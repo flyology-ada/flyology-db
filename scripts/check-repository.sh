@@ -30,6 +30,9 @@ test -z "$(git -C .deps/tidesdb status --short)"
 oracles/contract/validate_workload.py \
   oracles/contract/workload.schema.json \
   oracles/workloads/*.ndjson
+oracles/contract/validate_workload.py \
+  oracles/contract/workload.schema.json \
+  oracles/contract/valid/*.ndjson
 for invalid_workload in oracles/contract/invalid/*.ndjson
 do
   if oracles/contract/validate_workload.py \

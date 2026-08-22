@@ -211,6 +211,14 @@ def validate_schema_contract(schema: dict[str, Any]) -> None:
     )
     commit_condition = definitions["commit_operation"].get("allOf")
     require(
+        definitions["commit_operation"]
+        .get("properties", {})
+        .get("durability", {})
+        .get("const")
+        == "remote",
+        "commit durability schema drift",
+    )
+    require(
         commit_condition
         == [
             {
@@ -260,7 +268,9 @@ def load_records(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def validate_header(record: dict[str, Any]) -> tuple[set[str], dict[str, int]]:
+def validate_header(
+    record: dict[str, Any],
+) -> tuple[set[str], dict[str, int], set[str]]:
     allowed = {
         "record",
         "schema",
@@ -328,7 +338,7 @@ def validate_header(record: dict[str, Any]) -> tuple[set[str], dict[str, int]]:
     require(isinstance(capabilities, list), "required_capabilities must be an array")
     require(all(item in CAPABILITIES for item in capabilities), "unknown capability")
     require(len(capabilities) == len(set(capabilities)), "duplicate required capability")
-    return ids, limits
+    return ids, limits, set(capabilities)
 
 
 def validate_checkpoint(
@@ -384,6 +394,7 @@ def validate_operation(
     record: dict[str, Any],
     families: set[str],
     limits: dict[str, int],
+    capabilities: set[str],
     active: dict[str, int],
     unknown_receipts: set[str],
     seen_receipts: set[str],
@@ -397,6 +408,11 @@ def validate_operation(
 
     if "expected" in record:
         require(record["expected"] in OUTCOMES, "unknown expected outcome")
+    if operation == "commit" and record["expected"] != "Unsupported":
+        require(
+            "remote_durable" in capabilities,
+            "remote commit requires the remote_durable capability",
+        )
     if "transaction" in record:
         require_identifier(record["transaction"], "invalid transaction ID")
     if "receipt" in record:
@@ -481,7 +497,7 @@ def validate(path: Path, schema_path: Path) -> None:
     validate_schema_contract(schema)
 
     records = load_records(path)
-    families, limits = validate_header(records[0])
+    families, limits, capabilities = validate_header(records[0])
     active: dict[str, int] = {}
     unknown_receipts: set[str] = set()
     seen_receipts: set[str] = set()
@@ -498,6 +514,7 @@ def validate(path: Path, schema_path: Path) -> None:
                 record,
                 families,
                 limits,
+                capabilities,
                 active,
                 unknown_receipts,
                 seen_receipts,

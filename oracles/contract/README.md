@@ -19,6 +19,11 @@ A commit with `Outcome_Unknown` consumes the transaction and creates the named r
 mutate, commit, or roll back that transaction. Only `resolve` may inspect the receipt; inconclusive resolution keeps it
 live, while a conclusive result consumes it. Commit receipt IDs are never reused in one workload.
 
+Every commit in schema version 1 requests remote durability. Unless its expected outcome is explicitly `Unsupported`,
+the workload header must therefore declare `remote_durable` in `required_capabilities`. Adapters reject a missing
+required capability before executing any operation; local-fsync recovery is comparative evidence and never satisfies
+this capability.
+
 Normalized outcomes are `Success`, `Not_Found`, `Conflict`, `Serialization_Failure`, `Timed_Out`, `Cancelled`,
 `Outcome_Unknown`, `Corrupt`, and `Unsupported`. At a checkpoint, adapters emit a canonical digest and may emit sorted
 `(column_family_id, key_hex, value_hex_or_tombstone)` tuples for bounded small state.
