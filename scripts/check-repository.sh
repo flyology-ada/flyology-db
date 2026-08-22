@@ -11,6 +11,15 @@ test -f src/flyology-db.ads
 test -f docs/qualification/dependency-provenance.md
 test -f oracles/contract/workload.schema.json
 test -x oracles/contract/validate_workload.py
+test -f oracles/contract/canonical-state.md
+test -x oracles/contract/canonical_state.py
+test -f oracles/contract/canonical_state_vectors.json
+test -f oracles/adapters/slatedb/Cargo.lock
+test -f oracles/adapters/slatedb/Cargo.toml
+test -x oracles/adapters/slatedb/run_workload.py
+test -x oracles/adapters/slatedb/scripts/build.sh
+test -x oracles/adapters/slatedb/scripts/test.sh
+test -x oracles/adapters/slatedb/tests/test_adapter.py
 test -x formal/tla/witness_to_workload.py
 test -x scripts/check-tla.sh
 test -f formal/tla/CommitPublication.tla
@@ -24,15 +33,20 @@ test -z "$(git -C .deps/flyology-object-storage status --short)"
 slatedb_commit=$(git -C .deps/slatedb rev-parse HEAD)
 tidesdb_commit=$(git -C .deps/tidesdb rev-parse HEAD)
 grep -q "$slatedb_commit" docs/qualification/dependency-provenance.md
+grep -q "$slatedb_commit" oracles/adapters/slatedb/src/lib.rs
 grep -q "$tidesdb_commit" docs/qualification/dependency-provenance.md
 test -z "$(git -C .deps/slatedb status --short)"
 test -z "$(git -C .deps/tidesdb status --short)"
+oracles/contract/canonical_state.py oracles/contract/canonical_state_vectors.json
 oracles/contract/validate_workload.py \
   oracles/contract/workload.schema.json \
   oracles/workloads/*.ndjson
 oracles/contract/validate_workload.py \
   oracles/contract/workload.schema.json \
   oracles/contract/valid/*.ndjson
+oracles/contract/validate_workload.py \
+  oracles/contract/workload.schema.json \
+  oracles/adapters/slatedb/tests/fixtures/*.ndjson
 for invalid_workload in oracles/contract/invalid/*.ndjson
 do
   if oracles/contract/validate_workload.py \

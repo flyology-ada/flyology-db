@@ -13,6 +13,7 @@ tests/**/*-test_data.ads
 tests/**/*-test_data-tests.ads
 proof/obj/
 oracles/adapters/*/upstream/
+oracles/adapters/slatedb/target/
 benchmarks/results/
 formal/tla/*_TTrace_*
 formal/tla/states/

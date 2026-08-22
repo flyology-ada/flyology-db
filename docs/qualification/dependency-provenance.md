@@ -30,6 +30,11 @@ the upstream report as substitute evidence.
 These exact SHAs, rather than tags or workspace version strings, define the current oracle source campaign. Their
 capability reports are under `docs/compatibility/`.
 
+The SlateDB executable adapter has its own checked `Cargo.lock`. Its build gate verifies Rust 1.91.1, the exact clean
+source SHA, SlateDB 0.15.0 with default features disabled, and the local-filesystem-fsync profile before emitting the
+ignored `build/oracles/slatedb-adapter/provenance.json` artifact. This artifact records effective toolchain and feature
+configuration for each local build; it is evidence for that build, not a portable or remote-durability claim.
+
 ## Formal-method tools
 
 - TLC: TLA+ Tools `v1.8.0`, release commit `9787e65`, official `tla2tools.jar` SHA-1

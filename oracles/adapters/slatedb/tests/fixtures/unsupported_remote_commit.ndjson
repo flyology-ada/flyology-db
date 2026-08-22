@@ -1,0 +1,7 @@
+{"record":"workload","schema":"flyology.db.workload.v1","seed":"18","database_id":"10112233445566778899aabbccddeeff","limits":{"transactions":1,"mutations_per_transaction":1,"key_bytes":8,"value_bytes":16},"column_families":[{"id":"1","name":"default"}],"required_capabilities":["snapshot"]}
+{"record":"operation","step":0,"client":"comparison","operation":"create","expected":"Success"}
+{"record":"operation","step":1,"client":"comparison","transaction":"20112233445566778899aabbccddeeff","operation":"begin","isolation":"Snapshot","expected":"Success"}
+{"record":"operation","step":2,"client":"comparison","transaction":"20112233445566778899aabbccddeeff","operation":"put","column_family_id":"1","key":"00ff","value":"00ff10","expected":"Success"}
+{"record":"operation","step":3,"client":"comparison","transaction":"20112233445566778899aabbccddeeff","operation":"commit","durability":"remote","expected":"Unsupported"}
+{"record":"operation","step":4,"client":"comparison","transaction":"20112233445566778899aabbccddeeff","operation":"rollback","expected":"Success"}
+{"record":"checkpoint","step":5,"name":"remote-commit-rejected-before-effect","digest":"d34869735d4b2e142a264b862d0b82a33cc322f1c1dcf4c512f9df02699e1929","durability_barrier":true,"expected_tuples":[]}

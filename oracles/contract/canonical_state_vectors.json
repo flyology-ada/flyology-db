@@ -1,0 +1,29 @@
+{
+  "schema": "flyology.db.oracle.canonical-state.v1",
+  "vectors": [
+    {
+      "name": "empty",
+      "ordering": "canonical",
+      "tuples": [],
+      "sha256": "d34869735d4b2e142a264b862d0b82a33cc322f1c1dcf4c512f9df02699e1929"
+    },
+    {
+      "name": "input-order-is-significant",
+      "ordering": "input_order",
+      "tuples": [
+        { "column_family_id": "1", "key": "61", "value": "6f6e65" },
+        { "column_family_id": "1", "key": "00ff", "value": "" }
+      ],
+      "sha256": "e50506e3ad0edad658830fc0d7e433b7566fca596953451cadabf1aa6a90beae"
+    },
+    {
+      "name": "canonical-binary-order",
+      "ordering": "canonical",
+      "tuples": [
+        { "column_family_id": "1", "key": "00ff", "value": "" },
+        { "column_family_id": "1", "key": "61", "value": "6f6e65" }
+      ],
+      "sha256": "fd120325d7fc05b83ff49139066799be93d2cb051167d39c986ed85ec82e2438"
+    }
+  ]
+}

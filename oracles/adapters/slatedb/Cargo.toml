@@ -1,0 +1,19 @@
+[package]
+name = "flyology-db-slatedb-adapter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+base64 = "0.22.1"
+futures = "0.3.31"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.142"
+sha2 = "0.10.9"
+slatedb = { path = "../../../.deps/slatedb/slatedb", version = "=0.15.0", default-features = false }
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"

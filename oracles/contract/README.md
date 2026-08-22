@@ -26,7 +26,11 @@ this capability.
 
 Normalized outcomes are `Success`, `Not_Found`, `Conflict`, `Serialization_Failure`, `Timed_Out`, `Cancelled`,
 `Outcome_Unknown`, `Corrupt`, and `Unsupported`. At a checkpoint, adapters emit a canonical digest and may emit sorted
-`(column_family_id, key_hex, value_hex_or_tombstone)` tuples for bounded small state.
+`(column_family_id, key_hex, value_hex)` live tuples for bounded small state.
+
+[`canonical-state.md`](canonical-state.md) defines the exact shared digest byte stream and canonical tuple order.
+`canonical_state.py canonical_state_vectors.json` validates the machine-readable empty, binary-order, and explicit
+input-order golden vectors consumed by executable adapters.
 
 Keys, values, IDs, and digests use lowercase hexadecimal strings. Numeric counters are exact unsigned decimal strings
 when they may exceed language-neutral JSON integer precision. Unknown fields are rejected for schema version 1.

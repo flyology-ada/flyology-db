@@ -1,0 +1,10 @@
+{"record":"workload","schema":"flyology.db.workload.v1","seed":"17","database_id":"00112233445566778899aabbccddeeff","limits":{"transactions":2,"mutations_per_transaction":1,"key_bytes":8,"value_bytes":16},"column_families":[{"id":"1","name":"default"}],"required_capabilities":["snapshot","crash_recovery"]}
+{"record":"operation","step":0,"client":"writer","operation":"create","expected":"Success"}
+{"record":"operation","step":1,"client":"reader","transaction":"10112233445566778899aabbccddeeff","operation":"begin","isolation":"Snapshot","expected":"Success"}
+{"record":"operation","step":2,"client":"reader","transaction":"10112233445566778899aabbccddeeff","operation":"get","column_family_id":"1","key":"00ff","expected":"Not_Found"}
+{"record":"operation","step":3,"client":"reader","transaction":"10112233445566778899aabbccddeeff","operation":"scan","column_family_id":"1","lower":"00","upper":"01","maximum_items":10,"expected":"Success"}
+{"record":"operation","step":4,"client":"reader","transaction":"10112233445566778899aabbccddeeff","operation":"rollback","expected":"Success"}
+{"record":"checkpoint","step":5,"name":"empty","digest":"d34869735d4b2e142a264b862d0b82a33cc322f1c1dcf4c512f9df02699e1929","durability_barrier":true,"expected_tuples":[]}
+{"record":"operation","step":6,"client":"writer","operation":"crash"}
+{"record":"operation","step":7,"client":"writer","operation":"reopen","expected":"Success"}
+{"record":"checkpoint","step":8,"name":"recovered-empty","digest":"d34869735d4b2e142a264b862d0b82a33cc322f1c1dcf4c512f9df02699e1929","durability_barrier":true,"expected_tuples":[]}
