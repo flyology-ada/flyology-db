@@ -29,3 +29,16 @@ the upstream report as substitute evidence.
 
 These exact SHAs, rather than tags or workspace version strings, define the current oracle source campaign. Their
 capability reports are under `docs/compatibility/`.
+
+## Formal-method tools
+
+- TLC: TLA+ Tools `v1.8.0`, release commit `9787e65`, official `tla2tools.jar` SHA-1
+  `0e4cfdb976f04522d218ec62c6046bbee5098377`, SHA-256
+  `eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a`.
+- TLAPS: rolling release `1.6.0-pre`, proof-manager commit `4600b24`, official arm64 macOS archive SHA-256
+  `ad1cb0a047ac2b5c33d6811d5d57c5bfbad4b317cd90299fee4302514f1bebde`; extracted `tlapm` binary SHA-256
+  `291db0665c3b599f5343b03c06bcfb49b48ac966c39efff8643fa730f0d296b7`.
+
+The ignored `.deps/tla` directory contains the verified release artifacts. `scripts/check-tla.sh` verifies both
+executable artifacts by SHA-256 and the TLAPS reported commit before use. TLC requires Java 11 or newer; the Java
+runtime is an execution prerequisite, not a repository dependency.

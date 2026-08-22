@@ -6,8 +6,7 @@
 - Reviewer: independent read-only task `/root/foundation_review`.
 - First reviewed revision: `c63cc5125c33c3ed256eaef100858d370f614e18`.
 - First amended revision: `0ead79a74deb60d6400ab29262f81287814bb78c`.
-- Final amended revision: the root commit containing this record; obtain its immutable ID with
-  `git rev-parse HEAD`.
+- Final amended revision: `8b9ff8c338e4ffb346b0a18ff234646671dd2fd5`.
 - Initial P1 findings: unreachable older batches, structurally unreachable HEAD images, and reconciliation dependent
   on unenforced transition-ID nonreuse.
 - Initial P2/P3 findings: incomplete format corruption/golden coverage, overstated proof claims, permissive workload
@@ -24,4 +23,5 @@
   Proof documentation was narrowed, full range-union normalization was assigned to Milestone 3, and AUnit was removed.
 - Verification: `./tests/scripts/test.sh`, `./scripts/prove.sh`, `./scripts/check-repository.sh`, and
   `git diff --check` pass. The current SPARK gate proves every reported check with no warning or unproved check.
-- Follow-up status: re-review of the final amended root commit is pending.
+- Follow-up status: accepted. The independent reviewer reported no P0, P1, P2, or P3 findings and reran every listed
+  gate against the exact final revision with clean root and dependency worktrees.

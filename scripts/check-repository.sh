@@ -11,6 +11,10 @@ test -f src/flyology-db.ads
 test -f docs/qualification/dependency-provenance.md
 test -f oracles/contract/workload.schema.json
 test -x oracles/contract/validate_workload.py
+test -x formal/tla/witness_to_workload.py
+test -x scripts/check-tla.sh
+test -f formal/tla/CommitPublication.tla
+test -f formal/tla/PublicationSafetyProof.tla
 grep -q '^name = "flyology_db"$' alire.toml
 grep -q '^package Flyology.DB is$' src/flyology-db.ads
 grep -q 'flyology_object_storage = { path=' alire.toml

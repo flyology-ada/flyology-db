@@ -5,7 +5,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 
 | Milestone | Acceptance gate | State |
 | --- | --- | --- |
-| 0 Foundation | Crate, guide, dependency clone/pin, architecture/format/oracle contracts, runners, provenance | In progress |
+| 0 Foundation | Crate, guide, dependency clone/pin, architecture/format/oracle contracts, runners, provenance | Accepted at `8b9ff8c` |
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | In progress; dependency landed |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Pending |
@@ -20,3 +20,10 @@ The first implementation unit after foundation is the smallest log-only, remotel
 transaction slice. Its required cases are exact CRUD/reopen, cross-family atomicity, cacheless recovery, stale head,
 lost response reconciliation, pre/post-publication faults, reference-model agreement, and no unresolved P0/P1 review
 finding.
+
+## Formal state-machine lane
+
+TLA+ models publication, ambiguous outcomes, fencing, cache loss, and recovery before the corresponding production
+unit freezes. TLC exhausts a bounded state space and emits selected execution witnesses. TLAPS proves an unbounded
+inductive safety kernel. A checked scenario converter projects selected witnesses into the normative NDJSON workload
+contract for replay against the Ada reference model, Flyology.DB, and supported comparative oracles.

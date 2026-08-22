@@ -29,3 +29,21 @@ Current selected packages:
 The proof does not establish provider atomicity, read freshness, transport behavior, durability barriers, or that a
 concrete I/O adapter supplies bytes faithfully. Object Storage conformance and executable boundary tests gate those
 trusted boundaries.
+
+## TLA+ state-machine assurance
+
+`./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:
+
+- TLC exhausts 105,663 distinct states of the bounded two-writer, two-transaction commit-publication model and checks
+  type, reachable-chain, durable-acknowledgment, no-replay, explicit stale-publication history, and
+  cacheless-recovery invariants. A separate negative model deliberately applies the shared publication-history
+  function after a writer becomes stale and must violate the stale-publication invariant.
+- A deliberate witness predicate emits an accepted-but-response-lost publication path. A checked converter validates
+  every state and projects the scenario to `oracles/workloads/tla_commit_publication_witness.ndjson`.
+- TLAPS, in strict mode with its SMT backend, proves all 20 obligations in the unbounded inductive safety kernel.
+  These obligations cover initialization and preservation by every abstract action.
+
+The TLAPS kernel is an abstraction of the executable TLC model. It proves publication-epoch monotonicity, while the
+executable TLC model separately checks stale-writer exclusion with a history monitor. The mapping and deliberately
+excluded claims are documented in `formal/tla/README.md`; a machine-checked refinement theorem between the two
+models is not yet claimed.

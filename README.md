@@ -30,8 +30,12 @@ The root manifest path-pins it for development while leaving its indexed HTTP de
 alr build
 ./tests/scripts/test.sh
 ./scripts/prove.sh
+./scripts/check-tla.sh
 ./scripts/check-repository.sh
 ```
 
 The exact Object Storage commit used by the current campaign is recorded in
 [dependency-provenance.md](docs/qualification/dependency-provenance.md).
+
+The TLA+ gate exhausts the bounded commit-publication state machine, checks the unbounded safety kernel with TLAPS,
+and regenerates a workload witness for later replay against the Ada model, Flyology.DB, and comparative oracles.
