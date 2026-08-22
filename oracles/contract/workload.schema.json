@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flyology.org/db/oracles/workload-v1.schema.json",
+  "title": "Flyology.DB workload record",
+  "oneOf": [
+    { "$ref": "#/$defs/workload" },
+    { "$ref": "#/$defs/operation" },
+    { "$ref": "#/$defs/checkpoint" }
+  ],
+  "$defs": {
+    "hex": { "type": "string", "pattern": "^(?:[0-9a-f]{2})*$" },
+    "id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "family_id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "outcome": {
+      "enum": [
+        "Success",
+        "Not_Found",
+        "Conflict",
+        "Serialization_Failure",
+        "Timed_Out",
+        "Cancelled",
+        "Outcome_Unknown",
+        "Corrupt",
+        "Unsupported"
+      ]
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "schema",
+        "seed",
+        "database_id",
+        "limits",
+        "column_families",
+        "required_capabilities"
+      ],
+      "properties": {
+        "record": { "const": "workload" },
+        "schema": { "const": "flyology.db.workload.v1" },
+        "seed": { "type": "string", "pattern": "^[0-9]+$" },
+        "database_id": { "$ref": "#/$defs/id" },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "transactions",
+            "mutations_per_transaction",
+            "key_bytes",
+            "value_bytes"
+          ],
+          "properties": {
+            "transactions": { "type": "integer", "minimum": 1 },
+            "mutations_per_transaction": { "type": "integer", "minimum": 1 },
+            "key_bytes": { "type": "integer", "minimum": 0 },
+            "value_bytes": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "column_families": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name"],
+            "properties": {
+              "id": { "$ref": "#/$defs/family_id" },
+              "name": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "required_capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "multi_column_family",
+              "remote_durable",
+              "snapshot",
+              "serializable",
+              "crash_recovery",
+              "outcome_resolution"
+            ]
+          }
+        }
+      }
+    },
+    "operation": {
+      "oneOf": [
+        { "$ref": "#/$defs/simple_operation" },
+        { "$ref": "#/$defs/begin_operation" },
+        { "$ref": "#/$defs/get_operation" },
+        { "$ref": "#/$defs/scan_operation" },
+        { "$ref": "#/$defs/put_operation" },
+        { "$ref": "#/$defs/delete_operation" },
+        { "$ref": "#/$defs/transaction_operation" },
+        { "$ref": "#/$defs/commit_operation" },
+        { "$ref": "#/$defs/resolve_operation" },
+        { "$ref": "#/$defs/crash_operation" }
+      ]
+    },
+    "simple_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record", "step", "client", "operation", "expected"],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": {
+          "enum": ["create", "open", "reopen", "flush", "checkpoint"]
+        },
+        "expected": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "begin_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "step",
+        "client",
+        "operation",
+        "transaction",
+        "isolation",
+        "expected"
+      ],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": { "const": "begin" },
+        "transaction": { "$ref": "#/$defs/id" },
+        "isolation": { "enum": ["Snapshot", "Serializable"] },
+        "expected": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "get_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "step",
+        "client",
+        "operation",
+        "transaction",
+        "column_family_id",
+        "key",
+        "expected"
+      ],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": { "const": "get" },
+        "transaction": { "$ref": "#/$defs/id" },
+        "column_family_id": { "$ref": "#/$defs/family_id" },
+        "key": { "$ref": "#/$defs/hex" },
+        "expected": { "$ref": "#/$defs/outcome" },
+        "expected_value": { "$ref": "#/$defs/hex" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "expected": { "const": "Success" } } },
+          "then": { "required": ["expected_value"] },
+          "else": { "not": { "required": ["expected_value"] } }
+        }
+      ]
+    },
+    "scan_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "step",
+        "client",
+        "operation",
+        "transaction",
+        "column_family_id",
+        "lower",
+        "upper",
+        "maximum_items",
+        "expected"
+      ],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": { "const": "scan" },
+        "transaction": { "$ref": "#/$defs/id" },
+        "column_family_id": { "$ref": "#/$defs/family_id" },
+        "lower": { "$ref": "#/$defs/hex" },
+        "upper": { "$ref": "#/$defs/hex" },
+        "maximum_items": { "type": "integer", "minimum": 1 },
+        "expected": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "put_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "step",
+        "client",
+        "operation",
+        "transaction",
+        "column_family_id",
+        "key",
+        "value",
+        "expected"
+      ],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": { "const": "put" },
+        "transaction": { "$ref": "#/$defs/id" },
+        "column_family_id": { "$ref": "#/$defs/family_id" },
+        "key": { "$ref": "#/$defs/hex" },
+        "value": { "$ref": "#/$defs/hex" },
+        "expected": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "delete_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "step",
+        "client",
+        "operation",
+        "transaction",
+        "column_family_id",
+        "key",
+        "expected"
+      ],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": { "const": "delete" },
+        "transaction": { "$ref": "#/$defs/id" },
+        "column_family_id": { "$ref": "#/$defs/family_id" },
+        "key": { "$ref": "#/$defs/hex" },
+        "expected": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "transaction_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "step",
+        "client",
+        "operation",
+        "transaction",
+        "expected"
+      ],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": { "const": "rollback" },
+        "transaction": { "$ref": "#/$defs/id" },
+        "expected": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "commit_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "step",
+        "client",
+        "operation",
+        "transaction",
+        "durability",
+        "expected"
+      ],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": { "const": "commit" },
+        "transaction": { "$ref": "#/$defs/id" },
+        "receipt": { "$ref": "#/$defs/id" },
+        "durability": { "const": "remote" },
+        "expected": { "$ref": "#/$defs/outcome" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "expected": { "enum": ["Success", "Outcome_Unknown"] }
+            }
+          },
+          "then": { "required": ["receipt"] },
+          "else": { "not": { "required": ["receipt"] } }
+        }
+      ]
+    },
+    "resolve_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "step",
+        "client",
+        "operation",
+        "receipt",
+        "expected"
+      ],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": { "const": "resolve" },
+        "receipt": { "$ref": "#/$defs/id" },
+        "expected": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "crash_operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record", "step", "client", "operation"],
+      "properties": {
+        "record": { "const": "operation" },
+        "step": { "type": "integer", "minimum": 0 },
+        "client": { "type": "string", "minLength": 1 },
+        "operation": { "const": "crash" }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record", "step", "name"],
+      "properties": {
+        "record": { "const": "checkpoint" },
+        "step": { "type": "integer", "minimum": 0 },
+        "name": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "durability_barrier": { "type": "boolean" },
+        "expected_tuples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["column_family_id", "key", "value"],
+            "properties": {
+              "column_family_id": { "$ref": "#/$defs/family_id" },
+              "key": { "$ref": "#/$defs/hex" },
+              "value": { "$ref": "#/$defs/hex" }
+            }
+          }
+        }
+      },
+      "anyOf": [
+        { "required": ["digest"] },
+        { "required": ["expected_tuples"] }
+      ]
+    }
+  }
+}

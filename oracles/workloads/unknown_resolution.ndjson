@@ -1,0 +1,8 @@
+{"record":"workload","schema":"flyology.db.workload.v1","seed":"2","database_id":"101112131415161718191a1b1c1d1e1f","limits":{"transactions":1,"mutations_per_transaction":1,"key_bytes":4,"value_bytes":4},"column_families":[{"id":"1","name":"default"}],"required_capabilities":["remote_durable","outcome_resolution"]}
+{"record":"operation","step":0,"client":"writer","operation":"create","expected":"Success"}
+{"record":"operation","step":1,"client":"writer","transaction":"202122232425262728292a2b2c2d2e2f","operation":"begin","isolation":"Snapshot","expected":"Success"}
+{"record":"operation","step":2,"client":"writer","transaction":"202122232425262728292a2b2c2d2e2f","operation":"put","column_family_id":"1","key":"61","value":"31","expected":"Success"}
+{"record":"operation","step":3,"client":"writer","transaction":"202122232425262728292a2b2c2d2e2f","operation":"commit","receipt":"303132333435363738393a3b3c3d3e3f","durability":"remote","expected":"Outcome_Unknown"}
+{"record":"operation","step":4,"client":"writer","operation":"resolve","receipt":"303132333435363738393a3b3c3d3e3f","expected":"Outcome_Unknown"}
+{"record":"operation","step":5,"client":"writer","operation":"resolve","receipt":"303132333435363738393a3b3c3d3e3f","expected":"Success"}
+{"record":"checkpoint","step":6,"name":"resolved-publication","durability_barrier":true,"expected_tuples":[{"column_family_id":"1","key":"61","value":"31"}]}
