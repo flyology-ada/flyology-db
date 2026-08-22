@@ -20,7 +20,10 @@ Current selected packages:
 - `Flyology.DB.Head_Policy`, covering initial-head validity, writer acquisition, commit sequence/identity transitions,
   monotonic transition ordinals, and conservative ambiguous-outcome reconciliation;
 - `Flyology.DB.Formats`, covering explicit big-endian head encoding, bounds, CRC-32C calculation, and fail-closed
-  structural decoding; and
+  structural decoding;
+- `Flyology.DB.Batch_Formats`, covering runtime safety and definite initialization of the bounded encoder and
+  structural/latest decoders, helper contracts for lengths and byte copies, decoder success/failure postconditions,
+  and predecessor-policy arithmetic; and
 - `Flyology.DB.Reference_Model`, covering absence of runtime checks and definite initialization in bounded MVCC state
   transitions. Executable tests, rather than current functional proof contracts, establish the model's fixed-snapshot,
   conflict, atomic-commit, and rollback examples. Exact duplicate scan predicates are deduplicated; full range-union
@@ -29,6 +32,16 @@ Current selected packages:
 The proof does not establish provider atomicity, read freshness, transport behavior, durability barriers, or that a
 concrete I/O adapter supplies bytes faithfully. Object Storage conformance and executable boundary tests gate those
 trusted boundaries.
+
+`Flyology.DB.Batch_Formats` is one private bounded operational instance rather than a public generic. Its helper
+contracts split header, transaction, and mutation encoding, and split bounded count, extent, and byte-copy decoding,
+so GNATprove checks each bound without constructing one monolithic verification condition. The persisted
+32-bit/64-bit wire widths remain independent of those operational caps; a future larger instance must repeat the
+memory-budget, corruption-test, and proof gates.
+
+Executable golden-byte, corruption, boundary, HEAD-binding, and cacheless-recovery tests establish byte ordering,
+CRC-32C behavior, semantic rejection classes, and concrete publication/predecessor predicate examples. The current
+SPARK contracts do not claim functional equivalence between those byte-level behaviors and an independent codec.
 
 ## TLA+ state-machine assurance
 

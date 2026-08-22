@@ -13,8 +13,8 @@ trap cleanup_log EXIT HUP INT TERM
 
 cd "$project_root/proof"
 if ! "$alr" gnatprove -P flyology_db_proof.gpr --mode=all --level=1 -j0 \
-  --output=oneline --output-header --report=all -f -u \
-  flyology-db-head_policy.adb flyology-db-formats.adb \
+  --output=oneline --output-header --report=all --warnings=error -f -u \
+  flyology-db-head_policy.adb flyology-db-formats.adb flyology-db-batch_formats.adb \
   flyology-db-reference_model.adb >"$log" 2>&1
 then
   cat "$log"

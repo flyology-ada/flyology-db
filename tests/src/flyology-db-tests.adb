@@ -1,4 +1,5 @@
 with Ada.Text_IO;
+with Flyology.DB.Batch_Format_Tests;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
 with Flyology.DB.Reference_Model;
@@ -500,6 +501,7 @@ begin
    end if;
 
    Test_Reference_Model;
+   Flyology.DB.Batch_Format_Tests.Run;
 
-   Ada.Text_IO.Put_Line ("Flyology.DB head policy, formats, and reference model: OK");
+   Ada.Text_IO.Put_Line ("Flyology.DB head/batch formats, policy, and reference model: OK");
 end Flyology.DB.Tests;

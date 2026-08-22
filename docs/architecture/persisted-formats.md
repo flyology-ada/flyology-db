@@ -38,12 +38,31 @@ advances sequence by the exact batch transaction count, and names the published 
 
 ## Commit batch
 
-Commit batches use magic `FLYBATC1`. The header includes writer epoch, batch ID, predecessor batch ID, expected head
-transition ID, publication transition ID, first and last sequence, transaction count, mutation count, and payload
-length. The first batch has an all-zero predecessor; every later batch names the exact prior reachable batch. Each
-transaction stores its idempotency ID, assigned sequence, mutation count, and exact mutation-frame length. Each
-mutation stores a stable column-family ID, operation code (`put` or `delete`), key length, value length, then key and
-value bytes. Delete has value length zero.
+Commit batches use magic `FLYBATC1`, kind code `2`, and a 156-byte header. The common envelope occupies bytes
+0 through 43. The kind-specific fields are fixed as follows:
+
+| Field | Offset | Bytes |
+| --- | ---: | ---: |
+| writer epoch | 44 | 8 |
+| batch ID | 52 | 16 |
+| previous batch ID | 68 | 16 |
+| expected head transition ID | 84 | 16 |
+| expected head transition number | 100 | 8 |
+| publication transition ID | 108 | 16 |
+| publication transition number | 124 | 8 |
+| first sequence | 132 | 8 |
+| last sequence | 140 | 8 |
+| transaction count | 148 | 4 |
+| mutation count | 152 | 4 |
+
+The two transition identities are exact `(number, ID)` pairs. The expected number is nonzero and below the maximum;
+the publication number is its exact successor. A first batch has expected number equal to its writer epoch. Every
+later batch has expected number greater than its epoch. The first batch has an all-zero predecessor; every later batch
+names the exact prior reachable batch. Each transaction frame has a 32-byte prefix: idempotency ID (16 bytes), assigned
+sequence (8), mutation count (4), and exact byte length of all following mutation frames in that transaction (4). Each
+mutation frame has a 14-byte prefix: stable nonzero column-family ID (4), operation code (`1` for Put or `2` for
+Delete), zero flags (1), key length (4), and value length (4), followed by the exact key and value bytes. Delete has
+value length zero; a Put value and every key may be empty. The final four bytes hold CRC-32C over every preceding byte.
 
 Transactions and mutations are encoded in proposed commit order. Sequences are contiguous and strictly increasing;
 keys and values must fit configured bounds; counts and summed lengths are checked before slicing. A decoder rejects a
@@ -52,7 +71,28 @@ or transition IDs disagree with the head that references it. Recovery validates 
 identity, sequence adjacency, and checksum before following it. Sequence decreases strictly during the backward walk,
 so a valid chain cannot cycle.
 
+The version-1 wire widths permit 32-bit counts and lengths and a 64-bit payload length. The initial private Ada reader
+is deliberately narrower: at most 16 transactions, 64 mutations, 64 bytes per key, 256 bytes per value, 21,888
+payload bytes, and 22,048 total bytes. These are operational backpressure limits, not wire-format changes. The total
+image admission limit is checked before copying into the bounded representation. For an admitted image, exact extent,
+magic, version, kind, flags, database identity, and both checksums are checked before declared reader caps. A
+`Limit_Exceeded` result reports a declared resource requirement; it does not certify transaction or mutation structure
+that the reader deliberately skipped. Corruption has separate results, and every decode failure returns an empty batch
+value. Raising these caps later does not require a format-version change, but does require renewed memory-budget,
+test, and proof evidence.
+
+A latest batch is visible only when the live head has the same database and writer epoch, names the batch ID, ends at
+the batch's last sequence, and carries its exact expected/publication transition identities. Historical predecessor
+batches decode structurally without requiring historical HEAD objects. Recovery then checks database identity, exact
+batch-ID linkage, sequence adjacency, nondecreasing epoch, and ordinal continuity. The next expected number is at least
+the predecessor publication number, and the epoch delta cannot exceed that ordinal gap. A zero gap is a direct edge
+and requires equal transition IDs. A gap of one is the immediate successor transition and must use a different ID. A
+gap of two or more permits intervening metadata or writer-acquisition HEAD transitions and does not constrain IDs,
+because a historical opaque ID may recur after another transition.
+
 ## Evolution
 
-A format change records whether existing readers reject, read, or migrate it. Golden byte fixtures and explicit
-corruption cases gate each supported version. Migration never rewrites a reachable immutable object in place.
+This is the initial Flyology.DB commit-batch encoding. No earlier batch encoding was released or persisted, so version
+1 has no legacy migration obligation. A future format change records whether existing readers reject, read, or migrate
+it. Golden byte fixtures and explicit corruption cases gate each supported version. Migration never rewrites a
+reachable immutable object in place.
