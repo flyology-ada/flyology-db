@@ -104,9 +104,11 @@ does not prove per-family reconstruction, sorting/completeness/corruption checks
 reconciliation, byte formats, or refinement to a future Ada implementation. Those concrete behaviors remain in the
 exhaustive TLC lane or future format/implementation gates.
 
-The semantic format decision is staged in `docs/architecture/lsm-checkpoint-publication.md`: checkpoint publication
-will use a future immutable manifest object version 2 plus a new SST object kind. Current manifest v1 remains
-log-only, and this model/design unit does not make either future encoding decodable or operational.
+The semantic decision in `docs/architecture/lsm-checkpoint-publication.md` now has an exact private reference format:
+immutable manifest version 2 and SST kind 4/version 1 have frozen bytes, goldens, corruption tests, and bounded SPARK
+decoders. Current manifest v1 remains the only operational log-engine format; the format unit does not make
+checkpoint publication, recovery, or the dynamically allocated production decoder live, and no refinement theorem
+connects these reference bytes to this TLA+ model.
 
 ## Witness projection
 

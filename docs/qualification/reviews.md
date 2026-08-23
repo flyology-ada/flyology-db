@@ -1,5 +1,26 @@
 # Review record
 
+## Accepted first-LSM exact-format candidate
+
+- Parent: constants-skill agent-resource refresh `59597cbadf17d8f43c03192bd1aeccddf644248e`.
+- Scope: exact immutable checkpoint-manifest-v2 and SST-v1 bytes, private bounded SPARK reference codecs, independent
+  golden generation, corruption/cap/lower-bound tests, and proof-project integration. It does not activate checkpoint
+  publication, production dynamic decoding, recovery, compaction, remote providers, or composable I/O.
+- Constant authority: every consequential new persisted, derived, proof, fixture, and test value has an adjacent
+  stable source comment identifying its role, authority/classification, and compatibility effect. Generic capacities
+  are explicitly reference/proof representation dimensions; persisted database and family limits remain the later
+  operational allocation authority.
+- Verification: `./tests/scripts/test.sh` passes repository checks, the deterministic Ada format/policy/model/local
+  engine, files crash/recovery, 32 comparative cases, and the pinned TidesDB 4/4 set with no compiler warning. The
+  final warning-strict FSF GNATprove 16.1.0 widening proves 1,078/1,078 checks (164 flow and 914 prover) with zero
+  warnings, unproved or justified checks, or `pragma Assume`. The independent Python generator reproduces the frozen
+  358-byte manifest and 164-byte SST images.
+- Findings cycle: the first sweep found two P2 issues and one P3 issue. Unused family LSM slots could hold nonzero
+  state that the encoder silently omitted, the TLA+ README still described the now-decodable reference formats as
+  future, and one private decode status was unreachable. The amendment requires canonical zero family tails and
+  tests the rejection, aligns the formal boundary wording, removes the dead status, and also exercises successful
+  decoding from nonzero array lower bounds. Follow-up review finds no remaining P0, P1, P2, or P3 issue.
+
 ## Pending first-LSM checkpoint model/design candidate
 
 - Parent: owned synchronous byte-spine candidate `c909c57227596a49e4d4dedd793fd615e15bd149`.

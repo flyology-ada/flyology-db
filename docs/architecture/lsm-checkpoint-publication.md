@@ -1,17 +1,17 @@
 # First LSM checkpoint publication design
 
-This document freezes the semantic checkpoint-publication decision for a later implementation unit. It does not
-define binary offsets, claim that a checkpoint format is currently decodable, or claim an Ada LSM implementation.
-The current engine remains a log-only HEAD-v2 database whose manifest objects use format version 1.
+This document freezes the semantic checkpoint-publication decision. The separate format unit now defines exact
+manifest-v2 and SST-v1 bytes plus a private SPARK reference decoder, but does not claim an operational Ada LSM.
+The current engine remains a log-only HEAD-v2 database whose live manifest objects use format version 1.
 
 ## Staged compatibility decision
 
-A checkpoint requires a future column-family manifest object version 2 and a new immutable SST object kind. Manifest
+A checkpoint uses column-family manifest object version 2 and immutable SST object kind 4. Manifest
 version 1 remains readable as the current log-only registry and limit authority, but it cannot name runs or a replay
 boundary. There is no in-place rewrite and no implicit migration. A later upgrade will write complete immutable SST
-runs, write a new immutable manifest-v2 object, and publish it through one exact conditional HEAD transition. Exact
-wire widths, offsets, checksums, golden bytes, corruption fixtures, and decoder proofs belong to the next focused Ada
-format unit; the normative supported-version rules in `persisted-formats.md` do not change in this design-only unit.
+runs, write a new immutable manifest-v2 object, and publish it through one exact conditional HEAD transition. The
+focused format unit freezes exact wire widths, offsets, checksums, golden bytes, corruption fixtures, and decoder
+proofs without making that operational publication path live.
 
 Manifest v2 preserves the complete immutable family registry and every existing database and family limit. It adds,
 at minimum, for each family:
@@ -32,8 +32,9 @@ A first checkpoint snapshots an already committed replay boundary. For each none
 constructs one complete immutable L0 run sorted by that family's persisted byte ordering. Empty families need no
 run. Every run carries a caller- or operation-stable nonzero identity. The manifest identity and attempted HEAD
 transition identity are likewise stable for the operation; reconciliation never invents replacement identities.
+The exact offsets, widths, canonical ordering, and corruption rules are normative in `persisted-formats.md`.
 
-The future manifest records:
+Manifest version 2 records:
 
 - its immutable predecessor and complete unchanged registry and limits;
 - the exact family-to-L0-run mapping, appending new run IDs without rewriting an existing run;
@@ -103,6 +104,6 @@ TLC or future gates.
 
 ## Non-goals
 
-This unit does not implement Ada production code, binary formats, automatic flushing, compaction, run pruning,
+This unit does not implement Ada production checkpoint publication, automatic flushing, compaction, run pruning,
 garbage collection, scans, MVCC, snapshots, remote-provider qualification, S3, asynchronous/composable I/O, or an
 LSM performance claim. Those require separate focused format, implementation, provider, and qualification reviews.

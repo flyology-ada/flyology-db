@@ -33,7 +33,10 @@ Current selected packages:
   and predecessor-policy arithmetic; and
 - `Flyology.DB.Manifest_Formats`, an additive bounded manifest-v1 candidate covering runtime safety, definite
   initialization, length/UTF-8 arithmetic, decoder success/failure postconditions, and publication/predecessor
-  predicate arithmetic; and
+  predicate arithmetic;
+- `Flyology.DB.LSM_Formats.Reference`, instantiated with deliberately small representation-only proof capacities,
+  covering exact checkpoint-manifest-v2 and SST-v1 length arithmetic, structural validation, fail-closed arbitrary-
+  bound decoding, exact cursor and slice bounds, and definite initialization; and
 - `Flyology.DB.Reference_Model`, covering absence of runtime checks and definite initialization in bounded MVCC state
   transitions. Executable tests, rather than current functional proof contracts, establish the model's fixed-snapshot,
   conflict, atomic-commit, and rollback examples. Exact duplicate scan predicates are deduplicated; full range-union
@@ -57,6 +60,15 @@ SPARK contracts do not claim functional equivalence between those byte-level beh
 Manifest golden-byte, every-truncation, repaired semantic corruption, cap, UTF-8, publication, and predecessor tests
 likewise establish concrete byte/predicate behavior. The manifest proof boundary does not claim CRC correctness,
 semantic completeness of the corruption corpus, provider publication, or operational HEAD-v2 refinement.
+
+The first-LSM format candidate adds a warning-strict forced selected-unit run on 2026-08-23 using FSF GNATprove
+16.1.0, `--mode=all --level=1 -j0 --output=oneline --output-header --report=all --warnings=error -f`. It proves
+1,078/1,078 checks: 93 initialization checks, 522 run-time checks, 91 assertions, 300 functional contracts, and 72
+termination checks; 164 are discharged by flow analysis and 914 by provers. It reports zero warnings, unproved or
+justified checks, and zero `pragma Assume` statements. A focused bounded instance first proved 435/435 checks. These
+results establish runtime safety and the stated contracts of the reference format implementation; they do not prove
+CRC functional correctness, equivalence to the independent golden generator, operational dynamic allocation,
+provider publication, recovery I/O, or refinement from the TLA+ model.
 
 The final warning-strict forced five-unit gate on the amended, rebased candidate proves 639/639 checks: 65
 initialization checks, 309 runtime checks, 54 assertions, 161 functional contracts, and 50 termination checks; 114

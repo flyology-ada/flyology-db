@@ -3,6 +3,7 @@ with Flyology.DB.Batch_Format_Tests;
 with Flyology.DB.Engine_Tests;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
+with Flyology.DB.LSM_Format_Tests;
 with Flyology.DB.Manifest_Format_Tests;
 with Flyology.DB.Reference_Model;
 with Interfaces;
@@ -544,6 +545,7 @@ begin
    end if;
 
    Flyology.DB.Manifest_Format_Tests.Run;
+   Flyology.DB.LSM_Format_Tests.Run;
    Test_Reference_Model;
    Flyology.DB.Batch_Format_Tests.Run;
    Flyology.DB.Engine_Tests.Run;

@@ -2,15 +2,14 @@
 
 This document is normative for HEAD versions 1 and 2 and the independent version-1 commit-batch and
 column-family-manifest encodings. Each object kind advances its own version constant: the HEAD kind accepts versions
-1 and 2, while batch and manifest currently accept only version 1. All multibyte integers are unsigned big-endian.
+1 and 2, batch accepts version 1, manifest accepts versions 1 and 2, and SST accepts version 1. All multibyte integers
+are unsigned big-endian.
 Byte strings are length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is
 persisted.
 
-The staged first-LSM design chooses a future manifest object version 2 and a new SST object kind, but freezes no byte
-layout here and does not make either version operational. See
-[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). The kind-specific supported versions in this
-document remain unchanged until the separate persisted-format unit supplies exact offsets, golden bytes, corruption
-tests, and decoder proof.
+The first-LSM format unit freezes manifest version 2 and SST version 1 below. Its private generic codec is a bounded
+reference/proof implementation; it does not make checkpoint publication or the operational dynamic decoder live.
+See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
 
 ## Common envelope
 
@@ -201,9 +200,100 @@ reachable history longer than its own persisted cap is `Corrupt`, while an unrep
 is `Capacity_Exceeded` and Open remains closed. A future composable provider path may additionally use `Unique_Buffer`
 while sharing these format and publication predicates.
 
+### Checkpoint manifest version 2
+
+Manifest version 2 retains magic `FLYCFM01`, kind code `3`, every version-1 field at the same offset, and every
+version-1 registry and database limit. Its header is 220 bytes. The 24-byte extension is:
+
+| Field | Offset | Bytes |
+| --- | ---: | ---: |
+| replay boundary | 196 | 8 |
+| maximum total L0 runs | 204 | 4 |
+| maximum checkpoint identities | 208 | 4 |
+| admitted identity count | 212 | 4 |
+| reserved, zero | 216 | 4 |
+
+Each family payload frame retains the version-1 fields at offsets 0 through 27 relative to its start and extends its
+fixed prefix to 52 bytes:
+
+| Field | Relative offset | Bytes |
+| --- | ---: | ---: |
+| family ID | 0 | 4 |
+| flags, zero | 4 | 4 |
+| maximum key bytes | 8 | 8 |
+| maximum value bytes | 16 | 8 |
+| UTF-8 name length | 24 | 2 |
+| reserved, zero | 26 | 2 |
+| memtable maximum logical bytes | 28 | 8 |
+| memtable maximum entries | 36 | 4 |
+| maximum L0 runs | 40 | 4 |
+| current L0 run count | 44 | 4 |
+| reserved, zero | 48 | 4 |
+
+The exact family-name bytes follow this prefix. They are followed by `current L0 run count` fixed 48-byte run
+descriptors:
+
+| Field | Relative offset | Bytes |
+| --- | ---: | ---: |
+| run ID | 0 | 16 |
+| lowest sequence | 16 | 8 |
+| highest sequence | 24 | 8 |
+| entry count | 32 | 4 |
+| reserved, zero | 36 | 4 |
+| logical key plus Put-value bytes | 40 | 8 |
+
+After every family frame and its descriptors, the payload ends with `admitted identity count` exact 16-byte opaque
+identities. The identities are nonzero and strictly increasing by unsigned bytewise order. Sorting makes the same
+authority set encode to one canonical byte image; no ordering meaning is assigned to the identities.
+
+All new configured limits are nonzero persisted authority. The codec supplies no default. Each current family run
+count must fit its persisted family limit, the sum must fit the persisted database run limit, and the identity count
+must fit the persisted database identity limit. A run is nonempty, has a nonzero ID and positive ordered sequence
+interval, and cannot extend beyond the replay boundary. Run IDs are unique across every family. Within a family,
+descriptors are ordered by nonoverlapping sequence interval. A zero replay boundary permits no runs and no admitted
+identities. The format does not infer the exact identity ledger from visible keys.
+
+The private SPARK reference codec is generic over run, identity, SST-entry, key, and value representation capacities.
+Those instantiation values are proof/test storage choices, not wire limits, database defaults, or operational
+backpressure. An admitted image validates exact extent, envelope, database identity, and both checksums before reader
+caps. A representation or declared reader-cap excess is `Limit_Exceeded`; malformed frames and noncanonical mapping
+fail closed and return an empty manifest value.
+
+## Immutable SST run
+
+SST version 1 uses magic `FLYSST01` and the next unused stable object-kind code, `4`. Its header is 96 bytes:
+
+| Field | Offset | Bytes |
+| --- | ---: | ---: |
+| common envelope | 0 | 44 |
+| run ID | 44 | 16 |
+| family ID | 60 | 4 |
+| lowest sequence | 64 | 8 |
+| highest sequence | 72 | 8 |
+| entry count | 80 | 4 |
+| reserved, zero | 84 | 4 |
+| logical key plus Put-value bytes | 88 | 8 |
+
+Every entry begins with a 20-byte prefix: sequence (8), operation (`1` Put or `2` Delete), zero flags (1), zero
+reserved bits (2), key length (4), and value length (4), followed by exact key and value bytes. Delete requires zero
+value length. Empty keys and empty Put values remain legal, matching commit batches. Unused bytes in the bounded
+reference record are zero and are not persisted.
+
+Entries are ordered by arbitrary key bytes ascending; entries for the same key are ordered by sequence descending.
+An exact duplicate `(key, sequence)` is invalid. Every sequence lies in the positive inclusive header interval, and
+the header endpoints equal the actual minimum and maximum entry sequences. The header logical byte total equals the
+sum of every key plus every Put value; Delete contributes its key only. The run ID and family ID are nonzero.
+
+Recovery accepts an SST for one manifest family only when database ID, family ID, run ID, sequence interval, entry
+count, and logical byte total exactly match the manifest mapping and descriptor. Envelope integrity, exact extent,
+and both checksums precede reader caps. Any corruption or noncanonical ordering returns an empty SST value; exceeding
+the generic reference representation or explicit reader cap is `Limit_Exceeded` and does not authenticate skipped
+entries.
+
 ## Evolution
 
-These are the initial Flyology.DB batch and manifest encodings. No earlier encoding was released or persisted, so
-version 1 has no legacy migration obligation. A future kind-specific format change records whether existing readers
-reject, read, or migrate it. Golden byte fixtures and explicit corruption cases gate each supported version.
-Migration never rewrites a reachable immutable object in place.
+Batch version 1 and manifest version 1 are the initial log-only encodings. Manifest version 2 is a readable immutable
+checkpoint successor; it never rewrites or implicitly migrates a reachable version-1 manifest. SST begins at version
+1 under its independent kind. A future kind-specific format change records whether existing readers reject, read, or
+migrate it. Golden byte fixtures and explicit corruption cases gate each supported version. Migration never rewrites
+a reachable immutable object in place.
