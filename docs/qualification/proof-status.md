@@ -62,6 +62,15 @@ initialization checks, 309 runtime checks, 54 assertions, 161 functional contrac
 are discharged by flow analysis and 525 by provers. It reports zero warnings, unproved or justified checks, or
 `pragma Assume` statements. Independent re-review remains required before acceptance.
 
+The root-owned warning-strict forced five-unit gate for the operational HEAD-v2/root-family candidate proves 644/644
+checks: 66 initialization checks, 310 runtime checks, 54 assertions, 160 functional contracts, and 54 termination
+checks; 119 are discharged by flow analysis and 525 by provers. The FSF GNAT 16.1 invocation uses `mode=all`,
+`--level=1`, `-j0`, `--warnings=error`, `-f`, and an output header. It reports zero warnings, unproved or justified
+checks, or `pragma Assume` statements. The amendment after independent review changes no selected unit relative to
+the exact proved `71329fe` tree, so that evidence carries forward without another prover run. Protected
+lifecycle/tasking, storage I/O, create reconciliation, and manifest-aware runtime replay remain trusted
+executable-test boundaries.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

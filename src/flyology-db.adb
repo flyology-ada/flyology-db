@@ -4,6 +4,7 @@ with Ada.Unchecked_Deallocation;
 with Flyology.DB.Batch_Formats;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
+with Flyology.DB.Manifest_Formats;
 with Flyology.Object_Storage;
 
 package body Flyology.DB is
@@ -12,20 +13,51 @@ package body Flyology.DB is
    package Backends renames Flyology.Object_Storage.Backends;
    package Batches renames Flyology.DB.Batch_Formats;
    package Heads renames Flyology.DB.Head_Policy;
+   package Manifests renames Flyology.DB.Manifest_Formats;
    package UStrings renames Ada.Strings.Unbounded;
 
    use type Ada.Real_Time.Time;
    use type Ada.Streams.Stream_Element_Offset;
    use type Byte;
+   use type Interfaces.Unsigned_16;
+   use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
    use type Batches.Decode_Status;
    use type Batches.Encode_Status;
+   use type Batches.Key_Bytes;
    use type Batches.Mutation_Kind;
    use type Flyology.DB.Formats.Decode_Status;
+   use type Manifests.Decode_Status;
+   use type Manifests.Encode_Status;
+   use type Manifests.Family_Name_Bytes;
+   use type Manifests.Manifest;
    use type OS.Status;
 
    Head_Key_Suffix   : constant String := "meta/HEAD";
    Commit_Key_Prefix : constant String := "commits/";
+   Manifest_Key_Prefix : constant String := "manifests/";
+
+   type Stored_Object_Kind is (Batch_Object, Manifest_Object, Head_Object);
+
+   protected Incarnation_Source is
+      procedure Allocate (Value : out Engine_Incarnation; Result : out Outcome_Code);
+   private
+      Last : Engine_Incarnation := No_Incarnation;
+   end Incarnation_Source;
+
+   protected body Incarnation_Source is
+      procedure Allocate (Value : out Engine_Incarnation; Result : out Outcome_Code) is
+      begin
+         Value := No_Incarnation;
+         if Last = Engine_Incarnation'Last then
+            Result := Capacity_Exceeded;
+         else
+            Last := Last + 1;
+            Value := Last;
+            Result := Success;
+         end if;
+      end Allocate;
+   end Incarnation_Source;
 
    subtype Generation_Length is Natural range 0 .. Maximum_Generation_Bytes;
    type Generation_Value is record
@@ -126,9 +158,55 @@ package body Flyology.DB is
    is (Left.Length = Right.Length
        and then (Left.Length = 0 or else Left.Bytes (1 .. Left.Length) = Right.Bytes (1 .. Right.Length)));
 
+   function Same_Configuration
+     (Left, Right : Column_Family_Configuration) return Boolean
+   is (Left = Right);
+
+   function To_Manifest_Configuration
+     (Item : Column_Family_Configuration) return Manifests.Column_Family_Configuration
+   is
+      Result : Manifests.Column_Family_Configuration;
+   begin
+      Result.ID := Interfaces.Unsigned_32 (Item.ID);
+      Result.Name_Length := Item.Name_Length;
+      Result.Max_Key_Bytes := Item.Max_Key_Bytes;
+      Result.Max_Value_Bytes := Item.Max_Value_Bytes;
+      for Index in Item.Name'Range loop
+         Result.Name (Index) := Item.Name (Index);
+      end loop;
+      return Result;
+   end To_Manifest_Configuration;
+
+   function From_Manifest_Configuration
+     (Item : Manifests.Column_Family_Configuration) return Column_Family_Configuration
+   is
+      Result : Column_Family_Configuration;
+   begin
+      Result.ID := Column_Family_ID (Item.ID);
+      Result.Name_Length := Item.Name_Length;
+      Result.Max_Key_Bytes := Item.Max_Key_Bytes;
+      Result.Max_Value_Bytes := Item.Max_Value_Bytes;
+      for Index in Item.Name'Range loop
+         Result.Name (Index) := Item.Name (Index);
+      end loop;
+      return Result;
+   end From_Manifest_Configuration;
+
+   function To_Manifest_Limits (Item : Database_Limits) return Manifests.Database_Limits
+   is ((Maximum_Column_Families           => Item.Maximum_Column_Families,
+        Maximum_Manifest_History          => Item.Maximum_Manifest_History,
+        Maximum_Batch_History             => Item.Maximum_Batch_History,
+        Maximum_Transactions_Per_Batch    => Item.Maximum_Transactions_Per_Batch,
+        Maximum_Mutations_Per_Transaction => Item.Maximum_Mutations_Per_Transaction,
+        Maximum_Mutations_Per_Batch       => Item.Maximum_Mutations_Per_Batch,
+        Maximum_Live_Entries              => Item.Maximum_Live_Entries,
+        Maximum_Transaction_Payload_Bytes => Item.Maximum_Transaction_Payload_Bytes,
+        Maximum_Batch_Payload_Bytes       => Item.Maximum_Batch_Payload_Bytes,
+        Maximum_Live_State_Bytes          => Item.Maximum_Live_State_Bytes));
+
    function To_Head (Item : Head_Snapshot) return Heads.Head_State
    is ((Database_ID            => To_Head_ID (Item.Database_ID),
-        Version                => Heads.Current_Format,
+        Version                => Heads.Format_Version (Item.Version),
         Epoch                  => Heads.Writer_Epoch (Item.Epoch),
         Highest_Visible        => Heads.Commit_Sequence (Item.Highest),
         Latest_Batch           => To_Head_ID (Item.Latest_Batch),
@@ -139,6 +217,7 @@ package body Flyology.DB is
 
    function From_Head (Item : Heads.Head_State) return Head_Snapshot
    is ((Database_ID            => To_Database_ID (Item.Database_ID),
+        Version                => Interfaces.Unsigned_16 (Item.Version),
         Epoch                  => Interfaces.Unsigned_64 (Item.Epoch),
         Highest                => Sequence_Number (Item.Highest_Visible),
         Latest_Batch           => To_Identifier (Item.Latest_Batch),
@@ -198,6 +277,9 @@ package body Flyology.DB is
    function Batch_Key (Storage : Storage_Context; Batch_ID : Identifier) return String
    is (Full_Key (Storage, Commit_Key_Prefix & Identifier_Hex (Batch_ID)));
 
+   function Manifest_Key (Storage : Storage_Context; Manifest_ID : Identifier) return String
+   is (Full_Key (Storage, Manifest_Key_Prefix & Identifier_Hex (Manifest_ID)));
+
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier is
       Result : Identifier := [others => 0];
    begin
@@ -240,11 +322,15 @@ package body Flyology.DB is
          end if;
       end Consume;
 
-      procedure Record_Put (Is_Head : Boolean) is
+      procedure Record_Put (Is_Head, Is_Manifest : Boolean) is
       begin
          if Is_Head then
             if Head_Puts < Natural'Last then
                Head_Puts := Head_Puts + 1;
+            end if;
+         elsif Is_Manifest then
+            if Manifest_Puts < Natural'Last then
+               Manifest_Puts := Manifest_Puts + 1;
             end if;
          else
             if Batch_Puts < Natural'Last then
@@ -253,9 +339,11 @@ package body Flyology.DB is
          end if;
       end Record_Put;
 
-      procedure Publication_Counts (Batch_Total : out Natural; Head_Total : out Natural) is
+      procedure Publication_Counts
+        (Batch_Total : out Natural; Manifest_Total : out Natural; Head_Total : out Natural) is
       begin
          Batch_Total := Batch_Puts;
+         Manifest_Total := Manifest_Puts;
          Head_Total := Head_Puts;
       end Publication_Counts;
 
@@ -270,6 +358,11 @@ package body Flyology.DB is
             Waiting_Gets := Waiting_Gets + 1;
          end if;
       end Arrive_Get;
+
+      entry Await_Get when Waiting_Gets > 0 is
+      begin
+         null;
+      end Await_Get;
 
       entry Continue_Get when not Get_Paused is
       begin
@@ -293,6 +386,7 @@ package body Flyology.DB is
       procedure Get_Whole
         (Storage    : in out Storage_Context;
          Key        : String;
+         Kind       : Stored_Object_Kind;
          Deadline   : Ada.Real_Time.Time;
          Token      : access Flyology.Cancellation.Token;
          Data       : out Object_Buffer;
@@ -305,7 +399,7 @@ package body Flyology.DB is
          Key        : String;
          Data       : Object_Buffer;
          Length     : Natural;
-         Is_Head    : Boolean;
+         Kind       : Stored_Object_Kind;
          Deadline   : Ada.Real_Time.Time;
          Token      : access Flyology.Cancellation.Token;
          Generation : out Generation_Value;
@@ -456,6 +550,7 @@ package body Flyology.DB is
       procedure Get_Whole
         (Storage    : in out Storage_Context;
          Key        : String;
+         Kind       : Stored_Object_Kind;
          Deadline   : Ada.Real_Time.Time;
          Token      : access Flyology.Cancellation.Token;
          Data       : out Object_Buffer;
@@ -473,7 +568,11 @@ package body Flyology.DB is
          Generation := (others => <>);
          Storage.Test_Control.Arrive_Get;
          Storage.Test_Control.Continue_Get;
-         Consume_Fault (Storage, Before_Get, Fault);
+         if Kind = Manifest_Object then
+            Consume_Fault (Storage, Before_Manifest_Get, Fault);
+         else
+            Consume_Fault (Storage, Before_Get, Fault);
+         end if;
          if Fault /= No_Fault then
             Result := Read_Failed;
             return;
@@ -567,7 +666,9 @@ package body Flyology.DB is
          Source.Data := Data;
          Source.Length := Length;
          Entered := True;
-         Storage.Test_Control.Record_Put (Before_Point = Before_Head_Put);
+         Storage.Test_Control.Record_Put
+           (Is_Head     => Before_Point = Before_Head_Put,
+            Is_Manifest => Before_Point = Before_Manifest_Put);
          Storage.Backend.Put_Object
            (Bucket     => UStrings.To_String (Storage.Bucket),
             Key        => Key,
@@ -615,7 +716,7 @@ package body Flyology.DB is
          Key        : String;
          Data       : Object_Buffer;
          Length     : Natural;
-         Is_Head    : Boolean;
+         Kind       : Stored_Object_Kind;
          Deadline   : Ada.Real_Time.Time;
          Token      : access Flyology.Cancellation.Token;
          Generation : out Generation_Value;
@@ -623,8 +724,15 @@ package body Flyology.DB is
       is
          Conditions   : OS.Write_Conditions := OS.Default_Write_Conditions;
          Before_Point : constant Storage_Fault_Point :=
-           (if Is_Head then Before_Head_Put else Before_Batch_Put);
-         After_Point  : constant Storage_Fault_Point := (if Is_Head then After_Head_Put else After_Batch_Put);
+           (case Kind is
+              when Head_Object     => Before_Head_Put,
+              when Manifest_Object => Before_Manifest_Put,
+              when Batch_Object    => Before_Batch_Put);
+         After_Point  : constant Storage_Fault_Point :=
+           (case Kind is
+              when Head_Object     => After_Head_Put,
+              when Manifest_Object => After_Manifest_Put,
+              when Batch_Object    => After_Batch_Put);
       begin
          Conditions.If_None_Match := UStrings.To_Unbounded_String ("*");
          Put_Common
@@ -719,7 +827,11 @@ package body Flyology.DB is
    type Reserved_Identity_Array is array (Reserved_Identity_Slot) of Identifier;
 
    protected type Coordinator is
-      procedure Initialize (Head : Head_Snapshot; Generation : Generation_Value);
+      procedure Initialize
+        (Head        : Head_Snapshot;
+         Generation  : Generation_Value;
+         Manifest    : Manifests.Manifest;
+         Stamp       : Engine_Incarnation);
 
       procedure Recover_Batch (Batch : Batches.Commit_Batch; Result : out Outcome_Code);
 
@@ -751,6 +863,8 @@ package body Flyology.DB is
 
       procedure Prepublication_Check (Items : Work_Group; Count : Group_Count; Result : out Outcome_Code);
 
+      procedure Validate_Batch (Batch : Batches.Commit_Batch; Result : out Outcome_Code);
+
       procedure Complete_Group
         (Tokens         : Token_Group;
          Receipts       : Receipt_Group;
@@ -777,6 +891,20 @@ package body Flyology.DB is
       procedure Lookup
         (Family : Column_Family_ID; Item_Key : Key; Data : out Value; Result : out Outcome_Code);
 
+      procedure Find_Family
+        (ID : Column_Family_ID; Configuration : out Column_Family_Configuration; Result : out Outcome_Code);
+
+      procedure Find_Family
+        (Name : Byte_Array; Configuration : out Column_Family_Configuration; Result : out Outcome_Code);
+
+      procedure Validate_Family
+        (Family : Column_Family; Configuration : out Column_Family_Configuration; Result : out Outcome_Code);
+
+      procedure Validate_Transaction_Bounds
+        (Mutation_Count : Natural; Payload_Bytes : Natural; Result : out Outcome_Code);
+
+      function Current_Incarnation return Engine_Incarnation;
+
       procedure Fence;
       procedure Set_Paused (Value : Boolean);
       function Queue_Depth return Natural;
@@ -793,6 +921,9 @@ package body Flyology.DB is
       In_Flight_Bytes : Natural range 0 .. Maximum_Commit_Bytes := 0;
       Current_Head    : Head_Snapshot;
       Head_Generation : Generation_Value;
+      Current_Manifest : Manifests.Manifest;
+      Incarnation     : Engine_Incarnation := No_Incarnation;
+      Live_State_Bytes : Natural range 0 .. Maximum_Live_State_Bytes := 0;
       Entries         : State_Entry_Array;
       Entry_Count     : Natural range 0 .. Maximum_State_Entries := 0;
       Seen            : Seen_Transaction_Array := [others => Zero_Transaction_ID];
@@ -811,22 +942,71 @@ package body Flyology.DB is
 
    protected body Coordinator is
 
-      procedure Initialize (Head : Head_Snapshot; Generation : Generation_Value) is
+      procedure Initialize
+        (Head        : Head_Snapshot;
+         Generation  : Generation_Value;
+         Manifest    : Manifests.Manifest;
+         Stamp       : Engine_Incarnation) is
       begin
          Current_Head := Head;
          Head_Generation := Generation;
+         Current_Manifest := Manifest;
+         Incarnation := Stamp;
       end Initialize;
 
       procedure Apply_Batch
-        (Batch : Batches.Commit_Batch; Identities_Reserved : Boolean; Result : out Outcome_Code)
+        (Batch               : Batches.Commit_Batch;
+         Identities_Reserved : Boolean;
+         Install             : Boolean;
+         Result              : out Outcome_Code)
       is
-         Found                 : Natural;
          Identity_Found        : Boolean;
          Batch_ID              : constant Identifier := To_Identifier (Batch.Batch_ID);
          Additional_Identities : Natural := Batch.Transaction_Total;
+         Candidate_Entries     : State_Entry_Array := [others => <>];
+         Candidate_Count       : Natural range 0 .. Maximum_State_Entries := 0;
+         Candidate_Bytes       : Natural range 0 .. Maximum_Live_State_Bytes := 0;
+         Batch_Payload         : Interfaces.Unsigned_64 := 0;
+         Policy_Failure        : constant Outcome_Code :=
+           (if Identities_Reserved then Capacity_Exceeded else Corrupt);
+         type Mutation_Projection is array (Batches.Mutation_Slot) of Batches.Mutation;
+         type Mutation_Matches is array (Batches.Mutation_Slot) of Boolean;
+         Projected       : Mutation_Projection := [others => <>];
+         Projected_Count : Natural range 0 .. Batches.Max_Mutations := 0;
+         Matched         : Mutation_Matches := [others => False];
+
+         function Same_Mutation_Key (Left, Right : Batches.Mutation) return Boolean is
+         begin
+            return
+              Left.Column_Family = Right.Column_Family
+              and then Left.Key_Size = Right.Key_Size
+              and then
+              (Left.Key_Size = 0
+               or else Left.Key (1 .. Left.Key_Size) = Right.Key (1 .. Right.Key_Size));
+         end Same_Mutation_Key;
+
+         function Matches_Entry (Mutation : Batches.Mutation; State_Item : State_Entry) return Boolean is
+         begin
+            if Mutation.Column_Family /= Interfaces.Unsigned_32 (State_Item.Family)
+              or else Mutation.Key_Size /= State_Item.Item_Key.Length
+            then
+               return False;
+            end if;
+            for Index in Positive range 1 .. State_Item.Item_Key.Length loop
+               if Mutation.Key (Index) /= State_Item.Item_Key.Bytes (Index) then
+                  return False;
+               end if;
+            end loop;
+            return True;
+         end Matches_Entry;
       begin
-         if Batch.Transaction_Total = 0 then
-            Result := Corrupt;
+         if Batch.Transaction_Total = 0
+           or else Interfaces.Unsigned_32 (Batch.Transaction_Total) >
+             Current_Manifest.Limits.Maximum_Transactions_Per_Batch
+           or else Interfaces.Unsigned_32 (Batch.Mutation_Total) >
+             Current_Manifest.Limits.Maximum_Mutations_Per_Batch
+         then
+            Result := Policy_Failure;
             return;
          elsif Batch.Transaction_Total /= 1
            or else To_Identifier (Batch.Transactions (1).Transaction_ID) /= Batch_ID
@@ -865,7 +1045,35 @@ package body Flyology.DB is
             declare
                Transaction_ID : constant Transaction_Identifier :=
                  To_Transaction_ID (Batch.Transactions (Transaction_Index).Transaction_ID);
+               Transaction_Payload : Interfaces.Unsigned_64 := 0;
             begin
+               if Interfaces.Unsigned_32 (Batch.Transactions (Transaction_Index).Mutations) >
+                 Current_Manifest.Limits.Maximum_Mutations_Per_Transaction
+               then
+                  Result := Policy_Failure;
+                  return;
+               end if;
+               for Mutation_Index in Batches.Mutation_Slot range
+                 Batch.Transactions (Transaction_Index).First_Mutation ..
+                   Batch.Transactions (Transaction_Index).First_Mutation
+                     + Batch.Transactions (Transaction_Index).Mutations - 1
+               loop
+                  declare
+                     Mutation_Bytes : constant Interfaces.Unsigned_64 :=
+                       Interfaces.Unsigned_64 (Batch.Mutations (Mutation_Index).Key_Size)
+                       + Interfaces.Unsigned_64 (Batch.Mutations (Mutation_Index).Value_Size);
+                  begin
+                     Transaction_Payload := Transaction_Payload + Mutation_Bytes;
+                  end;
+               end loop;
+               if Transaction_Payload > Current_Manifest.Limits.Maximum_Transaction_Payload_Bytes
+                 or else Batch_Payload >
+                   Current_Manifest.Limits.Maximum_Batch_Payload_Bytes - Transaction_Payload
+               then
+                  Result := Policy_Failure;
+                  return;
+               end if;
+               Batch_Payload := Batch_Payload + Transaction_Payload;
                if Batch.Transaction_Total > 1 and then Identifier (Transaction_ID) = Batch_ID then
                   Result := Corrupt;
                   return;
@@ -895,66 +1103,137 @@ package body Flyology.DB is
          for Mutation_Index in Batches.Mutation_Slot range 1 .. Batch.Mutation_Total loop
             declare
                Mutation : Batches.Mutation renames Batch.Mutations (Mutation_Index);
-               Item_Key : Key;
-               Data     : Value;
+               Family   : Manifests.Column_Family_Configuration;
+               Family_Found : Boolean := False;
+               Projection_Index : Natural := 0;
             begin
-               Item_Key.Length := Key_Length (Mutation.Key_Size);
-               for Byte_Index in Positive range 1 .. Item_Key.Length loop
-                  Item_Key.Bytes (Byte_Index) := Mutation.Key (Byte_Index);
-               end loop;
-               Data.Length := Value_Length (Mutation.Value_Size);
-               for Byte_Index in Positive range 1 .. Data.Length loop
-                  Data.Bytes (Byte_Index) := Mutation.Value (Byte_Index);
-               end loop;
-               Found := 0;
-               for Existing in Positive range 1 .. Entry_Count loop
-                  if Entries (Existing).Family = Column_Family_ID (Mutation.Column_Family)
-                    and then Same_Key (Entries (Existing).Item_Key, Item_Key)
-                  then
-                     Found := Existing;
+               for Family_Index in Manifests.Family_Slot range 1 .. Current_Manifest.Family_Total loop
+                  if Current_Manifest.Families (Family_Index).ID = Mutation.Column_Family then
+                     Family := Current_Manifest.Families (Family_Index);
+                     Family_Found := True;
                      exit;
                   end if;
                end loop;
-               if Mutation.Operation = Batches.Put then
-                  if Found = 0 then
-                     if Entry_Count = Maximum_State_Entries then
-                        Result := Capacity_Exceeded;
-                        return;
-                     end if;
-                     Entry_Count := Entry_Count + 1;
-                     Found := Entry_Count;
+               if not Family_Found
+                 or else Interfaces.Unsigned_64 (Mutation.Key_Size) > Family.Max_Key_Bytes
+                 or else Interfaces.Unsigned_64 (Mutation.Value_Size) > Family.Max_Value_Bytes
+               then
+                  Result := Policy_Failure;
+                  return;
+               end if;
+               for Existing in Batches.Mutation_Slot range 1 .. Projected_Count loop
+                  if Same_Mutation_Key (Projected (Existing), Mutation) then
+                     Projection_Index := Existing;
+                     exit;
                   end if;
-                  Entries (Found) :=
-                    (Family => Column_Family_ID (Mutation.Column_Family), Item_Key => Item_Key, Data => Data);
-               elsif Found > 0 then
-                  for Existing in Found .. Entry_Count - 1 loop
-                     Entries (Existing) := Entries (Existing + 1);
-                  end loop;
-                  Entry_Count := Entry_Count - 1;
+               end loop;
+               if Projection_Index = 0 then
+                  Projected_Count := Projected_Count + 1;
+                  Projection_Index := Projected_Count;
+               end if;
+               Projected (Projection_Index) := Mutation;
+            end;
+         end loop;
+
+         for Existing in Positive range 1 .. Entry_Count loop
+            declare
+               Projection_Index : Natural := 0;
+               Item_Key         : constant Key := Entries (Existing).Item_Key;
+               Data             : Value := Entries (Existing).Data;
+               Entry_Bytes      : Natural;
+            begin
+               for Index in Batches.Mutation_Slot range 1 .. Projected_Count loop
+                  if Matches_Entry (Projected (Index), Entries (Existing)) then
+                     Projection_Index := Index;
+                     Matched (Index) := True;
+                     exit;
+                  end if;
+               end loop;
+               if Projection_Index = 0 or else Projected (Projection_Index).Operation = Batches.Put then
+                  if Projection_Index > 0 then
+                     Data := (others => <>);
+                     Data.Length := Value_Length (Projected (Projection_Index).Value_Size);
+                     for Byte_Index in Positive range 1 .. Data.Length loop
+                        Data.Bytes (Byte_Index) := Projected (Projection_Index).Value (Byte_Index);
+                     end loop;
+                  end if;
+                  Entry_Bytes := Item_Key.Length + Data.Length;
+                  if Candidate_Bytes > Maximum_Live_State_Bytes - Entry_Bytes then
+                     Result := Policy_Failure;
+                     return;
+                  end if;
+                  Candidate_Count := Candidate_Count + 1;
+                  Candidate_Bytes := Candidate_Bytes + Entry_Bytes;
+                  Candidate_Entries (Candidate_Count) :=
+                    (Family => Entries (Existing).Family, Item_Key => Item_Key, Data => Data);
                end if;
             end;
          end loop;
-         if not Identities_Reserved and then Additional_Identities > Batch.Transaction_Total then
-            Reserved_Count := Reserved_Count + 1;
-            Reserved (Reserved_Count) := Batch_ID;
-         end if;
-         for Transaction_Index in Batches.Transaction_Slot range 1 .. Batch.Transaction_Total loop
-            Seen_Count := Seen_Count + 1;
-            Seen (Seen_Count) := To_Transaction_ID (Batch.Transactions (Transaction_Index).Transaction_ID);
-            if not Identities_Reserved then
-               Reserved_Count := Reserved_Count + 1;
-               Reserved (Reserved_Count) :=
-                 To_Identifier (Batch.Transactions (Transaction_Index).Transaction_ID);
+
+         for Index in Batches.Mutation_Slot range 1 .. Projected_Count loop
+            if not Matched (Index) and then Projected (Index).Operation = Batches.Put then
+               declare
+                  Item_Key    : Key;
+                  Data        : Value;
+                  Entry_Bytes : constant Natural :=
+                    Projected (Index).Key_Size + Projected (Index).Value_Size;
+               begin
+                  if Candidate_Count = Maximum_State_Entries
+                    or else Candidate_Bytes > Maximum_Live_State_Bytes - Entry_Bytes
+                  then
+                     Result := Policy_Failure;
+                     return;
+                  end if;
+                  Item_Key.Length := Key_Length (Projected (Index).Key_Size);
+                  for Byte_Index in Positive range 1 .. Item_Key.Length loop
+                     Item_Key.Bytes (Byte_Index) := Projected (Index).Key (Byte_Index);
+                  end loop;
+                  Data.Length := Value_Length (Projected (Index).Value_Size);
+                  for Byte_Index in Positive range 1 .. Data.Length loop
+                     Data.Bytes (Byte_Index) := Projected (Index).Value (Byte_Index);
+                  end loop;
+                  Candidate_Count := Candidate_Count + 1;
+                  Candidate_Bytes := Candidate_Bytes + Entry_Bytes;
+                  Candidate_Entries (Candidate_Count) :=
+                    (Family => Column_Family_ID (Projected (Index).Column_Family),
+                     Item_Key => Item_Key,
+                     Data => Data);
+               end;
             end if;
          end loop;
-         History_Count := History_Count + 1;
-         Used_Batches (History_Count) := Batch_ID;
+         if Interfaces.Unsigned_32 (Candidate_Count) > Current_Manifest.Limits.Maximum_Live_Entries
+           or else Interfaces.Unsigned_64 (Candidate_Bytes) >
+             Current_Manifest.Limits.Maximum_Live_State_Bytes
+         then
+            Result := Policy_Failure;
+            return;
+         end if;
+         if Install then
+            Entries := Candidate_Entries;
+            Entry_Count := Candidate_Count;
+            Live_State_Bytes := Candidate_Bytes;
+            if not Identities_Reserved and then Additional_Identities > Batch.Transaction_Total then
+               Reserved_Count := Reserved_Count + 1;
+               Reserved (Reserved_Count) := Batch_ID;
+            end if;
+            for Transaction_Index in Batches.Transaction_Slot range 1 .. Batch.Transaction_Total loop
+               Seen_Count := Seen_Count + 1;
+               Seen (Seen_Count) := To_Transaction_ID (Batch.Transactions (Transaction_Index).Transaction_ID);
+               if not Identities_Reserved then
+                  Reserved_Count := Reserved_Count + 1;
+                  Reserved (Reserved_Count) :=
+                    To_Identifier (Batch.Transactions (Transaction_Index).Transaction_ID);
+               end if;
+            end loop;
+            History_Count := History_Count + 1;
+            Used_Batches (History_Count) := Batch_ID;
+         end if;
          Result := Success;
       end Apply_Batch;
 
       procedure Recover_Batch (Batch : Batches.Commit_Batch; Result : out Outcome_Code) is
       begin
-         Apply_Batch (Batch, False, Result);
+         Apply_Batch (Batch, False, True, Result);
       end Recover_Batch;
 
       procedure Transaction_Available (Transaction_ID : Transaction_Identifier; Result : out Outcome_Code) is
@@ -1011,7 +1290,6 @@ package body Flyology.DB is
       is
          Selected           : Commit_Slot := Commit_Slot'First;
          Candidate_Batch_ID : constant Identifier := Identifier (Txn.Transaction_ID);
-         Put_Count          : Natural := 0;
       begin
          Slot := (others => <>);
          if Closing then
@@ -1032,21 +1310,22 @@ package body Flyology.DB is
          elsif Deadline <= Ada.Real_Time.Clock then
             Result := Timed_Out;
             return;
-         elsif In_Use_Count = Maximum_Commit_Slots
-           or else In_Flight_Bytes > Maximum_Commit_Bytes - Txn.Bytes_Used
-           or else History_Count = Maximum_History_Batches
-           or else Seen_Count = Maximum_Seen_Transactions
-           or else Reserved_Count = Maximum_Reserved_Identities
+         elsif Current_Manifest.Limits.Maximum_Transactions_Per_Batch < 1
+           or else Interfaces.Unsigned_32 (Txn.Mutation_Count) >
+             Current_Manifest.Limits.Maximum_Mutations_Per_Batch
+           or else Interfaces.Unsigned_64 (Txn.Bytes_Used) >
+             Current_Manifest.Limits.Maximum_Batch_Payload_Bytes
          then
             Result := Capacity_Exceeded;
             return;
-         end if;
-         for Index in Mutation_Slot range 1 .. Txn.Mutation_Count loop
-            if Txn.Mutations (Index).Operation = Put_Mutation then
-               Put_Count := Put_Count + 1;
-            end if;
-         end loop;
-         if Entry_Count > Maximum_State_Entries - Put_Count then
+         elsif In_Use_Count = Maximum_Commit_Slots
+           or else In_Flight_Bytes > Maximum_Commit_Bytes - Txn.Bytes_Used
+           or else History_Count = Maximum_History_Batches
+           or else Interfaces.Unsigned_32 (History_Count) =
+             Current_Manifest.Limits.Maximum_Batch_History
+           or else Seen_Count = Maximum_Seen_Transactions
+           or else Reserved_Count = Maximum_Reserved_Identities
+         then
             Result := Capacity_Exceeded;
             return;
          end if;
@@ -1123,7 +1402,6 @@ package body Flyology.DB is
       is
          Total_Bytes     : Natural := 0;
          Total_Mutations : Natural := 0;
-         Put_Count       : Natural := 0;
          Selected        : Commit_Slot;
       begin
          Tokens := [others => <>];
@@ -1146,6 +1424,11 @@ package body Flyology.DB is
          elsif Transactions'Length > Maximum_Group_Transactions then
             Result := Capacity_Exceeded;
             return;
+         elsif Interfaces.Unsigned_32 (Transactions'Length) >
+           Current_Manifest.Limits.Maximum_Transactions_Per_Batch
+         then
+            Result := Capacity_Exceeded;
+            return;
          elsif Is_Zero (Batch_ID) then
             Result := Invalid_State;
             return;
@@ -1159,6 +1442,8 @@ package body Flyology.DB is
             Result := Capacity_Exceeded;
             return;
          elsif History_Count = Maximum_History_Batches
+           or else Interfaces.Unsigned_32 (History_Count) =
+             Current_Manifest.Limits.Maximum_Batch_History
            or else Seen_Count > Maximum_Seen_Transactions - Transactions'Length
            or else Reserved_Count > Maximum_Reserved_Identities - (Transactions'Length + 1)
          then
@@ -1204,11 +1489,6 @@ package body Flyology.DB is
                end if;
                Total_Bytes := Total_Bytes + Item.Bytes_Used;
                Total_Mutations := Total_Mutations + Item.Mutation_Count;
-               for Index in Mutation_Slot range 1 .. Item.Mutation_Count loop
-                  if Item.Mutations (Index).Operation = Put_Mutation then
-                     Put_Count := Put_Count + 1;
-                  end if;
-               end loop;
                for Existing in Positive range 1 .. Seen_Count loop
                   if Seen (Existing) = Item.Transaction_ID then
                      Result := Conflict;
@@ -1246,7 +1526,11 @@ package body Flyology.DB is
                end if;
             end;
          end loop;
-         if Put_Count > Maximum_State_Entries - Entry_Count then
+         if Interfaces.Unsigned_32 (Total_Mutations) >
+           Current_Manifest.Limits.Maximum_Mutations_Per_Batch
+           or else Interfaces.Unsigned_64 (Total_Bytes) >
+             Current_Manifest.Limits.Maximum_Batch_Payload_Bytes
+         then
             Result := Capacity_Exceeded;
             return;
          end if;
@@ -1367,7 +1651,6 @@ package body Flyology.DB is
       end Take_Group;
 
       procedure Prepublication_Check (Items : Work_Group; Count : Group_Count; Result : out Outcome_Code) is
-         Put_Count : Natural := 0;
       begin
          if History_Count = Maximum_History_Batches or else Seen_Count + Count > Maximum_Seen_Transactions
          then
@@ -1387,18 +1670,14 @@ package body Flyology.DB is
                   return;
                end if;
             end loop;
-            for Mutation_Index in Mutation_Slot range 1 .. Items (Left).Mutation_Count loop
-               if Items (Left).Mutations (Mutation_Index).Operation = Put_Mutation then
-                  Put_Count := Put_Count + 1;
-               end if;
-            end loop;
          end loop;
-         if Entry_Count + Put_Count > Maximum_State_Entries then
-            Result := Capacity_Exceeded;
-         else
-            Result := Success;
-         end if;
+         Result := Success;
       end Prepublication_Check;
+
+      procedure Validate_Batch (Batch : Batches.Commit_Batch; Result : out Outcome_Code) is
+      begin
+         Apply_Batch (Batch, True, False, Result);
+      end Validate_Batch;
 
       procedure Complete_Group
         (Tokens         : Token_Group;
@@ -1464,7 +1743,7 @@ package body Flyology.DB is
             Fail_Install := False;
             raise Program_Error with "injected local installation failure";
          end if;
-         Apply_Batch (Batch, True, Result);
+         Apply_Batch (Batch, True, True, Result);
          if Result = Success then
             Current_Head := Head;
             Head_Generation := Generation;
@@ -1496,6 +1775,84 @@ package body Flyology.DB is
          end loop;
          Result := Not_Found;
       end Lookup;
+
+      procedure Find_Family
+        (ID : Column_Family_ID; Configuration : out Column_Family_Configuration; Result : out Outcome_Code)
+      is
+      begin
+         Configuration := (others => <>);
+         for Index in Manifests.Family_Slot range 1 .. Current_Manifest.Family_Total loop
+            if Current_Manifest.Families (Index).ID = Interfaces.Unsigned_32 (ID) then
+               Configuration := From_Manifest_Configuration (Current_Manifest.Families (Index));
+               Result := Success;
+               return;
+            end if;
+         end loop;
+         Result := Not_Found;
+      end Find_Family;
+
+      procedure Find_Family
+        (Name : Byte_Array; Configuration : out Column_Family_Configuration; Result : out Outcome_Code)
+      is
+         Candidate : Manifests.Column_Family_Configuration;
+      begin
+         Configuration := (others => <>);
+         if Name'Length = 0 or else Name'Length > Maximum_Column_Family_Name_Bytes then
+            Result := Not_Found;
+            return;
+         end if;
+         Candidate.Name_Length := Name'Length;
+         for Offset in Natural range 0 .. Name'Length - 1 loop
+            Candidate.Name (Offset + 1) := Name (Name'First + Offset);
+         end loop;
+         for Index in Manifests.Family_Slot range 1 .. Current_Manifest.Family_Total loop
+            if Current_Manifest.Families (Index).Name_Length = Candidate.Name_Length
+              and then Current_Manifest.Families (Index).Name (1 .. Candidate.Name_Length) =
+                Candidate.Name (1 .. Candidate.Name_Length)
+            then
+               Configuration := From_Manifest_Configuration (Current_Manifest.Families (Index));
+               Result := Success;
+               return;
+            end if;
+         end loop;
+         Result := Not_Found;
+      end Find_Family;
+
+      procedure Validate_Family
+        (Family : Column_Family; Configuration : out Column_Family_Configuration; Result : out Outcome_Code)
+      is
+      begin
+         Configuration := (others => <>);
+         if not Family.Valid
+           or else Family.Database_ID /= Current_Head.Database_ID
+           or else Family.Incarnation /= Incarnation
+         then
+            Result := Invalid_State;
+            return;
+         end if;
+         Find_Family (Family.Configuration.ID, Configuration, Result);
+         if Result = Success and then not Same_Configuration (Configuration, Family.Configuration) then
+            Configuration := (others => <>);
+            Result := Invalid_State;
+         end if;
+      end Validate_Family;
+
+      procedure Validate_Transaction_Bounds
+        (Mutation_Count : Natural; Payload_Bytes : Natural; Result : out Outcome_Code) is
+      begin
+         if Interfaces.Unsigned_32 (Mutation_Count) >
+           Current_Manifest.Limits.Maximum_Mutations_Per_Transaction
+           or else Interfaces.Unsigned_64 (Payload_Bytes) >
+             Current_Manifest.Limits.Maximum_Transaction_Payload_Bytes
+         then
+            Result := Capacity_Exceeded;
+         else
+            Result := Success;
+         end if;
+      end Validate_Transaction_Bounds;
+
+      function Current_Incarnation return Engine_Incarnation
+      is (Incarnation);
 
       procedure Fence is
       begin
@@ -1727,6 +2084,34 @@ package body Flyology.DB is
       end if;
    end Acquire;
 
+   type Activation_Guard is new Ada.Finalization.Limited_Controlled with record
+      Life   : Database_Lifecycle_Access := null;
+      Active : Boolean := False;
+   end record;
+
+   overriding
+   procedure Finalize (Item : in out Activation_Guard) is
+   begin
+      if Item.Active and then Item.Life /= null then
+         Item.Life.Abort_Open;
+         Item.Active := False;
+      end if;
+   end Finalize;
+
+   type Resolve_Guard is new Ada.Finalization.Limited_Controlled with record
+      Life   : Database_Lifecycle_Access := null;
+      Active : Boolean := False;
+   end record;
+
+   overriding
+   procedure Finalize (Item : in out Resolve_Guard) is
+   begin
+      if Item.Active and then Item.Life /= null then
+         Item.Life.Cancel_Resolve;
+         Item.Active := False;
+      end if;
+   end Finalize;
+
    type Admission_Guard is new Ada.Finalization.Limited_Controlled with record
       State  : Engine_State_Access := null;
       Tokens : Token_Group;
@@ -1772,6 +2157,17 @@ package body Flyology.DB is
       end loop;
    end Copy_Head_Image;
 
+   procedure Copy_Manifest_Image
+     (Image : Manifests.Manifest_Image; Length : Natural; Target : out Object_Buffer) is
+   begin
+      Target := [others => 0];
+      if Length > 0 then
+         for Index in Natural range 0 .. Length - 1 loop
+            Target (Index) := Image (Index);
+         end loop;
+      end if;
+   end Copy_Manifest_Image;
+
    function Exact_Bytes
      (Left : Object_Buffer; Left_Length : Natural; Right : Object_Buffer; Right_Length : Natural)
       return Boolean is
@@ -1780,6 +2176,15 @@ package body Flyology.DB is
         Left_Length = Right_Length
         and then (Left_Length = 0 or else Left (0 .. Left_Length - 1) = Right (0 .. Right_Length - 1));
    end Exact_Bytes;
+
+   function Head_Database_ID (Data : Object_Buffer) return Database_Identifier is
+      Result : Database_Identifier := Zero_Database_ID;
+   begin
+      for Index in Identifier_Index loop
+         Result (Index) := Data (11 + Index);
+      end loop;
+      return Result;
+   end Head_Database_ID;
 
    procedure Build_Batch
      (Items    : Work_Group;
@@ -1802,7 +2207,12 @@ package body Flyology.DB is
       Image := [others => 0];
       Receipts := [others => <>];
       Length := 0;
-      if Count = 0
+      if Expected.Version /= Interfaces.Unsigned_16 (Heads.Current_Format)
+        or else Is_Zero (Expected.Latest_Manifest)
+      then
+         Result := Unsupported_Format;
+         return;
+      elsif Count = 0
         or else Expected.Highest > Sequence_Number'Last - Sequence_Number (Count)
         or else Expected.Transition_Number = Interfaces.Unsigned_64'Last
       then
@@ -1893,6 +2303,7 @@ package body Flyology.DB is
          Receipts (Index).Expected_Head := Expected;
          Receipts (Index).Attempted_Head :=
            (Database_ID            => Expected.Database_ID,
+            Version                => Expected.Version,
             Epoch                  => Expected.Epoch,
             Highest                => Expected.Highest + Sequence_Number (Count),
             Latest_Batch           => Batch_ID,
@@ -1979,13 +2390,18 @@ package body Flyology.DB is
          Finish_Work (State, Tokens, Receipts, Count, Result);
          return;
       end if;
+      State.Gate.Validate_Batch (Batch, Result);
+      if Result /= Success then
+         Finish_Work (State, Tokens, Receipts, Count, Result);
+         return;
+      end if;
       Copy_Batch_Image (Batch_Image, Batch_Length, Batch_Data);
       Storage_Port.Put_Create
         (State.Storage.all,
          Batch_Key (State.Storage.all, Receipts (1).Batch_ID),
          Batch_Data,
          Batch_Length,
-         False,
+         Batch_Object,
          Deadline,
          Token,
          Ignored_Generation,
@@ -1994,7 +2410,8 @@ package body Flyology.DB is
          if Put_Result = Put_Outcome_Unknown then
             Storage_Port.Get_Whole
               (State.Storage.all,
-               Batch_Key (State.Storage.all, Receipts (1).Batch_ID),
+              Batch_Key (State.Storage.all, Receipts (1).Batch_ID),
+               Batch_Object,
                Deadline,
                Token,
                Read_Data,
@@ -2111,6 +2528,36 @@ package body Flyology.DB is
 
    subtype History_Slot is Positive range 1 .. Maximum_History_Batches;
    type Batch_History is array (History_Slot) of Batches.Commit_Batch;
+   type Manifest_History is array (History_Slot) of Manifests.Manifest;
+
+   procedure Decode_Stored_Manifest
+     (Data              : Object_Buffer;
+      Length            : Natural;
+      Expected_Database : Database_Identifier;
+      Value             : out Manifests.Manifest;
+      Result            : out Outcome_Code)
+   is
+      Status : Manifests.Decode_Status;
+   begin
+      Value := Manifests.Empty_Manifest;
+      if Length = 0 or else Length > Manifests.Max_Manifest_Image_Length then
+         Result := Corrupt;
+         return;
+      end if;
+      declare
+         Image : Formats.Byte_Array (0 .. Length - 1);
+      begin
+         for Index in Image'Range loop
+            Image (Index) := Data (Index);
+         end loop;
+         Manifests.Decode_Manifest
+           (Image, To_Head_ID (Expected_Database), Manifests.Default_Reader_Caps, Value, Status);
+      end;
+      Result :=
+        (if Status = Manifests.Decoded then Success
+         elsif Status = Manifests.Limit_Exceeded then Capacity_Exceeded
+         else Corrupt);
+   end Decode_Stored_Manifest;
 
    procedure Decode_Stored_Batch
      (Data              : Object_Buffer;
@@ -2157,6 +2604,8 @@ package body Flyology.DB is
       Token       : access Flyology.Cancellation.Token;
       Head        : out Head_Snapshot;
       Generation  : out Generation_Value;
+      Manifest    : out Manifests.Manifest;
+      Root        : out Manifests.Manifest;
       History     : out Batch_History;
       Count       : out Natural;
       Result      : out Outcome_Code)
@@ -2167,15 +2616,21 @@ package body Flyology.DB is
       Decode_Result    : Formats.Decode_Status;
       Batch_Result     : Outcome_Code;
       Current_Batch_ID : Identifier;
-      Batch_Generation : Generation_Value;
+      Ignored_Generation : Generation_Value;
+      Manifests_Seen   : Manifest_History := [others => Manifests.Empty_Manifest];
+      Manifest_Count   : Natural := 0;
+      Current_Manifest_ID : Identifier;
    begin
       Head := (others => <>);
       Generation := (others => <>);
+      Manifest := Manifests.Empty_Manifest;
+      Root := Manifests.Empty_Manifest;
       History := [others => Batches.Empty_Batch];
       Count := 0;
       Storage_Port.Get_Whole
         (Storage,
          Full_Key (Storage, Head_Key_Suffix),
+         Head_Object,
          Deadline,
          Token,
          Data,
@@ -2207,30 +2662,109 @@ package body Flyology.DB is
          end loop;
          Formats.Decode_Head (Image, To_Head_ID (Database_ID), Value, Decode_Result);
          if Decode_Result /= Formats.Decoded then
-            Result := Corrupt;
+            Result :=
+              (if Decode_Result = Formats.Unsupported_Version then Unsupported_Format else Corrupt);
             return;
          end if;
          Head := From_Head (Value);
       end;
-      if Head.Highest = 0 then
+      if Head.Version = Interfaces.Unsigned_16 (Heads.Legacy_Format) then
+         Result := Unsupported_Format;
+         return;
+      elsif Head.Version /= Interfaces.Unsigned_16 (Heads.Current_Format)
+        or else Is_Zero (Head.Latest_Manifest)
+      then
+         Result := Corrupt;
+         return;
+      end if;
+
+      Current_Manifest_ID := Head.Latest_Manifest;
+      loop
+         if Manifest_Count = Maximum_History_Batches then
+            Result :=
+              (if Manifests_Seen (1).Limits.Maximum_Manifest_History <=
+                   Maximum_History_Batches
+               then Corrupt
+               else Capacity_Exceeded);
+            return;
+         elsif Manifest_Count > 0
+           and then Interfaces.Unsigned_32 (Manifest_Count) =
+             Manifests_Seen (1).Limits.Maximum_Manifest_History
+         then
+            Result := Corrupt;
+            return;
+         end if;
+         Storage_Port.Get_Whole
+           (Storage,
+            Manifest_Key (Storage, Current_Manifest_ID),
+            Manifest_Object,
+            Deadline,
+            Token,
+            Data,
+            Length,
+            Ignored_Generation,
+            Read_Result);
+         if Read_Result /= Object_Read then
+            Result :=
+              (if Read_Result = Read_Cancelled then Cancelled
+               elsif Read_Result = Read_Timed_Out then Timed_Out
+               elsif Read_Result in Object_Missing | Read_Corrupt then Corrupt
+               else Storage_Failure);
+            return;
+         end if;
+         Manifest_Count := Manifest_Count + 1;
+         Decode_Stored_Manifest
+           (Data, Length, Database_ID, Manifests_Seen (Manifest_Count), Result);
+         if Result /= Success then
+            return;
+         elsif To_Identifier (Manifests_Seen (Manifest_Count).Manifest_ID) /= Current_Manifest_ID
+         then
+            Result := Corrupt;
+            return;
+         elsif Manifest_Count = 1
+           and then not Manifests.Referenced_By (Manifests_Seen (1), To_Head (Head))
+         then
+            Result := Corrupt;
+            return;
+         elsif Manifest_Count > 1
+           and then not Manifests.Valid_Predecessor
+             (Manifests_Seen (Manifest_Count - 1), Manifests_Seen (Manifest_Count))
+         then
+            Result := Corrupt;
+            return;
+         elsif Manifests.Is_Root (Manifests_Seen (Manifest_Count)) then
+            Root := Manifests_Seen (Manifest_Count);
+            exit;
+         end if;
+         Current_Manifest_ID :=
+           To_Identifier (Manifests_Seen (Manifest_Count).Previous_Manifest_ID);
+      end loop;
+      Manifest := Manifests_Seen (1);
+      if not Manifests.Runtime_Compatible (Manifest) then
+         Result := Capacity_Exceeded;
+         return;
+      elsif Head.Highest = 0 then
          Result := Success;
          return;
       end if;
 
       Current_Batch_ID := Head.Latest_Batch;
       loop
-         if Count = Maximum_History_Batches then
-            Result := Capacity_Exceeded;
+         if Count = Maximum_History_Batches
+           or else Interfaces.Unsigned_32 (Count) = Manifest.Limits.Maximum_Batch_History
+         then
+            Result := Corrupt;
             return;
          end if;
          Storage_Port.Get_Whole
            (Storage,
             Batch_Key (Storage, Current_Batch_ID),
+            Batch_Object,
             Deadline,
             Token,
             Data,
             Length,
-            Batch_Generation,
+            Ignored_Generation,
             Read_Result);
          if Read_Result /= Object_Read then
             Result :=
@@ -2262,11 +2796,80 @@ package body Flyology.DB is
       Result := Success;
    end Read_Recovery;
 
+   procedure Reconcile_Create_Head
+     (Storage       : in out Storage_Context;
+      Expected_Root : Manifests.Manifest;
+      Observed_Data : Object_Buffer;
+      Observed_Length : Natural;
+      Deadline      : Ada.Real_Time.Time;
+      Token         : access Flyology.Cancellation.Token;
+      Head          : out Head_Snapshot;
+      Generation    : out Generation_Value;
+      Manifest      : out Manifests.Manifest;
+      History       : out Batch_History;
+      Count         : out Natural;
+      Result        : out Outcome_Code)
+   is
+      Observed_Database : Database_Identifier := Zero_Database_ID;
+      Root              : Manifests.Manifest;
+      Read_Result       : Outcome_Code;
+   begin
+      Head := (others => <>);
+      Generation := (others => <>);
+      Manifest := Manifests.Empty_Manifest;
+      History := [others => Batches.Empty_Batch];
+      Count := 0;
+      if Observed_Length /= Formats.Head_Image_Length then
+         Result := Corrupt;
+         return;
+      end if;
+      Observed_Database := Head_Database_ID (Observed_Data);
+      if Is_Zero (Observed_Database) then
+         Result := Corrupt;
+         return;
+      end if;
+      Read_Recovery
+        (Storage,
+         Observed_Database,
+         Deadline,
+         Token,
+         Head,
+         Generation,
+         Manifest,
+         Root,
+         History,
+         Count,
+         Read_Result);
+      if Read_Result = Success then
+         if Observed_Database = To_Database_ID (Expected_Root.Database_ID)
+           and then Root = Expected_Root
+         then
+            Result := Success;
+         else
+            Result := Already_Exists;
+         end if;
+      elsif Read_Result = Unsupported_Format then
+         Result :=
+           (if Observed_Data (8) = 0
+              and then Observed_Data (9) = Byte (Formats.Legacy_Head_Format_Version)
+            then Already_Exists
+            else Unsupported_Format);
+      elsif Read_Result = Corrupt then
+         Result := Corrupt;
+      elsif Read_Result = Capacity_Exceeded then
+         Result := Capacity_Exceeded;
+      else
+         Result := Outcome_Unknown;
+      end if;
+   end Reconcile_Create_Head;
+
    procedure Allocate_Engine
      (Life       : not null Database_Lifecycle_Access;
       Storage    : not null access Storage_Context;
       Head       : Head_Snapshot;
       Generation : Generation_Value;
+      Manifest   : Manifests.Manifest;
+      Incarnation : Engine_Incarnation;
       History    : Batch_History;
       Count      : Natural;
       State      : out Engine_State_Access;
@@ -2276,7 +2879,7 @@ package body Flyology.DB is
       --  Database retains this caller-owned context only until Close/Finalize.
       State.Storage := Storage.all'Unchecked_Access;
       State.Life := Life;
-      State.Gate.Initialize (Head, Generation);
+      State.Gate.Initialize (Head, Generation, Manifest, Incarnation);
       for Index in reverse History_Slot range 1 .. Count loop
          State.Gate.Recover_Batch (History (Index), Result);
          if Result /= Success then
@@ -2306,13 +2909,25 @@ package body Flyology.DB is
       Storage    : not null access Storage_Context;
       Head       : Head_Snapshot;
       Generation : Generation_Value;
+      Manifest   : Manifests.Manifest;
+      Incarnation : Engine_Incarnation;
       History    : Batch_History;
       Count      : Natural;
       Result     : out Outcome_Code)
    is
       State : Engine_State_Access;
    begin
-      Allocate_Engine (Item.Life'Unchecked_Access, Storage, Head, Generation, History, Count, State, Result);
+      Allocate_Engine
+        (Item.Life'Unchecked_Access,
+         Storage,
+         Head,
+         Generation,
+         Manifest,
+         Incarnation,
+         History,
+         Count,
+         State,
+         Result);
       if Result = Success then
          Item.Life.Complete_Open (State, Head.Highest, Result);
          if Result /= Success then
@@ -2350,19 +2965,106 @@ package body Flyology.DB is
       end return;
    end To_Value;
 
+   function Configure_Column_Family
+     (ID              : Column_Family_ID;
+      Name            : Byte_Array;
+      Max_Key_Bytes   : Interfaces.Unsigned_64;
+      Max_Value_Bytes : Interfaces.Unsigned_64) return Column_Family_Configuration
+   is
+      Candidate : Manifests.Column_Family_Configuration;
+   begin
+      if Name'Length = 0 or else Name'Length > Maximum_Column_Family_Name_Bytes then
+         raise Constraint_Error with "column-family name length is invalid";
+      end if;
+      Candidate.ID := Interfaces.Unsigned_32 (ID);
+      Candidate.Name_Length := Name'Length;
+      Candidate.Max_Key_Bytes := Max_Key_Bytes;
+      Candidate.Max_Value_Bytes := Max_Value_Bytes;
+      for Offset in Natural range 0 .. Name'Length - 1 loop
+         Candidate.Name (Offset + 1) := Name (Name'First + Offset);
+      end loop;
+      if not Manifests.Valid_Configuration (Candidate) then
+         raise Constraint_Error with "column-family configuration is invalid";
+      end if;
+      return From_Manifest_Configuration (Candidate);
+   end Configure_Column_Family;
+
+   procedure Build_Root_Manifest
+     (Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Limits                : Database_Limits;
+      Initial_Families      : Column_Family_Configuration_Array;
+      Value                 : out Manifests.Manifest;
+      Result                : out Outcome_Code)
+   is
+      Candidate : Manifests.Manifest;
+      Moved     : Manifests.Column_Family_Configuration;
+      Position  : Positive;
+   begin
+      Value := Manifests.Empty_Manifest;
+      if Is_Zero (Database_ID)
+        or else Is_Zero (Manifest_ID)
+        or else Is_Zero (Initial_Transition_ID)
+        or else Initial_Families'Length = 0
+        or else Initial_Families'Length > Maximum_Initial_Column_Families
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+      Candidate.Database_ID := To_Head_ID (Database_ID);
+      Candidate.Manifest_ID := To_Head_ID (Manifest_ID);
+      Candidate.Publication_Transition_ID := To_Head_ID (Initial_Transition_ID);
+      Candidate.Publication_Transition_Number := 1;
+      Candidate.Writer_Epoch := 1;
+      Candidate.Registry_Revision := 1;
+      Candidate.Family_Total := Initial_Families'Length;
+      Candidate.Limits := To_Manifest_Limits (Limits);
+      for Offset in Natural range 0 .. Initial_Families'Length - 1 loop
+         Candidate.Families (Offset + 1) :=
+           To_Manifest_Configuration (Initial_Families (Initial_Families'First + Offset));
+      end loop;
+      for Index in Manifests.Family_Slot range 2 .. Candidate.Family_Total loop
+         Moved := Candidate.Families (Index);
+         Position := Index;
+         while Position > 1 and then Candidate.Families (Position - 1).ID > Moved.ID loop
+            Candidate.Families (Position) := Candidate.Families (Position - 1);
+            Position := Position - 1;
+         end loop;
+         Candidate.Families (Position) := Moved;
+      end loop;
+      if not Manifests.Structurally_Valid (Candidate) then
+         Result := Invalid_State;
+      elsif not Manifests.Runtime_Compatible (Candidate) then
+         Result := Capacity_Exceeded;
+      else
+         Value := Candidate;
+         Result := Success;
+      end if;
+   end Build_Root_Manifest;
+
    procedure Create
      (Item                  : in out Database;
       Storage               : not null access Storage_Context;
       Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
       Initial_Transition_ID : Identifier;
+      Limits                : Database_Limits;
+      Initial_Families      : Column_Family_Configuration_Array;
       Timeout               : Duration;
       Token                 : access Flyology.Cancellation.Token := null;
+      Receipt               : out Create_Receipt;
       Result                : out Outcome_Code)
    is
       Deadline        : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Head            : Head_Snapshot;
       Head_Image      : Formats.Head_Image;
-      Data            : Object_Buffer;
+      Head_Data       : Object_Buffer;
+      Manifest_Value  : Manifests.Manifest;
+      Manifest_Image  : Manifests.Manifest_Image;
+      Manifest_Length : Natural;
+      Encode_Result   : Manifests.Encode_Status;
+      Manifest_Data   : Object_Buffer;
       Read_Data       : Object_Buffer;
       Length          : Natural;
       Generation      : Generation_Value;
@@ -2371,48 +3073,207 @@ package body Flyology.DB is
       Read_Result     : Read_Outcome;
       History         : constant Batch_History := [others => Batches.Empty_Batch];
       Bucket_Result   : Outcome_Code;
+      Stamp           : Engine_Incarnation;
+      Activation_Fault : Storage_Fault_Mode;
+      Guard           : Activation_Guard;
+      pragma Unreferenced (Guard);
+
+      procedure Finish_Activation
+        (Activated_Head       : Head_Snapshot;
+         Activated_Generation : Generation_Value;
+         Activated_Manifest   : Manifests.Manifest;
+         Activated_History    : Batch_History;
+         Activated_Count      : Natural) is
+      begin
+         Receipt.Phase := Head_Confirmed;
+         Receipt.Current_Outcome := Success;
+         Consume_Fault (Storage.all, Before_Local_Activation, Activation_Fault);
+         if Activation_Fault /= No_Fault then
+            Receipt.Current_Outcome := Local_Activation_Failed;
+            Result := Local_Activation_Failed;
+            return;
+         end if;
+         Incarnation_Source.Allocate (Stamp, Result);
+         if Result = Success then
+            Start_Engine
+              (Item,
+               Storage,
+               Activated_Head,
+               Activated_Generation,
+               Activated_Manifest,
+               Stamp,
+               Activated_History,
+               Activated_Count,
+               Result);
+         end if;
+         if Result = Success then
+            Guard.Active := False;
+         else
+            Receipt.Current_Outcome := Local_Activation_Failed;
+            Result := Local_Activation_Failed;
+         end if;
+      end Finish_Activation;
+
+      procedure Attempt_Head is
+      begin
+         if Token /= null and then Token.Requested then
+            Result := Cancelled;
+            Receipt.Current_Outcome := Result;
+            return;
+         elsif Deadline <= Ada.Real_Time.Clock then
+            Result := Timed_Out;
+            Receipt.Current_Outcome := Result;
+            return;
+         end if;
+         Storage_Port.Put_Create
+           (Storage.all,
+            Full_Key (Storage.all, Head_Key_Suffix),
+            Head_Data,
+            Formats.Head_Image_Length,
+            Head_Object,
+            Deadline,
+            Token,
+            Generation,
+            Put_Result);
+         if Put_Result = Object_Published then
+            Finish_Activation (Head, Generation, Manifest_Value, History, 0);
+         elsif Put_Result in Put_Outcome_Unknown | Put_Precondition_Failed then
+            if Put_Result = Put_Outcome_Unknown then
+               Receipt.Phase := Head_Publication_Unknown;
+            end if;
+            Storage_Port.Get_Whole
+              (Storage.all,
+               Full_Key (Storage.all, Head_Key_Suffix),
+               Head_Object,
+               Deadline,
+               Token,
+               Read_Data,
+               Length,
+               Read_Generation,
+               Read_Result);
+            if Read_Result = Object_Read
+              and then Exact_Bytes (Head_Data, Formats.Head_Image_Length, Read_Data, Length)
+            then
+               Generation := Read_Generation;
+               Finish_Activation (Head, Read_Generation, Manifest_Value, History, 0);
+            elsif Read_Result = Object_Read then
+               declare
+                  Observed_Head     : Head_Snapshot;
+                  Observed_Manifest : Manifests.Manifest;
+                  Observed_History  : Batch_History;
+                  Observed_Count    : Natural;
+               begin
+                  Reconcile_Create_Head
+                    (Storage.all,
+                     Manifest_Value,
+                     Read_Data,
+                     Length,
+                     Deadline,
+                     Token,
+                     Observed_Head,
+                     Read_Generation,
+                     Observed_Manifest,
+                     Observed_History,
+                     Observed_Count,
+                     Result);
+                  if Result = Success then
+                     Finish_Activation
+                       (Observed_Head,
+                        Read_Generation,
+                        Observed_Manifest,
+                        Observed_History,
+                        Observed_Count);
+                  else
+                     Receipt.Current_Outcome := Result;
+                  end if;
+               end;
+            elsif Put_Result = Put_Precondition_Failed then
+               Result := Outcome_Unknown;
+               Receipt.Current_Outcome := Result;
+            else
+               Result := Outcome_Unknown;
+               Receipt.Current_Outcome := Result;
+            end if;
+         elsif Put_Result = Put_Cancelled then
+            Result := Cancelled;
+            Receipt.Current_Outcome := Result;
+         elsif Put_Result = Put_Timed_Out then
+            Result := Timed_Out;
+            Receipt.Current_Outcome := Result;
+         else
+            Result := Storage_Failure;
+            Receipt.Current_Outcome := Result;
+         end if;
+      end Attempt_Head;
    begin
-      if Storage.Backend = null or else Is_Zero (Database_ID) or else Is_Zero (Initial_Transition_ID) then
-         Result := Invalid_State;
-         return;
-      end if;
-      Item.Life.Begin_Open (Result);
+      Receipt := (others => <>);
+      Build_Root_Manifest
+        (Database_ID, Manifest_ID, Initial_Transition_ID, Limits, Initial_Families, Manifest_Value, Result);
       if Result /= Success then
+         Receipt.Current_Outcome := Result;
          return;
       end if;
-      Storage_Port.Bucket_Available (Storage.all, Deadline, Token, Bucket_Result);
-      if Bucket_Result /= Success then
-         Result := Bucket_Result;
-         Item.Life.Abort_Open;
+      Manifests.Encode_Manifest (Manifest_Value, Manifest_Image, Manifest_Length, Encode_Result);
+      if Encode_Result /= Manifests.Encoded
+        or else Storage.Backend = null
+        or else not OS.Valid_Object_Key (Manifest_Key (Storage.all, Manifest_ID))
+        or else not OS.Valid_Object_Key (Full_Key (Storage.all, Head_Key_Suffix))
+      then
+         Result := Invalid_State;
+         Receipt.Current_Outcome := Result;
          return;
       end if;
+      Copy_Manifest_Image (Manifest_Image, Manifest_Length, Manifest_Data);
+      Receipt.Database_ID := Database_ID;
+      Receipt.Manifest_ID := Manifest_ID;
+      Receipt.Manifest_Length := Manifest_Length;
+      for Index in Natural range 0 .. Manifest_Length - 1 loop
+         Receipt.Manifest_Image (Index) := Manifest_Data (Index);
+      end loop;
       Head :=
         (Database_ID            => Database_ID,
+         Version                => Interfaces.Unsigned_16 (Heads.Current_Format),
          Epoch                  => 1,
          Highest                => 0,
          Latest_Batch           => Zero_Identifier,
-         Latest_Manifest        => Zero_Identifier,
+         Latest_Manifest        => Manifest_ID,
          Transition_ID          => Initial_Transition_ID,
          Predecessor_Transition => Zero_Identifier,
          Transition_Number      => 1);
+      Receipt.Attempted_Head := Head;
       Head_Image := Formats.Encode_Head (To_Head (Head));
-      Copy_Head_Image (Head_Image, Data);
+      Copy_Head_Image (Head_Image, Head_Data);
+      Item.Life.Begin_Open (Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Storage_Port.Bucket_Available (Storage.all, Deadline, Token, Bucket_Result);
+      if Bucket_Result /= Success then
+         Result := Bucket_Result;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
       Storage_Port.Put_Create
         (Storage.all,
-         Full_Key (Storage.all, Head_Key_Suffix),
-         Data,
-         Formats.Head_Image_Length,
-         True,
+         Manifest_Key (Storage.all, Manifest_ID),
+         Manifest_Data,
+         Manifest_Length,
+         Manifest_Object,
          Deadline,
          Token,
          Generation,
          Put_Result);
       if Put_Result = Object_Published then
-         Start_Engine (Item, Storage, Head, Generation, History, 0, Result);
-      elsif Put_Result = Put_Outcome_Unknown then
+         Receipt.Phase := Manifest_Confirmed;
+         Attempt_Head;
+      elsif Put_Result in Put_Outcome_Unknown | Put_Precondition_Failed then
          Storage_Port.Get_Whole
            (Storage.all,
-            Full_Key (Storage.all, Head_Key_Suffix),
+            Manifest_Key (Storage.all, Manifest_ID),
+            Manifest_Object,
             Deadline,
             Token,
             Read_Data,
@@ -2420,40 +3281,290 @@ package body Flyology.DB is
             Read_Generation,
             Read_Result);
          if Read_Result = Object_Read
-           and then Exact_Bytes (Data, Formats.Head_Image_Length, Read_Data, Length)
+           and then Exact_Bytes (Manifest_Data, Manifest_Length, Read_Data, Length)
          then
-            Start_Engine (Item, Storage, Head, Read_Generation, History, 0, Result);
+            Receipt.Phase := Manifest_Confirmed;
+            Attempt_Head;
+         elsif Read_Result = Object_Read then
+            Result := Already_Exists;
+            Receipt.Current_Outcome := Result;
          else
             Result := Outcome_Unknown;
-         end if;
-      elsif Put_Result = Put_Precondition_Failed then
-         Storage_Port.Get_Whole
-           (Storage.all,
-            Full_Key (Storage.all, Head_Key_Suffix),
-            Deadline,
-            Token,
-            Read_Data,
-            Length,
-            Read_Generation,
-            Read_Result);
-         if Read_Result = Object_Read
-           and then Exact_Bytes (Data, Formats.Head_Image_Length, Read_Data, Length)
-         then
-            Start_Engine (Item, Storage, Head, Read_Generation, History, 0, Result);
-         else
-            Result := Already_Exists;
+            Receipt.Current_Outcome := Result;
          end if;
       elsif Put_Result = Put_Cancelled then
          Result := Cancelled;
+         Receipt.Current_Outcome := Result;
       elsif Put_Result = Put_Timed_Out then
          Result := Timed_Out;
+         Receipt.Current_Outcome := Result;
       else
          Result := Storage_Failure;
+         Receipt.Current_Outcome := Result;
       end if;
-      if Result /= Success then
-         Item.Life.Abort_Open;
-      end if;
+   exception
+      when others =>
+         Result :=
+           (if Receipt.Phase = Head_Confirmed then Local_Activation_Failed
+            elsif Receipt.Phase = Head_Publication_Unknown then Outcome_Unknown
+            else Storage_Failure);
+         Receipt.Current_Outcome := Result;
    end Create;
+
+   procedure Resolve_Create
+     (Item    : in out Database;
+      Storage : not null access Storage_Context;
+      Receipt : in out Create_Receipt;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null;
+      Result  : out Outcome_Code)
+   is
+      Deadline        : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      Manifest_Value  : Manifests.Manifest;
+      Decode_Result   : Outcome_Code;
+      Manifest_Data   : Object_Buffer := [others => 0];
+      Head_Image      : Formats.Head_Image;
+      Head_Data       : Object_Buffer;
+      Read_Data       : Object_Buffer;
+      Length          : Natural;
+      Generation      : Generation_Value;
+      Put_Result      : Put_Outcome;
+      Read_Result     : Read_Outcome;
+      Bucket_Result   : Outcome_Code;
+      History         : constant Batch_History := [others => Batches.Empty_Batch];
+      Stamp           : Engine_Incarnation;
+      Activation_Fault : Storage_Fault_Mode;
+      Guard           : Activation_Guard;
+      pragma Unreferenced (Guard);
+
+      procedure Activate
+        (Activated_Head       : Head_Snapshot;
+         Activated_Generation : Generation_Value;
+         Activated_Manifest   : Manifests.Manifest;
+         Activated_History    : Batch_History;
+         Activated_Count      : Natural) is
+      begin
+         Receipt.Phase := Head_Confirmed;
+         Receipt.Current_Outcome := Success;
+         Consume_Fault (Storage.all, Before_Local_Activation, Activation_Fault);
+         if Activation_Fault /= No_Fault then
+            Receipt.Current_Outcome := Local_Activation_Failed;
+            Result := Local_Activation_Failed;
+            return;
+         end if;
+         Incarnation_Source.Allocate (Stamp, Result);
+         if Result = Success then
+            Start_Engine
+              (Item,
+               Storage,
+               Activated_Head,
+               Activated_Generation,
+               Activated_Manifest,
+               Stamp,
+               Activated_History,
+               Activated_Count,
+               Result);
+         end if;
+         if Result = Success then
+            Guard.Active := False;
+         else
+            Receipt.Current_Outcome := Local_Activation_Failed;
+            Result := Local_Activation_Failed;
+         end if;
+      end Activate;
+   begin
+      if Receipt.Manifest_Length > 0 then
+         for Index in Natural range 0 .. Receipt.Manifest_Length - 1 loop
+            Manifest_Data (Index) := Receipt.Manifest_Image (Index);
+         end loop;
+      end if;
+      if Receipt.Phase = Head_Confirmed then
+         Result := Local_Activation_Failed;
+         Receipt.Current_Outcome := Result;
+         return;
+      elsif Receipt.Database_ID = Zero_Database_ID
+        or else Is_Zero (Receipt.Manifest_ID)
+        or else Receipt.Manifest_Length = 0
+        or else Storage.Backend = null
+      then
+         Result := Invalid_State;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Decode_Stored_Manifest
+        (Manifest_Data,
+         Receipt.Manifest_Length,
+         Receipt.Database_ID,
+         Manifest_Value,
+         Decode_Result);
+      if Decode_Result /= Success
+        or else To_Identifier (Manifest_Value.Manifest_ID) /= Receipt.Manifest_ID
+        or else not Manifests.Valid_Root_Publication
+          (To_Head (Receipt.Attempted_Head), Manifest_Value)
+        or else not OS.Valid_Object_Key (Manifest_Key (Storage.all, Receipt.Manifest_ID))
+        or else not OS.Valid_Object_Key (Full_Key (Storage.all, Head_Key_Suffix))
+      then
+         Result := Invalid_State;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Head_Image := Formats.Encode_Head (To_Head (Receipt.Attempted_Head));
+      Copy_Head_Image (Head_Image, Head_Data);
+      Item.Life.Begin_Open (Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Storage_Port.Bucket_Available (Storage.all, Deadline, Token, Bucket_Result);
+      if Bucket_Result /= Success then
+         Result := Bucket_Result;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Storage_Port.Get_Whole
+        (Storage.all,
+         Manifest_Key (Storage.all, Receipt.Manifest_ID),
+         Manifest_Object,
+         Deadline,
+         Token,
+         Read_Data,
+         Length,
+         Generation,
+         Read_Result);
+      if Read_Result = Object_Read
+        and then Exact_Bytes (Manifest_Data, Receipt.Manifest_Length, Read_Data, Length)
+      then
+         if Receipt.Phase = No_Create_Publication then
+            Receipt.Phase := Manifest_Confirmed;
+         end if;
+      elsif Read_Result = Object_Read then
+         Result := (if Receipt.Phase = No_Create_Publication then Already_Exists else Corrupt);
+         Receipt.Current_Outcome := Result;
+         return;
+      elsif Read_Result = Object_Missing then
+         Result := (if Receipt.Phase = No_Create_Publication then Storage_Failure else Corrupt);
+         Receipt.Current_Outcome := Result;
+         return;
+      else
+         Result :=
+           (if Receipt.Phase = Head_Publication_Unknown then Outcome_Unknown
+            elsif Read_Result = Read_Cancelled then Cancelled
+            elsif Read_Result = Read_Timed_Out then Timed_Out
+            else Outcome_Unknown);
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      if Receipt.Phase = Manifest_Confirmed then
+         if Token /= null and then Token.Requested then
+            Result := Cancelled;
+            Receipt.Current_Outcome := Result;
+            return;
+         elsif Deadline <= Ada.Real_Time.Clock then
+            Result := Timed_Out;
+            Receipt.Current_Outcome := Result;
+            return;
+         end if;
+         Storage_Port.Put_Create
+           (Storage.all,
+            Full_Key (Storage.all, Head_Key_Suffix),
+            Head_Data,
+            Formats.Head_Image_Length,
+            Head_Object,
+            Deadline,
+            Token,
+            Generation,
+            Put_Result);
+         if Put_Result = Object_Published then
+            Activate (Receipt.Attempted_Head, Generation, Manifest_Value, History, 0);
+            return;
+         elsif Put_Result = Put_Outcome_Unknown then
+            Receipt.Phase := Head_Publication_Unknown;
+         elsif Put_Result = Put_Precondition_Failed then
+            null;
+         elsif Put_Result = Put_Cancelled then
+            Result := Cancelled;
+            Receipt.Current_Outcome := Result;
+            return;
+         elsif Put_Result = Put_Timed_Out then
+            Result := Timed_Out;
+            Receipt.Current_Outcome := Result;
+            return;
+         else
+            Result := Storage_Failure;
+            Receipt.Current_Outcome := Result;
+            return;
+         end if;
+      end if;
+      Storage_Port.Get_Whole
+        (Storage.all,
+         Full_Key (Storage.all, Head_Key_Suffix),
+         Head_Object,
+         Deadline,
+         Token,
+         Read_Data,
+         Length,
+         Generation,
+         Read_Result);
+      if Read_Result = Object_Read
+        and then Exact_Bytes (Head_Data, Formats.Head_Image_Length, Read_Data, Length)
+      then
+         Activate (Receipt.Attempted_Head, Generation, Manifest_Value, History, 0);
+      elsif Read_Result = Object_Read then
+         declare
+            Observed_Head     : Head_Snapshot;
+            Observed_Manifest : Manifests.Manifest;
+            Observed_History  : Batch_History;
+            Observed_Count    : Natural;
+         begin
+            Reconcile_Create_Head
+              (Storage.all,
+               Manifest_Value,
+               Read_Data,
+               Length,
+               Deadline,
+               Token,
+               Observed_Head,
+               Generation,
+               Observed_Manifest,
+               Observed_History,
+               Observed_Count,
+               Result);
+            if Result = Success then
+               Activate
+                 (Observed_Head,
+                  Generation,
+                  Observed_Manifest,
+                  Observed_History,
+                  Observed_Count);
+            else
+               Receipt.Current_Outcome := Result;
+            end if;
+         end;
+      else
+         Result := Outcome_Unknown;
+         Receipt.Current_Outcome := Result;
+      end if;
+   exception
+      when others =>
+         Result :=
+           (if Receipt.Phase = Head_Confirmed then Local_Activation_Failed
+            elsif Receipt.Phase = Head_Publication_Unknown then Outcome_Unknown
+            else Storage_Failure);
+         Receipt.Current_Outcome := Result;
+   end Resolve_Create;
+
+   function Create_Receipt_Outcome (Item : Create_Receipt) return Outcome_Code
+   is (Item.Current_Outcome);
+
+   function Create_Receipt_Manifest_ID (Item : Create_Receipt) return Identifier
+   is (Item.Manifest_ID);
+
+   function Create_Receipt_Transition_ID (Item : Create_Receipt) return Identifier
+   is (if Item.Phase in Head_Publication_Unknown | Head_Confirmed
+       then Item.Attempted_Head.Transition_ID
+       else Zero_Identifier);
 
    procedure Open
      (Item        : in out Database;
@@ -2466,9 +3577,14 @@ package body Flyology.DB is
       Deadline      : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Head          : Head_Snapshot;
       Generation    : Generation_Value;
+      Manifest      : Manifests.Manifest;
+      Root          : Manifests.Manifest;
       History       : Batch_History;
       History_Count : Natural;
       Bucket_Result : Outcome_Code;
+      Stamp         : Engine_Incarnation;
+      Guard         : Activation_Guard;
+      pragma Unreferenced (Guard);
    begin
       if Storage.Backend = null or else Is_Zero (Database_ID) then
          Result := Invalid_State;
@@ -2478,26 +3594,45 @@ package body Flyology.DB is
       if Result /= Success then
          return;
       end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
       Storage_Port.Bucket_Available (Storage.all, Deadline, Token, Bucket_Result);
       if Bucket_Result /= Success then
          Result := Bucket_Result;
-         Item.Life.Abort_Open;
          return;
       end if;
       Read_Recovery
-        (Storage.all, Database_ID, Deadline, Token, Head, Generation, History, History_Count, Result);
+        (Storage.all,
+         Database_ID,
+         Deadline,
+         Token,
+         Head,
+         Generation,
+         Manifest,
+         Root,
+         History,
+         History_Count,
+         Result);
       if Result = Success then
-         Start_Engine (Item, Storage, Head, Generation, History, History_Count, Result);
+         Incarnation_Source.Allocate (Stamp, Result);
       end if;
-      if Result /= Success then
-         Item.Life.Abort_Open;
+      if Result = Success then
+         Start_Engine
+           (Item, Storage, Head, Generation, Manifest, Stamp, History, History_Count, Result);
       end if;
+      if Result = Success then
+         Guard.Active := False;
+      end if;
+   exception
+      when others =>
+         Result := Storage_Failure;
    end Open;
 
    procedure Reset_Transaction (Txn : out Transaction) is
    begin
       Txn.Active := False;
       Txn.Database_ID := Zero_Database_ID;
+      Txn.Incarnation := No_Incarnation;
       Txn.Transaction_ID := Zero_Transaction_ID;
       Txn.Mutation_Count := 0;
       Txn.Bytes_Used := 0;
@@ -2548,14 +3683,85 @@ package body Flyology.DB is
          Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
          Txn.Active := True;
          Txn.Database_ID := Head.Database_ID;
+         Txn.Incarnation := Lease.State.Gate.Current_Incarnation;
          Txn.Transaction_ID := Transaction_ID;
       end if;
    end Begin_Transaction;
 
+   procedure Open_Column_Family
+     (Item   : in out Database;
+      ID     : Column_Family_ID;
+      Family : out Column_Family;
+      Result : out Outcome_Code)
+   is
+      Lease         : Lifecycle_Lease;
+      Configuration : Column_Family_Configuration;
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Uncertain     : Boolean;
+      Fenced        : Boolean;
+   begin
+      Family := (others => <>);
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+      elsif Fenced then
+         Result := Stale_Writer;
+      else
+         Lease.State.Gate.Find_Family (ID, Configuration, Result);
+         if Result = Success then
+            Family :=
+              (Valid         => True,
+               Database_ID   => Head.Database_ID,
+               Incarnation   => Lease.State.Gate.Current_Incarnation,
+               Configuration => Configuration);
+         end if;
+      end if;
+   end Open_Column_Family;
+
+   procedure Open_Column_Family
+     (Item   : in out Database;
+      Name   : Byte_Array;
+      Family : out Column_Family;
+      Result : out Outcome_Code)
+   is
+      Lease         : Lifecycle_Lease;
+      Configuration : Column_Family_Configuration;
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Uncertain     : Boolean;
+      Fenced        : Boolean;
+   begin
+      Family := (others => <>);
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+      elsif Fenced then
+         Result := Stale_Writer;
+      else
+         Lease.State.Gate.Find_Family (Name, Configuration, Result);
+         if Result = Success then
+            Family :=
+              (Valid         => True,
+               Database_ID   => Head.Database_ID,
+               Incarnation   => Lease.State.Gate.Current_Incarnation,
+               Configuration => Configuration);
+         end if;
+      end if;
+   end Open_Column_Family;
+
    procedure Get
      (Item     : in out Database;
       Txn      : in out Transaction;
-      Family   : Column_Family_ID;
+      Family   : Column_Family;
       Item_Key : Key;
       Data     : out Value;
       Result   : out Outcome_Code)
@@ -2566,6 +3772,7 @@ package body Flyology.DB is
       Generation : Generation_Value;
       Uncertain  : Boolean;
       Fenced     : Boolean;
+      Configuration : Column_Family_Configuration;
    begin
       Data := (others => <>);
       if not Txn.Active then
@@ -2577,7 +3784,9 @@ package body Flyology.DB is
          return;
       end if;
       Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
-      if Txn.Database_ID /= Head.Database_ID then
+      if Txn.Database_ID /= Head.Database_ID
+        or else Txn.Incarnation /= Lease.State.Gate.Current_Incarnation
+      then
          Result := Invalid_State;
          return;
       elsif Uncertain then
@@ -2587,9 +3796,17 @@ package body Flyology.DB is
          Result := Stale_Writer;
          return;
       end if;
+      Lease.State.Gate.Validate_Family (Family, Configuration, Result);
+      if Result /= Success or else Item_Key.Length > Natural (Configuration.Max_Key_Bytes) then
+         if Result = Success then
+            Result := Capacity_Exceeded;
+         end if;
+         return;
+      end if;
       for Reverse_Index in reverse Mutation_Slot range 1 .. Txn.Mutation_Count loop
          Index := Reverse_Index;
-         if Txn.Mutations (Index).Family = Family and then Same_Key (Txn.Mutations (Index).Item_Key, Item_Key)
+         if Txn.Mutations (Index).Family = Family.Configuration.ID
+           and then Same_Key (Txn.Mutations (Index).Item_Key, Item_Key)
          then
             if Txn.Mutations (Index).Operation = Delete_Mutation then
                Result := Not_Found;
@@ -2600,13 +3817,13 @@ package body Flyology.DB is
             return;
          end if;
       end loop;
-      Lease.State.Gate.Lookup (Family, Item_Key, Data, Result);
+      Lease.State.Gate.Lookup (Family.Configuration.ID, Item_Key, Data, Result);
    end Get;
 
    procedure Store_Mutation
      (Item      : in out Database;
       Txn       : in out Transaction;
-      Family    : Column_Family_ID;
+      Family    : Column_Family;
       Item_Key  : Key;
       Data      : Value;
       Operation : Mutation_Kind;
@@ -2621,6 +3838,7 @@ package body Flyology.DB is
       Old_Bytes  : Natural := 0;
       New_Bytes  : constant Natural :=
         Item_Key.Length + (if Operation = Put_Mutation then Data.Length else 0);
+      Configuration : Column_Family_Configuration;
    begin
       if not Txn.Active then
          Result := Invalid_State;
@@ -2631,7 +3849,9 @@ package body Flyology.DB is
          return;
       end if;
       Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
-      if Txn.Database_ID /= Head.Database_ID then
+      if Txn.Database_ID /= Head.Database_ID
+        or else Txn.Incarnation /= Lease.State.Gate.Current_Incarnation
+      then
          Result := Invalid_State;
          return;
       elsif Uncertain then
@@ -2641,8 +3861,18 @@ package body Flyology.DB is
          Result := Stale_Writer;
          return;
       end if;
+      Lease.State.Gate.Validate_Family (Family, Configuration, Result);
+      if Result /= Success then
+         return;
+      elsif Item_Key.Length > Natural (Configuration.Max_Key_Bytes)
+        or else (Operation = Put_Mutation and then Data.Length > Natural (Configuration.Max_Value_Bytes))
+      then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
       for Index in Mutation_Slot range 1 .. Txn.Mutation_Count loop
-         if Txn.Mutations (Index).Family = Family and then Same_Key (Txn.Mutations (Index).Item_Key, Item_Key)
+         if Txn.Mutations (Index).Family = Family.Configuration.ID
+           and then Same_Key (Txn.Mutations (Index).Item_Key, Item_Key)
          then
             Existing := Index;
             Old_Bytes :=
@@ -2660,12 +3890,19 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
          return;
       end if;
+      Lease.State.Gate.Validate_Transaction_Bounds
+        (Txn.Mutation_Count + (if Existing = 0 then 1 else 0),
+         Txn.Bytes_Used - Old_Bytes + New_Bytes,
+         Result);
+      if Result /= Success then
+         return;
+      end if;
       if Existing = 0 then
          Txn.Mutation_Count := Txn.Mutation_Count + 1;
          Existing := Txn.Mutation_Count;
       end if;
       Txn.Mutations (Existing) :=
-        (Family => Family, Operation => Operation, Item_Key => Item_Key, Data => Data);
+        (Family => Family.Configuration.ID, Operation => Operation, Item_Key => Item_Key, Data => Data);
       Txn.Bytes_Used := Txn.Bytes_Used - Old_Bytes + New_Bytes;
       Result := Success;
    end Store_Mutation;
@@ -2673,7 +3910,7 @@ package body Flyology.DB is
    procedure Put
      (Item     : in out Database;
       Txn      : in out Transaction;
-      Family   : Column_Family_ID;
+      Family   : Column_Family;
       Item_Key : Key;
       Data     : Value;
       Result   : out Outcome_Code) is
@@ -2684,7 +3921,7 @@ package body Flyology.DB is
    procedure Delete
      (Item     : in out Database;
       Txn      : in out Transaction;
-      Family   : Column_Family_ID;
+      Family   : Column_Family;
       Item_Key : Key;
       Result   : out Outcome_Code) is
    begin
@@ -2727,7 +3964,9 @@ package body Flyology.DB is
          return;
       end if;
       Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
-      if Txn.Database_ID /= Head.Database_ID then
+      if Txn.Database_ID /= Head.Database_ID
+        or else Txn.Incarnation /= Lease.State.Gate.Current_Incarnation
+      then
          Result := Invalid_State;
          return;
       end if;
@@ -2778,6 +4017,8 @@ package body Flyology.DB is
          if not Transactions (Transactions'First + Offset).Active
            or else Transactions (Transactions'First + Offset).Mutation_Count = 0
            or else Transactions (Transactions'First + Offset).Database_ID /= Head.Database_ID
+           or else Transactions (Transactions'First + Offset).Incarnation /=
+             Lease.State.Gate.Current_Incarnation
          then
             Result := Invalid_State;
             return;
@@ -2817,6 +4058,7 @@ package body Flyology.DB is
       Token       : access Flyology.Cancellation.Token;
       Observed    : out Head_Snapshot;
       Generation  : out Generation_Value;
+      Manifest    : out Manifests.Manifest;
       History     : out Batch_History;
       Count       : out Natural;
       Resolution  : out Receipt_Resolution;
@@ -2826,9 +4068,21 @@ package body Flyology.DB is
       Encoded : Batches.Batch_Image;
       Length  : Natural;
       Status  : Batches.Encode_Status;
+      Root    : Manifests.Manifest;
    begin
       Resolution := Receipt_Unresolved;
-      Read_Recovery (Storage, Database_ID, Deadline, Token, Observed, Generation, History, Count, Result);
+      Read_Recovery
+        (Storage,
+         Database_ID,
+         Deadline,
+         Token,
+         Observed,
+         Generation,
+         Manifest,
+         Root,
+         History,
+         Count,
+         Result);
       if Result /= Success then
          return;
       end if;
@@ -2877,7 +4131,11 @@ package body Flyology.DB is
       New_State     : Engine_State_Access;
       History       : Batch_History;
       History_Count : Natural;
+      Manifest      : Manifests.Manifest;
+      Stamp         : Engine_Incarnation;
       Resolution    : Receipt_Resolution;
+      Guard         : Resolve_Guard;
+      pragma Unreferenced (Guard);
    begin
       if Receipt.Phase /= Head_Publication_Unknown then
          Result := Invalid_State;
@@ -2887,10 +4145,11 @@ package body Flyology.DB is
       if Result /= Success then
          return;
       end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
       Item.Life.Await_Quiescent;
       State.Gate.Snapshot (Current_Head, Generation, Uncertain, Fenced);
       if Current_Head.Database_ID /= Receipt.Expected_Head.Database_ID then
-         Item.Life.Cancel_Resolve;
          Result := Invalid_State;
          return;
       end if;
@@ -2904,26 +4163,31 @@ package body Flyology.DB is
          Token,
          Observed,
          Generation,
+         Manifest,
          History,
          History_Count,
          Resolution,
          Read_Result);
       if Read_Result /= Success then
-         Item.Life.Cancel_Resolve;
          Result := Read_Result;
          return;
       elsif Resolution = Receipt_Committed or else Same_Head (Observed, Receipt.Attempted_Head) then
+         Incarnation_Source.Allocate (Stamp, Result);
+         if Result /= Success then
+            return;
+         end if;
          Allocate_Engine
            (Item.Life'Unchecked_Access,
             Storage,
             Observed,
             Generation,
+            Manifest,
+            Stamp,
             History,
             History_Count,
             New_State,
             Result);
          if Result /= Success then
-            Item.Life.Cancel_Resolve;
             return;
          end if;
          State.Gate.Request_Close;
@@ -2931,17 +4195,18 @@ package body Flyology.DB is
          Free_Worker (State.Worker);
          Free_State (State);
          Item.Life.Finish_Resolve (New_State, Observed.Highest);
+         Guard.Active := False;
          Receipt.Current_Outcome := Success;
          Receipt.Phase := Resolved;
          Result := Success;
       elsif Resolution = Receipt_Rejected then
          State.Gate.Fence;
          Item.Life.Cancel_Resolve;
+         Guard.Active := False;
          Receipt.Current_Outcome := Stale_Writer;
          Receipt.Phase := Resolved;
          Result := Stale_Writer;
       else
-         Item.Life.Cancel_Resolve;
          Result := Outcome_Unknown;
       end if;
    end Resolve;
@@ -2997,10 +4262,413 @@ package body Flyology.DB is
       Item.Test_Control.Set_Get_Paused (Value);
    end Set_Test_Get_Paused;
 
-   function Test_Get_Waiting (Item : Storage_Context) return Boolean is
+   procedure Wait_For_Test_Get
+     (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean) is
    begin
-      return Item.Test_Control.Get_Waiting;
-   end Test_Get_Waiting;
+      Arrived := False;
+      select
+         delay Timeout;
+      then abort
+         Item.Test_Control.Await_Get;
+         Arrived := True;
+      end select;
+   end Wait_For_Test_Get;
+
+   function Test_Get_Waiting (Item : Storage_Context) return Boolean
+   is (Item.Test_Control.Get_Waiting);
+
+   procedure Install_Test_Head
+     (Item          : in out Storage_Context;
+      Database_ID   : Database_Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Legacy        : Boolean;
+      Result        : out Outcome_Code)
+   is
+      Head       : constant Head_Snapshot :=
+        (Database_ID            => Database_ID,
+         Version                =>
+           Interfaces.Unsigned_16 (if Legacy then Heads.Legacy_Format else Heads.Current_Format),
+         Epoch                  => 1,
+         Highest                => 0,
+         Latest_Batch           => Zero_Identifier,
+         Latest_Manifest        => (if Legacy then Zero_Identifier else Manifest_ID),
+         Transition_ID          => Transition_ID,
+         Predecessor_Transition => Zero_Identifier,
+         Transition_Number      => 1);
+      Image      : constant Formats.Head_Image := Formats.Encode_Head (To_Head (Head));
+      Data       : Object_Buffer;
+      Generation : Generation_Value;
+      Put_Result : Put_Outcome;
+   begin
+      Copy_Head_Image (Image, Data);
+      Storage_Port.Put_Create
+        (Item,
+         Full_Key (Item, Head_Key_Suffix),
+         Data,
+         Formats.Head_Image_Length,
+         Head_Object,
+         Ada.Real_Time.Time_Last,
+         null,
+         Generation,
+         Put_Result);
+      Result := (if Put_Result = Object_Published then Success else Storage_Failure);
+   end Install_Test_Head;
+
+   procedure Install_Test_Unsupported_Head
+     (Item          : in out Storage_Context;
+      Database_ID   : Database_Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Result        : out Outcome_Code)
+   is
+      Head       : constant Head_Snapshot :=
+        (Database_ID            => Database_ID,
+         Version                => Interfaces.Unsigned_16 (Heads.Current_Format),
+         Epoch                  => 1,
+         Highest                => 0,
+         Latest_Batch           => Zero_Identifier,
+         Latest_Manifest        => Manifest_ID,
+         Transition_ID          => Transition_ID,
+         Predecessor_Transition => Zero_Identifier,
+         Transition_Number      => 1);
+      Image      : Formats.Head_Image := Formats.Encode_Head (To_Head (Head));
+      Data       : Object_Buffer;
+      Generation : Generation_Value;
+      Put_Result : Put_Outcome;
+
+      procedure Put_U32 (Position : Natural; Value : Interfaces.Unsigned_32) is
+      begin
+         for Offset in Natural range 0 .. 3 loop
+            Image (Position + Offset) :=
+              Byte (Interfaces.Shift_Right (Value, (3 - Offset) * 8) and 16#FF#);
+         end loop;
+      end Put_U32;
+   begin
+      Image (8) := 0;
+      Image (9) := 3;
+      Image (40 .. 43) := [others => 0];
+      Put_U32 (40, Formats.CRC_32C (Image (0 .. 131)));
+      Put_U32 (132, Formats.CRC_32C (Image (0 .. 131)));
+      Copy_Head_Image (Image, Data);
+      Storage_Port.Put_Create
+        (Item,
+         Full_Key (Item, Head_Key_Suffix),
+         Data,
+         Formats.Head_Image_Length,
+         Head_Object,
+         Ada.Real_Time.Time_Last,
+         null,
+         Generation,
+         Put_Result);
+      Result := (if Put_Result = Object_Published then Success else Storage_Failure);
+   end Install_Test_Unsupported_Head;
+
+   procedure Install_Test_Invalid_V2_Head
+     (Item          : in out Storage_Context;
+      Database_ID   : Database_Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Result        : out Outcome_Code)
+   is
+      Head       : constant Head_Snapshot :=
+        (Database_ID            => Database_ID,
+         Version                => Interfaces.Unsigned_16 (Heads.Current_Format),
+         Epoch                  => 1,
+         Highest                => 0,
+         Latest_Batch           => Zero_Identifier,
+         Latest_Manifest        => Manifest_ID,
+         Transition_ID          => Transition_ID,
+         Predecessor_Transition => Zero_Identifier,
+         Transition_Number      => 1);
+      Image      : Formats.Head_Image := Formats.Encode_Head (To_Head (Head));
+      Data       : Object_Buffer;
+      Generation : Generation_Value;
+      Put_Result : Put_Outcome;
+
+      procedure Put_U32 (Position : Natural; Value : Interfaces.Unsigned_32) is
+      begin
+         for Offset in Natural range 0 .. 3 loop
+            Image (Position + Offset) :=
+              Byte (Interfaces.Shift_Right (Value, (3 - Offset) * 8) and 16#FF#);
+         end loop;
+      end Put_U32;
+   begin
+      Image (76 .. 91) := [others => 0];
+      Image (40 .. 43) := [others => 0];
+      Put_U32 (40, Formats.CRC_32C (Image (0 .. 131)));
+      Put_U32 (132, Formats.CRC_32C (Image (0 .. 131)));
+      Copy_Head_Image (Image, Data);
+      Storage_Port.Put_Create
+        (Item,
+         Full_Key (Item, Head_Key_Suffix),
+         Data,
+         Formats.Head_Image_Length,
+         Head_Object,
+         Ada.Real_Time.Time_Last,
+         null,
+         Generation,
+         Put_Result);
+      Result := (if Put_Result = Object_Published then Success else Storage_Failure);
+   end Install_Test_Invalid_V2_Head;
+
+   procedure Corrupt_Test_Manifest
+     (Item : in out Storage_Context; Manifest_ID : Identifier; Result : out Outcome_Code)
+   is
+      Data           : Object_Buffer;
+      Length         : Natural;
+      Generation     : Generation_Value;
+      Read_Result    : Read_Outcome;
+      New_Generation : Generation_Value;
+      Put_Result     : Put_Outcome;
+   begin
+      Storage_Port.Get_Whole
+        (Item,
+         Manifest_Key (Item, Manifest_ID),
+         Manifest_Object,
+         Ada.Real_Time.Time_Last,
+         null,
+         Data,
+         Length,
+         Generation,
+         Read_Result);
+      if Read_Result /= Object_Read or else Length = 0 then
+         Result := Storage_Failure;
+         return;
+      end if;
+      Data (Length - 1) := Data (Length - 1) xor 1;
+      Storage_Port.Put_Replace
+        (Item,
+         Manifest_Key (Item, Manifest_ID),
+         Data,
+         Length,
+         Generation,
+         Ada.Real_Time.Time_Last,
+         null,
+         New_Generation,
+         Put_Result);
+      Result := (if Put_Result = Object_Published then Success else Storage_Failure);
+   end Corrupt_Test_Manifest;
+
+   procedure Remove_Test_Manifest
+     (Item : in out Storage_Context; Manifest_ID : Identifier; Result : out Outcome_Code)
+   is
+      Status : OS.Status;
+   begin
+      Item.Backend.Delete_Object
+        (UStrings.To_String (Item.Bucket),
+         Manifest_Key (Item, Manifest_ID),
+         null,
+         Ada.Real_Time.Time_Last,
+         Status);
+      Result := (if Status = OS.Success then Success else Storage_Failure);
+   end Remove_Test_Manifest;
+
+   procedure Rewrite_Test_Manifest
+     (Item                 : in out Storage_Context;
+      Manifest_ID          : Identifier;
+      Expected_Database_ID : Database_Identifier;
+      Replacement_Database : Database_Identifier;
+      Oversize_Family      : Boolean;
+      Drop_Last_Family     : Boolean;
+      Restricted_Family    : Interfaces.Unsigned_32;
+      Restricted_Max_Key   : Interfaces.Unsigned_64;
+      Result               : out Outcome_Code)
+   is
+      Data           : Object_Buffer;
+      Length         : Natural;
+      Generation     : Generation_Value;
+      Read_Result    : Read_Outcome;
+      Value          : Manifests.Manifest;
+      Image          : Manifests.Manifest_Image;
+      Encode_Result  : Manifests.Encode_Status;
+      New_Generation : Generation_Value;
+      Put_Result     : Put_Outcome;
+      Found          : Boolean := False;
+   begin
+      Storage_Port.Get_Whole
+        (Item,
+         Manifest_Key (Item, Manifest_ID),
+         Manifest_Object,
+         Ada.Real_Time.Time_Last,
+         null,
+         Data,
+         Length,
+         Generation,
+         Read_Result);
+      if Read_Result /= Object_Read then
+         Result := Storage_Failure;
+         return;
+      end if;
+      Decode_Stored_Manifest (Data, Length, Expected_Database_ID, Value, Result);
+      if Result /= Success then
+         return;
+      end if;
+      if Replacement_Database /= Zero_Database_ID then
+         Value.Database_ID := To_Head_ID (Replacement_Database);
+      end if;
+      if Oversize_Family then
+         Value.Families (1).Max_Key_Bytes := Maximum_Key_Bytes + 1;
+      end if;
+      if Drop_Last_Family then
+         if Value.Family_Total <= 1 then
+            Result := Invalid_State;
+            return;
+         end if;
+         Value.Families (Value.Family_Total) := (others => <>);
+         Value.Family_Total := Value.Family_Total - 1;
+      elsif Restricted_Family /= 0 then
+         for Index in Manifests.Family_Slot range 1 .. Value.Family_Total loop
+            if Value.Families (Index).ID = Restricted_Family then
+               Value.Families (Index).Max_Key_Bytes := Restricted_Max_Key;
+               Found := True;
+               exit;
+            end if;
+         end loop;
+         if not Found then
+            Result := Invalid_State;
+            return;
+         end if;
+      end if;
+      Manifests.Encode_Manifest (Value, Image, Length, Encode_Result);
+      if Encode_Result /= Manifests.Encoded then
+         Result := Invalid_State;
+         return;
+      end if;
+      Copy_Manifest_Image (Image, Length, Data);
+      Storage_Port.Put_Replace
+        (Item,
+         Manifest_Key (Item, Manifest_ID),
+         Data,
+         Length,
+         Generation,
+         Ada.Real_Time.Time_Last,
+         null,
+         New_Generation,
+         Put_Result);
+      Result := (if Put_Result = Object_Published then Success else Storage_Failure);
+   end Rewrite_Test_Manifest;
+
+   procedure Extend_Test_Manifest_Chain
+     (Item          : in out Storage_Context;
+      Database_ID   : Database_Identifier;
+      Root_ID       : Identifier;
+      Successors    : Positive;
+      Result        : out Outcome_Code)
+   is
+      Data            : Object_Buffer;
+      Length          : Natural;
+      Generation      : Generation_Value;
+      Read_Result     : Read_Outcome;
+      Previous        : Manifests.Manifest;
+      Current         : Manifests.Manifest;
+      Image           : Manifests.Manifest_Image;
+      Encode_Result   : Manifests.Encode_Status;
+      New_Generation  : Generation_Value;
+      Put_Result      : Put_Outcome;
+      Head            : Head_Snapshot;
+      Head_Image      : Formats.Head_Image;
+   begin
+      Storage_Port.Get_Whole
+        (Item,
+         Manifest_Key (Item, Root_ID),
+         Manifest_Object,
+         Ada.Real_Time.Time_Last,
+         null,
+         Data,
+         Length,
+         Generation,
+         Read_Result);
+      if Read_Result /= Object_Read then
+         Result := Storage_Failure;
+         return;
+      end if;
+      Decode_Stored_Manifest (Data, Length, Database_ID, Previous, Result);
+      if Result /= Success then
+         return;
+      end if;
+      for Index in Positive range 1 .. Successors loop
+         if Previous.Family_Total = Manifests.Family_Count'Last then
+            Result := Capacity_Exceeded;
+            return;
+         end if;
+         Current := Previous;
+         Current.Manifest_ID := To_Head_ID (Structural_ID (16#4E#, Interfaces.Unsigned_64 (Index)));
+         Current.Previous_Manifest_ID := Previous.Manifest_ID;
+         Current.Expected_Transition_ID := Previous.Publication_Transition_ID;
+         Current.Expected_Transition_Number := Previous.Publication_Transition_Number;
+         Current.Publication_Transition_ID :=
+           To_Head_ID (Structural_ID (16#54#, Interfaces.Unsigned_64 (Index + 1)));
+         Current.Publication_Transition_Number := Current.Expected_Transition_Number + 1;
+         Current.Registry_Revision := Previous.Registry_Revision + 1;
+         Current.Family_Total := Previous.Family_Total + 1;
+         Current.Families (Current.Family_Total) :=
+           (ID              => Previous.Families (Previous.Family_Total).ID + 1,
+            Max_Key_Bytes   => 1,
+            Max_Value_Bytes => 1,
+            Name_Length     => 2,
+            Name            => [1 => 16#78#, 2 => Byte (Index), others => 0]);
+         Manifests.Encode_Manifest (Current, Image, Length, Encode_Result);
+         if Encode_Result /= Manifests.Encoded then
+            Result := Invalid_State;
+            return;
+         end if;
+         Copy_Manifest_Image (Image, Length, Data);
+         Storage_Port.Put_Create
+           (Item,
+            Manifest_Key (Item, To_Identifier (Current.Manifest_ID)),
+            Data,
+            Length,
+            Manifest_Object,
+            Ada.Real_Time.Time_Last,
+            null,
+            New_Generation,
+            Put_Result);
+         if Put_Result /= Object_Published then
+            Result := Storage_Failure;
+            return;
+         end if;
+         Previous := Current;
+      end loop;
+
+      Storage_Port.Get_Whole
+        (Item,
+         Full_Key (Item, Head_Key_Suffix),
+         Head_Object,
+         Ada.Real_Time.Time_Last,
+         null,
+         Data,
+         Length,
+         Generation,
+         Read_Result);
+      if Read_Result /= Object_Read then
+         Result := Storage_Failure;
+         return;
+      end if;
+      Head :=
+        (Database_ID            => Database_ID,
+         Version                => Interfaces.Unsigned_16 (Heads.Current_Format),
+         Epoch                  => Previous.Writer_Epoch,
+         Highest                => 0,
+         Latest_Batch           => Zero_Identifier,
+         Latest_Manifest        => To_Identifier (Previous.Manifest_ID),
+         Transition_ID          => To_Identifier (Previous.Publication_Transition_ID),
+         Predecessor_Transition => To_Identifier (Previous.Expected_Transition_ID),
+         Transition_Number      => Previous.Publication_Transition_Number);
+      Head_Image := Formats.Encode_Head (To_Head (Head));
+      Copy_Head_Image (Head_Image, Data);
+      Storage_Port.Put_Replace
+        (Item,
+         Full_Key (Item, Head_Key_Suffix),
+         Data,
+         Formats.Head_Image_Length,
+         Generation,
+         Ada.Real_Time.Time_Last,
+         null,
+         New_Generation,
+         Put_Result);
+      Result := (if Put_Result = Object_Published then Success else Storage_Failure);
+   end Extend_Test_Manifest_Chain;
 
    overriding
    procedure Finalize (Item : in out Database) is

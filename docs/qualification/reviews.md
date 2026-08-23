@@ -1,21 +1,47 @@
 # Review record
 
-## Pending additive manifest-v1 candidate
+## Pending operational HEAD-v2 root-family candidate
+
+- Parent: accepted manifest-v1 format/policy commit `a02a569a932230ed28c4559c17f9352d94410007`.
+- Scope: explicit create-time database/family limits, canonical root-manifest publication, version-aware HEAD
+  inspection, operational HEAD-v2 Create/Open/recovery, stable ID/name family handles, and manifest-aware commit and
+  replay validation over the existing provider-neutral synchronous engine.
+- Boundary: this candidate does not add dynamic family changes, owned large-value arenas, SST/LSM state,
+  authenticated S3 binding, composable provider operations, or full Milestone 2 acceptance. HEAD v1 is inspection
+  only and has no migration path in this unit.
+- Verification status: `./tests/scripts/test.sh` passes the deterministic memory/files engine, repository checks,
+  three files subprocess crash/restart boundaries, and the pinned TidesDB suite. Focused cases cover canonical family
+  permutations, exact name/ID and stale/cross-database handles, lower persisted limits, manifest ambiguity and local
+  activation failure, legacy HEAD rejection, missing/corrupt/wrong-identity/over-cap manifests, and cacheless
+  manifest-first replay. The unchanged selected proof-unit tree carries the root-owned warning-strict 644/644 result
+  recorded in `proof-status.md`; independent re-review is pending and no acceptance is claimed.
+- Independent-review amendment: the first candidate classified every non-exact observed create HEAD as a competing
+  creator, rejected valid exact-cap overwrites through conservative Put counts, and allowed delayed create resolution
+  to trust retained manifest bytes without rereading the immutable object. The pending amendment validates the full
+  manifest-first and batch chain and its exact root ancestor before accepting a later HEAD, collapses each batch to
+  its final last-write-wins image before applying live entry/byte caps, and requires an authoritative whole-manifest
+  byte match for every resumable create phase. Additional closures distinguish unsupported HEAD versions, freeze an
+  independent HEAD-v2
+  golden and repaired semantic corruption, gate the exact manifest-key prefix boundary, and remove unused manifest
+  read diagnostics. Independent re-review remains required.
+
+## Accepted additive manifest-v1 candidate
 
 - Parent: accepted TidesDB comparative-adapter commit `a641f89157a64a48142f041db5b40c0dfcee3a07`.
 - Scope: private manifest-v1 codec/policy, independent golden and corruption/cap tests, future HEAD-v2 publication
   predicates, and a focused TLC/TLAPS registry-publication model.
 - Boundary: this candidate does not activate operational manifests, change public Create/Open, qualify a remote
   provider, allocate production transaction arenas, or claim full Milestone 2 acceptance.
+- Accepted candidate: `a02a569a932230ed28c4559c17f9352d94410007`.
 - Verification status: deterministic Ada and repository tests plus the combined TLC/TLAPS gate are green. The final
   amended, rebased five-unit warning-strict SPARK gate proves 639/639 checks: 114 flow checks and 525 prover checks,
   with zero warnings, unproved or justified checks, or `pragma Assume` statements. Independent re-review remains
-  pending; no acceptance is claimed.
+  complete. Independent re-review accepted the exact candidate before fast-forward integration.
 - Initial independent-review findings: an exact or immediate-successor recovery reference did not bind the HEAD
   predecessor identity; transaction count could exceed the total batch mutation count; fixed family-name tails were
   not canonicalized; and decoder precedence wording omitted the total representation-admission check. The amended
   candidate binds both recovery edges, enforces the count relation, rejects nonzero name tails, and aligns the spec,
-  tests, and format document with the implementation's admission order. Re-review remains pending.
+  tests, and format document with the implementation's admission order.
 
 ## Accepted local-provider log-only slice
 

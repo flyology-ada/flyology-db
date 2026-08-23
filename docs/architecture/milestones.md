@@ -7,7 +7,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | --- | --- | --- |
 | 0 Foundation | Crate, guide, dependency clone/pin, architecture/format/oracle contracts, runners, provenance | Accepted at `8b9ff8c` |
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local-provider review unit implemented; not yet accepted |
-| 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Provisional local numeric-family slice implemented; remote and descriptor gates pending |
+| 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | HEAD-v2 root-family candidate implemented; proof/review, owned bytes, and remote gates pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Pending |
@@ -16,18 +16,14 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
 
-The current implementation unit is intentionally narrower than full Milestone 2 acceptance. It qualifies the
-provider-neutral synchronous port against local memory and files backends and exercises a bounded log-only engine
-with provisional numeric column-family IDs. It includes an explicit synchronous `Commit_Group` execution path, but
-authenticated remote-provider qualification and an immutable family descriptor remain prerequisites for accepting
-Milestone 2. The accepted pooled TLA+ lane models whole-batch outcomes and no active transaction replay. The local
-unit covers CRUD/reopen, cross-family group atomicity, cacheless recovery, stale generations, lost-response
-reconciliation, and pre/post-publication faults; it remains subject to independent review.
-
-An additive manifest-v1 candidate now defines the immutable family registry, persisted per-family key/value limits,
-append-only transition predicates, and a separate formal publication model. It deliberately does not change public
-Create/Open, current HEAD-v1 validity, or operational recovery. HEAD-v2 activation and owned production arenas remain
-separate reviewed units, so this format candidate alone does not satisfy the Milestone 2 descriptor gate.
+The current implementation unit is intentionally narrower than full Milestone 2 acceptance. It activates the
+accepted manifest-v1 encoding through operational HEAD version 2 for provider-neutral memory/files backends. Public
+Create requires an explicit root manifest identity, transition identity, database limits, and initial family table;
+Open resolves handles by stable ID or exact name and validates manifest authority before replaying batches. HEAD-v1
+images remain inspection-only and return `Unsupported_Format` operationally. Authenticated remote-provider
+qualification, owned large-value arenas, dynamic append-only family changes, proof of the amended closure, and
+independent review remain prerequisites for accepting Milestone 2. The accepted pooled TLA+ and manifest-publication
+models remain abstract assurance lanes rather than a claimed refinement proof.
 
 ## Formal state-machine lane
 

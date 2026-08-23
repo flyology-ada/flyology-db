@@ -115,9 +115,18 @@ is
 
    type Encode_Status is (Encoded, Invalid_Value);
 
+   --  Whether one definite family record has a canonical, valid identity/name
+   --  and nonzero semantic key/value limits, independent of database budgets.
+   function Valid_Configuration (Value : Column_Family_Configuration) return Boolean;
+
    --  Whether Value is a complete root or successor manifest with valid limits
    --  and a strictly ID-ordered, uniquely named UTF-8 family registry.
    function Structurally_Valid (Value : Manifest) return Boolean;
+
+   --  Whether one structurally valid manifest fits the current fixed-array
+   --  engine instance. This is operational capacity, not wire-format validity.
+   function Runtime_Compatible (Value : Manifest) return Boolean
+   with Pre => Structurally_Valid (Value);
 
    --  Whether Value is the first immutable registry published with initial HEAD.
    function Is_Root (Value : Manifest) return Boolean;
@@ -125,8 +134,7 @@ is
    --  Whether Current is one append-only registry successor of Previous.
    function Valid_Predecessor (Current, Previous : Manifest) return Boolean;
 
-   --  Whether Candidate has a reachable manifest-bearing HEAD-v2 shape without
-   --  changing the current operational HEAD-v1 structural predicate.
+   --  Whether Candidate has a reachable manifest-bearing HEAD-v2 shape.
    function Manifest_Head_Structurally_Valid
      (Candidate : Head_Policy.Head_State) return Boolean;
 

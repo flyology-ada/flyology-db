@@ -238,7 +238,7 @@ procedure Flyology.DB.Tests is
       Epoch                  => 1,
       Highest_Visible        => 0,
       Latest_Batch           => Head.Zero_Identifier,
-      Latest_Manifest        => Head.Zero_Identifier,
+      Latest_Manifest        => ID (6),
       Transition_ID          => ID (2),
       Predecessor_Transition => Head.Zero_Identifier,
       Transition_Number      => 1);
@@ -265,12 +265,24 @@ procedure Flyology.DB.Tests is
       Predecessor_Transition => Initial.Transition_ID,
       Transition_Number      => 2);
 
+   Legacy_Committed : constant Head.Head_State :=
+     (Database_ID            => Initial.Database_ID,
+      Version                => Head.Legacy_Format,
+      Epoch                  => 1,
+      Highest_Visible        => 2,
+      Latest_Batch           => ID (3),
+      Latest_Manifest        => Head.Zero_Identifier,
+      Transition_ID          => ID (4),
+      Predecessor_Transition => ID (2),
+      Transition_Number      => 2);
+
    CRC_Vector : constant Formats.Byte_Array (0 .. 8) :=
      [Character'Pos ('1'), Character'Pos ('2'), Character'Pos ('3'),
       Character'Pos ('4'), Character'Pos ('5'), Character'Pos ('6'),
       Character'Pos ('7'), Character'Pos ('8'), Character'Pos ('9')];
 
-   Image          : constant Formats.Head_Image := Formats.Encode_Head (Committed);
+   Image          : constant Formats.Head_Image := Formats.Encode_Head (Legacy_Committed);
+   Initial_Image  : constant Formats.Head_Image := Formats.Encode_Head (Initial);
    Acquired_Image : constant Formats.Head_Image := Formats.Encode_Head (Acquired);
    Corrupt     : Formats.Head_Image := Image;
    Decoded     : Head.Head_State;
@@ -294,6 +306,25 @@ procedure Flyology.DB.Tests is
       16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
       16#00#, 16#00#, 16#00#, 16#02#, 16#00#, 16#00#, 16#00#, 16#00#,
       16#00#, 16#00#, 16#00#, 16#02#, 16#5C#, 16#C0#, 16#62#, 16#B9#];
+
+   V2_Golden : constant Formats.Head_Image :=
+     [16#46#, 16#4C#, 16#59#, 16#48#, 16#45#, 16#41#, 16#44#, 16#31#,
+      16#00#, 16#02#, 16#01#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#01#, 16#00#, 16#00#, 16#00#, 16#84#,
+      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#85#, 16#76#, 16#15#, 16#70#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#01#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#06#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#02#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
+      16#00#, 16#00#, 16#00#, 16#01#, 16#25#, 16#4D#, 16#BD#, 16#EC#];
 
    procedure Put_U32
      (Item     : in out Formats.Head_Image;
@@ -348,6 +379,10 @@ begin
       raise Program_Error with "head encoding differs from the independent golden image";
    end if;
 
+   if Initial_Image /= V2_Golden then
+      raise Program_Error with "HEAD-v2 encoding differs from the independent golden image";
+   end if;
+
    if Head.Reconcile (Initial.Transition_ID, Committed.Transition_ID,
                       Committed.Transition_Number, True,
                       Committed.Transition_ID, Initial.Transition_ID,
@@ -394,7 +429,7 @@ begin
    end if;
 
    Formats.Decode_Head (Image, Initial.Database_ID, Decoded, Decode_Code);
-   if Decode_Code /= Formats.Decoded or else Decoded /= Committed then
+   if Decode_Code /= Formats.Decoded or else Decoded /= Legacy_Committed then
       raise Program_Error with "encoded head did not round-trip";
    end if;
 
@@ -426,8 +461,14 @@ begin
    Expect_Decode (Corrupt, Formats.Invalid_Magic, "invalid magic was not rejected");
 
    Corrupt := Image;
-   Corrupt (9) := 2;
+   Corrupt (9) := 3;
    Expect_Decode (Corrupt, Formats.Unsupported_Version, "unknown version was not rejected");
+
+   Corrupt := V2_Golden;
+   Corrupt (76 .. 91) := [others => 0];
+   Repair_Checksums (Corrupt);
+   Expect_Decode
+     (Corrupt, Formats.Invalid_Head_State, "HEAD-v2 without latest manifest survived checksum repair");
 
    Corrupt := Image;
    Corrupt (10) := 2;

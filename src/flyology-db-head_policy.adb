@@ -9,7 +9,7 @@ is
       return
         Candidate.Database_ID = Current.Database_ID
         and then not Is_Zero (Candidate.Database_ID)
-        and then Candidate.Version = Current.Version
+        and then Current.Version = Current_Format
         and then Candidate.Version = Current_Format
         and then Candidate.Epoch = Current.Epoch + 1
         and then Candidate.Highest_Visible = Current.Highest_Visible
@@ -18,7 +18,8 @@ is
         and then not Is_Zero (Candidate.Transition_ID)
         and then Candidate.Transition_ID /= Current.Transition_ID
         and then Candidate.Predecessor_Transition = Current.Transition_ID
-        and then Candidate.Transition_Number = Current.Transition_Number + 1;
+        and then Candidate.Transition_Number = Current.Transition_Number + 1
+        and then Structurally_Valid (Candidate);
    end Valid_Writer_Acquisition;
 
    function Valid_Commit
@@ -30,7 +31,7 @@ is
       return
         Candidate.Database_ID = Current.Database_ID
         and then not Is_Zero (Candidate.Database_ID)
-        and then Candidate.Version = Current.Version
+        and then Current.Version = Current_Format
         and then Candidate.Version = Current_Format
         and then Candidate.Epoch = Current.Epoch
         and then Candidate.Highest_Visible =
@@ -41,7 +42,8 @@ is
         and then not Is_Zero (Candidate.Transition_ID)
         and then Candidate.Transition_ID /= Current.Transition_ID
         and then Candidate.Predecessor_Transition = Current.Transition_ID
-        and then Candidate.Transition_Number = Current.Transition_Number + 1;
+        and then Candidate.Transition_Number = Current.Transition_Number + 1
+        and then Structurally_Valid (Candidate);
    end Valid_Commit;
 
    function Reconcile

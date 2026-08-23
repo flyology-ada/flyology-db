@@ -1,6 +1,7 @@
 with Ada.Command_Line;
 with Ada.Real_Time;
 with Flyology.DB.Object_Storage;
+with Flyology.DB.Testing;
 with Flyology.Object_Storage;
 with Flyology.Object_Storage.Backends.Files;
 with GNAT.OS_Lib;
@@ -8,6 +9,7 @@ with GNAT.OS_Lib;
 procedure Flyology.DB.Files_Crash_Probe is
    package OS renames Flyology.Object_Storage;
    package Files renames Flyology.Object_Storage.Backends.Files;
+   package Testing renames Flyology.DB.Testing;
 
    use type OS.Status;
 
@@ -26,6 +28,21 @@ procedure Flyology.DB.Files_Crash_Probe is
 
    function TX_ID (Last : Flyology.DB.Byte) return Flyology.DB.Transaction_Identifier
    is (Flyology.DB.Transaction_Identifier (ID (Last)));
+
+   Limits : constant Flyology.DB.Database_Limits :=
+     (Maximum_Column_Families           => 2,
+      Maximum_Manifest_History          => 64,
+      Maximum_Batch_History             => 64,
+      Maximum_Transactions_Per_Batch    => 8,
+      Maximum_Mutations_Per_Transaction => 64,
+      Maximum_Mutations_Per_Batch       => 64,
+      Maximum_Live_Entries              => 256,
+      Maximum_Transaction_Payload_Bytes => 4_096,
+      Maximum_Batch_Payload_Bytes       => 16_384,
+      Maximum_Live_State_Bytes          => 81_920);
+   Families : constant Flyology.DB.Column_Family_Configuration_Array :=
+     [Flyology.DB.Configure_Column_Family (1, [1], 64, 256),
+      Flyology.DB.Configure_Column_Family (2, [2], 64, 256)];
 
    procedure Require (Condition : Boolean; Message : String) is
    begin
@@ -48,21 +65,38 @@ begin
          Item         : Flyology.DB.Database;
          Transactions : Flyology.DB.Transaction_Array (1 .. 2);
          Receipts     : Flyology.DB.Commit_Receipt_Array (Transactions'Range);
+         Create_Info  : Flyology.DB.Create_Receipt;
          Result       : Flyology.DB.Outcome_Code;
       begin
          Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, Prefix);
-         Flyology.DB.Create (Item, Context'Access, DB_ID (1), ID (2), 10.0, Result => Result);
+         Flyology.DB.Create
+           (Item,
+            Context'Access,
+            DB_ID (1),
+            ID (3),
+            ID (2),
+            Limits,
+            Families,
+            10.0,
+            Receipt => Create_Info,
+            Result  => Result);
          Require (Result = Flyology.DB.Success, "crash database create failed");
          for Index in Transactions'Range loop
+            declare
+               Family : Flyology.DB.Column_Family;
+            begin
             Flyology.DB.Begin_Transaction
               (Item, TX_ID (Flyology.DB.Byte (10 + Index)), Transactions (Index), Result);
+            Flyology.DB.Open_Column_Family
+              (Item, Flyology.DB.Column_Family_ID (Index), Family, Result);
             Flyology.DB.Put
               (Item,
                Transactions (Index),
-               Flyology.DB.Column_Family_ID (Index),
+               Family,
                Flyology.DB.To_Key ([Flyology.DB.Byte (Index)]),
                Flyology.DB.To_Value ([Flyology.DB.Byte (Index + 20)]),
                Result);
+            end;
          end loop;
          Flyology.DB.Commit_Group (Item, ID (30), Transactions, 10.0, Receipts => Receipts, Result => Result);
          Require (Result = Flyology.DB.Success, "crash group commit failed");
@@ -81,10 +115,15 @@ begin
          Require (Result = Flyology.DB.Success, "crash recovery open failed");
          Flyology.DB.Begin_Transaction (Item, TX_ID (40), Txn, Result);
          for Index in 1 .. 2 loop
+            declare
+               Family : Flyology.DB.Column_Family;
+            begin
+            Flyology.DB.Open_Column_Family
+              (Item, Flyology.DB.Column_Family_ID (Index), Family, Result);
             Flyology.DB.Get
               (Item,
                Txn,
-               Flyology.DB.Column_Family_ID (Index),
+               Family,
                Flyology.DB.To_Key ([Flyology.DB.Byte (Index)]),
                Value,
                Result);
@@ -92,10 +131,99 @@ begin
               (Result = Flyology.DB.Success
                and then Value = Flyology.DB.To_Value ([Flyology.DB.Byte (Index + 20)]),
                "crash recovery exposed a partial group");
+            end;
          end loop;
          Flyology.DB.Rollback (Txn, Result);
          Flyology.DB.Close (Item, Result);
          Require (Result = Flyology.DB.Success, "crash recovery close failed");
+      end;
+   elsif Ada.Command_Line.Argument (1) = "manifest-orphan-crash" then
+      Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
+      Require (Status = OS.Success, "manifest-orphan bucket create failed");
+      declare
+         Context     : aliased Flyology.DB.Storage_Context;
+         Item        : Flyology.DB.Database;
+         Create_Info : Flyology.DB.Create_Receipt;
+         Result      : Flyology.DB.Outcome_Code;
+      begin
+         Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, "manifest-orphan");
+         Testing.Arm (Context, Before_Head_Put, Definite_Failure);
+         Flyology.DB.Create
+           (Item,
+            Context'Access,
+            DB_ID (50),
+            ID (51),
+            ID (52),
+            Limits,
+            Families,
+            10.0,
+            Receipt => Create_Info,
+            Result  => Result);
+         Require (Result = Flyology.DB.Storage_Failure, "manifest orphan reached HEAD");
+         GNAT.OS_Lib.OS_Exit (137);
+      end;
+   elsif Ada.Command_Line.Argument (1) = "manifest-orphan-verify" then
+      declare
+         Context     : aliased Flyology.DB.Storage_Context;
+         Item        : Flyology.DB.Database;
+         Create_Info : Flyology.DB.Create_Receipt;
+         Result      : Flyology.DB.Outcome_Code;
+      begin
+         Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, "manifest-orphan");
+         Flyology.DB.Open (Item, Context'Access, DB_ID (50), 10.0, Result => Result);
+         Require (Result = Flyology.DB.Not_Found, "orphan manifest became crash-visible");
+         Flyology.DB.Create
+           (Item,
+            Context'Access,
+            DB_ID (50),
+            ID (51),
+            ID (52),
+            Limits,
+            Families,
+            10.0,
+            Receipt => Create_Info,
+            Result  => Result);
+         Require (Result = Flyology.DB.Success, "exact orphan manifest retry did not publish HEAD");
+         Flyology.DB.Close (Item, Result);
+         Require (Result = Flyology.DB.Success, "orphan retry close failed");
+      end;
+   elsif Ada.Command_Line.Argument (1) = "manifest-head-crash" then
+      Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
+      Require (Status = OS.Success, "manifest-head bucket create failed");
+      declare
+         Context     : aliased Flyology.DB.Storage_Context;
+         Item        : Flyology.DB.Database;
+         Create_Info : Flyology.DB.Create_Receipt;
+         Result      : Flyology.DB.Outcome_Code;
+      begin
+         Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, "manifest-head");
+         Testing.Arm (Context, Before_Local_Activation, Definite_Failure);
+         Flyology.DB.Create
+           (Item,
+            Context'Access,
+            DB_ID (53),
+            ID (54),
+            ID (55),
+            Limits,
+            Families,
+            10.0,
+            Receipt => Create_Info,
+            Result  => Result);
+         Require
+           (Result = Flyology.DB.Local_Activation_Failed, "durable HEAD lost activation classification");
+         GNAT.OS_Lib.OS_Exit (137);
+      end;
+   elsif Ada.Command_Line.Argument (1) = "manifest-head-verify" then
+      declare
+         Context : aliased Flyology.DB.Storage_Context;
+         Item    : Flyology.DB.Database;
+         Result  : Flyology.DB.Outcome_Code;
+      begin
+         Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, "manifest-head");
+         Flyology.DB.Open (Item, Context'Access, DB_ID (53), 10.0, Result => Result);
+         Require (Result = Flyology.DB.Success, "durable HEAD did not recover after process loss");
+         Flyology.DB.Close (Item, Result);
+         Require (Result = Flyology.DB.Success, "durable HEAD recovery close failed");
       end;
    else
       raise Program_Error with "unknown crash-probe action";

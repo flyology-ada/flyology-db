@@ -632,7 +632,7 @@ package body Flyology.DB.Manifest_Format_Tests is
          begin
             case Dimension is
                when 1 => Wrong.Database_ID := Head.Zero_Identifier;
-               when 2 => Wrong.Version := Head.Current_Format;
+               when 2 => Wrong.Version := Head.Legacy_Format;
                when 3 => Wrong.Epoch := 0;
                when 4 => Wrong.Latest_Manifest := Head.Zero_Identifier;
                when 5 => Wrong.Transition_ID := Head.Zero_Identifier;
@@ -671,7 +671,7 @@ package body Flyology.DB.Manifest_Format_Tests is
          begin
             case Dimension is
                when 1 => Wrong.Database_ID := ID (99);
-               when 2 => Wrong.Version := Head.Current_Format;
+               when 2 => Wrong.Version := Head.Legacy_Format;
                when 3 => Wrong.Epoch := 2;
                when 4 => Wrong.Highest_Visible := 1;
                when 5 => Wrong.Latest_Manifest := ID (99);
@@ -786,7 +786,7 @@ package body Flyology.DB.Manifest_Format_Tests is
             begin
                case Dimension is
                   when 1 => Wrong.Database_ID := ID (99);
-                  when 2 => Wrong.Version := Head.Current_Format;
+                  when 2 => Wrong.Version := Head.Legacy_Format;
                   when 3 => Wrong.Epoch := 2;
                   when 4 => Wrong.Highest_Visible := 1;
                   when 5 => Wrong.Latest_Batch := ID (99);

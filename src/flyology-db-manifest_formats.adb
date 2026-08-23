@@ -230,6 +230,13 @@ is
       return Cursor = Item.Name_Length + 1;
    end Valid_UTF8_Name;
 
+   function Valid_Configuration (Value : Column_Family_Configuration) return Boolean
+   is (Value.ID /= 0
+       and then Value.Max_Key_Bytes > 0
+       and then Value.Max_Value_Bytes > 0
+       and then Valid_UTF8_Name (Value)
+       and then Canonical_Name_Tail (Value));
+
    function Is_Root (Value : Manifest) return Boolean
    is (Head_Policy.Is_Zero (Value.Previous_Manifest_ID)
        and then Head_Policy.Is_Zero (Value.Expected_Transition_ID)
@@ -268,9 +275,7 @@ is
          declare
             Item : Column_Family_Configuration renames Value.Families (Index);
          begin
-            if Item.ID = 0
-              or else Item.Max_Key_Bytes = 0
-              or else Item.Max_Value_Bytes = 0
+            if not Valid_Configuration (Item)
               or else Item.Max_Key_Bytes > Value.Limits.Maximum_Transaction_Payload_Bytes
               or else Item.Max_Value_Bytes > Value.Limits.Maximum_Transaction_Payload_Bytes
               or else Item.Max_Key_Bytes >
@@ -278,8 +283,6 @@ is
               or else Item.Max_Key_Bytes > Value.Limits.Maximum_Live_State_Bytes
               or else Item.Max_Value_Bytes > Value.Limits.Maximum_Live_State_Bytes
               or else Item.Max_Key_Bytes > Value.Limits.Maximum_Live_State_Bytes - Item.Max_Value_Bytes
-              or else not Valid_UTF8_Name (Item)
-              or else not Canonical_Name_Tail (Item)
               or else (Index > 1 and then Value.Families (Index - 1).ID >= Item.ID)
             then
                return False;
@@ -293,6 +296,31 @@ is
       end loop;
       return True;
    end Structurally_Valid;
+
+   function Runtime_Compatible (Value : Manifest) return Boolean is
+   begin
+      if Value.Limits.Maximum_Column_Families > Maximum_Initial_Column_Families
+        or else Value.Limits.Maximum_Manifest_History > Maximum_History_Batches
+        or else Value.Limits.Maximum_Batch_History > Maximum_History_Batches
+        or else Value.Limits.Maximum_Transactions_Per_Batch > Maximum_Group_Transactions
+        or else Value.Limits.Maximum_Mutations_Per_Transaction > Maximum_Transaction_Mutations
+        or else Value.Limits.Maximum_Mutations_Per_Batch > Maximum_Transaction_Mutations
+        or else Value.Limits.Maximum_Live_Entries > Maximum_State_Entries
+        or else Value.Limits.Maximum_Transaction_Payload_Bytes > Maximum_Transaction_Bytes
+        or else Value.Limits.Maximum_Batch_Payload_Bytes > Maximum_Commit_Bytes
+        or else Value.Limits.Maximum_Live_State_Bytes > Maximum_Live_State_Bytes
+      then
+         return False;
+      end if;
+      for Index in Family_Slot range 1 .. Value.Family_Total loop
+         if Value.Families (Index).Max_Key_Bytes > Maximum_Key_Bytes
+           or else Value.Families (Index).Max_Value_Bytes > Maximum_Value_Bytes
+         then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end Runtime_Compatible;
 
    function Valid_Predecessor (Current, Previous : Manifest) return Boolean is
    begin
@@ -338,28 +366,8 @@ is
      (Candidate : Head_Policy.Head_State) return Boolean
    is
    begin
-      return not Head_Policy.Is_Zero (Candidate.Database_ID)
-        and then Candidate.Version = Manifest_Head_Format
-        and then Candidate.Epoch > 0
-        and then Interfaces.Unsigned_64 (Candidate.Epoch) <=
-          Interfaces.Unsigned_64 (Candidate.Transition_Number)
-        and then not Head_Policy.Is_Zero (Candidate.Latest_Manifest)
-        and then not Head_Policy.Is_Zero (Candidate.Transition_ID)
-        and then
-          (if Candidate.Highest_Visible = 0 then
-             Head_Policy.Is_Zero (Candidate.Latest_Batch)
-           else
-             not Head_Policy.Is_Zero (Candidate.Latest_Batch)
-             and then Candidate.Epoch < Head_Policy.Writer_Epoch (Candidate.Transition_Number))
-        and then
-          (if Candidate.Transition_Number = Head_Policy.Transition_Ordinal'First then
-             Candidate.Epoch = 1
-             and then Candidate.Highest_Visible = 0
-             and then Head_Policy.Is_Zero (Candidate.Latest_Batch)
-             and then Head_Policy.Is_Zero (Candidate.Predecessor_Transition)
-           else
-             not Head_Policy.Is_Zero (Candidate.Predecessor_Transition)
-             and then Candidate.Transition_ID /= Candidate.Predecessor_Transition);
+      return Candidate.Version = Manifest_Head_Format
+        and then Head_Policy.Structurally_Valid_V2 (Candidate);
    end Manifest_Head_Structurally_Valid;
 
    function Valid_Root_Publication

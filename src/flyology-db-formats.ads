@@ -11,7 +11,8 @@ is
    subtype Byte is Interfaces.Unsigned_8;
    type Byte_Array is array (Natural range <>) of Byte;
 
-   Head_Format_Version : constant Interfaces.Unsigned_16 := 1;
+   Legacy_Head_Format_Version : constant Interfaces.Unsigned_16 := 1;
+   Head_Format_Version        : constant Interfaces.Unsigned_16 := 2;
    Head_Image_Length : constant := 136;
    subtype Head_Image_Index is Natural range 0 .. Head_Image_Length - 1;
    subtype Head_Image is Byte_Array (Head_Image_Index);
@@ -31,12 +32,12 @@ is
    --  CRC-32C checksum with the Castagnoli polynomial.
    function CRC_32C (Data : Byte_Array) return Interfaces.Unsigned_32;
 
-   --  Encode one complete version-1 database-head object.
+   --  Encode one complete supported database-head object.
    function Encode_Head (Value : Head_Policy.Head_State) return Head_Image
    with
      Pre => Head_Policy.Structurally_Valid (Value);
 
-   --  Decode and validate one exact version-1 database-head object.
+   --  Decode and validate one exact version-1 or version-2 database-head object.
    procedure Decode_Head
      (Image             : Byte_Array;
       Expected_Database : Head_Policy.Identifier;

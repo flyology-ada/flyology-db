@@ -42,6 +42,8 @@ package body Flyology.DB.Object_Storage is
       if not Flyology.Object_Storage.Valid_Object_Key (Prefix & "/meta/HEAD")
         or else not Flyology.Object_Storage.Valid_Object_Key
                       (Prefix & "/commits/0123456789abcdef0123456789abcdef")
+        or else not Flyology.Object_Storage.Valid_Object_Key
+                      (Prefix & "/manifests/0123456789abcdef0123456789abcdef")
       then
          raise Program_Error with "database object prefix is too long";
       end if;

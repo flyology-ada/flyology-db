@@ -178,7 +178,7 @@ is
       Result : Head_Image := [others => 0];
    begin
       Result (0 .. 7) := Magic;
-      Put_U16 (Result, 8, Head_Format_Version);
+      Put_U16 (Result, 8, Interfaces.Unsigned_16 (Value.Version));
       Result (10) := Head_Kind;
       Result (11) := 0;
       Put_Identifier (Result, 12, Value.Database_ID);
@@ -202,8 +202,9 @@ is
       Value             : out Head_Policy.Head_State;
       Status            : out Decode_Status)
    is
-      Fixed     : Head_Image;
-      Candidate : Head_Policy.Head_State;
+      Fixed       : Head_Image;
+      Candidate   : Head_Policy.Head_State;
+      Wire_Format : Interfaces.Unsigned_16;
    begin
       Value := (others => <>);
 
@@ -216,9 +217,10 @@ is
          Fixed (Offset) := Image (Image'First + Offset);
       end loop;
 
+      Wire_Format := Read_U16 (Fixed, 8);
       if Fixed (0 .. 7) /= Magic then
          Status := Invalid_Magic;
-      elsif Read_U16 (Fixed, 8) /= Head_Format_Version then
+      elsif Wire_Format not in Legacy_Head_Format_Version | Head_Format_Version then
          Status := Unsupported_Version;
       elsif Fixed (10) /= Head_Kind then
          Status := Invalid_Object_Kind;
@@ -237,7 +239,7 @@ is
       else
          Candidate :=
            (Database_ID            => Read_Identifier (Fixed, 12),
-            Version                => Head_Policy.Format_Version (Read_U16 (Fixed, 8)),
+            Version                => Head_Policy.Format_Version (Wire_Format),
             Epoch                  => Head_Policy.Writer_Epoch (Read_U64 (Fixed, 44)),
             Highest_Visible        => Head_Policy.Commit_Sequence (Read_U64 (Fixed, 52)),
             Latest_Batch           => Read_Identifier (Fixed, 60),

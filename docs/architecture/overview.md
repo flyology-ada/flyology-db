@@ -21,17 +21,14 @@ transition identity; continuing unavailability remains unknown.
 - Per-family logical/MVCC state, memtables, immutable runs, configuration, and later compaction.
 - Read-only replicas advance monotonically by observing valid head transitions.
 
-The first executable slice is log-only: recovery follows `HEAD.Latest_Batch` and the predecessor-batch ID in each
-immutable commit object, then rebuilds logical state in sequence order without local state or listing. Its explicit
-numeric column-family IDs demonstrate provisional namespace isolation; create-time family authority and lifecycle
-configuration require the later immutable family descriptor. Later milestones checkpoint that chain through
-immutable manifests and SSTs without changing the publication rule.
-
-The first family-registry contract is an additive immutable manifest format only. It persists stable numeric IDs,
-exact UTF-8 names, per-family key/value admission limits, and database resource budgets. Operational HEAD version 1
-continues to carry no initial manifest; a separately reviewed HEAD version 2 activation will publish the root manifest
-and route Create/Open/recovery through it. Until that activation, the accepted local engine still uses provisional
-numeric family IDs and the manifest is not storage authority.
+The executable slice remains log-only: recovery follows `HEAD.Latest_Batch` and the predecessor-batch ID in each
+immutable commit object, then rebuilds logical state in sequence order without local state or listing. HEAD version 2
+names an immutable root column-family manifest before any batch is decoded. That manifest is the authority for stable
+numeric IDs, exact UTF-8 names, per-family key/value admission limits, and database resource budgets. Create requires
+all initial identities, limits, and families explicitly and canonicalizes families by numeric ID before effects.
+Open reads the complete manifest chain before the batch chain and installs neither partial registry nor partial state.
+HEAD version 1 remains decodable for inspection but operational Open returns `Unsupported_Format`; no migration or
+write path silently upgrades it.
 
 ## Transaction semantics
 
@@ -66,13 +63,22 @@ buffer. An immutable owned group arena supplies a measured/CRC pass and one-shot
 provider; recovery streams into a bounded arena, validates the complete object, then installs atomically. Later
 composable overloads may move `Unique_Buffer` tokens while reusing the same semantic state machine.
 
+The current fixed-array recovery path retains up to 64 complete batch records on the caller stack. The deterministic
+exclusive-resolution test therefore gives its native Ada task an explicit 8 MiB stack. This is bounded evidence for
+the present reference instance, not the production owned-byte design; replacing that footprint with the owned
+streaming spine is a prerequisite before widening family key/value limits.
+
 `Get`, `Put`, and `Delete` take the owning `Database` so each call acquires the same lifecycle lease used by commit
 admission. They reject fenced or uncertain engine state before observing or changing transaction-local data.
 `Rollback` deliberately remains database-independent so callers can always discard an active transaction after a
 close or fence. This is an experimental 0.1 API correction; no compatibility promise exists for the earlier
 transaction-only `Put` and `Delete` declarations.
 
-The local slice fixes recovery at 64 batches, 512 published transaction IDs, and 256 live entries. Eight completion
+The current build accepts persisted family configurations only when every key limit is at most 64 bytes, every value
+limit is at most 256 bytes, and the database limits fit the fixed runtime ceilings. A valid manifest above those
+physical ceilings returns `Capacity_Exceeded` before engine activation; lower persisted limits remain authoritative
+for mutation admission and recovery. The local slice fixes recovery at 64 batches, 512 published transaction IDs,
+and 256 live entries. Eight completion
 slots and eight transactions per explicit group make the published seen-ID bound exactly `64 * 8 = 512`. A separate
 open-engine reservation ledger holds at most `64 * (8 + 1) = 576` identities: eight member transaction IDs and one
 distinct group ID for every admitted group; a singleton transaction/batch ID counts once. The queue byte budget is

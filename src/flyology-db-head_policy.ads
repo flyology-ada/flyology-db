@@ -17,7 +17,8 @@ is
    function Is_Zero (Value : Identifier) return Boolean is (Value = Zero_Identifier);
 
    type Format_Version is new Interfaces.Unsigned_16 range 1 .. Interfaces.Unsigned_16'Last;
-   Current_Format : constant Format_Version := 1;
+   Legacy_Format  : constant Format_Version := 1;
+   Current_Format : constant Format_Version := 2;
 
    type Writer_Epoch is new Interfaces.Unsigned_64;
    type Commit_Sequence is new Interfaces.Unsigned_64;
@@ -36,13 +37,13 @@ is
       Transition_Number       : Transition_Ordinal := Transition_Ordinal'First;
    end record;
 
-   --  Whether Candidate has a reachable version-1 head shape. Transition_Number
-   --  makes transition identity globally monotonic even if opaque IDs are reused.
-   function Structurally_Valid (Candidate : Head_State) return Boolean is
+   --  Whether Candidate has a reachable inspection-only version-1 head shape.
+   function Structurally_Valid_V1 (Candidate : Head_State) return Boolean is
      (not Is_Zero (Candidate.Database_ID)
-      and then Candidate.Version = Current_Format
+      and then Candidate.Version = Legacy_Format
       and then Candidate.Epoch > 0
       and then not Is_Zero (Candidate.Transition_ID)
+      and then Is_Zero (Candidate.Latest_Manifest)
       and then
       (if Candidate.Highest_Visible = 0 then
          Is_Zero (Candidate.Latest_Batch)
@@ -57,11 +58,45 @@ is
          Candidate.Epoch = 1
          and then Candidate.Highest_Visible = 0
          and then Is_Zero (Candidate.Latest_Batch)
-         and then Is_Zero (Candidate.Latest_Manifest)
          and then Is_Zero (Candidate.Predecessor_Transition)
        else
          not Is_Zero (Candidate.Predecessor_Transition)
          and then Candidate.Transition_ID /= Candidate.Predecessor_Transition));
+
+   --  Whether Candidate has a reachable manifest-bearing version-2 head shape.
+   function Structurally_Valid_V2 (Candidate : Head_State) return Boolean is
+     (not Is_Zero (Candidate.Database_ID)
+      and then Candidate.Version = Current_Format
+      and then Candidate.Epoch > 0
+      and then Interfaces.Unsigned_64 (Candidate.Epoch) <=
+        Interfaces.Unsigned_64 (Candidate.Transition_Number)
+      and then not Is_Zero (Candidate.Latest_Manifest)
+      and then not Is_Zero (Candidate.Transition_ID)
+      and then
+      (if Candidate.Highest_Visible = 0 then
+         Is_Zero (Candidate.Latest_Batch)
+       else
+         not Is_Zero (Candidate.Latest_Batch)
+         and then Interfaces.Unsigned_64 (Candidate.Epoch) <
+           Interfaces.Unsigned_64 (Candidate.Transition_Number))
+      and then
+      (if Candidate.Transition_Number = Transition_Ordinal'First then
+         Candidate.Epoch = 1
+         and then Candidate.Highest_Visible = 0
+         and then Is_Zero (Candidate.Latest_Batch)
+         and then Is_Zero (Candidate.Predecessor_Transition)
+       else
+         not Is_Zero (Candidate.Predecessor_Transition)
+         and then Candidate.Transition_ID /= Candidate.Predecessor_Transition));
+
+   --  Whether Candidate uses one supported, structurally reachable HEAD version.
+   function Structurally_Valid (Candidate : Head_State) return Boolean is
+     (if Candidate.Version = Legacy_Format then
+        Structurally_Valid_V1 (Candidate)
+      elsif Candidate.Version = Current_Format then
+        Structurally_Valid_V2 (Candidate)
+      else
+        False);
 
    --  Whether a head is a valid initial database publication.
    function Valid_Initial (Candidate : Head_State) return Boolean is

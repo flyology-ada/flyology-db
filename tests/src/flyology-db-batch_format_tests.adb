@@ -68,7 +68,7 @@ package body Flyology.DB.Batch_Format_Tests is
       Epoch                  => 1,
       Highest_Visible        => 1,
       Latest_Batch           => ID (3),
-      Latest_Manifest        => Head.Zero_Identifier,
+      Latest_Manifest        => ID (7),
       Transition_ID          => ID (4),
       Predecessor_Transition => ID (2),
       Transition_Number      => 2);

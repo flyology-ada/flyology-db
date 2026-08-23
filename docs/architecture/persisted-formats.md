@@ -1,9 +1,10 @@
 # Persisted formats
 
-This document is normative for the independent version-1 HEAD, commit-batch, and column-family-manifest encodings.
-Each object kind advances its own version constant; adding manifest version 1 does not redefine batch or HEAD
-version 1. All multibyte integers are unsigned big-endian. Byte strings are length-prefixed and contain arbitrary
-bytes. No Ada record image or enumeration position is persisted.
+This document is normative for HEAD versions 1 and 2 and the independent version-1 commit-batch and
+column-family-manifest encodings. Each object kind advances its own version constant: the HEAD kind accepts versions
+1 and 2, while batch and manifest currently accept only version 1. All multibyte integers are unsigned big-endian.
+Byte strings are length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is
+persisted.
 
 ## Common envelope
 
@@ -12,7 +13,7 @@ Every object begins with:
 | Field | Bytes | Rule |
 | --- | ---: | --- |
 | magic | 8 | Object-kind-specific ASCII constant |
-| format version | 2 | `1`; unknown versions fail closed |
+| format version | 2 | Kind-specific supported version; unknown versions fail closed |
 | object kind | 1 | Explicit stable code |
 | flags | 1 | Unknown set bits fail closed |
 | database UUID | 16 | Must equal the opened database |
@@ -28,19 +29,28 @@ overflow, unknown kind/version/flags, wrong UUID, and either checksum mismatch.
 `meta/HEAD` uses magic `FLYHEAD1` and contains writer epoch, highest visible sequence, latest commit object ID,
 latest manifest ID, transition ID, predecessor transition ID, and a monotonic transition ordinal. IDs are fixed
 16-byte opaque values; all-zero denotes the absent optional reference only where the field explicitly permits it.
-The exact transition identity is `(ordinal, ID)`. The initial head has ordinal one, sequence zero, no commit or
-manifest, a nonzero transition ID, and an all-zero predecessor. Every later head has a nonzero predecessor and
-increments the ordinal exactly once. Before the first commit, the ordinal equals the writer epoch; after a commit it
-is strictly greater, rejecting states that cannot be reached by the version-1 acquisition and commit transitions.
+The exact transition identity is `(ordinal, ID)`. Both initial HEAD shapes have ordinal one, sequence zero, no commit,
+a nonzero transition ID, and an all-zero predecessor. Version 1 requires an all-zero manifest ID; version 2 requires
+the nonzero root-manifest ID published before HEAD. Every later head has a nonzero predecessor and increments the
+ordinal exactly once. Before the first commit, the ordinal equals the writer epoch; after a commit it is strictly
+greater, rejecting states that cannot be reached by acquisition and commit transitions for that HEAD version.
 
 A valid successor preserves the database UUID and version, increases the writer epoch only through writer
 acquisition, never decreases sequence, names the prior transition ID as predecessor, advances the transition ordinal,
 and has a nonzero transition ID different from its immediate predecessor. A commit transition keeps the writer epoch,
 advances sequence by the exact batch transaction count, and names the published batch.
 
-Current operational HEAD version 1 retains an all-zero latest-manifest field in its initial state. The additive
-manifest codec below reserves a separate manifest-bearing HEAD version 2 contract, but this unit does not activate,
-encode, publish, or recover that HEAD version. Activation requires a later reviewed engine transition.
+HEAD version 1 retains an all-zero latest-manifest field and remains decodable for inspection. Operational Open
+returns `Unsupported_Format` for version 1 and never writes or upgrades it. HEAD version 2 is the current operational
+shape: every valid state carries a nonzero latest-manifest ID, and writer acquisition and commit transitions preserve
+that reference. Create publishes the canonical root manifest before conditionally creating HEAD v2; Open resolves the
+complete referenced manifest chain before reading any batch.
+
+Delayed create resolution always reads the immutable root-manifest object again and requires byte-for-byte equality
+with the canonical receipt image before it retries or reconciles HEAD. An exact attempted HEAD or a fully validated
+later manifest-and-batch chain confirms creation only when its root ancestor equals that manifest and publication
+transition. A valid competing root is `Already_Exists`; missing, altered, or unvalidated acknowledged data is never
+trusted from receipt bytes alone.
 
 ## Commit batch
 
@@ -155,7 +165,7 @@ family or database limit, and carries exact expected/publication HEAD identities
 ordinal gap from the predecessor manifest permits intervening metadata or writer-acquisition HEAD transitions under
 the same recurrence and epoch-gap rules as commit batches.
 
-`Valid_Root_Publication` describes the future initial manifest-bearing HEAD version 2. Three-way
+`Valid_Root_Publication` describes the initial manifest-bearing HEAD version 2. Three-way
 `Valid_Publication(Current, Candidate, Manifest)` additionally requires exact current expected identity, candidate
 publication identity, one ordinal step, and preservation of database, epoch, highest sequence, and latest batch.
 `Referenced_By` is deliberately narrower: it establishes that a current or later HEAD still names one decoded
@@ -173,12 +183,12 @@ extent, magic, kind/version/flags, database identity, and checksums precede decl
 `Limit_Exceeded` therefore remains distinct from corruption but does not certify the skipped family structure. Every
 other decode failure also returns an empty value.
 
-This is the initial manifest encoding and has no prior encoding or migration obligation. The additive unit does not
-switch operational HEAD or recovery authority. The later runtime will use an owned bounded transaction arena, measure
-and checksum before a one-shot streaming encode, and stream recovery into a bounded batch arena before atomic install;
-it does not require one fixed 16 MiB object buffer. Receipts retain immutable object digest/identity and attempted HEAD
-identity rather than the complete image. A future composable provider path may additionally use `Unique_Buffer` while
-sharing these format and publication predicates.
+This is the initial manifest encoding and has no prior manifest migration obligation. Operational HEAD v2 names the
+latest manifest as recovery authority. The initial runtime accepts only manifests within its fixed physical ceilings;
+valid larger configurations return `Capacity_Exceeded`, while a reachable history longer than its own persisted cap
+is `Corrupt`. The later owned runtime will measure and checksum an immutable transaction arena before one-shot
+streaming encode and will stream recovery into a bounded arena before atomic install. A future composable provider
+path may additionally use `Unique_Buffer` while sharing these format and publication predicates.
 
 ## Evolution
 

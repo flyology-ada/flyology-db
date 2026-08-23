@@ -10,8 +10,9 @@ transaction.
 
 This repository is under active development. The current acceptance state and remaining work are recorded in
 [the milestone plan](docs/architecture/milestones.md). No production qualification or performance claim is made.
-The present operational slice covers provider-neutral memory/files backends and provisional numeric column-family
-IDs; authenticated remote binding and immutable family descriptors are still separate review units.
+The pending operational slice covers provider-neutral memory/files backends, HEAD-v2 root manifests, and stable
+column-family handles with persisted per-family limits. Authenticated remote binding, dynamic family changes, and
+owned large-value arenas remain separate review units.
 
 ## Durability rule
 
