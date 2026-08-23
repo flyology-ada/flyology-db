@@ -4,14 +4,17 @@ package body Flyology.DB.Testing is
    begin
       Set_Test_Allocation_Fault
         (case Point is
-           when Transaction_Arena   => Transaction_Arena_Allocation,
-           when Transaction_Payload => Transaction_Payload_Allocation,
-           when Batch_Descriptors   => Batch_Descriptor_Allocation,
-           when Storage_Sink        => Storage_Sink_Allocation,
-           when Recovery_History    => Recovery_History_Allocation,
-           when Engine_State        => Engine_State_Allocation,
-           when Identity_Tables     => Identity_Table_Allocation,
-           when Projection_Scratch  => Projection_Scratch_Allocation);
+           when Transaction_Arena       => Transaction_Arena_Allocation,
+           when Transaction_Payload     => Transaction_Payload_Allocation,
+           when Batch_Descriptors       => Batch_Descriptor_Allocation,
+           when Storage_Sink            => Storage_Sink_Allocation,
+           when Recovery_History        => Recovery_History_Allocation,
+           when Engine_State            => Engine_State_Allocation,
+           when Identity_Tables         => Identity_Table_Allocation,
+           when Projection_Scratch      => Projection_Scratch_Allocation,
+           when Root_Checkpoint_State   => Root_Checkpoint_State_Allocation,
+           when Root_Checkpoint_Image   => Root_Checkpoint_Image_Allocation,
+           when Root_Manifest_Retention => Root_Manifest_Retention_Allocation);
    end Fail_Next_Allocation;
 
    procedure Decode_Runtime_Image
@@ -199,6 +202,40 @@ package body Flyology.DB.Testing is
    begin
       Extend_Test_Manifest_Chain (Item, Database_ID, Root_ID, Successors, Result);
    end Extend_Manifest_Chain;
+
+   procedure Manifest_Version
+     (Item        : in out Storage_Context;
+      Manifest_ID : Identifier;
+      Version     : out Interfaces.Unsigned_16;
+      Result      : out Outcome_Code) is
+   begin
+      Read_Test_Manifest_Version (Item, Manifest_ID, Version, Result);
+   end Manifest_Version;
+
+   procedure Root_LSM_Limits
+     (Item                   : in out Storage_Context;
+      Manifest_ID            : Identifier;
+      Expected_Database      : Database_Identifier;
+      Family_ID              : Column_Family_ID;
+      Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
+      Maximum_Identities     : out Interfaces.Unsigned_32;
+      Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
+      Memtable_Max_Entries   : out Interfaces.Unsigned_32;
+      Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
+      Result                 : out Outcome_Code) is
+   begin
+      Read_Test_Root_LSM_Limits
+        (Item,
+         Manifest_ID,
+         Expected_Database,
+         Family_ID,
+         Maximum_Total_L0_Runs,
+         Maximum_Identities,
+         Memtable_Max_Bytes,
+         Memtable_Max_Entries,
+         Maximum_Family_L0_Runs,
+         Result);
+   end Root_LSM_Limits;
 
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier
    is (Structural_ID (Tag, Number));

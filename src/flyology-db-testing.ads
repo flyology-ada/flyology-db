@@ -10,7 +10,10 @@ private package Flyology.DB.Testing is
       Recovery_History,
       Engine_State,
       Identity_Tables,
-      Projection_Scratch);
+      Projection_Scratch,
+      Root_Checkpoint_State,
+      Root_Checkpoint_Image,
+      Root_Manifest_Retention);
 
    procedure Fail_Next_Allocation (Point : Allocation_Fault_Point);
    procedure Decode_Runtime_Image
@@ -100,6 +103,22 @@ private package Flyology.DB.Testing is
       Root_ID     : Identifier;
       Successors  : Positive;
       Result      : out Outcome_Code);
+   procedure Manifest_Version
+     (Item        : in out Storage_Context;
+      Manifest_ID : Identifier;
+      Version     : out Interfaces.Unsigned_16;
+      Result      : out Outcome_Code);
+   procedure Root_LSM_Limits
+     (Item                   : in out Storage_Context;
+      Manifest_ID            : Identifier;
+      Expected_Database      : Database_Identifier;
+      Family_ID              : Column_Family_ID;
+      Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
+      Maximum_Identities     : out Interfaces.Unsigned_32;
+      Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
+      Memtable_Max_Entries   : out Interfaces.Unsigned_32;
+      Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
+      Result                 : out Outcome_Code);
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB.Testing;

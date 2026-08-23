@@ -23,16 +23,17 @@ transition identity; continuing unavailability remains unknown.
 
 The executable slice remains log-only: recovery follows `HEAD.Latest_Batch` and the predecessor-batch ID in each
 immutable commit object, then rebuilds logical state in sequence order without local state or listing. HEAD version 2
-names an immutable root column-family manifest before any batch is decoded. That manifest is the authority for stable
-numeric IDs, exact UTF-8 names, per-family key/value admission limits, and database resource budgets. Create requires
-all initial identities, limits, and families explicitly and canonicalizes families by numeric ID before effects.
-Open reads the complete manifest chain before the batch chain and installs neither partial registry nor partial state.
-HEAD version 1 remains decodable for inspection but operational Open returns `Unsupported_Format`; no migration or
-write path silently upgrades it.
+names an immutable root column-family manifest before any batch is decoded. New Create operations encode that root as
+manifest version 2 with an empty checkpoint partition and explicit database-wide run/identity plus per-family
+memtable/L0 authority. Existing manifest-v1 roots remain readable for log-only operation. Create requires all initial
+identities, limits, and families explicitly and canonicalizes families by numeric ID before effects. Open reads the
+complete manifest chain before the batch chain and installs neither partial registry nor partial state. HEAD version
+1 remains decodable for inspection but operational Open returns `Unsupported_Format`; no migration or write path
+silently upgrades an existing manifest-v1 database.
 
 The staged first-checkpoint protocol is specified separately in
-[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). It chooses a future immutable manifest-v2 object and
-new SST object kind without making either operational or changing the current persisted-format support matrix.
+[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v2 root creation and empty-checkpoint
+recovery are operational; nonempty SST publication and recovery remain the next focused unit.
 
 ## Transaction semantics
 

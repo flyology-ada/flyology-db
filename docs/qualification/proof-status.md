@@ -70,6 +70,13 @@ results establish runtime safety and the stated contracts of the reference forma
 CRC functional correctness, equivalence to the independent golden generator, operational dynamic allocation,
 provider publication, recovery I/O, or refinement from the TLA+ model.
 
+The operational empty-root candidate reran that exact forced warning-strict selected-unit gate after changing the
+root package's public limits and Create/Open integration. The retained report again proves 1,078/1,078 checks: 164
+by flow analysis and 914 by provers, with zero warnings, unproved or justified checks, and zero `pragma Assume`
+statements; maximum successful proof effort is 6,840 steps. The root builder, dynamic operational codec allocation,
+storage publication, recovery I/O, protected tasking, and fault injection remain executable-test boundaries rather
+than SPARK-proved implementations.
+
 The final warning-strict forced five-unit gate on the amended, rebased candidate proves 639/639 checks: 65
 initialization checks, 309 runtime checks, 54 assertions, 161 functional contracts, and 50 termination checks; 114
 are discharged by flow analysis and 525 by provers. It reports zero warnings, unproved or justified checks, or

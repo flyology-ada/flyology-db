@@ -6,6 +6,7 @@ with Flyology.Cancellation;
 with Flyology.Bytes;
 with Flyology.DB.Batch_Format_Tests;
 with Flyology.DB.Formats;
+with Flyology.DB.LSM_Formats;
 with Flyology.DB.Object_Storage;
 with Flyology.DB.Testing;
 with Flyology.Object_Storage;
@@ -18,6 +19,7 @@ package body Flyology.DB.Engine_Tests is
    package Binding renames Flyology.DB.Object_Storage;
    package Batch_Tests renames Flyology.DB.Batch_Format_Tests;
    package Formats renames Flyology.DB.Formats;
+   package LSM renames Flyology.DB.LSM_Formats;
    package Root_DB renames Flyology.DB;
    package Testing renames Flyology.DB.Testing;
    package OS renames Flyology.Object_Storage;
@@ -27,6 +29,7 @@ package body Flyology.DB.Engine_Tests is
 
    use type Byte;
    use type Ada.Real_Time.Time;
+   use type Interfaces.Unsigned_16;
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
    use type OS.Status;
@@ -196,20 +199,38 @@ package body Flyology.DB.Engine_Tests is
       Maximum_Live_Entries              => 256,
       Maximum_Transaction_Payload_Bytes => 4_096,
       Maximum_Batch_Payload_Bytes       => 16_384,
-      Maximum_Live_State_Bytes          => 81_920);
+      Maximum_Live_State_Bytes          => 81_920,
+      --  One potential L0 run per family and the exact current reservation
+      --  capacity (64 histories * (8 transaction IDs + one group ID)). These
+      --  are persisted corpus choices, not library defaults.
+      Maximum_Total_L0_Runs             => 8,
+      Maximum_Checkpoint_Identities     => 576);
+
+   function Configure_Test_Family
+     (ID : Column_Family_ID; Name : Byte_Array; Max_Key, Max_Value : Interfaces.Unsigned_64)
+      return Column_Family_Configuration is
+   begin
+      if Max_Key > Interfaces.Unsigned_64'Last - Max_Value then
+         raise Constraint_Error with "test family extent overflow";
+      end if;
+      --  The fixture memtable holds one maximum-sized entry and one first-L0
+      --  run. Call sites vary key/value authority independently; this helper
+      --  deliberately supplies no production default.
+      return Configure_Column_Family (ID, Name, Max_Key, Max_Value, Max_Key + Max_Value, 1, 1);
+   end Configure_Test_Family;
 
    --  Eight deterministic family profiles exercise unequal per-family limits;
    --  64/256 are reference-corpus dimensions, while 16/16 and 8/8 prove that
    --  the selected family, not a global default, governs admission.
    Default_Families : constant Column_Family_Configuration_Array :=
-     [Configure_Column_Family (1, [Byte (Character'Pos ('a'))], 64, 256),
-      Configure_Column_Family (2, [Byte (Character'Pos ('b'))], 16, 16),
-      Configure_Column_Family (3, [Byte (Character'Pos ('c'))], 8, 8),
-      Configure_Column_Family (4, [Byte (Character'Pos ('d'))], 64, 256),
-      Configure_Column_Family (5, [Byte (Character'Pos ('e'))], 64, 256),
-      Configure_Column_Family (6, [Byte (Character'Pos ('f'))], 64, 256),
-      Configure_Column_Family (7, [Byte (Character'Pos ('g'))], 64, 256),
-      Configure_Column_Family (8, [Byte (Character'Pos ('h'))], 64, 256)];
+     [Configure_Test_Family (1, [Byte (Character'Pos ('a'))], 64, 256),
+      Configure_Test_Family (2, [Byte (Character'Pos ('b'))], 16, 16),
+      Configure_Test_Family (3, [Byte (Character'Pos ('c'))], 8, 8),
+      Configure_Test_Family (4, [Byte (Character'Pos ('d'))], 64, 256),
+      Configure_Test_Family (5, [Byte (Character'Pos ('e'))], 64, 256),
+      Configure_Test_Family (6, [Byte (Character'Pos ('f'))], 64, 256),
+      Configure_Test_Family (7, [Byte (Character'Pos ('g'))], 64, 256),
+      Configure_Test_Family (8, [Byte (Character'Pos ('h'))], 64, 256)];
 
    function Manifest_ID_For (Transition_ID : Identifier) return Identifier is
       Result : Identifier := Transition_ID;
@@ -227,7 +248,10 @@ package body Flyology.DB.Engine_Tests is
       Transition_ID : Identifier;
       Result        : out Outcome_Code)
    is
-      Receipt : Create_Receipt;
+      Receipt      : Create_Receipt;
+      Version      : Interfaces.Unsigned_16;
+      Inspect      : Outcome_Code;
+      Close_Result : Outcome_Code;
    begin
       Create
         (Item,
@@ -240,6 +264,13 @@ package body Flyology.DB.Engine_Tests is
          Test_Operation_Timeout,
          Receipt => Receipt,
          Result  => Result);
+      if Result = Success then
+         Testing.Manifest_Version (Context.all, Manifest_ID_For (Transition_ID), Version, Inspect);
+         if Inspect /= Success or else Version /= LSM.Checkpoint_Manifest_Format_Version then
+            Close (Item, Close_Result);
+            Result := Corrupt;
+         end if;
+      end if;
    end Create_DB;
 
    procedure Get
@@ -526,7 +557,9 @@ package body Flyology.DB.Engine_Tests is
       --  Persisted test policy deliberately exceeds the reference value bound:
       --  family 17 admits a 4 KiB key and 1 MiB value, while aggregate budgets
       --  leave room for the exact campaign. This proves runtime sizing from the
-      --  family/database records rather than supplying defaults.
+      --  family/database records rather than supplying defaults. One L0 run is
+      --  reserved for the sole family; 24 identities derive from 8 histories *
+      --  (2 transaction IDs + one group ID).
       Limits       : constant Database_Limits :=
         (Maximum_Column_Families           => 1,
          Maximum_Manifest_History          => 4,
@@ -537,9 +570,11 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Live_Entries              => 8,
          Maximum_Transaction_Payload_Bytes => 1_100_000,
          Maximum_Batch_Payload_Bytes       => 2_200_000,
-         Maximum_Live_State_Bytes          => 4_400_000);
+         Maximum_Live_State_Bytes          => 4_400_000,
+         Maximum_Total_L0_Runs             => 1,
+         Maximum_Checkpoint_Identities     => 24);
       Families     : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family (17, [16#72#, 16#75#, 16#6E#], 4_096, 1_048_576)];
+        [Configure_Test_Family (17, [16#72#, 16#75#, 16#6E#], 4_096, 1_048_576)];
       Database_ID  : constant Database_Identifier := DB_ID (Tag);
    begin
       for Index in Key_Data'Range loop
@@ -630,6 +665,9 @@ package body Flyology.DB.Engine_Tests is
       Value_Max       : Byte_Array_Access := new Byte_Array (1 .. Value_Bytes);
       Value_Short     : Byte_Array_Access := new Byte_Array (1 .. Value_Bytes - 1);
       Value_Over      : Byte_Array_Access := new Byte_Array (1 .. Value_Bytes + 1);
+      --  Two first-L0 runs match the two families; 108 identities derive from
+      --  12 histories * (8 transaction IDs + one group ID). These are exact
+      --  stress-corpus reservations, not runtime defaults.
       Limits          : constant Database_Limits :=
         (Maximum_Column_Families           => 2,
          Maximum_Manifest_History          => 4,
@@ -640,11 +678,13 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Live_Entries              => 2,
          Maximum_Transaction_Payload_Bytes => Entry_Bytes,
          Maximum_Batch_Payload_Bytes       => Exact_Two_Bytes,
-         Maximum_Live_State_Bytes          => Exact_Two_Bytes);
+         Maximum_Live_State_Bytes          => Exact_Two_Bytes,
+         Maximum_Total_L0_Runs             => 2,
+         Maximum_Checkpoint_Identities     => 108);
       Families        : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family
+        [Configure_Test_Family
            (17, [16#6C#, 16#61#], Interfaces.Unsigned_64 (Key_Bytes), Interfaces.Unsigned_64 (Value_Bytes)),
-         Configure_Column_Family
+         Configure_Test_Family
            (18, [16#6C#, 16#62#], Interfaces.Unsigned_64 (Key_Bytes), Interfaces.Unsigned_64 (Value_Bytes))];
       Database_ID     : constant Database_Identifier := DB_ID (Tag);
 
@@ -884,7 +924,9 @@ package body Flyology.DB.Engine_Tests is
       Result       : Outcome_Code;
       --  257 mutation descriptors is deliberately one over the common 256-item
       --  hidden-cap boundary. One two-byte entry per mutation makes the
-      --  514-byte aggregate exact and proves persisted dynamic allocation.
+      --  514-byte aggregate exact and proves persisted dynamic allocation. One
+      --  L0 run covers the sole family; 6 identities derive from 2 histories *
+      --  (2 transaction IDs + one group ID).
       Limits       : constant Database_Limits :=
         (Maximum_Column_Families           => 1,
          Maximum_Manifest_History          => 2,
@@ -895,9 +937,11 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Live_Entries              => 257,
          Maximum_Transaction_Payload_Bytes => 514,
          Maximum_Batch_Payload_Bytes       => 514,
-         Maximum_Live_State_Bytes          => 514);
+         Maximum_Live_State_Bytes          => 514,
+         Maximum_Total_L0_Runs             => 1,
+         Maximum_Checkpoint_Identities     => 6);
       Families     : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family (23, [16#64#, 16#79#, 16#6E#], 2, 1)];
+        [Configure_Test_Family (23, [16#64#, 16#79#, 16#6E#], 2, 1)];
       Database_ID  : constant Database_Identifier := DB_ID (Tag);
    begin
       Bind_Context (Context, Backend, Prefix);
@@ -1215,10 +1259,14 @@ package body Flyology.DB.Engine_Tests is
       Context                                    : aliased Storage_Context;
       Other_Ctx                                  : aliased Storage_Context;
       Over_Ctx                                   : aliased Storage_Context;
+      Invalid_Ctx                                : aliased Storage_Context;
+      Allocation_Ctx                             : aliased Storage_Context;
       Item                                       : Database;
       Retry                                      : Database;
       Other                                      : Database;
       Over_Item                                  : Database;
+      Invalid_Item                               : Database;
+      Allocation_Item                            : Database;
       Txn                                        : Transaction;
       Receipt                                    : Commit_Receipt;
       Create_Info                                : Create_Receipt;
@@ -1229,7 +1277,9 @@ package body Flyology.DB.Engine_Tests is
       --  API fixture persists two unequal families and tight aggregate limits.
       --  Permuted proves canonical ordering, Different changes one persisted
       --  family value, and Over_* isolate explicit admission/capacity failures;
-      --  none is an implicit configuration default.
+      --  none is an implicit configuration default. Two first-L0 runs match
+      --  the families; 24 identities derive from 8 histories * (2 transaction
+      --  IDs + one group ID).
       Limits                                     : constant Database_Limits :=
         (Maximum_Column_Families           => 2,
          Maximum_Manifest_History          => 4,
@@ -1240,17 +1290,30 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Live_Entries              => 4,
          Maximum_Transaction_Payload_Bytes => 16,
          Maximum_Batch_Payload_Bytes       => 32,
-         Maximum_Live_State_Bytes          => 24);
+         Maximum_Live_State_Bytes          => 24,
+         Maximum_Total_L0_Runs             => 2,
+         Maximum_Checkpoint_Identities     => 24);
       Families                                   : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family (7, [16#77#], 8, 8), Configure_Column_Family (2, [16#C3#, 16#A9#], 2, 3)];
+        [Configure_Test_Family (7, [16#77#], 8, 8), Configure_Test_Family (2, [16#C3#, 16#A9#], 2, 3)];
       Permuted                                   : constant Column_Family_Configuration_Array :=
         [Families (2), Families (1)];
       Different                                  : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family (2, [16#C3#, 16#A9#], 2, 4), Families (1)];
+        [Configure_Test_Family (2, [16#C3#, 16#A9#], 2, 4), Families (1)];
       Over_Families                              : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family (1, [16#78#], Maximum_Key_Bytes + 1, 1)];
+        [Configure_Test_Family (1, [16#78#], Maximum_Key_Bytes + 1, 1)];
       Over_Limits                                : constant Database_Limits :=
         (Default_Limits with delta Maximum_Column_Families => 1, Maximum_Live_Entries => 257);
+      --  Zero is the public invalid-policy sentinel for each required database
+      --  LSM authority; these variants prove rejection before publication.
+      Invalid_LSM_Limits                         : constant Database_Limits :=
+        (Limits with delta Maximum_Total_L0_Runs => 0);
+      Invalid_Identity_Limits                    : constant Database_Limits :=
+        (Limits with delta Maximum_Checkpoint_Identities => 0);
+      --  These three injected sites cover every exact allocation introduced
+      --  by empty-root construction before storage admission.
+      Root_Allocation_Points                     :
+        constant array (Positive range 1 .. 3) of Testing.Allocation_Fault_Point :=
+          [Testing.Root_Checkpoint_State, Testing.Root_Checkpoint_Image, Testing.Root_Manifest_Retention];
       Database_ID                                : constant Database_Identifier := DB_ID (200);
       Manifest_ID                                : constant Identifier := ID (201);
       Transition                                 : constant Identifier := ID (202);
@@ -1268,6 +1331,33 @@ package body Flyology.DB.Engine_Tests is
          Receipt => Create_Info,
          Result  => Result);
       Expect (Result, Success, "multi-family manifest create failed");
+      declare
+         --  Family 2's fixture authority is exactly one maximum 2+3-byte
+         --  entry and one run, as derived by Configure_Test_Family above.
+         Total_Runs, Identity_Total, Memtable_Entries, Family_Runs : Interfaces.Unsigned_32;
+         Memtable_Bytes                                            : Interfaces.Unsigned_64;
+      begin
+         Testing.Root_LSM_Limits
+           (Context,
+            Manifest_ID,
+            Database_ID,
+            2,
+            Total_Runs,
+            Identity_Total,
+            Memtable_Bytes,
+            Memtable_Entries,
+            Family_Runs,
+            Result);
+         if Result /= Success
+           or else Total_Runs /= Limits.Maximum_Total_L0_Runs
+           or else Identity_Total /= Limits.Maximum_Checkpoint_Identities
+           or else Memtable_Bytes /= 5
+           or else Memtable_Entries /= 1
+           or else Family_Runs /= 1
+         then
+            raise Program_Error with "manifest-v2 root did not preserve explicit LSM authority";
+         end if;
+      end;
 
       Create
         (Retry,
@@ -1335,6 +1425,92 @@ package body Flyology.DB.Engine_Tests is
       Rollback (Txn, Result);
       Close (Other, Result);
       Close (Item, Result);
+
+      declare
+         Rejected : Boolean := False;
+      begin
+         begin
+            declare
+               Ignored : constant Column_Family_Configuration :=
+                 Configure_Column_Family (1, [16#78#], 1, 1, 0, 1, 1);
+               pragma Unreferenced (Ignored);
+            begin
+               null;
+            end;
+         exception
+            when Constraint_Error =>
+               Rejected := True;
+         end;
+         if not Rejected then
+            raise Program_Error with "zero memtable authority was accepted";
+         end if;
+      end;
+
+      Bind_Context (Invalid_Ctx, Backend, "manifest-family-invalid-lsm-policy");
+      Testing.Publication_Counts (Invalid_Ctx, Batch_Puts, Manifest_Puts, Head_Puts);
+      Create
+        (Invalid_Item,
+         Invalid_Ctx'Access,
+         DB_ID (211),
+         ID (212),
+         ID (213),
+         Invalid_LSM_Limits,
+         Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Invalid_State, "zero database L0 authority reached publication");
+      Create
+        (Invalid_Item,
+         Invalid_Ctx'Access,
+         DB_ID (214),
+         ID (215),
+         ID (216),
+         Invalid_Identity_Limits,
+         Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Invalid_State, "zero checkpoint identity authority reached publication");
+      declare
+         After_Batch, After_Manifest, After_Head : Natural;
+      begin
+         Testing.Publication_Counts (Invalid_Ctx, After_Batch, After_Manifest, After_Head);
+         if After_Batch /= Batch_Puts or else After_Manifest /= Manifest_Puts or else After_Head /= Head_Puts
+         then
+            raise Program_Error with "invalid LSM policy published an object";
+         end if;
+      end;
+
+      Bind_Context (Allocation_Ctx, Backend, "manifest-family-root-allocation");
+      Testing.Publication_Counts (Allocation_Ctx, Batch_Puts, Manifest_Puts, Head_Puts);
+      for Point of Root_Allocation_Points loop
+         Testing.Fail_Next_Allocation (Point);
+         Create
+           (Allocation_Item,
+            Allocation_Ctx'Access,
+            DB_ID (217),
+            ID (218),
+            ID (219),
+            Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Capacity_Exceeded, "root allocation failure was not typed capacity");
+         if Create_Receipt_Manifest_ID (Create_Info) /= Zero_Identifier then
+            raise Program_Error with "root allocation failure retained a prepublication identity";
+         end if;
+      end loop;
+      declare
+         After_Batch, After_Manifest, After_Head : Natural;
+      begin
+         Testing.Publication_Counts (Allocation_Ctx, After_Batch, After_Manifest, After_Head);
+         if After_Batch /= Batch_Puts or else After_Manifest /= Manifest_Puts or else After_Head /= Head_Puts
+         then
+            raise Program_Error with "root allocation failure published an object";
+         end if;
+      end;
 
       Bind_Context (Over_Ctx, Backend, "manifest-family-over-build");
       Testing.Publication_Counts (Over_Ctx, Batch_Puts, Manifest_Puts, Head_Puts);
@@ -1793,7 +1969,7 @@ package body Flyology.DB.Engine_Tests is
               Maximum_Live_Entries     => Live_Entries,
               Maximum_Live_State_Bytes => Live_Bytes);
          Families                                   : constant Column_Family_Configuration_Array :=
-           [Configure_Column_Family (1, [16#61#], 2, 3)];
+           [Configure_Test_Family (1, [16#61#], 2, 3)];
       begin
          Bind_Context (Context, Backend, Prefix);
          Create
@@ -1866,7 +2042,7 @@ package body Flyology.DB.Engine_Tests is
               Maximum_Live_Entries     => 1,
               Maximum_Live_State_Bytes => 5);
          Families                                   : constant Column_Family_Configuration_Array :=
-           [Configure_Column_Family (1, [16#61#], 2, 3)];
+           [Configure_Test_Family (1, [16#61#], 2, 3)];
          Old_Key                                    : constant Key := To_Key ([16#00#, 16#FF#]);
          New_Key                                    : constant Key := To_Key ([16#80#, 16#81#]);
       begin
@@ -2165,7 +2341,7 @@ package body Flyology.DB.Engine_Tests is
          Limits      : constant Database_Limits :=
            (Default_Limits with delta Maximum_Column_Families => 3, Maximum_Manifest_History => 2);
          Families    : constant Column_Family_Configuration_Array :=
-           [Configure_Column_Family (1, [16#61#], 1, 1)];
+           [Configure_Test_Family (1, [16#61#], 1, 1)];
       begin
          Bind_Context (Context, Backend, "open-overlong-manifest-chain");
          Create
@@ -2196,7 +2372,7 @@ package body Flyology.DB.Engine_Tests is
          Limits      : constant Database_Limits :=
            (Default_Limits with delta Maximum_Column_Families => 2, Maximum_Manifest_History => 2);
          Families    : constant Column_Family_Configuration_Array :=
-           [Configure_Column_Family (1, [16#61#], 1, 1)];
+           [Configure_Test_Family (1, [16#61#], 1, 1)];
       begin
          Bind_Context (Context, Backend, "open-exact-manifest-chain");
          Create

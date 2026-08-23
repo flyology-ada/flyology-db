@@ -52,10 +52,14 @@ procedure Flyology.DB.Files_Crash_Probe is
       Maximum_Live_Entries              => 256,
       Maximum_Transaction_Payload_Bytes => 4_096,
       Maximum_Batch_Payload_Bytes       => 16_384,
-      Maximum_Live_State_Bytes          => 81_920);
+      Maximum_Live_State_Bytes          => 81_920,
+      --  One first-L0 run per family and the exact history reservation
+      --  capacity are persisted crash-fixture choices, not DB defaults.
+      Maximum_Total_L0_Runs             => 2,
+      Maximum_Checkpoint_Identities     => 576);
    Families : constant Flyology.DB.Column_Family_Configuration_Array :=
-     [Flyology.DB.Configure_Column_Family (1, [1], 64, 256),
-      Flyology.DB.Configure_Column_Family (2, [2], 64, 256)];
+     [Flyology.DB.Configure_Column_Family (1, [1], 64, 256, 320, 1, 1),
+      Flyology.DB.Configure_Column_Family (2, [2], 64, 256, 320, 1, 1)];
 
    procedure Require (Condition : Boolean; Message : String) is
    begin

@@ -309,8 +309,10 @@ independently generated golden bytes.
 
 ## Evolution
 
-Batch version 1 and manifest version 1 are the initial log-only encodings. Manifest version 2 is a readable immutable
-checkpoint successor; it never rewrites or implicitly migrates a reachable version-1 manifest. SST begins at version
-1 under its independent kind. A future kind-specific format change records whether existing readers reject, read, or
-migrate it. Golden byte fixtures and explicit corruption cases gate each supported version. Migration never rewrites
-a reachable immutable object in place.
+Batch version 1 remains the transaction-log encoding. Manifest version 1 is the legacy log-only registry encoding and
+remains readable. New databases use manifest version 2 from their root: the root has replay boundary zero, no runs,
+and no checkpoint identities, but persists every explicit LSM allocation limit. A nonempty version-2 manifest is a
+later checkpoint successor and never rewrites or implicitly migrates a reachable version-1 manifest. SST begins at
+version 1 under its independent kind. A future kind-specific format change records whether existing readers reject,
+read, or migrate it. Golden byte fixtures and explicit corruption cases gate each supported version. Migration never
+rewrites a reachable immutable object in place.

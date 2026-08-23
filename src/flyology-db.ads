@@ -58,6 +58,8 @@ package Flyology.DB is
       Maximum_Transaction_Payload_Bytes : Interfaces.Unsigned_64;
       Maximum_Batch_Payload_Bytes       : Interfaces.Unsigned_64;
       Maximum_Live_State_Bytes          : Interfaces.Unsigned_64;
+      Maximum_Total_L0_Runs             : Interfaces.Unsigned_32;
+      Maximum_Checkpoint_Identities     : Interfaces.Unsigned_32;
    end record;
 
    type Column_Family_Configuration is private;
@@ -65,15 +67,18 @@ package Flyology.DB is
    type Column_Family is private;
 
    --  Construct one immutable family configuration. Name must contain one to
-   --  255 exact UTF-8 bytes, contain no NUL, and Max_Key_Bytes and
-   --  Max_Value_Bytes must be nonzero. Invalid input raises Constraint_Error
-   --  before storage effects. Persisted limits remain U64 policy authority;
-   --  each actual runtime allocation is checked for host representability.
+   --  255 exact UTF-8 bytes and contain no NUL. Key/value and memtable limits
+   --  plus the per-family L0 run bound must be nonzero. Invalid input raises
+   --  Constraint_Error before storage effects. These caller-selected values
+   --  are persisted authority; there are no library defaults.
    function Configure_Column_Family
-     (ID              : Column_Family_ID;
-      Name            : Byte_Array;
-      Max_Key_Bytes   : Interfaces.Unsigned_64;
-      Max_Value_Bytes : Interfaces.Unsigned_64) return Column_Family_Configuration;
+     (ID                   : Column_Family_ID;
+      Name                 : Byte_Array;
+      Max_Key_Bytes        : Interfaces.Unsigned_64;
+      Max_Value_Bytes      : Interfaces.Unsigned_64;
+      Memtable_Max_Bytes   : Interfaces.Unsigned_64;
+      Memtable_Max_Entries : Interfaces.Unsigned_32;
+      Maximum_L0_Runs      : Interfaces.Unsigned_32) return Column_Family_Configuration;
 
    type Outcome_Code is
      (Success,
@@ -288,11 +293,14 @@ private
    --  sentinels; Configure_Column_Family must replace them before publication.
    --  They introduce no implicit family policy or persisted defaults.
    type Column_Family_Configuration is record
-      ID              : Column_Family_ID := Column_Family_ID'First;
-      Name_Length     : Column_Family_Name_Length := 0;
-      Name            : Column_Family_Name_Storage := [others => 0];
-      Max_Key_Bytes   : Interfaces.Unsigned_64 := 0;
-      Max_Value_Bytes : Interfaces.Unsigned_64 := 0;
+      ID                   : Column_Family_ID := Column_Family_ID'First;
+      Name_Length          : Column_Family_Name_Length := 0;
+      Name                 : Column_Family_Name_Storage := [others => 0];
+      Max_Key_Bytes        : Interfaces.Unsigned_64 := 0;
+      Max_Value_Bytes      : Interfaces.Unsigned_64 := 0;
+      Memtable_Max_Bytes   : Interfaces.Unsigned_64 := 0;
+      Memtable_Max_Entries : Interfaces.Unsigned_32 := 0;
+      Maximum_L0_Runs      : Interfaces.Unsigned_32 := 0;
    end record;
 
    type Engine_Incarnation is new Interfaces.Unsigned_64;
@@ -309,7 +317,10 @@ private
       Recovery_History_Allocation,
       Engine_State_Allocation,
       Identity_Table_Allocation,
-      Projection_Scratch_Allocation);
+      Projection_Scratch_Allocation,
+      Root_Checkpoint_State_Allocation,
+      Root_Checkpoint_Image_Allocation,
+      Root_Manifest_Retention_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code);
@@ -553,6 +564,22 @@ private
       Root_ID     : Identifier;
       Successors  : Positive;
       Result      : out Outcome_Code);
+   procedure Read_Test_Manifest_Version
+     (Item        : in out Storage_Context;
+      Manifest_ID : Identifier;
+      Version     : out Interfaces.Unsigned_16;
+      Result      : out Outcome_Code);
+   procedure Read_Test_Root_LSM_Limits
+     (Item                   : in out Storage_Context;
+      Manifest_ID            : Identifier;
+      Expected_Database      : Database_Identifier;
+      Family_ID              : Column_Family_ID;
+      Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
+      Maximum_Identities     : out Interfaces.Unsigned_32;
+      Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
+      Memtable_Max_Entries   : out Interfaces.Unsigned_32;
+      Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
+      Result                 : out Outcome_Code);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB;

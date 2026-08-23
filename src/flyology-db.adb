@@ -4,6 +4,7 @@ with Ada.Unchecked_Deallocation;
 with Flyology.DB.Batch_Formats;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
+with Flyology.DB.LSM_Runtime_Formats;
 with Flyology.DB.Manifest_Formats;
 with Flyology.Object_Storage;
 
@@ -13,6 +14,7 @@ package body Flyology.DB is
    package Backends renames Flyology.Object_Storage.Backends;
    package Batches renames Flyology.DB.Batch_Formats;
    package Heads renames Flyology.DB.Head_Policy;
+   package LSM_Runtime renames Flyology.DB.LSM_Runtime_Formats;
    package Manifests renames Flyology.DB.Manifest_Formats;
    package UStrings renames Ada.Strings.Unbounded;
 
@@ -30,6 +32,11 @@ package body Flyology.DB is
    use type Manifests.Encode_Status;
    use type Manifests.Family_Name_Bytes;
    use type Manifests.Manifest;
+   use type LSM_Runtime.Allocation_Status;
+   use type LSM_Runtime.Checkpoint_Manifest_Access;
+   use type LSM_Runtime.Decode_Status;
+   use type LSM_Runtime.Encode_Status;
+   use type LSM_Runtime.Image_Access;
    use type OS.Status;
 
    function Group_Mutation_Total_Fits_Wire (Value : Natural) return Boolean
@@ -292,6 +299,26 @@ package body Flyology.DB is
    --  Commit objects use Shared_Image and the runtime-sized path below.
    type Small_Metadata_Buffer is array (Small_Metadata_Index) of Byte;
 
+   --  Derived maximum empty manifest-v2 root extent: the frozen 220-byte
+   --  header, 64 family frames with their maximum 255-byte names, and the
+   --  four-byte trailer. It is a compatibility assertion against the existing
+   --  small-object transport boundary, not a database allocation default.
+   Maximum_Empty_Root_Checkpoint_Bytes : constant Natural :=
+     LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length
+     + Maximum_Initial_Column_Families
+       * (LSM_Runtime.LSM.Checkpoint_Family_Header_Length + Maximum_Column_Family_Name_Bytes)
+     + LSM_Runtime.LSM.Object_Trailer_Length;
+   pragma
+     Compile_Time_Error
+       (Maximum_Empty_Root_Checkpoint_Bytes > Maximum_Small_Metadata_Image_Bytes,
+        "manifest-v2 root exceeds the small-metadata transport boundary");
+
+   --  Frozen common-envelope U16 version field offsets shared by persisted
+   --  object formats. Moving either byte is wire-incompatible; naming them
+   --  here keeps version dispatch and test observation on the same authority.
+   Common_Version_High_Offset : constant Natural := 8;
+   Common_Version_Low_Offset  : constant Natural := 9;
+
    type Buffer_Source is new Backends.Byte_Source with record
       Image  : Shared_Image_Access := null;
       Cursor : Natural := 0;
@@ -384,6 +411,11 @@ package body Flyology.DB is
       Result.Name_Length := Item.Name_Length;
       Result.Max_Key_Bytes := Item.Max_Key_Bytes;
       Result.Max_Value_Bytes := Item.Max_Value_Bytes;
+      --  Manifest-v1/base frames do not carry LSM policy. A v2 decoder fills
+      --  these fields from its adjacent family extension before activation.
+      Result.Memtable_Max_Bytes := 0;
+      Result.Memtable_Max_Entries := 0;
+      Result.Maximum_L0_Runs := 0;
       for Index in Item.Name'Range loop
          Result.Name (Index) := Item.Name (Index);
       end loop;
@@ -412,7 +444,11 @@ package body Flyology.DB is
         Maximum_Live_Entries              => Item.Maximum_Live_Entries,
         Maximum_Transaction_Payload_Bytes => Item.Maximum_Transaction_Payload_Bytes,
         Maximum_Batch_Payload_Bytes       => Item.Maximum_Batch_Payload_Bytes,
-        Maximum_Live_State_Bytes          => Item.Maximum_Live_State_Bytes));
+        Maximum_Live_State_Bytes          => Item.Maximum_Live_State_Bytes,
+        --  These zeroes mean the manifest-v1 base has no LSM extension; they
+        --  are never substituted for v2 persisted allocation authority.
+        Maximum_Total_L0_Runs             => 0,
+        Maximum_Checkpoint_Identities     => 0));
 
    function Maximum_Runtime_Batch_Length (Limits : Manifests.Database_Limits) return Natural is
       --  Derived exact maximum framing from the persisted transaction/mutation
@@ -3451,7 +3487,7 @@ package body Flyology.DB is
    end Copy_Head_Image;
 
    procedure Copy_Manifest_Image
-     (Image : Manifests.Manifest_Image; Length : Natural; Target : out Small_Metadata_Buffer) is
+     (Image : Formats.Byte_Array; Length : Natural; Target : out Small_Metadata_Buffer) is
    begin
       Target := [others => 0];
       if Length > 0 then
@@ -3776,10 +3812,12 @@ package body Flyology.DB is
       Value             : out Manifests.Manifest;
       Result            : out Outcome_Code)
    is
-      Status : Manifests.Decode_Status;
+      Status     : Manifests.Decode_Status;
+      LSM_Status : LSM_Runtime.Decode_Status;
+      Checkpoint : LSM_Runtime.Checkpoint_Manifest_Access := null;
    begin
       Value := Manifests.Empty_Manifest;
-      if Length = 0 or else Length > Manifests.Max_Manifest_Image_Length then
+      if Length = 0 or else Length > Small_Metadata_Buffer'Length then
          Result := Corrupt;
          return;
       end if;
@@ -3789,6 +3827,39 @@ package body Flyology.DB is
          for Index in Image'Range loop
             Image (Index) := Data (Index);
          end loop;
+         if Length > Common_Version_Low_Offset
+           and then Image (Common_Version_High_Offset) = 0
+           and then Image (Common_Version_Low_Offset)
+                    = Byte (LSM_Runtime.LSM.Checkpoint_Manifest_Format_Version)
+         then
+            LSM_Runtime.Decode_Checkpoint_Manifest
+              (Image, To_Head_ID (Expected_Database), Checkpoint, LSM_Status);
+            if LSM_Status = LSM_Runtime.Decoded then
+               --  Until the flush/recovery unit lands, only a v2 root with an
+               --  empty checkpoint partition is operationally activated.
+               if Checkpoint.Replay_Boundary /= 0
+                 or else Checkpoint.Run_Total /= 0
+                 or else Checkpoint.Identity_Total /= 0
+               then
+                  Result := Unsupported_Format;
+               else
+                  Value := Checkpoint.Base;
+                  Result := Success;
+               end if;
+            elsif LSM_Status
+                  in LSM_Runtime.Limit_Exceeded
+                   | LSM_Runtime.Allocation_Failed
+                   | LSM_Runtime.Runtime_Incompatible
+            then
+               Result := Capacity_Exceeded;
+            elsif LSM_Status = LSM_Runtime.Unsupported_Version then
+               Result := Unsupported_Format;
+            else
+               Result := Corrupt;
+            end if;
+            LSM_Runtime.Release (Checkpoint);
+            return;
+         end if;
          Manifests.Decode_Manifest
            (Image, To_Head_ID (Expected_Database), Manifests.Default_Reader_Caps, Value, Status);
       end;
@@ -3797,7 +3868,16 @@ package body Flyology.DB is
          then Success
          elsif Status = Manifests.Limit_Exceeded
          then Capacity_Exceeded
+         elsif Status = Manifests.Unsupported_Version
+         then Unsupported_Format
          else Corrupt);
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Checkpoint);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Checkpoint);
+         raise;
    end Decode_Stored_Manifest;
 
    procedure Decode_Stored_Batch
@@ -4278,10 +4358,13 @@ package body Flyology.DB is
    end Start_Engine;
 
    function Configure_Column_Family
-     (ID              : Column_Family_ID;
-      Name            : Byte_Array;
-      Max_Key_Bytes   : Interfaces.Unsigned_64;
-      Max_Value_Bytes : Interfaces.Unsigned_64) return Column_Family_Configuration
+     (ID                   : Column_Family_ID;
+      Name                 : Byte_Array;
+      Max_Key_Bytes        : Interfaces.Unsigned_64;
+      Max_Value_Bytes      : Interfaces.Unsigned_64;
+      Memtable_Max_Bytes   : Interfaces.Unsigned_64;
+      Memtable_Max_Entries : Interfaces.Unsigned_32;
+      Maximum_L0_Runs      : Interfaces.Unsigned_32) return Column_Family_Configuration
    is
       Candidate : Manifests.Column_Family_Configuration;
    begin
@@ -4298,7 +4381,17 @@ package body Flyology.DB is
       if not Manifests.Valid_Configuration (Candidate) then
          raise Constraint_Error with "column-family configuration is invalid";
       end if;
-      return From_Manifest_Configuration (Candidate);
+      declare
+         Result : Column_Family_Configuration := From_Manifest_Configuration (Candidate);
+      begin
+         if Memtable_Max_Bytes = 0 or else Memtable_Max_Entries = 0 or else Maximum_L0_Runs = 0 then
+            raise Constraint_Error with "column-family LSM limits are invalid";
+         end if;
+         Result.Memtable_Max_Bytes := Memtable_Max_Bytes;
+         Result.Memtable_Max_Entries := Memtable_Max_Entries;
+         Result.Maximum_L0_Runs := Maximum_L0_Runs;
+         return Result;
+      end;
    end Configure_Column_Family;
 
    procedure Build_Root_Manifest
@@ -4359,6 +4452,73 @@ package body Flyology.DB is
       end if;
    end Build_Root_Manifest;
 
+   procedure Build_Root_Checkpoint
+     (Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Limits                : Database_Limits;
+      Initial_Families      : Column_Family_Configuration_Array;
+      Value                 : out LSM_Runtime.Checkpoint_Manifest_Access;
+      Result                : out Outcome_Code)
+   is
+      Base       : Manifests.Manifest;
+      Allocation : LSM_Runtime.Allocation_Status;
+   begin
+      Value := null;
+      Build_Root_Manifest
+        (Database_ID, Manifest_ID, Initial_Transition_ID, Limits, Initial_Families, Base, Result);
+      if Result /= Success then
+         return;
+      elsif Limits.Maximum_Total_L0_Runs = 0 or else Limits.Maximum_Checkpoint_Identities = 0 then
+         Result := Invalid_State;
+         return;
+      end if;
+      Allocation_Faults.Check (Root_Checkpoint_State_Allocation);
+      LSM_Runtime.Create_Checkpoint_Manifest (Natural (Base.Family_Total), 0, 0, Value, Allocation);
+      if Allocation /= LSM_Runtime.Allocated then
+         Result := (if Allocation = LSM_Runtime.Allocation_Failed then Capacity_Exceeded else Invalid_State);
+         return;
+      end if;
+      Value.Base := Base;
+      Value.Maximum_Total_L0_Runs := Limits.Maximum_Total_L0_Runs;
+      Value.Maximum_Checkpoint_Identities := Limits.Maximum_Checkpoint_Identities;
+      for Family_Index in Value.Families'Range loop
+         declare
+            Found : Boolean := False;
+         begin
+            for Source_Index in Initial_Families'Range loop
+               if Interfaces.Unsigned_32 (Initial_Families (Source_Index).ID)
+                 = Base.Families (Family_Index).ID
+               then
+                  Value.Families (Family_Index) :=
+                    (Memtable_Max_Bytes   => Initial_Families (Source_Index).Memtable_Max_Bytes,
+                     Memtable_Max_Entries => Initial_Families (Source_Index).Memtable_Max_Entries,
+                     Maximum_L0_Runs      => Initial_Families (Source_Index).Maximum_L0_Runs,
+                     First_Run            => 0,
+                     Run_Total            => 0);
+                  Found := True;
+                  exit;
+               end if;
+            end loop;
+            if not Found then
+               LSM_Runtime.Release (Value);
+               Result := Invalid_State;
+               return;
+            end if;
+         end;
+      end loop;
+      if not LSM_Runtime.Structurally_Valid (Value.all) then
+         LSM_Runtime.Release (Value);
+         Result := Invalid_State;
+      else
+         Result := Success;
+      end if;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Value);
+         Result := Capacity_Exceeded;
+   end Build_Root_Checkpoint;
+
    procedure Create
      (Item                  : in out Database;
       Storage               : not null access Storage_Context;
@@ -4379,9 +4539,10 @@ package body Flyology.DB is
       Head_Image       : Formats.Head_Image;
       Head_Data        : Small_Metadata_Buffer;
       Manifest_Value   : Manifests.Manifest;
-      Manifest_Image   : Manifests.Manifest_Image;
-      Manifest_Length  : Natural;
-      Encode_Result    : Manifests.Encode_Status;
+      Checkpoint_Value : LSM_Runtime.Checkpoint_Manifest_Access := null;
+      Manifest_Image   : LSM_Runtime.Image_Access := null;
+      Manifest_Length  : Natural := 0;
+      Encode_Result    : LSM_Runtime.Encode_Status;
       Manifest_Data    : Small_Metadata_Buffer;
       Read_Data        : Small_Metadata_Buffer;
       Length           : Natural;
@@ -4526,27 +4687,66 @@ package body Flyology.DB is
       end Attempt_Head;
    begin
       Receipt := (others => <>);
-      Build_Root_Manifest
-        (Database_ID, Manifest_ID, Initial_Transition_ID, Limits, Initial_Families, Manifest_Value, Result);
+      Build_Root_Checkpoint
+        (Database_ID, Manifest_ID, Initial_Transition_ID, Limits, Initial_Families, Checkpoint_Value, Result);
       if Result /= Success then
          Receipt.Current_Outcome := Result;
          return;
       end if;
-      Manifests.Encode_Manifest (Manifest_Value, Manifest_Image, Manifest_Length, Encode_Result);
-      if Encode_Result /= Manifests.Encoded
+      Manifest_Value := Checkpoint_Value.Base;
+      begin
+         Allocation_Faults.Check (Root_Checkpoint_Image_Allocation);
+         LSM_Runtime.Encode_Checkpoint_Manifest (Checkpoint_Value.all, Manifest_Image, Encode_Result);
+      exception
+         when Storage_Error =>
+            LSM_Runtime.Release (Checkpoint_Value);
+            Result := Capacity_Exceeded;
+            Receipt.Current_Outcome := Result;
+            return;
+      end;
+      if Manifest_Image /= null then
+         Manifest_Length := Manifest_Image.all'Length;
+      end if;
+      LSM_Runtime.Release (Checkpoint_Value);
+      if Encode_Result = LSM_Runtime.Allocation_Failed or else Encode_Result = LSM_Runtime.Length_Overflow
+      then
+         LSM_Runtime.Release (Manifest_Image);
+         Result := Capacity_Exceeded;
+         Receipt.Current_Outcome := Result;
+         return;
+      elsif Encode_Result /= LSM_Runtime.Encoded
+        or else Manifest_Image = null
         or else Storage.Backend = null
         or else not OS.Valid_Object_Key (Manifest_Key (Storage.all, Manifest_ID))
         or else not OS.Valid_Object_Key (Full_Key (Storage.all, Head_Key_Suffix))
       then
+         LSM_Runtime.Release (Manifest_Image);
          Result := Invalid_State;
          Receipt.Current_Outcome := Result;
          return;
+      elsif Manifest_Length > Manifest_Data'Length then
+         --  The frozen small-metadata buffer is the current transport boundary.
+         --  A valid caller-selected root that outgrows it is a typed capacity
+         --  failure before object publication, never malformed database state.
+         LSM_Runtime.Release (Manifest_Image);
+         Result := Capacity_Exceeded;
+         Receipt.Current_Outcome := Result;
+         return;
       end if;
-      Copy_Manifest_Image (Manifest_Image, Manifest_Length, Manifest_Data);
+      Copy_Manifest_Image (Manifest_Image.all, Manifest_Length, Manifest_Data);
+      begin
+         Allocation_Faults.Check (Root_Manifest_Retention_Allocation);
+         Receipt.Retained_Manifest.Image := New_Image (Manifest_Image.all);
+      exception
+         when Storage_Error =>
+            LSM_Runtime.Release (Manifest_Image);
+            Result := Capacity_Exceeded;
+            Receipt.Current_Outcome := Result;
+            return;
+      end;
+      LSM_Runtime.Release (Manifest_Image);
       Receipt.Database_ID := Database_ID;
       Receipt.Manifest_ID := Manifest_ID;
-      Receipt.Retained_Manifest.Image :=
-        New_Image (Formats.Byte_Array (Manifest_Image (0 .. Manifest_Length - 1)));
       Head :=
         (Database_ID            => Database_ID,
          Version                => Interfaces.Unsigned_16 (Heads.Current_Format),
@@ -4626,6 +4826,8 @@ package body Flyology.DB is
       end if;
    exception
       when others =>
+         LSM_Runtime.Release (Checkpoint_Value);
+         LSM_Runtime.Release (Manifest_Image);
          Result :=
            (if Receipt.Phase = Head_Confirmed
             then Local_Activation_Failed
@@ -5941,6 +6143,9 @@ package body Flyology.DB is
       if Result /= Success then
          return;
       end if;
+      --  This corruption helper deliberately projects any readable v2 root to
+      --  its legacy v1 base before applying the requested damage. It is test
+      --  fixture construction, not a supported migration or publication path.
       if Replacement_Database /= Zero_Database_ID then
          Value.Database_ID := To_Head_ID (Replacement_Database);
       end if;
@@ -6024,6 +6229,9 @@ package body Flyology.DB is
       if Result /= Success then
          return;
       end if;
+      --  History-depth fixtures deliberately continue from the readable v1
+      --  base projection and publish v1 successors. This test-only mixed chain
+      --  must not be interpreted as a production downgrade or migration rule.
       --  Test-only 4E/54 domain tags distinguish manifest and transition IDs;
       --  one-byte key/value limits keep chain fixtures minimal. These values
       --  exercise history-depth policy and are not deployable defaults.
@@ -6110,6 +6318,115 @@ package body Flyology.DB is
       Result := (if Put_Result = Object_Published then Success else Storage_Failure);
    end Extend_Test_Manifest_Chain;
 
+   procedure Read_Test_Manifest_Version
+     (Item        : in out Storage_Context;
+      Manifest_ID : Identifier;
+      Version     : out Interfaces.Unsigned_16;
+      Result      : out Outcome_Code)
+   is
+      Data        : Small_Metadata_Buffer;
+      Length      : Natural;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome;
+   begin
+      Version := 0;
+      Storage_Port.Get_Whole
+        (Item,
+         Manifest_Key (Item, Manifest_ID),
+         Manifest_Object,
+         Ada.Real_Time.Time_Last,
+         null,
+         Data,
+         Length,
+         Generation,
+         Read_Result);
+      --  This test observation uses the production common-envelope offsets
+      --  and does not interpret or authorize any remaining payload.
+      if Read_Result = Object_Read and then Length > Common_Version_Low_Offset then
+         Version :=
+           Interfaces.Shift_Left
+             (Interfaces.Unsigned_16 (Data (Common_Version_High_Offset)), Interfaces.Unsigned_16'Size / 2)
+           or Interfaces.Unsigned_16 (Data (Common_Version_Low_Offset));
+         Result := Success;
+      else
+         Result := Storage_Failure;
+      end if;
+   end Read_Test_Manifest_Version;
+
+   procedure Read_Test_Root_LSM_Limits
+     (Item                   : in out Storage_Context;
+      Manifest_ID            : Identifier;
+      Expected_Database      : Database_Identifier;
+      Family_ID              : Column_Family_ID;
+      Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
+      Maximum_Identities     : out Interfaces.Unsigned_32;
+      Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
+      Memtable_Max_Entries   : out Interfaces.Unsigned_32;
+      Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
+      Result                 : out Outcome_Code)
+   is
+      Data        : Small_Metadata_Buffer;
+      Length      : Natural;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome;
+      Status      : LSM_Runtime.Decode_Status;
+      Checkpoint  : LSM_Runtime.Checkpoint_Manifest_Access := null;
+      Found       : Boolean := False;
+   begin
+      Maximum_Total_L0_Runs := 0;
+      Maximum_Identities := 0;
+      Memtable_Max_Bytes := 0;
+      Memtable_Max_Entries := 0;
+      Maximum_Family_L0_Runs := 0;
+      Storage_Port.Get_Whole
+        (Item,
+         Manifest_Key (Item, Manifest_ID),
+         Manifest_Object,
+         Ada.Real_Time.Time_Last,
+         null,
+         Data,
+         Length,
+         Generation,
+         Read_Result);
+      if Read_Result /= Object_Read or else Length = 0 then
+         Result := Storage_Failure;
+         return;
+      end if;
+      declare
+         Image : Formats.Byte_Array (0 .. Length - 1);
+      begin
+         for Index in Image'Range loop
+            Image (Index) := Data (Index);
+         end loop;
+         LSM_Runtime.Decode_Checkpoint_Manifest (Image, To_Head_ID (Expected_Database), Checkpoint, Status);
+      end;
+      if Status /= LSM_Runtime.Decoded then
+         LSM_Runtime.Release (Checkpoint);
+         Result := Corrupt;
+         return;
+      end if;
+      Maximum_Total_L0_Runs := Checkpoint.Maximum_Total_L0_Runs;
+      Maximum_Identities := Checkpoint.Maximum_Checkpoint_Identities;
+      for Index in Checkpoint.Families'Range loop
+         if Checkpoint.Base.Families (Index).ID = Interfaces.Unsigned_32 (Family_ID) then
+            Memtable_Max_Bytes := Checkpoint.Families (Index).Memtable_Max_Bytes;
+            Memtable_Max_Entries := Checkpoint.Families (Index).Memtable_Max_Entries;
+            Maximum_Family_L0_Runs := Checkpoint.Families (Index).Maximum_L0_Runs;
+            Found := True;
+            exit;
+         end if;
+      end loop;
+      LSM_Runtime.Release (Checkpoint);
+      Result := (if Found then Success else Not_Found);
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Checkpoint);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Checkpoint);
+         Result := Corrupt;
+   end Read_Test_Root_LSM_Limits;
+
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code)
    is
@@ -6145,7 +6462,11 @@ package body Flyology.DB is
          Maximum_Live_Entries              => 257,
          Maximum_Transaction_Payload_Bytes => 1_000_000,
          Maximum_Batch_Payload_Bytes       => 1_000_000,
-         Maximum_Live_State_Bytes          => 1_000_000);
+         Maximum_Live_State_Bytes          => 1_000_000,
+         --  Unused by batch decoding; nonzero fixture values keep the public
+         --  aggregate explicit without introducing runtime fallback policy.
+         Maximum_Total_L0_Runs             => 1,
+         Maximum_Checkpoint_Identities     => 1);
    begin
       Flyology.Bytes.Reserve_Capacity (Owned, Data'Length);
       for Value of Data loop

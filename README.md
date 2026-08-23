@@ -10,9 +10,10 @@ transaction.
 
 This repository is under active development. The current acceptance state and remaining work are recorded in
 [the milestone plan](docs/architecture/milestones.md). No production qualification or performance claim is made.
-The pending operational slice covers provider-neutral memory/files backends, HEAD-v2 root manifests, stable
-column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/database limits.
-Authenticated remote binding and dynamic family changes remain separate review units.
+The pending operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v2 roots with explicit
+LSM limits, stable column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/
+database limits. Nonempty checkpoint publication/recovery, authenticated remote binding, and dynamic family changes
+remain separate review units.
 
 ## Durability rule
 

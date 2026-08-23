@@ -1,5 +1,31 @@
 # Review record
 
+## Accepted operational manifest-v2 root candidate
+
+- Parent: accepted operational first-LSM codec commit `6bc7abe`.
+- Scope: public create-time database run/identity and per-family memtable/L0 limits, exact empty manifest-v2 root
+  construction, prepublication allocation classification, v2 root recovery, and legacy manifest-v1 log-only
+  readability. Create canonicalizes family IDs before pairing their LSM extensions. This unit publishes no SST,
+  nonzero replay boundary, run descriptor, checkpoint identity, implicit migration, remote provider, or composable
+  operation.
+- Constant authority: the public API has no LSM defaults. Every database/family value is caller-selected and
+  persisted; zero remains only an invalid construction sentinel. The empty-root transport extent is derived from
+  frozen format widths and compile-time checked against the existing small-metadata boundary. Test run/identity
+  capacities cite their family counts and history-reservation formulas adjacent to the fixtures.
+- Verification: `./tests/scripts/test.sh` passes the root/test builds, repository/provenance checks, deterministic
+  Ada engine/format suites, filesystem subprocess crash/recovery, 32 comparative cases, pinned TidesDB 4/4, and all
+  adapter fixtures against Object Storage `00ac6b925ea884fb94853a0e315556b9d94c1bd1`. `./scripts/check-tla.sh`
+  remains green at 112,031/286/819 commit/manifest/checkpoint states and 23/12/43 TLAPS obligations, including all
+  generated witnesses and negative probes. A fresh forced warning-strict FSF GNATprove 16.1.0 run proves the
+  unchanged selected deterministic boundary at 1,078/1,078 checks (164 flow and 914 prover), with zero warnings,
+  unproved or justified checks, or `pragma Assume`.
+- Findings cycle: the first sweep fixed P2 failures to distinguish checkpoint allocation/length exhaustion from
+  invalid state and to prevent test-only v2-to-v1 fixture projection from implying migration. Follow-up review added
+  a compile-time root-extent compatibility assertion, re-raised unexpected decoder faults instead of misclassifying
+  them as corrupt input, and injected every new prepublication allocation site to prove typed `Capacity_Exceeded`,
+  an empty receipt, and zero object publication. The final sweep finds no remaining P0, P1, P2, or P3 issue in this
+  empty-root boundary.
+
 ## Accepted operational first-LSM codec candidate
 
 - Parent: APM v0.3 agent-resource refresh `97061ea`.

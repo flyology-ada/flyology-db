@@ -25,10 +25,10 @@ qualification and dynamic append-only family changes remain prerequisites for ac
 owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication
 models remain abstract assurance lanes rather than a claimed refinement proof.
 
-The first-LSM model/design unit adds a staged checkpoint-publication contract for Milestone 4, not an implementation
-or acceptance claim. It chooses future manifest-v2 and SST object kinds, models bounded per-family L0 runs and exact
-identity-ledger recovery, and leaves binary formats, Ada runtime work, scans, compaction, and provider qualification
-to later focused units. Milestone 4 therefore remains Pending.
+The first-LSM work now includes exact/proven manifest-v2 and SST-v1 formats, dynamic operational codecs, and
+manifest-v2 root creation with explicit database/per-family LSM authority. New roots contain no runs or checkpoint
+identity partition, so the engine remains log-only. Nonempty Flush publication, SST recovery/lookup, scans,
+compaction, and provider qualification remain later focused units; Milestone 4 therefore remains Pending.
 
 ## Formal state-machine lane
 
