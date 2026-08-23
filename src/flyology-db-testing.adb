@@ -260,6 +260,16 @@ package body Flyology.DB.Testing is
          Result);
    end Live_LSM_Limits;
 
+   procedure Live_Entry_Sequence
+     (Item      : in out Database;
+      Family_ID : Column_Family_ID;
+      Item_Key  : Byte_Array;
+      Sequence  : out Sequence_Number;
+      Result    : out Outcome_Code) is
+   begin
+      Read_Test_Live_Entry_Sequence (Item, Family_ID, Item_Key, Sequence, Result);
+   end Live_Entry_Sequence;
+
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier
    is (Structural_ID (Tag, Number));
 

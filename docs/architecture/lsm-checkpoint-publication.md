@@ -20,6 +20,11 @@ Create, Open, create reconciliation, and ambiguous-commit resolution retain the 
 in live engine state. Legacy v1 activation retains an explicit no-LSM sentinel and never synthesizes replacement
 policy. This is the authority used by the staged Flush path; public handles are not a second source.
 
+Every installed live key also retains the exact nonzero sequence of its last authenticated Put. Same-key replacement
+changes that sequence to the replacing transaction's sequence, and cacheless batch replay reconstructs it exactly.
+The later SST snapshot consumes this retained authority; it never infers a sequence from traversal order, current
+HEAD, or the flush operation.
+
 Manifest v2 preserves the complete immutable family registry and every existing database and family limit. It adds,
 at minimum, for each family:
 

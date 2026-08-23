@@ -1,5 +1,19 @@
 # Review record
 
+## Accepted live-entry sequence retention candidate
+
+- Parent: live LSM-authority retention commit `2270798`.
+- Scope: retain each installed key's exact authenticated last-write transaction sequence through projection,
+  replacement, and cacheless batch replay. The sequence is internal state for the later SST snapshot; this unit adds
+  no Flush API, object publication, allocation ceiling, persisted format, or public default.
+- Verification: the focused engine case checks the first committed sequence, a same-key replacement advancing to
+  the next receipt sequence, and cacheless recovery preserving both the replacement bytes and exact sequence. The
+  authoritative repository suite is the acceptance gate; the unchanged TLA+/TLAPS models and selected SPARK units
+  are not rerun for this internal projection correction.
+- Findings cycle: the initial sweep requires malformed mutation-to-transaction mappings to fail before projection
+  and keeps zero solely as a vacant/test-output sentinel. Follow-up review finds no remaining P0, P1, P2, or P3
+  issue in this retention boundary.
+
 ## Accepted live LSM-authority retention candidate
 
 - Parent: operational manifest-v2 root commit `5e9ed61`.

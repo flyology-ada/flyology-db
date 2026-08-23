@@ -1273,6 +1273,8 @@ package body Flyology.DB.Engine_Tests is
       Family_By_ID, Family_By_Name, Stale_Family : Column_Family;
       Result                                     : Outcome_Code;
       Data                                       : Value;
+      Live_Sequence                              : Sequence_Number;
+      Expected_Live_Sequence                     : Sequence_Number;
       Batch_Puts, Manifest_Puts, Head_Puts       : Natural;
       --  API fixture persists two unequal families and tight aggregate limits.
       --  Permuted proves canonical ordering, Different changes one persisted
@@ -1321,6 +1323,9 @@ package body Flyology.DB.Engine_Tests is
       Database_ID                                : constant Database_Identifier := DB_ID (200);
       Manifest_ID                                : constant Identifier := ID (201);
       Transition                                 : constant Identifier := ID (202);
+      --  This same-width replacement isolates last-write sequence retention;
+      --  it adds no key/value capacity or public default.
+      Replacement_Value                          : constant Value := To_Value ([3, 2, 1]);
 
       procedure Expect_Live_LSM_Authority (Target : in out Database; Context_Text : String) is
          Replay, Memtable_Bytes                                    : Interfaces.Unsigned_64;
@@ -1348,6 +1353,15 @@ package body Flyology.DB.Engine_Tests is
             raise Program_Error with Context_Text & " lost authenticated live LSM authority";
          end if;
       end Expect_Live_LSM_Authority;
+
+      procedure Expect_Live_Entry_Sequence (Target : in out Database; Context_Text : String) is
+         Inspect : Outcome_Code;
+      begin
+         Testing.Live_Entry_Sequence (Target, 2, [16#00#, 16#FF#], Live_Sequence, Inspect);
+         if Inspect /= Success or else Live_Sequence /= Expected_Live_Sequence then
+            raise Program_Error with Context_Text & " lost the exact live-entry sequence";
+         end if;
+      end Expect_Live_Entry_Sequence;
    begin
       Bind_Context (Context, Backend, "manifest-family-api");
       Create
@@ -1448,18 +1462,36 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Capacity_Exceeded, "family value limit plus one was admitted");
       Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
       Expect (Result, Success, "family-limit rejection changed the exact admitted mutation");
+      Expected_Live_Sequence := Receipt_Sequence (Receipt);
+      Expect_Live_Entry_Sequence (Item, "first commit");
+
+      Begin_Transaction (Item, TX_ID (204), Txn, Result);
+      Expect (Result, Success, "replacement transaction begin failed");
+      Put (Item, Txn, Family_By_ID, To_Key ([16#00#, 16#FF#]), Replacement_Value, Result);
+      Expect (Result, Success, "same-key replacement was rejected");
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "same-key replacement commit failed");
+      if Receipt_Sequence (Receipt) /= Expected_Live_Sequence + 1 then
+         raise Program_Error with "same-key replacement did not advance by one sequence";
+      end if;
+      Expected_Live_Sequence := Receipt_Sequence (Receipt);
+      Expect_Live_Entry_Sequence (Item, "replacement commit");
 
       Stale_Family := Family_By_ID;
       Close (Item, Result);
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "family-handle database reopen failed");
       Expect_Live_LSM_Authority (Item, "cacheless reopen");
-      Begin_Transaction (Item, TX_ID (204), Txn, Result);
+      Expect_Live_Entry_Sequence (Item, "cacheless reopen");
+      Begin_Transaction (Item, TX_ID (205), Txn, Result);
       Get (Item, Txn, Stale_Family, To_Key ([16#00#, 16#FF#]), Data, Result);
       Expect (Result, Invalid_State, "stale family handle survived engine incarnation change");
       Open_Column_Family (Item, [16#C3#, 16#A9#], Family_By_Name, Result);
       Get (Item, Txn, Family_By_Name, To_Key ([16#00#, 16#FF#]), Data, Result);
       Expect (Result, Success, "reopened exact-name family handle could not read persisted data");
+      if Data /= Replacement_Value then
+         raise Program_Error with "reopened replacement value changed";
+      end if;
       Rollback (Txn, Result);
 
       Bind_Context (Other_Ctx, Backend, "manifest-family-other");

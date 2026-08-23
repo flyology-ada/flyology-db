@@ -129,6 +129,12 @@ private package Flyology.DB.Testing is
       Memtable_Max_Entries   : out Interfaces.Unsigned_32;
       Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
       Result                 : out Outcome_Code);
+   procedure Live_Entry_Sequence
+     (Item      : in out Database;
+      Family_ID : Column_Family_ID;
+      Item_Key  : Byte_Array;
+      Sequence  : out Sequence_Number;
+      Result    : out Outcome_Code);
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB.Testing;

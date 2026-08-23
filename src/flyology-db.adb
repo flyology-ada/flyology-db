@@ -1314,6 +1314,10 @@ package body Flyology.DB is
       Key_Length   : Natural := 0;
       Value_Offset : Natural := 0;
       Value_Length : Natural := 0;
+      --  Zero is the vacant-entry sentinel. Every installed entry retains the
+      --  exact nonzero last-write sequence authenticated by its runtime batch;
+      --  changing it would change SST ordering and cacheless reconstruction.
+      Sequence     : Sequence_Number := 0;
    end record;
    type State_Entry_Array is array (Positive range <>) of State_Entry;
    type Seen_Transaction_Array is array (Positive range <>) of Transaction_Identifier;
@@ -1453,6 +1457,12 @@ package body Flyology.DB is
         (Family   : Column_Family_ID;
          Item_Key : Byte_Array;
          Data     : out Flyology.Bytes.Unbounded_Bytes;
+         Result   : out Outcome_Code);
+
+      procedure Lookup_Sequence
+        (Family   : Column_Family_ID;
+         Item_Key : Byte_Array;
+         Sequence : out Sequence_Number;
          Result   : out Outcome_Code);
 
       procedure Find_Family
@@ -1602,6 +1612,18 @@ package body Flyology.DB is
             end loop;
             return False;
          end Existing_Key;
+
+         function Sequence_For_Mutation (Index : Positive) return Sequence_Number is
+         begin
+            for Transaction of Batch.Transactions (1 .. Batch.Transaction_Total) loop
+               if Index >= Transaction.First_Mutation
+                 and then Index - Transaction.First_Mutation < Transaction.Mutation_Count
+               then
+                  return Transaction.Sequence;
+               end if;
+            end loop;
+            return 0;
+         end Sequence_For_Mutation;
 
          procedure Add_Bytes (Amount : Interfaces.Unsigned_64; Valid : out Boolean) is
          begin
@@ -1774,7 +1796,12 @@ package body Flyology.DB is
                elsif Batch.Mutations (Last_Mutation).Operation = Put_Mutation then
                   declare
                      Mutation : Runtime_Mutation renames Batch.Mutations (Last_Mutation);
+                     Sequence : constant Sequence_Number := Sequence_For_Mutation (Last_Mutation);
                   begin
+                     if Sequence = 0 then
+                        Result := Policy_Failure;
+                        return;
+                     end if;
                      Add_Bytes
                        (Interfaces.Unsigned_64 (Mutation.Key_Length)
                         + Interfaces.Unsigned_64 (Mutation.Value_Length),
@@ -1790,7 +1817,8 @@ package body Flyology.DB is
                         Key_Offset   => Mutation.Key_Offset,
                         Key_Length   => Mutation.Key_Length,
                         Value_Offset => Mutation.Value_Offset,
-                        Value_Length => Mutation.Value_Length);
+                        Value_Length => Mutation.Value_Length,
+                        Sequence     => Sequence);
                   end;
                end if;
             end;
@@ -1804,8 +1832,12 @@ package body Flyology.DB is
                declare
                   Mutation : Runtime_Mutation renames Batch.Mutations (Index);
                   Valid    : Boolean;
+                  Sequence : constant Sequence_Number := Sequence_For_Mutation (Index);
                begin
-                  if Candidate_Count = Entry_Capacity then
+                  if Sequence = 0 then
+                     Result := Policy_Failure;
+                     return;
+                  elsif Candidate_Count = Entry_Capacity then
                      Result := Policy_Failure;
                      return;
                   end if;
@@ -1824,7 +1856,8 @@ package body Flyology.DB is
                      Key_Offset   => Mutation.Key_Offset,
                      Key_Length   => Mutation.Key_Length,
                      Value_Offset => Mutation.Value_Offset,
-                     Value_Length => Mutation.Value_Length);
+                     Value_Length => Mutation.Value_Length,
+                     Sequence     => Sequence);
                end;
             end if;
          end loop;
@@ -2447,6 +2480,41 @@ package body Flyology.DB is
             Flyology.Bytes.Clear (Data);
             Result := Capacity_Exceeded;
       end Lookup;
+
+      procedure Lookup_Sequence
+        (Family   : Column_Family_ID;
+         Item_Key : Byte_Array;
+         Sequence : out Sequence_Number;
+         Result   : out Outcome_Code)
+      is
+         Matches : Boolean;
+      begin
+         Sequence := 0;
+         for Index in Positive range 1 .. Entry_Count loop
+            Matches :=
+              Entries (Index).Family = Family
+              and then Entries (Index).Image /= null
+              and then Entries (Index).Key_Length = Item_Key'Length;
+            if Matches then
+               for Offset in Natural range 0 .. Item_Key'Length - 1 loop
+                  if Byte
+                       (Flyology.Bytes.Element
+                          (Entries (Index).Image.Data, Entries (Index).Key_Offset + Offset + 1))
+                    /= Item_Key (Item_Key'First + Offset)
+                  then
+                     Matches := False;
+                     exit;
+                  end if;
+               end loop;
+               if Matches then
+                  Sequence := Entries (Index).Sequence;
+                  Result := Success;
+                  return;
+               end if;
+            end if;
+         end loop;
+         Result := Not_Found;
+      end Lookup_Sequence;
 
       procedure Find_Family
         (ID : Column_Family_ID; Configuration : out Column_Family_Configuration; Result : out Outcome_Code) is
@@ -6603,6 +6671,22 @@ package body Flyology.DB is
       end loop;
       Result := Not_Found;
    end Read_Test_Live_LSM_Limits;
+
+   procedure Read_Test_Live_Entry_Sequence
+     (Item      : in out Database;
+      Family_ID : Column_Family_ID;
+      Item_Key  : Byte_Array;
+      Sequence  : out Sequence_Number;
+      Result    : out Outcome_Code)
+   is
+      Lease : Lifecycle_Lease;
+   begin
+      Sequence := 0;
+      Acquire (Item, Lease, Result);
+      if Result = Success then
+         Lease.State.Gate.Lookup_Sequence (Family_ID, Item_Key, Sequence, Result);
+      end if;
+   end Read_Test_Live_Entry_Sequence;
 
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code)
