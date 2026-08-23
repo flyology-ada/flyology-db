@@ -322,7 +322,8 @@ private
       Root_Checkpoint_Image_Allocation,
       Root_Manifest_Retention_Allocation,
       Checkpoint_Reference_Allocation,
-      Checkpoint_SST_Allocation);
+      Checkpoint_SST_Allocation,
+      Checkpoint_Manifest_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code);
@@ -612,6 +613,12 @@ private
       Lowest_Sequence  : out Sequence_Number;
       Highest_Sequence : out Sequence_Number;
       Result           : out Outcome_Code);
+   procedure Build_Test_First_Checkpoint
+     (Item            : in out Database;
+      Run_Total       : out Natural;
+      Identity_Total  : out Natural;
+      Replay_Boundary : out Sequence_Number;
+      Result          : out Outcome_Code);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB;

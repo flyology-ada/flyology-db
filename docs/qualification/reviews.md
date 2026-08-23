@@ -1,5 +1,25 @@
 # Review record
 
+## Accepted exact whole-checkpoint plan candidate
+
+- Parent: exact first-SST snapshot commit `3d16863`.
+- Scope: assemble one exact immutable SST for every nonempty canonical family and one exact successor manifest under
+  the exclusive checkpoint lifecycle. The plan captures the expected opaque provider generation and transition,
+  advances the persisted successor fields once, records the committed replay boundary, copies and canonically sorts
+  the exact never-reused identity authority, and revalidates the operational manifest. It performs no object write,
+  HEAD transition, public Flush, recovery change, or composable operation.
+- Constant authority: all allocation extents and backpressure limits come from authenticated database/family LSM
+  policy and measured quiescent state. The three structural-ID domains are explicitly test/reference fixtures and
+  cannot become public run/manifest/transition authority; the later public operation must receive stable caller-owned
+  IDs. The registry increment is existing persisted predecessor policy, not a new configurable limit.
+- Verification: the focused deterministic engine suite builds two family runs, retains the exact singleton identity
+  ledger and committed replay boundary, encodes the complete manifest, and proves injected manifest-allocation
+  failure is `Capacity_Exceeded` with unchanged batch/manifest/HEAD publication counts. The authoritative full suite
+  is the acceptance gate for the exact commit; selected SPARK units and TLA+/TLAPS models are unchanged.
+- Findings cycle: review found and fixed one P1 omission where a complete plan failed to retain the exact provider
+  generation required by its future conditional HEAD call. Follow-up review finds no remaining P0, P1, P2, or P3
+  issue in this unpublished planning boundary.
+
 ## Accepted exact first-SST snapshot candidate
 
 - Parent: live-entry sequence retention commit `772d969`.

@@ -37,6 +37,7 @@ package body Flyology.DB is
    use type LSM_Runtime.Decode_Status;
    use type LSM_Runtime.Encode_Status;
    use type LSM_Runtime.Image_Access;
+   use type LSM_Runtime.SST_Access;
    use type OS.Status;
 
    function Group_Mutation_Total_Fits_Wire (Value : Natural) return Boolean
@@ -1337,6 +1338,21 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation
        (Object => Snapshot_Entry_Reference_Array,
         Name   => Snapshot_Entry_Reference_Array_Access);
+   --  The fixed slot map mirrors the frozen 64-family registry only. Each
+   --  populated slot owns one exact dynamically allocated SST; vacant slots
+   --  carry null and introduce no run or payload allocation policy.
+   type Checkpoint_SST_Array is array (Manifests.Family_Slot) of LSM_Runtime.SST_Access;
+   type Checkpoint_Plan is record
+      Manifest            : LSM_Runtime.Checkpoint_Manifest_Access := null;
+      SSTs                : Checkpoint_SST_Array := [others => null];
+      Expected_Generation : Generation_Value;
+   end record;
+   --  These disjoint structural-ID tags identify only unpublished test plans.
+   --  They are reference-fixture policy, never public or persisted-format
+   --  authority; changing them changes fixture object identities only.
+   Test_Checkpoint_Run_Tag        : constant Byte := 16#D1#;
+   Test_Checkpoint_Manifest_Tag   : constant Byte := 16#D2#;
+   Test_Checkpoint_Transition_Tag : constant Byte := 16#D3#;
    type Seen_Transaction_Array is array (Positive range <>) of Transaction_Identifier;
    type Used_Batch_ID_Array is array (Positive range <>) of Identifier;
    type History_Image_Array is array (Positive range <>) of Shared_Image_Access;
@@ -1492,6 +1508,12 @@ package body Flyology.DB is
         (Family     : Column_Family_ID;
          References : not null Snapshot_Entry_Reference_Array_Access;
          Result     : out Outcome_Code);
+
+      procedure Checkpoint_Metadata
+        (Base : out Manifests.Manifest; Identity_Total : out Natural; Result : out Outcome_Code);
+
+      procedure Copy_Checkpoint_Identities
+        (Value : not null LSM_Runtime.Checkpoint_Manifest_Access; Result : out Outcome_Code);
 
       procedure Find_Family
         (ID : Column_Family_ID; Configuration : out Column_Family_Configuration; Result : out Outcome_Code);
@@ -2611,6 +2633,27 @@ package body Flyology.DB is
          Result := (if Next = References'Length then Success else Invalid_State);
       end Copy_Family_Snapshot;
 
+      procedure Checkpoint_Metadata
+        (Base : out Manifests.Manifest; Identity_Total : out Natural; Result : out Outcome_Code) is
+      begin
+         Base := Current_Manifest;
+         Identity_Total := Reserved_Count;
+         Result := Success;
+      end Checkpoint_Metadata;
+
+      procedure Copy_Checkpoint_Identities
+        (Value : not null LSM_Runtime.Checkpoint_Manifest_Access; Result : out Outcome_Code) is
+      begin
+         if Value.Identity_Total /= Reserved_Count then
+            Result := Invalid_State;
+            return;
+         end if;
+         for Index in Positive range 1 .. Reserved_Count loop
+            Value.Identities (Index) := To_Head_ID (Reserved (Index));
+         end loop;
+         Result := Success;
+      end Copy_Checkpoint_Identities;
+
       procedure Find_Family
         (ID : Column_Family_ID; Configuration : out Column_Family_Configuration; Result : out Outcome_Code) is
       begin
@@ -2976,6 +3019,205 @@ package body Flyology.DB is
          LSM_Runtime.Release (Value);
          raise;
    end Build_Family_SST;
+
+   procedure Release_Checkpoint_Plan (Plan : in out Checkpoint_Plan) is
+   begin
+      LSM_Runtime.Release (Plan.Manifest);
+      for Value of Plan.SSTs loop
+         LSM_Runtime.Release (Value);
+      end loop;
+   end Release_Checkpoint_Plan;
+
+   function Identity_Less (Left, Right : Heads.Identifier) return Boolean is
+   begin
+      for Index in Heads.Identifier_Index loop
+         if Left (Index) < Right (Index) then
+            return True;
+         elsif Left (Index) > Right (Index) then
+            return False;
+         end if;
+      end loop;
+      return False;
+   end Identity_Less;
+
+   procedure Sort_Checkpoint_Identities (Value : in out LSM_Runtime.Checkpoint_Manifest) is
+   begin
+      for Index in Value.Identities'First + 1 .. Value.Identities'Last loop
+         declare
+            Item   : constant Heads.Identifier := Value.Identities (Index);
+            Cursor : Positive := Index;
+         begin
+            while Cursor > Value.Identities'First and then Identity_Less (Item, Value.Identities (Cursor - 1))
+            loop
+               Value.Identities (Cursor) := Value.Identities (Cursor - 1);
+               Cursor := Cursor - 1;
+            end loop;
+            Value.Identities (Cursor) := Item;
+         end;
+      end loop;
+   end Sort_Checkpoint_Identities;
+
+   procedure Build_First_Checkpoint_Plan
+     (State         : not null Engine_State_Access;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Plan          : out Checkpoint_Plan;
+      Result        : out Outcome_Code)
+   is
+      Base           : Manifests.Manifest;
+      Head           : Head_Snapshot;
+      Generation     : Generation_Value;
+      Uncertain      : Boolean;
+      Fenced         : Boolean;
+      Identity_Total : Natural;
+      Run_Total      : Natural := 0;
+      Run_Index      : Natural := 0;
+      Allocation     : LSM_Runtime.Allocation_Status;
+   begin
+      Plan := (others => <>);
+      if Is_Zero (Manifest_ID)
+        or else Is_Zero (Transition_ID)
+        or else Manifest_ID = Transition_ID
+        or else not State.LSM_Authority.Enabled
+        or else State.LSM_Authority.Replay_Boundary /= 0
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+      State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+         return;
+      elsif Fenced then
+         Result := Stale_Writer;
+         return;
+      elsif Head.Highest = 0
+        or else Head.Transition_Number = Interfaces.Unsigned_64'Last
+        or else Head.Latest_Manifest = Zero_Identifier
+        or else Manifest_ID = Head.Latest_Manifest
+        or else Transition_ID = Head.Transition_ID
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+      State.Gate.Checkpoint_Metadata (Base, Identity_Total, Result);
+      if Result /= Success then
+         return;
+      elsif Base.Registry_Revision = Interfaces.Unsigned_64'Last then
+         Result := Capacity_Exceeded;
+         return;
+      elsif Interfaces.Unsigned_64 (Identity_Total)
+        > Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Checkpoint_Identities)
+      then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+      Plan.Expected_Generation := Generation;
+
+      for Family_Index in Manifests.Family_Slot range 1 .. Base.Family_Total loop
+         declare
+            Family_ID : constant Column_Family_ID := Column_Family_ID (Base.Families (Family_Index).ID);
+            --  Test and internal planning use a stable per-family domain only;
+            --  the public Flush surface will supply caller-owned run IDs.
+            Run_ID    : constant Identifier :=
+              Structural_ID
+                (Test_Checkpoint_Run_Tag, Interfaces.Unsigned_64 (Base.Families (Family_Index).ID));
+         begin
+            Build_Family_SST (State, Family_ID, Run_ID, Plan.SSTs (Family_Index), Result);
+            if Result = Success then
+               Run_Total := Run_Total + 1;
+            elsif Result = Not_Found then
+               Result := Success;
+            else
+               Release_Checkpoint_Plan (Plan);
+               return;
+            end if;
+         end;
+      end loop;
+      if Interfaces.Unsigned_64 (Run_Total)
+        > Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Total_L0_Runs)
+      then
+         Release_Checkpoint_Plan (Plan);
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Checkpoint_Manifest_Allocation);
+      LSM_Runtime.Create_Checkpoint_Manifest
+        (Natural (Base.Family_Total), Run_Total, Identity_Total, Plan.Manifest, Allocation);
+      if Allocation /= LSM_Runtime.Allocated then
+         Release_Checkpoint_Plan (Plan);
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+      Base.Manifest_ID := To_Head_ID (Manifest_ID);
+      Base.Previous_Manifest_ID := To_Head_ID (Head.Latest_Manifest);
+      Base.Expected_Transition_ID := To_Head_ID (Head.Transition_ID);
+      Base.Expected_Transition_Number := Head.Transition_Number;
+      Base.Publication_Transition_ID := To_Head_ID (Transition_ID);
+      Base.Publication_Transition_Number := Head.Transition_Number + 1;
+      Base.Writer_Epoch := Head.Epoch;
+      --  Manifest predecessor validation defines each successor as the next
+      --  registry revision even when the family membership is unchanged.
+      --  This is persisted transition-policy authority; changing it breaks
+      --  predecessor compatibility and cacheless recovery validation.
+      Base.Registry_Revision := Base.Registry_Revision + 1;
+      Plan.Manifest.Base := Base;
+      Plan.Manifest.Replay_Boundary := Interfaces.Unsigned_64 (Head.Highest);
+      Plan.Manifest.Maximum_Total_L0_Runs := State.LSM_Authority.Maximum_Total_L0_Runs;
+      Plan.Manifest.Maximum_Checkpoint_Identities := State.LSM_Authority.Maximum_Checkpoint_Identities;
+
+      for Family_Index in Plan.Manifest.Families'Range loop
+         declare
+            Family_ID       : constant Interfaces.Unsigned_32 := Base.Families (Family_Index).ID;
+            Authority_Found : Boolean := False;
+         begin
+            for Family of State.LSM_Authority.Families loop
+               if Family.ID = Family_ID then
+                  Plan.Manifest.Families (Family_Index) := Family.State;
+                  Plan.Manifest.Families (Family_Index).First_Run := 0;
+                  Plan.Manifest.Families (Family_Index).Run_Total := 0;
+                  Authority_Found := True;
+                  exit;
+               end if;
+            end loop;
+            if not Authority_Found then
+               Release_Checkpoint_Plan (Plan);
+               Result := Corrupt;
+               return;
+            elsif Plan.SSTs (Family_Index) /= null then
+               Run_Index := Run_Index + 1;
+               Plan.Manifest.Families (Family_Index).First_Run := Run_Index;
+               Plan.Manifest.Families (Family_Index).Run_Total := 1;
+               Plan.Manifest.Runs (Run_Index) :=
+                 (Run_ID                => Plan.SSTs (Family_Index).Run_ID,
+                  Lowest_Sequence       => Plan.SSTs (Family_Index).Lowest_Sequence,
+                  Highest_Sequence      => Plan.SSTs (Family_Index).Highest_Sequence,
+                  Entry_Total           => Interfaces.Unsigned_32 (Plan.SSTs (Family_Index).Entry_Total),
+                  Logical_Payload_Bytes => Plan.SSTs (Family_Index).Logical_Payload_Bytes);
+            end if;
+         end;
+      end loop;
+      State.Gate.Copy_Checkpoint_Identities (Plan.Manifest, Result);
+      if Result /= Success then
+         Release_Checkpoint_Plan (Plan);
+         return;
+      end if;
+      Sort_Checkpoint_Identities (Plan.Manifest.all);
+      if Run_Index /= Run_Total or else not LSM_Runtime.Structurally_Valid (Plan.Manifest.all) then
+         Release_Checkpoint_Plan (Plan);
+         Result := Corrupt;
+         return;
+      end if;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Release_Checkpoint_Plan (Plan);
+         Result := Capacity_Exceeded;
+      when others =>
+         Release_Checkpoint_Plan (Plan);
+         raise;
+   end Build_First_Checkpoint_Plan;
 
    protected body Database_Lifecycle is
 
@@ -7050,6 +7292,60 @@ package body Flyology.DB is
          LSM_Runtime.Release (Value);
          raise;
    end Build_Test_First_SST;
+
+   procedure Build_Test_First_Checkpoint
+     (Item            : in out Database;
+      Run_Total       : out Natural;
+      Identity_Total  : out Natural;
+      Replay_Boundary : out Sequence_Number;
+      Result          : out Outcome_Code)
+   is
+      State         : Engine_State_Access;
+      Plan          : Checkpoint_Plan;
+      Image         : LSM_Runtime.Image_Access := null;
+      Encode_Result : LSM_Runtime.Encode_Status;
+      Guard         : Checkpoint_Guard;
+      pragma Unreferenced (Guard);
+      --  Stable test-only successor IDs isolate complete plan construction.
+      --  Production Flush will receive both from its caller-owned operation.
+      Manifest_ID   : constant Identifier := Structural_ID (Test_Checkpoint_Manifest_Tag, 1);
+      Transition_ID : constant Identifier := Structural_ID (Test_Checkpoint_Transition_Tag, 1);
+   begin
+      Run_Total := 0;
+      Identity_Total := 0;
+      Replay_Boundary := 0;
+      Item.Life.Begin_Checkpoint (State, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Item.Life.Await_Quiescent;
+      Build_First_Checkpoint_Plan (State, Manifest_ID, Transition_ID, Plan, Result);
+      if Result = Success then
+         LSM_Runtime.Encode_Checkpoint_Manifest (Plan.Manifest.all, Image, Encode_Result);
+         if Encode_Result /= LSM_Runtime.Encoded then
+            Result := Corrupt;
+         else
+            Run_Total := Plan.Manifest.Run_Total;
+            Identity_Total := Plan.Manifest.Identity_Total;
+            Replay_Boundary := Sequence_Number (Plan.Manifest.Replay_Boundary);
+         end if;
+      end if;
+      LSM_Runtime.Release (Image);
+      Release_Checkpoint_Plan (Plan);
+      Item.Life.Finish_Checkpoint;
+      Guard.Active := False;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Image);
+         Release_Checkpoint_Plan (Plan);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Image);
+         Release_Checkpoint_Plan (Plan);
+         raise;
+   end Build_Test_First_Checkpoint;
 
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code)

@@ -1484,6 +1484,8 @@ package body Flyology.DB.Engine_Tests is
       declare
          Snapshot_Entries                               : Natural;
          Snapshot_Low, Snapshot_High                    : Sequence_Number;
+         Checkpoint_Runs, Checkpoint_Identities         : Natural;
+         Checkpoint_Replay                              : Sequence_Number;
          Before_Batches, Before_Manifests, Before_Heads : Natural;
          After_Batches, After_Manifests, After_Heads    : Natural;
          Snapshot_Allocation_Points                     :
@@ -1512,6 +1514,33 @@ package body Flyology.DB.Engine_Tests is
            or else Snapshot_High /= Expected_Live_Sequence
          then
             raise Program_Error with "exact first-SST snapshot construction failed";
+         end if;
+
+         Testing.Fail_Next_Allocation (Testing.Checkpoint_Manifest);
+         Testing.Build_First_Checkpoint
+           (Item, Checkpoint_Runs, Checkpoint_Identities, Checkpoint_Replay, Result);
+         Expect (Result, Capacity_Exceeded, "checkpoint-plan allocation failure was not typed capacity");
+         Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Manifests /= Before_Manifests
+           or else After_Heads /= Before_Heads
+         then
+            raise Program_Error with "checkpoint-plan allocation failure published an object";
+         end if;
+         Testing.Build_First_Checkpoint
+           (Item, Checkpoint_Runs, Checkpoint_Identities, Checkpoint_Replay, Result);
+         if Result /= Success
+           or else Checkpoint_Runs /= 2
+           or else Checkpoint_Identities /= 1
+           or else Checkpoint_Replay /= Expected_Live_Sequence
+         then
+            raise Program_Error
+              with
+                "exact first checkpoint plan construction failed: "
+                & Result'Image
+                & Natural'Image (Checkpoint_Runs)
+                & Natural'Image (Checkpoint_Identities)
+                & Sequence_Number'Image (Checkpoint_Replay);
          end if;
       end;
 

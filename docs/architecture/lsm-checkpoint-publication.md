@@ -4,8 +4,8 @@ This document freezes the semantic checkpoint-publication decision. The format l
 SST-v1 bytes, a private SPARK reference decoder, and a byte-identical dynamically sized operational codec. The codec
 is the allocation and validation boundary. New Create operations now publish an empty manifest-v2 root carrying the
 explicit LSM policy, while the engine remains log-only: no SST, nonzero replay boundary, or checkpoint publication is
-live yet. The internal first-SST builder is active but cannot publish an object. Existing manifest-v1 databases
-remain readable for log-only operation.
+live yet. The internal checkpoint planner now assembles an exact complete successor and its family SSTs but cannot
+publish an object. Existing manifest-v1 databases remain readable for log-only operation.
 
 ## Staged compatibility decision
 
@@ -68,11 +68,19 @@ expected HEAD generation/transition, attempted transition identity, replay bound
 
 Before storage admission, the lifecycle enters an exclusive checkpoint mode and waits for every already-admitted
 database call to finish. The builder reads actual per-family entry and payload totals, checks them against that
-family's persisted memtable limits, then allocates an exact transient reference array and exact SST object. References
+family’s persisted memtable limits, then allocates an exact transient reference array and exact SST object. References
 borrow immutable engine images only while checkpoint mode excludes close and mutation. Arbitrary byte keys are sorted
 canonically, duplicate live keys fail closed, exact retained last-write sequences populate the run, and the operational
 SST encoder revalidates the complete result. Allocation failure is typed capacity and cannot publish an object. This
 work is designed for the bounded native coordinator; it creates no per-flush, per-run, or per-entry helper task.
+
+The complete unpublished plan includes one exact SST allocation for every nonempty canonical family, no allocation
+for an empty family, and one exact successor-manifest allocation. It retains the provider generation and transition
+identity observed with the committed HEAD snapshot, advances the manifest ordinal and registry revision exactly once,
+uses the committed highest sequence as its replay boundary, and copies the complete never-reused admission ledger.
+The ledger is sorted by identifier bytes before structural validation. Family, aggregate-run, and exact-identity
+limits come only from the authenticated manifest-v2 policy. Any validation or allocation failure releases the whole
+plan and leaves batch, manifest, and HEAD publication counts unchanged.
 
 Publication order is strict:
 
@@ -125,7 +133,7 @@ TLC or future gates.
 
 ## Non-goals
 
-This unit does not implement Ada checkpoint publication, automatic flushing, compaction, run pruning, garbage
+This unit does not implement object I/O or Ada checkpoint publication, automatic flushing, compaction, run pruning, garbage
 collection, scans, MVCC, snapshots, remote-provider qualification, S3, asynchronous/composable I/O, or an LSM
 performance claim. The operational scope is limited to manifest-v2 root creation, empty-checkpoint recovery, and an
-unpublished exact first-SST snapshot builder.
+unpublished exact whole-checkpoint planner whose current structural run IDs are test-only.

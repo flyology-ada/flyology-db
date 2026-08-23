@@ -15,7 +15,8 @@ private package Flyology.DB.Testing is
       Root_Checkpoint_Image,
       Root_Manifest_Retention,
       Checkpoint_References,
-      Checkpoint_SST);
+      Checkpoint_SST,
+      Checkpoint_Manifest);
 
    procedure Fail_Next_Allocation (Point : Allocation_Fault_Point);
    procedure Decode_Runtime_Image
@@ -145,6 +146,12 @@ private package Flyology.DB.Testing is
       Lowest_Sequence  : out Sequence_Number;
       Highest_Sequence : out Sequence_Number;
       Result           : out Outcome_Code);
+   procedure Build_First_Checkpoint
+     (Item            : in out Database;
+      Run_Total       : out Natural;
+      Identity_Total  : out Natural;
+      Replay_Boundary : out Sequence_Number;
+      Result          : out Outcome_Code);
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB.Testing;

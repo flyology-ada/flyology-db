@@ -16,7 +16,8 @@ package body Flyology.DB.Testing is
            when Root_Checkpoint_Image   => Root_Checkpoint_Image_Allocation,
            when Root_Manifest_Retention => Root_Manifest_Retention_Allocation,
            when Checkpoint_References   => Checkpoint_Reference_Allocation,
-           when Checkpoint_SST          => Checkpoint_SST_Allocation);
+           when Checkpoint_SST          => Checkpoint_SST_Allocation,
+           when Checkpoint_Manifest     => Checkpoint_Manifest_Allocation);
    end Fail_Next_Allocation;
 
    procedure Decode_Runtime_Image
@@ -283,6 +284,16 @@ package body Flyology.DB.Testing is
    begin
       Build_Test_First_SST (Item, Family_ID, Run_ID, Entry_Total, Lowest_Sequence, Highest_Sequence, Result);
    end Build_First_SST;
+
+   procedure Build_First_Checkpoint
+     (Item            : in out Database;
+      Run_Total       : out Natural;
+      Identity_Total  : out Natural;
+      Replay_Boundary : out Sequence_Number;
+      Result          : out Outcome_Code) is
+   begin
+      Build_Test_First_Checkpoint (Item, Run_Total, Identity_Total, Replay_Boundary, Result);
+   end Build_First_Checkpoint;
 
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier
    is (Structural_ID (Tag, Number));
