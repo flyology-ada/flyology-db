@@ -1,5 +1,22 @@
 # Review record
 
+## Accepted legacy constant-authority audit
+
+- Parent: accepted first-LSM exact-format commit `1ae755268f47822ce1ae1b9ed658c7d17ecf29ce`.
+- Scope: adjacent stable authority/classification and compatibility comments for consequential legacy Ada constants,
+  record initializers, persisted offsets, derived sizes, runtime allocation dimensions, and qualification fixtures.
+  Repeated batch-v1 tags and test deadlines are named without changing their values. The audit adds no public default,
+  persisted ceiling, provider assumption, or allocation policy; authenticated database and per-family limits remain
+  runtime authority, while small codec values remain explicitly reference/proof dimensions.
+- Verification: `./tests/scripts/test.sh` passes the root build and repository/provenance checks, deterministic Ada
+  formats/policy/model/local engine, files crash/recovery, 32 comparative cases, and pinned TidesDB 4/4 set. A forced
+  warning-strict FSF GNATprove 16.1.0 run proves 1,078/1,078 checks (164 flow and 914 prover), with zero warnings,
+  unproved or justified checks, or `pragma Assume`; maximum proof effort is 6,840 steps.
+- Findings cycle: the sweep fixed one P1 formatter-induced source-encoding corruption and four P2 documentation
+  defects: vacant mutation comments contradicted supported empty keys, a zero-duration task yield was mislabeled as an
+  expired operation timeout, two corpus descriptions overstated their provenance, and a derived batch-frame extent
+  lacked adjacent authority. Follow-up review finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted first-LSM exact-format candidate
 
 - Parent: constants-skill agent-resource refresh `59597cbadf17d8f43c03192bd1aeccddf644248e`.

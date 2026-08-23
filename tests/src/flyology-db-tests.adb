@@ -64,6 +64,9 @@ procedure Flyology.DB.Tests is
    end Expect;
 
    procedure Test_Reference_Model is
+      --  Two families, five ordered one-byte keys, and three distinct values
+      --  form the deterministic isolation corpus. Exact spellings select
+      --  read/write/range relationships and are not public defaults.
       Family_One : constant Model.Column_Family_ID := 1;
       Family_Two : constant Model.Column_Family_ID := 2;
       Key_A      : constant Model.Key := Model_Key ("a");
@@ -233,6 +236,10 @@ procedure Flyology.DB.Tests is
       return Result;
    end ID;
 
+   --  Canonical HEAD transition corpus: Initial is root transition 1,
+   --  Committed advances sequence/transition to 2, Acquired advances the writer
+   --  epoch without data, and Legacy_Committed is the v1 compatibility peer.
+   --  Exact identities/counters determine the frozen images below.
    Initial : constant Head.Head_State :=
      (Database_ID            => ID (1),
       Version                => Head.Current_Format,
@@ -277,6 +284,8 @@ procedure Flyology.DB.Tests is
       Predecessor_Transition => ID (2),
       Transition_Number      => 2);
 
+   --  Externally standardized CRC check text "123456789" validates Castagnoli
+   --  CRC-32C independently of the DB formats.
    CRC_Vector : constant Formats.Byte_Array (0 .. 8) :=
      [Character'Pos ('1'), Character'Pos ('2'), Character'Pos ('3'),
       Character'Pos ('4'), Character'Pos ('5'), Character'Pos ('6'),
@@ -289,6 +298,8 @@ procedure Flyology.DB.Tests is
    Decoded     : Head.Head_State;
    Decode_Code : Formats.Decode_Status;
 
+   --  Independently frozen HEAD-v1 image for Legacy_Committed. Any byte change
+   --  is a wire-compatibility change or deliberate golden correction.
    Golden : constant Formats.Head_Image :=
      [16#46#, 16#4C#, 16#59#, 16#48#, 16#45#, 16#41#, 16#44#, 16#31#,
       16#00#, 16#01#, 16#01#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
@@ -308,6 +319,8 @@ procedure Flyology.DB.Tests is
       16#00#, 16#00#, 16#00#, 16#02#, 16#00#, 16#00#, 16#00#, 16#00#,
       16#00#, 16#00#, 16#00#, 16#02#, 16#5C#, 16#C0#, 16#62#, 16#B9#];
 
+   --  Independently frozen HEAD-v2 image for Initial, including manifest ID.
+   --  Any byte change is a wire-compatibility change or golden correction.
    V2_Golden : constant Formats.Head_Image :=
      [16#46#, 16#4C#, 16#59#, 16#48#, 16#45#, 16#41#, 16#44#, 16#31#,
       16#00#, 16#02#, 16#01#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,

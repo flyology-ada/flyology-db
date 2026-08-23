@@ -20,6 +20,9 @@ package body Flyology.DB.Batch_Format_Tests is
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
 
+   --  Independently generated golden-batch length. It is derived from the
+   --  frozen v1 headers plus this fixture's exact frames/payload and changes
+   --  only with an intentional fixture or wire-format revision.
    Fixture_Length : constant := 223;
 
    function ID (Last : Interfaces.Unsigned_8) return Head.Identifier is
@@ -60,6 +63,9 @@ package body Flyology.DB.Batch_Format_Tests is
       return Result;
    end Minimal_Batch;
 
+   --  Canonical two-mutation batch and its matching HEAD form one compatibility
+   --  fixture: root counters start at one and publication advances to two.
+   --  These are golden-test identities, not product defaults.
    Fixture : constant Batches.Commit_Batch := Minimal_Batch;
 
    Referencing_Head : constant Head.Head_State :=
@@ -412,6 +418,9 @@ package body Flyology.DB.Batch_Format_Tests is
 
    procedure Test_Envelope_And_Semantics is
       Corrupt               : Batches.Batch_Image := [others => 0];
+      --  Frozen batch-v1 offsets of required nonzero identities/counters. The
+      --  sweep proves each field fails closed independently; offset movement is
+      --  wire-incompatible and must track the normative codec table.
       Required_Field_Starts : constant array (Positive range 1 .. 7) of Natural :=
         [44, 52, 84, 100, 108, 124, 132];
    begin
@@ -563,6 +572,9 @@ package body Flyology.DB.Batch_Format_Tests is
    end Test_Envelope_And_Semantics;
 
    procedure Test_Caps is
+      --  Exact caps are derived from Fixture: one transaction, two mutations,
+      --  two key bytes, no value bytes, and 63 total framed payload bytes.
+      --  One-below variants prove each independent reader budget.
       Exact   : constant Batches.Reader_Caps :=
         (Transactions => 1, Mutations => 2, Key_Bytes => 2, Value_Bytes => 0, Payload_Bytes => 63);
       Corrupt : Batches.Batch_Image := [others => 0];
@@ -763,6 +775,9 @@ package body Flyology.DB.Batch_Format_Tests is
    end Test_Extreme_Wire_Values;
 
    procedure Test_Cacheless_Traversal is
+      --  Previous is the frozen fixture; Current deliberately advances every
+      --  batch/HEAD link and sequence once. Exact IDs are traversal witnesses,
+      --  not product identity allocation policy.
       Previous         : constant Batches.Commit_Batch := Fixture;
       Current          : Batches.Commit_Batch := Fixture;
       Previous_Image   : Batches.Batch_Image;
@@ -876,6 +891,8 @@ package body Flyology.DB.Batch_Format_Tests is
    end Test_Maximum_Batch;
 
    procedure Test_Duplicates_And_Predecessor is
+      --  The frozen fixture is the exact predecessor authority for all
+      --  successor, duplicate-ID, and chain-corruption mutations in this test.
       Previous         : constant Batches.Commit_Batch := Fixture;
       Current          : Batches.Commit_Batch := Fixture;
       Image            : Batches.Batch_Image;

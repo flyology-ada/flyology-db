@@ -25,6 +25,8 @@ private package Flyology.DB.Testing is
    subtype Fault_Mode is Storage_Fault_Mode;
 
    --  Arm one deterministic storage fault for the next Count matching calls.
+   --  Count defaults to one as test-harness convenience only; it does not
+   --  define production retry or fault policy.
    procedure Arm
      (Item : in out Storage_Context; Point : Fault_Point; Mode : Fault_Mode; Count : Positive := 1);
 

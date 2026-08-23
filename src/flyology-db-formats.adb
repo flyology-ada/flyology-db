@@ -7,6 +7,8 @@ is
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
 
+   --  Frozen HEAD object magic, object kind, and 132-byte header extent.
+   --  Changing any value is persisted-format incompatible.
    Magic : constant Byte_Array (0 .. 7) :=
      [Character'Pos ('F'), Character'Pos ('L'), Character'Pos ('Y'), Character'Pos ('H'),
       Character'Pos ('E'), Character'Pos ('A'), Character'Pos ('D'), Character'Pos ('1')];
@@ -151,6 +153,8 @@ is
    end Read_Identifier;
 
    function CRC_32C (Data : Byte_Array) return Interfaces.Unsigned_32 is
+      --  Externally fixed reflected Castagnoli polynomial with all-ones initial
+      --  state and final complement, matching the persisted CRC-32C contract.
       Polynomial : constant Interfaces.Unsigned_32 := 16#82F6_3B78#;
       Result     : Interfaces.Unsigned_32 := 16#FFFF_FFFF#;
    begin
@@ -170,6 +174,8 @@ is
    function Header_Checksum (Image : Head_Image) return Interfaces.Unsigned_32 is
       Header : Byte_Array (0 .. Natural (Header_Length) - 1) := Image (0 .. Natural (Header_Length) - 1);
    begin
+      --  Common-envelope bytes 40..43 are the frozen header CRC field and are
+      --  zero while calculating that CRC.
       Header (40 .. 43) := [others => 0];
       return CRC_32C (Header);
    end Header_Checksum;
@@ -177,6 +183,8 @@ is
    function Encode_Head (Value : Head_Policy.Head_State) return Head_Image is
       Result : Head_Image := [others => 0];
    begin
+      --  Frozen HEAD layout: envelope 0..43, epoch/sequence 44..59, identities
+      --  60..123, transition ordinal 124..131, object CRC 132..135.
       Result (0 .. 7) := Magic;
       Put_U16 (Result, 8, Interfaces.Unsigned_16 (Value.Version));
       Result (10) := Head_Kind;
@@ -218,6 +226,8 @@ is
       end loop;
 
       Wire_Format := Read_U16 (Fixed, 8);
+      --  Decode the same frozen offsets emitted by Encode_Head; moving a field
+      --  is a persisted-format change, not a decoder implementation choice.
       if Fixed (0 .. 7) /= Magic then
          Status := Invalid_Magic;
       elsif Wire_Format not in Legacy_Head_Format_Version | Head_Format_Version then

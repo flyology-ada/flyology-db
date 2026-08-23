@@ -36,14 +36,27 @@ package body Flyology.DB is
    is (Natural'Size <= Interfaces.Unsigned_32'Size
        or else Interfaces.Unsigned_64 (Value) <= Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last));
 
+   --  Persisted object-key namespace authority. HEAD is the sole mutable
+   --  metadata key; immutable batch/manifest IDs are lower-hex suffixes below
+   --  these prefixes. Renaming any path makes existing databases unreachable.
    Head_Key_Suffix     : constant String := "meta/HEAD";
    Commit_Key_Prefix   : constant String := "commits/";
    Manifest_Key_Prefix : constant String := "manifests/";
 
+   --  Operational batch-v1 codec widths copied from the normative persisted
+   --  table: object header 156, trailer 4, transaction prefix 32, mutation
+   --  prefix 14. Divergence from the reference codec is wire-incompatible.
    Batch_Header_Length             : constant := 156;
    Batch_Trailer_Length            : constant := 4;
    Transaction_Frame_Header_Length : constant := 32;
    Mutation_Frame_Header_Length    : constant := 14;
+   --  Frozen operational batch-v1 version/kind and mutation tags. Naming them
+   --  keeps the dynamic codec visibly tied to the persisted table; changing a
+   --  value is wire-incompatible and requires a new format version.
+   Batch_Format_Version_Code       : constant Interfaces.Unsigned_16 := 1;
+   Batch_Object_Kind_Code          : constant Byte := 2;
+   Put_Operation_Code              : constant Byte := 1;
+   Delete_Operation_Code           : constant Byte := 2;
 
    type Stored_Object_Kind is (Batch_Object, Manifest_Object, Head_Object);
 
@@ -402,6 +415,9 @@ package body Flyology.DB is
         Maximum_Live_State_Bytes          => Item.Maximum_Live_State_Bytes));
 
    function Maximum_Runtime_Batch_Length (Limits : Manifests.Database_Limits) return Natural is
+      --  Derived exact maximum framing from the persisted transaction/mutation
+      --  counts and frozen batch-v1 widths. Persisted payload bytes are added
+      --  below with checked arithmetic; no replacement ceiling is introduced.
       Framing : constant Interfaces.Unsigned_64 :=
         Interfaces.Unsigned_64 (Batch_Header_Length + Batch_Trailer_Length)
         + Interfaces.Unsigned_64 (Limits.Maximum_Transactions_Per_Batch) * Transaction_Frame_Header_Length
@@ -471,6 +487,8 @@ package body Flyology.DB is
    is (UStrings.To_String (Storage.Prefix) & "/" & Suffix);
 
    function Hex_Character (Value : Byte) return Character is
+      --  Persisted object-key encoding uses canonical lowercase hexadecimal;
+      --  changing alphabet/case changes every immutable object path.
       Hex_Digits : constant String := "0123456789abcdef";
    begin
       return Hex_Digits (Natural (Value) + 1);
@@ -492,6 +510,10 @@ package body Flyology.DB is
    function Manifest_Key (Storage : Storage_Context; Manifest_ID : Identifier) return String
    is (Full_Key (Storage, Manifest_Key_Prefix & Identifier_Hex (Manifest_ID)));
 
+   --  Internal deterministic identifiers place the project-selected domain tag
+   --  in byte 1 and a big-endian counter in the final eight bytes. They are
+   --  test/coordination identities, not persisted format tags; changing this
+   --  layout invalidates deterministic recovery fixtures and parity witnesses.
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier is
       Result : Identifier := [others => 0];
    begin
@@ -1002,6 +1024,9 @@ package body Flyology.DB is
          Result     : out Put_Outcome)
       is
          Conditions   : OS.Write_Conditions := OS.Default_Write_Conditions;
+         --  Test-injection points are a total mapping from persisted object
+         --  kind to its exact pre/post publication boundary; changing the map
+         --  changes crash-certainty coverage, not production storage policy.
          Before_Point : constant Storage_Fault_Point :=
            (case Kind is
               when Head_Object     => Before_Head_Put,
@@ -1416,12 +1441,17 @@ package body Flyology.DB is
          Install             : Boolean;
          Result              : out Outcome_Code)
       is
+         --  Preserve the admitted immutable batch identity while Batch may be
+         --  moved/released during installation; this is derived ownership state.
          Batch_ID              : constant Identifier := Batch.Batch_ID;
          Additional_Identities : Natural := Batch.Transaction_Total;
          Candidate_Count       : Natural range 0 .. Entry_Capacity := 0;
          Candidate_Bytes       : Interfaces.Unsigned_64 := 0;
          Batch_Payload         : Interfaces.Unsigned_64 := 0;
          Identity_Found        : Boolean;
+         --  Certainty classification derives from admission state: reserved
+         --  caller work exhausts declared capacity; recovered malformed work is
+         --  corruption. This is semantic policy, not an arbitrary error default.
          Policy_Failure        : constant Outcome_Code :=
            (if Identities_Reserved then Capacity_Exceeded else Corrupt);
 
@@ -1553,6 +1583,8 @@ package body Flyology.DB is
                loop
                   declare
                      Mutation : Runtime_Mutation renames Batch.Mutations (Mutation_Index);
+                     --  Derived logical payload contribution from the exact
+                     --  key/value lengths decoded for this mutation.
                      Amount   : constant Interfaces.Unsigned_64 :=
                        Interfaces.Unsigned_64 (Mutation.Key_Length)
                        + Interfaces.Unsigned_64 (Mutation.Value_Length);
@@ -1792,6 +1824,8 @@ package body Flyology.DB is
          Result   : out Outcome_Code)
       is
          Selected           : Commit_Slot := Commit_Slot'First;
+         --  Singleton commits deliberately reuse the caller transaction ID as
+         --  immutable batch identity; this enforces one nonreuse namespace.
          Candidate_Batch_ID : constant Identifier := Identifier (Txn.Transaction_ID);
       begin
          Slot := (others => <>);
@@ -2193,6 +2227,8 @@ package body Flyology.DB is
       begin
          for Group_Index in Commit_Slot range 1 .. Count loop
             declare
+               --  Derived coordinator slot returned by admission; it is not a
+               --  fixed slot choice or extra capacity limit.
                Index : constant Commit_Slot := Tokens (Group_Index).Index;
             begin
                if Slots (Index).State = Running
@@ -2777,6 +2813,8 @@ package body Flyology.DB is
    end Append_U32;
 
    function CRC_32C (Data : Flyology.Bytes.Unbounded_Bytes; Count : Natural) return Interfaces.Unsigned_32 is
+      --  Externally fixed reflected Castagnoli polynomial with all-ones initial
+      --  state and final complement, matching the persisted-format CRC-32C.
       Polynomial : constant Interfaces.Unsigned_32 := 16#82F6_3B78#;
       Result     : Interfaces.Unsigned_32 := 16#FFFF_FFFF#;
    begin
@@ -2857,6 +2895,8 @@ package body Flyology.DB is
          for Mutation_Index in Positive range 1 .. Mutation_Count (Items (Index)) loop
             declare
                Mutation     : Owned_Mutation renames Items (Index).Arena.Mutations (Mutation_Index);
+               --  Derived exact byte extents from the caller-owned mutation;
+               --  U32/wire and aggregate checks below are the only admission.
                Key_Bytes    : constant Interfaces.Unsigned_64 := Interfaces.Unsigned_64 (Mutation.Key_Length);
                Value_Bytes  : constant Interfaces.Unsigned_64 :=
                  Interfaces.Unsigned_64 (Mutation.Value_Length);
@@ -2899,6 +2939,9 @@ package body Flyology.DB is
       Batch.Previous_Batch_ID := (if Expected.Highest = 0 then Zero_Identifier else Expected.Latest_Batch);
       Batch.Expected_Transition_ID := Expected.Transition_ID;
       Batch.Expected_Transition_Number := Expected.Transition_Number;
+      --  Project domain-separation tags C3/C4 generate deterministic internal
+      --  transition IDs from the exact next ordinal; C4 is the collision
+      --  fallback required to differ from the predecessor. They are not wire tags.
       Publication_ID := Structural_ID (16#C3#, Expected.Transition_Number + 1);
       if Publication_ID = Expected.Transition_ID then
          Publication_ID := Structural_ID (16#C4#, Expected.Transition_Number + 1);
@@ -2910,6 +2953,9 @@ package body Flyology.DB is
       Batch.Transaction_Total := Count;
       Batch.Mutation_Total := Mutation_Total;
 
+      --  Emit the frozen operational batch-v1 map: common fields
+      --  0/8/10/11/12/28/32/40; header fields 44..152; transaction and mutation
+      --  prefixes 32/14 bytes. These offsets mirror persisted-formats.md.
       Header (0 .. 7) :=
         [Character'Pos ('F'),
          Character'Pos ('L'),
@@ -2919,8 +2965,8 @@ package body Flyology.DB is
          Character'Pos ('T'),
          Character'Pos ('C'),
          Character'Pos ('1')];
-      Put_U16 (Header, 8, 1);
-      Header (10) := 2;
+      Put_U16 (Header, 8, Batch_Format_Version_Code);
+      Header (10) := Batch_Object_Kind_Code;
       Put_Identifier (Header, 12, Identifier (Batch.Database_ID));
       Put_U32 (Header, 28, Batch_Header_Length);
       Put_U64 (Header, 32, Image_Length - Batch_Header_Length - Batch_Trailer_Length);
@@ -2946,6 +2992,8 @@ package body Flyology.DB is
             for Mutation_Index in Positive range 1 .. Mutation_Count (Item) loop
                declare
                   Mutation    : Owned_Mutation renames Item.Arena.Mutations (Mutation_Index);
+                  --  Derived exact byte extents repeated while emitting the
+                  --  already-admitted frame; they introduce no new limits.
                   Key_Bytes   : constant Interfaces.Unsigned_64 :=
                     Interfaces.Unsigned_64 (Mutation.Key_Length);
                   Value_Bytes : constant Interfaces.Unsigned_64 :=
@@ -3000,7 +3048,8 @@ package body Flyology.DB is
                begin
                   Mutation_Head := [others => 0];
                   Put_U32 (Mutation_Head, 0, Interfaces.Unsigned_32 (Source.Family));
-                  Mutation_Head (4) := (if Source.Operation = Put_Mutation then 1 else 2);
+                  Mutation_Head (4) :=
+                    (if Source.Operation = Put_Mutation then Put_Operation_Code else Delete_Operation_Code);
                   Put_U32 (Mutation_Head, 6, Interfaces.Unsigned_32 (Source.Key_Length));
                   Put_U32 (Mutation_Head, 10, Interfaces.Unsigned_32 (Source.Value_Length));
                   Append_Array (Batch.Image.Data, Mutation_Head);
@@ -3102,6 +3151,8 @@ package body Flyology.DB is
       Batch             : out Runtime_Batch;
       Result            : out Outcome_Code)
    is
+      --  Exact caller image extent; all following offset arithmetic is against
+      --  the frozen batch-v1 table and persisted limits, not a hidden cap.
       Length             : constant Natural := Flyology.Bytes.Length (Data);
       Header             : Formats.Byte_Array (0 .. Batch_Header_Length - 1) := [others => 0];
       Stored_Header_CRC  : Interfaces.Unsigned_32;
@@ -3114,6 +3165,9 @@ package body Flyology.DB is
       Parsed_Mutations   : Natural := 0;
    begin
       Batch := (others => <>);
+      --  Decode the same frozen operational batch-v1 map emitted above.
+      --  Magic/version/kind/flags/database/extent and both CRCs authenticate
+      --  before persisted count and byte admission.
       if Length < Batch_Header_Length + Batch_Trailer_Length then
          Result := Corrupt;
          return;
@@ -3132,8 +3186,8 @@ package body Flyology.DB is
                     Character'Pos ('T'),
                     Character'Pos ('C'),
                     Character'Pos ('1')]
-        or else Read_U16 (Data, 8) /= 1
-        or else Header (10) /= 2
+        or else Read_U16 (Data, 8) /= Batch_Format_Version_Code
+        or else Header (10) /= Batch_Object_Kind_Code
         or else Header (11) /= 0
         or else Read_Identifier (Data, 12) /= Identifier (Expected_Database)
         or else Read_U32 (Data, 28) /= Batch_Header_Length
@@ -3228,6 +3282,8 @@ package body Flyology.DB is
             Count_Wire     : Interfaces.Unsigned_32;
             Body_Wire      : Interfaces.Unsigned_32;
             Body_End       : Natural;
+            --  Derived first global mutation slot after the already-decoded
+            --  prefix; it is not an additional count policy.
             First          : constant Natural := Parsed_Mutations + 1;
          begin
             if Cursor > Length - Batch_Trailer_Length - Transaction_Frame_Header_Length then
@@ -3269,6 +3325,8 @@ package body Flyology.DB is
                Mutation_Count => Natural (Count_Wire));
             for Local_Index in Positive range 1 .. Natural (Count_Wire) loop
                declare
+                  --  Derived next global mutation slot for this transaction;
+                  --  bounds come from validated persisted counts.
                   Index        : constant Positive := Parsed_Mutations + 1;
                   Family_Wire  : Interfaces.Unsigned_32;
                   Operation    : Byte;
@@ -3287,11 +3345,11 @@ package body Flyology.DB is
                   Key_Wire := Read_U32 (Batch.Image.Data, Cursor + 6);
                   Value_Wire := Read_U32 (Batch.Image.Data, Cursor + 10);
                   if Family_Wire = 0
-                    or else Operation not in 1 | 2
+                    or else Operation not in Put_Operation_Code | Delete_Operation_Code
                     or else Flyology.Bytes.Element (Batch.Image.Data, Cursor + 6) /= 0
                     or else Interfaces.Unsigned_64 (Key_Wire) > Interfaces.Unsigned_64 (Natural'Last)
                     or else Interfaces.Unsigned_64 (Value_Wire) > Interfaces.Unsigned_64 (Natural'Last)
-                    or else (Operation = 2 and then Value_Wire /= 0)
+                    or else (Operation = Delete_Operation_Code and then Value_Wire /= 0)
                   then
                      Release_Runtime_Batch (Batch);
                      Result := Corrupt;
@@ -3308,7 +3366,8 @@ package body Flyology.DB is
                   end if;
                   Batch.Mutations (Index) :=
                     (Family       => Column_Family_ID (Family_Wire),
-                     Operation    => (if Operation = 1 then Put_Mutation else Delete_Mutation),
+                     Operation    =>
+                       (if Operation = Put_Operation_Code then Put_Mutation else Delete_Mutation),
                      Key_Offset   => Cursor + Mutation_Frame_Header_Length,
                      Key_Length   => Key_Length,
                      Value_Offset => Cursor + Mutation_Frame_Header_Length + Key_Length,
@@ -3416,6 +3475,8 @@ package body Flyology.DB is
    function Exact_Bytes
      (Left : not null Shared_Image_Access; Right : Flyology.Bytes.Unbounded_Bytes) return Boolean
    is
+      --  Comparison spans the owned image's exact runtime length; no persisted
+      --  maximum or truncation policy is introduced by this derived bound.
       Length : constant Natural := Flyology.Bytes.Length (Left.Data);
    begin
       if Length /= Flyology.Bytes.Length (Right) then
@@ -3477,6 +3538,10 @@ package body Flyology.DB is
       Head_Image           : Formats.Head_Image;
       Head_Owner           : Shared_Image_Access := null;
       Deadline             : Ada.Real_Time.Time := Items (1).Deadline;
+      --  The coordinator already owns cancellation classification for every
+      --  admitted item, so its shared publication phase deliberately has no
+      --  independent cancellation authority. Changing this would split the
+      --  group's single terminal-outcome decision.
       Token                : constant access Flyology.Cancellation.Token := null;
       Attempted_Head       : Head_Snapshot;
       Head_Confirmed       : Boolean := False;
@@ -3907,6 +3972,8 @@ package body Flyology.DB is
          end if;
 
          declare
+            --  Persisted batch-history authority determines the lazy recovery
+            --  descriptor allocation; zero/unrepresentable values fail closed.
             Capacity : constant Interfaces.Unsigned_32 := Manifest.Limits.Maximum_Batch_History;
          begin
             if Capacity = 0 or else Interfaces.Unsigned_64 (Capacity) > Interfaces.Unsigned_64 (Positive'Last)
@@ -4067,6 +4134,9 @@ package body Flyology.DB is
       State       : out Engine_State_Access;
       Result      : out Outcome_Code)
    is
+      --  All allocation dimensions below come directly from the authenticated
+      --  persisted manifest. Seen = history * transactions; reserved = history
+      --  * (transactions + one batch/group ID), with checked arithmetic.
       Entry_Capacity_U64    : constant Interfaces.Unsigned_64 :=
         Interfaces.Unsigned_64 (Manifest.Limits.Maximum_Live_Entries);
       History_Capacity_U64  : constant Interfaces.Unsigned_64 :=
@@ -4257,6 +4327,10 @@ package body Flyology.DB is
       Candidate.Database_ID := To_Head_ID (Database_ID);
       Candidate.Manifest_ID := To_Head_ID (Manifest_ID);
       Candidate.Publication_Transition_ID := To_Head_ID (Initial_Transition_ID);
+      --  A root manifest starts all three persisted monotonic domains at one:
+      --  transition 1 publishes it, writer epoch 1 owns it, and registry
+      --  revision 1 names the initial family registry. Recovery and stale-writer
+      --  fencing depend on these canonical roots and cannot reinterpret them.
       Candidate.Publication_Transition_Number := 1;
       Candidate.Writer_Epoch := 1;
       Candidate.Registry_Revision := 1;
@@ -4298,6 +4372,8 @@ package body Flyology.DB is
       Receipt               : out Create_Receipt;
       Result                : out Outcome_Code)
    is
+      --  The operation's sole absolute monotonic deadline is derived from the
+      --  caller-supplied Timeout; there is no hidden default or retry budget.
       Deadline         : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Head             : Head_Snapshot;
       Head_Image       : Formats.Head_Image;
@@ -4570,6 +4646,8 @@ package body Flyology.DB is
       Token   : access Flyology.Cancellation.Token := null;
       Result  : out Outcome_Code)
    is
+      --  The operation's sole absolute monotonic deadline is derived from the
+      --  caller-supplied Timeout; there is no hidden default or retry budget.
       Deadline         : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Manifest_Value   : Manifests.Manifest;
       Decode_Result    : Outcome_Code;
@@ -4837,6 +4915,8 @@ package body Flyology.DB is
       Token       : access Flyology.Cancellation.Token := null;
       Result      : out Outcome_Code)
    is
+      --  The operation's sole absolute monotonic deadline is derived from the
+      --  caller-supplied Timeout; there is no hidden default or retry budget.
       Deadline      : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Head          : Head_Snapshot;
       Generation    : Generation_Value;
@@ -5279,6 +5359,8 @@ package body Flyology.DB is
       Receipt : out Commit_Receipt;
       Result  : out Outcome_Code)
    is
+      --  The operation's sole absolute monotonic deadline is derived from the
+      --  caller-supplied Timeout; there is no hidden default or retry budget.
       Deadline       : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Lease          : Lifecycle_Lease;
       Admission      : Admission_Guard;
@@ -5327,6 +5409,8 @@ package body Flyology.DB is
       Receipts     : out Commit_Receipt_Array;
       Result       : out Outcome_Code)
    is
+      --  The operation's sole absolute monotonic deadline is derived from the
+      --  caller-supplied Timeout; there is no hidden default or retry budget.
       Deadline       : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Lease          : Lifecycle_Lease;
       Admission      : Admission_Guard;
@@ -5445,6 +5529,8 @@ package body Flyology.DB is
       Token   : access Flyology.Cancellation.Token := null;
       Result  : out Outcome_Code)
    is
+      --  The operation's sole absolute monotonic deadline is derived from the
+      --  caller-supplied Timeout; there is no hidden default or retry budget.
       Deadline      : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Observed      : Head_Snapshot;
       Read_Result   : Outcome_Code;
@@ -5624,6 +5710,9 @@ package body Flyology.DB is
       Legacy        : Boolean;
       Result        : out Outcome_Code)
    is
+      --  This test-only canonical empty HEAD uses the persisted root counters
+      --  (epoch/transition 1, sequence 0) so open/recovery exercises the same
+      --  compatibility boundary as Create; these are not public defaults.
       Head       : constant Head_Snapshot :=
         (Database_ID            => Database_ID,
          Version                =>
@@ -5661,6 +5750,8 @@ package body Flyology.DB is
       Transition_ID : Identifier;
       Result        : out Outcome_Code)
    is
+      --  The otherwise-valid root HEAD isolates unsupported-version handling;
+      --  its root counters are persisted-format fixtures, not product policy.
       Head       : constant Head_Snapshot :=
         (Database_ID            => Database_ID,
          Version                => Interfaces.Unsigned_16 (Heads.Current_Format),
@@ -5683,6 +5774,10 @@ package body Flyology.DB is
          end loop;
       end Put_U32;
    begin
+      --  HEAD bytes 8..9 are the big-endian format version, byte 40 starts the
+      --  header CRC, and byte 132 starts the full-image CRC. Version 3 is the
+      --  deliberately unsupported successor. These offsets are frozen by the
+      --  HEAD v1/v2 codec and must move with a deliberate format revision.
       Image (8) := 0;
       Image (9) := 3;
       Image (40 .. 43) := [others => 0];
@@ -5709,6 +5804,8 @@ package body Flyology.DB is
       Transition_ID : Identifier;
       Result        : out Outcome_Code)
    is
+      --  The otherwise-valid v2 root HEAD isolates the mandatory manifest-ID
+      --  invariant; its root counters are persisted-format fixtures.
       Head       : constant Head_Snapshot :=
         (Database_ID            => Database_ID,
          Version                => Interfaces.Unsigned_16 (Heads.Current_Format),
@@ -5731,6 +5828,9 @@ package body Flyology.DB is
          end loop;
       end Put_U32;
    begin
+      --  HEAD v2 bytes 76..91 hold Latest_Manifest; zeroing them creates the
+      --  targeted semantic failure. CRC fields at 40 and 132 are recomputed so
+      --  integrity checks cannot mask the invariant under test.
       Image (76 .. 91) := [others => 0];
       Image (40 .. 43) := [others => 0];
       Put_U32 (40, Formats.CRC_32C (Image (0 .. 131)));
@@ -5924,6 +6024,9 @@ package body Flyology.DB is
       if Result /= Success then
          return;
       end if;
+      --  Test-only 4E/54 domain tags distinguish manifest and transition IDs;
+      --  one-byte key/value limits keep chain fixtures minimal. These values
+      --  exercise history-depth policy and are not deployable defaults.
       for Index in Positive range 1 .. Successors loop
          if Previous.Family_Total = Manifests.Family_Count'Last then
             Result := Capacity_Exceeded;
@@ -6012,6 +6115,9 @@ package body Flyology.DB is
    is
       Owned             : Flyology.Bytes.Unbounded_Bytes;
       Batch             : Runtime_Batch;
+      --  Test-only structural IDs distinguish the expected database/head from
+      --  their wrong-identity variants; changing them only invalidates codec
+      --  negative fixtures, not the persisted identifier representation.
       Expected_Database : constant Database_Identifier :=
         (if Wrong_DB
          then Database_Identifier (Structural_ID (16#DB#, 9))
@@ -6026,6 +6132,9 @@ package body Flyology.DB is
          Transition_ID          => Structural_ID (0, 4),
          Predecessor_Transition => Structural_ID (0, 2),
          Transition_Number      => 2);
+      --  The decoder harness admits 257 records and one million bytes so tests
+      --  reach structural/identity checks without an unrelated capacity result.
+      --  This is permissive test policy, not a public or persisted default.
       Limits            : constant Database_Limits :=
         (Maximum_Column_Families           => 2,
          Maximum_Manifest_History          => 2,
@@ -6054,6 +6163,9 @@ package body Flyology.DB is
    end Decode_Runtime_Image_For_Test;
 
    procedure Check_Runtime_Reference_Parity (Result : out Outcome_Code) is
+      --  Domain-separated test IDs and root counters make each runtime/reference
+      --  parity case deterministic. They are witness identities, not wire tags
+      --  or deployable defaults.
       Expected  : constant Head_Snapshot :=
         (Database_ID            => Database_Identifier (Structural_ID (16#D1#, 1)),
          Version                => Interfaces.Unsigned_16 (Heads.Current_Format),
@@ -6078,11 +6190,15 @@ package body Flyology.DB is
          end loop;
       end Release_Items;
    begin
+      --  Cases 1..4 cover every supported group cardinality used by this
+      --  parity witness; the range is a bounded test dimension.
       for Case_Number in Group_Count range 1 .. 4 loop
          Items := [others => <>];
          Batch := (others => <>);
          Reference := Batches.Empty_Batch;
          declare
+            --  B1/A1 are test-only batch/transaction domain tags; they keep
+            --  parity artifacts stable and have no persisted-format authority.
             Batch_ID : constant Identifier := Structural_ID (16#B1#, Interfaces.Unsigned_64 (Case_Number));
          begin
             for Transaction_Index in Commit_Slot range 1 .. Case_Number loop

@@ -16,8 +16,15 @@ procedure Flyology.DB.Files_Crash_Probe is
    use type OS.Status;
    use type Ada.Streams.Stream_Element;
 
+   --  Dedicated test namespace keeps destructive crash/reopen artifacts apart
+   --  from other suites; changing either component changes the filesystem
+   --  fixture location only, not production object naming policy.
    Bucket : constant String := "flyology-db-crash";
    Prefix : constant String := "group";
+
+   --  Ten seconds is a crash-runner stability budget for local object I/O; it
+   --  is not a DB API default, retry policy, or persisted workload deadline.
+   Test_Operation_Timeout : constant Duration := 10.0;
 
    function ID (Last : Flyology.DB.Byte) return Flyology.DB.Identifier is
       Result : Flyology.DB.Identifier := [others => 0];
@@ -32,6 +39,9 @@ procedure Flyology.DB.Files_Crash_Probe is
    function TX_ID (Last : Flyology.DB.Byte) return Flyology.DB.Transaction_Identifier
    is (Flyology.DB.Transaction_Identifier (ID (Last)));
 
+   --  Crash-probe persisted policy admits the exact two-transaction campaign
+   --  and bounded recovery history. These are explicit test inputs, not DB
+   --  defaults; the families below retain reference-sized 64/256 payloads.
    Limits   : constant Flyology.DB.Database_Limits :=
      (Maximum_Column_Families           => 2,
       Maximum_Manifest_History          => 64,
@@ -54,6 +64,9 @@ procedure Flyology.DB.Files_Crash_Probe is
       end if;
    end Require;
 
+   --  The caller-selected disposable campaign root is the sole filesystem
+   --  authority. The 100,000-byte object ceiling only bounds this test backend
+   --  and must remain above every crash fixture object.
    Root   : constant String := Ada.Command_Line.Argument (2);
    Store  : aliased Files.Store :=
      Files.Open (Root, Maximum_Object_Size => 100_000, Commit => Files.Process_Crash_Atomic);
@@ -80,7 +93,7 @@ begin
             ID (2),
             Limits,
             Families,
-            10.0,
+            Test_Operation_Timeout,
             Receipt => Create_Info,
             Result  => Result);
          Require (Result = Flyology.DB.Success, "crash database create failed");
@@ -100,7 +113,8 @@ begin
                   Result);
             end;
          end loop;
-         Flyology.DB.Commit_Group (Item, ID (30), Transactions, 10.0, Receipts => Receipts, Result => Result);
+         Flyology.DB.Commit_Group
+           (Item, ID (30), Transactions, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
          Require (Result = Flyology.DB.Success, "crash group commit failed");
          GNAT.OS_Lib.OS_Exit (137);
       end;
@@ -113,7 +127,7 @@ begin
          Result  : Flyology.DB.Outcome_Code;
       begin
          Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, Prefix);
-         Flyology.DB.Open (Item, Context'Access, DB_ID (1), 10.0, Result => Result);
+         Flyology.DB.Open (Item, Context'Access, DB_ID (1), Test_Operation_Timeout, Result => Result);
          Require (Result = Flyology.DB.Success, "crash recovery open failed");
          Flyology.DB.Begin_Transaction (Item, TX_ID (40), Txn, Result);
          for Index in 1 .. 2 loop
@@ -152,7 +166,7 @@ begin
             ID (52),
             Limits,
             Families,
-            10.0,
+            Test_Operation_Timeout,
             Receipt => Create_Info,
             Result  => Result);
          Require (Result = Flyology.DB.Storage_Failure, "manifest orphan reached HEAD");
@@ -166,7 +180,7 @@ begin
          Result      : Flyology.DB.Outcome_Code;
       begin
          Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, "manifest-orphan");
-         Flyology.DB.Open (Item, Context'Access, DB_ID (50), 10.0, Result => Result);
+         Flyology.DB.Open (Item, Context'Access, DB_ID (50), Test_Operation_Timeout, Result => Result);
          Require (Result = Flyology.DB.Not_Found, "orphan manifest became crash-visible");
          Flyology.DB.Create
            (Item,
@@ -176,7 +190,7 @@ begin
             ID (52),
             Limits,
             Families,
-            10.0,
+            Test_Operation_Timeout,
             Receipt => Create_Info,
             Result  => Result);
          Require (Result = Flyology.DB.Success, "exact orphan manifest retry did not publish HEAD");
@@ -202,7 +216,7 @@ begin
             ID (55),
             Limits,
             Families,
-            10.0,
+            Test_Operation_Timeout,
             Receipt => Create_Info,
             Result  => Result);
          Require
@@ -216,7 +230,7 @@ begin
          Result  : Flyology.DB.Outcome_Code;
       begin
          Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, "manifest-head");
-         Flyology.DB.Open (Item, Context'Access, DB_ID (53), 10.0, Result => Result);
+         Flyology.DB.Open (Item, Context'Access, DB_ID (53), Test_Operation_Timeout, Result => Result);
          Require (Result = Flyology.DB.Success, "durable HEAD did not recover after process loss");
          Flyology.DB.Close (Item, Result);
          Require (Result = Flyology.DB.Success, "durable HEAD recovery close failed");

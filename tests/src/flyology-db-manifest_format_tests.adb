@@ -19,6 +19,9 @@ package body Flyology.DB.Manifest_Format_Tests is
    use type Manifests.Encode_Status;
    use type Manifests.Manifest;
 
+   --  Independently generated golden-manifest length. It is derived from the
+   --  frozen v1 header, two exact family frames/names, and trailer; changing it
+   --  requires a corresponding fixture or wire-format decision.
    Fixture_Length : constant := 272;
 
    pragma
@@ -50,6 +53,9 @@ package body Flyology.DB.Manifest_Format_Tests is
       end if;
    end Set_Name;
 
+   --  Golden-fixture persisted limits deliberately span count and MiB-scale
+   --  byte fields. They are reference inputs encoded verbatim, not runtime
+   --  allocation defaults or recommendations.
    function Default_Limits return Manifests.Database_Limits
    is ((Maximum_Column_Families           => 64,
         Maximum_Manifest_History          => 64,
@@ -62,6 +68,9 @@ package body Flyology.DB.Manifest_Format_Tests is
         Maximum_Batch_Payload_Bytes       => 16 * 1_024 * 1_024,
         Maximum_Live_State_Bytes          => 64 * 1_024 * 1_024));
 
+   --  The root fixture uses canonical epoch/transition/registry value one and
+   --  two unequal family profiles, including canonical UTF-8. These choices
+   --  define golden coverage and therefore change the golden bytes if altered.
    function Root_Manifest return Manifests.Manifest is
       Result : Manifests.Manifest := Manifests.Empty_Manifest;
    begin
@@ -102,6 +111,8 @@ package body Flyology.DB.Manifest_Format_Tests is
       return Result;
    end Root_Manifest;
 
+   --  Frozen logical source paired with Golden below; neither supplies product
+   --  policy because every real database persists its own limits and families.
    Fixture : constant Manifests.Manifest := Root_Manifest;
 
    --  Frozen from an independent Ruby big-endian/CRC-32C encoder. It covers
@@ -489,6 +500,9 @@ package body Flyology.DB.Manifest_Format_Tests is
    procedure Test_Envelope_And_Semantics is
       Corrupt             : Manifests.Manifest_Image := [others => 0];
       type Position_List is array (Positive range <>) of Natural;
+      --  Frozen manifest-v1 offsets of the mandatory database/manifest IDs.
+      --  Moving them requires a wire-format revision and matching corruption
+      --  corpus update.
       Required_ID_Offsets : constant Position_List := [44, 100];
    begin
       Corrupt (0 .. Fixture_Length - 1) := Golden;
@@ -568,6 +582,8 @@ package body Flyology.DB.Manifest_Format_Tests is
       Image           : Manifests.Manifest_Image;
       Length          : Natural;
       type Byte_List is array (Positive range <>) of Formats.Byte;
+      --  UTF-8 authority: NUL, overlong C0, and out-of-range F5 are representative
+      --  invalid leading bytes required to fail closed without normalization.
       Invalid_Leaders : constant Byte_List := [16#00#, 16#C0#, 16#F5#];
    begin
       Corrupt (0 .. Fixture_Length - 1) := Golden;
@@ -644,6 +660,9 @@ package body Flyology.DB.Manifest_Format_Tests is
 
    procedure Test_Limits_And_Caps is
       Corrupt : Manifests.Manifest_Image := [others => 0];
+      --  Exact reader caps are derived from Fixture's two families, longest
+      --  eight-byte name, 72 logical family bytes, and largest key/value limit.
+      --  Each one-below test demonstrates independent backpressure authority.
       Exact   : constant Manifests.Reader_Caps :=
         (Families      => 2,
          Name_Bytes    => 8,
@@ -701,6 +720,8 @@ package body Flyology.DB.Manifest_Format_Tests is
 
       declare
          type Offset_List is array (Positive range <>) of Natural;
+         --  Manifest-v1 bytes 144/148/152/156 are implementation-bounded family
+         --  and history counts. U32 maxima must classify as resource limits.
          Count_Offsets : constant Offset_List := [144, 148, 152, 156];
       begin
          for Offset of Count_Offsets loop
@@ -729,6 +750,9 @@ package body Flyology.DB.Manifest_Format_Tests is
          "runtime-sized mutation/live counts were narrowed by the codec");
       declare
          type Offset_List is array (Positive range <>) of Natural;
+         --  Manifest-v1 bytes 160/164/168 are dynamically sized transaction,
+         --  mutation, and live-entry limits; zero is invalid, but the codec
+         --  must not invent smaller ceilings for nonzero persisted values.
          Dynamic_Count_Offsets : constant Offset_List := [160, 164, 168];
       begin
          for Offset of Dynamic_Count_Offsets loop
@@ -816,6 +840,9 @@ package body Flyology.DB.Manifest_Format_Tests is
          "cap hid corrupt header");
    end Test_Limits_And_Caps;
 
+   --  Fill every reference-format dimension exactly: 64 families, 255-byte
+   --  names, and one-byte per-family key/value limits. This is an image-bound
+   --  proof fixture, not recommended database policy.
    procedure Test_Maximum_Instance is
       Maximum : Manifests.Manifest := Manifests.Empty_Manifest;
       Image   : Manifests.Manifest_Image;
@@ -868,6 +895,9 @@ package body Flyology.DB.Manifest_Format_Tests is
    end Test_Maximum_Instance;
 
    procedure Test_Publication_And_Predecessor is
+      --  Previous is the frozen root manifest; Root_Head is its exact confirmed
+      --  publication witness. Successor mutations below must remain consistent
+      --  with both identities and transition numbers.
       Previous      : constant Manifests.Manifest := Fixture;
       Current       : Manifests.Manifest := Fixture;
       Image         : Manifests.Manifest_Image;

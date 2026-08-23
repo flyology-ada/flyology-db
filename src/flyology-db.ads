@@ -9,24 +9,39 @@ private with Flyology.Object_Storage.Backends;
 
 package Flyology.DB is
 
-   --  Persisted formats and public semantics may change before a stable release.
+   --  Project lifecycle classification: the crate is explicitly experimental,
+   --  so no stable compatibility promise exists. Changing this flag is a
+   --  release-policy decision, not an implementation detail.
    Experimental : constant Boolean := True;
 
    subtype Byte is Interfaces.Unsigned_8;
    type Byte_Array is array (Positive range <>) of Byte;
 
+   --  Persisted-format authority: every opaque database, transaction, batch,
+   --  manifest, run, and transition identity is exactly 16 bytes. Widening or
+   --  narrowing it is incompatible with every existing object format.
    Identifier_Length   : constant := 16;
    subtype Identifier_Index is Positive range 1 .. Identifier_Length;
    type Identifier is array (Identifier_Index) of Byte;
+   --  Persisted semantic sentinel: the all-zero identity means absent and is
+   --  rejected wherever a definite identity is required. Reclassifying it as
+   --  usable would invalidate structural and nonreuse rules.
    Zero_Identifier     : constant Identifier := [others => 0];
    type Database_Identifier is new Identifier;
    type Transaction_Identifier is new Identifier;
+   --  Public typed forms of the same frozen absence sentinel; they add no
+   --  separate namespace policy or wire representation.
    Zero_Database_ID    : constant Database_Identifier := [others => 0];
    Zero_Transaction_ID : constant Transaction_Identifier := [others => 0];
 
    type Sequence_Number is new Interfaces.Unsigned_64;
    type Column_Family_ID is new Interfaces.Unsigned_32 range 1 .. Interfaces.Unsigned_32'Last;
 
+   --  Current manifest-v1 implementation/reference admission dimensions from
+   --  the persisted-format contract: 64 family frames and 255 UTF-8 name
+   --  bytes. They are public creation/name ceilings, not defaults for the
+   --  persisted Database_Limits fields; changing them requires format, runtime,
+   --  fixture, and proof compatibility review.
    Maximum_Initial_Column_Families  : constant := 64;
    Maximum_Column_Family_Name_Bytes : constant := 255;
 
@@ -81,6 +96,9 @@ package Flyology.DB is
    type Transaction is limited private;
    type Create_Receipt is private;
    type Commit_Receipt is private;
+   --  Project admission policy documented by the synchronous topology: one
+   --  public atomic group has at most eight members. This is a bounded API and
+   --  coordinator-capacity choice, not a wire-count limit or database default.
    Maximum_Group_Transactions : constant := 8;
    type Transaction_Array is array (Positive range <>) of Transaction;
    type Commit_Receipt_Array is array (Positive range <>) of Commit_Receipt;
@@ -240,17 +258,35 @@ package Flyology.DB is
 
 private
 
+   --  Bounded synchronous coordinator policy: eight visible operation slots
+   --  match the maximum public group width. Raising it changes memory and
+   --  backpressure behavior; it does not change persisted bytes.
    Maximum_Commit_Slots     : constant := 8;
+   --  Current operational representation bound for manifest/batch history,
+   --  aligned with the persisted-format runtime-compatibility contract. A
+   --  larger persisted limit is not silently accepted by this implementation.
    Maximum_History_Batches  : constant := 64;
+   --  Local representation cap for opaque provider ETag/version strings. It is
+   --  not a content hash or wire-format field; changing it alters provider
+   --  compatibility and protected-state memory.
    Maximum_Generation_Bytes : constant := 256;
 
+   --  Bounded batch-codec reference/proof dimensions fixed by the v1 format
+   --  qualification corpus. They never narrow persisted family key/value
+   --  authority or dynamically allocated production data.
    Reference_Maximum_Key_Bytes        : constant := 64;
    Reference_Maximum_Value_Bytes      : constant := 256;
+   --  Derived exact reference image ceiling: the accepted batch-v1 header,
+   --  maximum reference payload, and trailer total 22,048 bytes. Changing a
+   --  component requires coordinated formula, golden, test, and proof updates.
    Maximum_Small_Metadata_Image_Bytes : constant := 22_048;
 
    subtype Column_Family_Name_Length is Natural range 0 .. Maximum_Column_Family_Name_Bytes;
    type Column_Family_Name_Storage is array (Positive range 1 .. Maximum_Column_Family_Name_Bytes) of Byte;
 
+   --  Zero lengths/limits and an all-zero name are invalid construction-state
+   --  sentinels; Configure_Column_Family must replace them before publication.
+   --  They introduce no implicit family policy or persisted defaults.
    type Column_Family_Configuration is record
       ID              : Column_Family_ID := Column_Family_ID'First;
       Name_Length     : Column_Family_Name_Length := 0;
@@ -260,6 +296,8 @@ private
    end record;
 
    type Engine_Incarnation is new Interfaces.Unsigned_64;
+   --  In-memory handle sentinel: zero means no live engine incarnation and is
+   --  never issued to an open database. This is lifecycle policy, not persisted.
    No_Incarnation : constant Engine_Incarnation := 0;
 
    type Internal_Allocation_Fault_Point is
@@ -291,6 +329,8 @@ private
       procedure Retain;
       procedure Release (Last : out Boolean);
    private
+      --  A newly allocated image starts with its creator's one owning lease;
+      --  retain/release accounting and final reclamation depend on this count.
       Count : Positive := 1;
    end Shared_Image_References;
 
@@ -309,6 +349,10 @@ private
    overriding
    procedure Finalize (Item : in out Shared_Image_Lease);
 
+   --  Mutation field initializers are vacant arena state only. Admission fills
+   --  the exact operation and byte extents before encoding, so Put_Mutation is
+   --  not an application default; zero lengths become meaningful only for an
+   --  admitted empty-key or empty-value mutation.
    type Owned_Mutation is record
       Family       : Column_Family_ID := Column_Family_ID'First;
       Operation    : Mutation_Kind := Put_Mutation;
@@ -341,6 +385,10 @@ private
       Owner          : Transaction_Arena_Owner;
    end record;
 
+   --  In-memory vacant HEADs use the current persisted version and canonical
+   --  first transition number; zero identities/counters remain absence
+   --  sentinels. Changing version 2 or transition 1 changes root/recovery
+   --  interpretation and requires a persisted-format decision.
    type Head_Snapshot is record
       Database_ID            : Database_Identifier := Zero_Database_ID;
       Version                : Interfaces.Unsigned_16 := 2;

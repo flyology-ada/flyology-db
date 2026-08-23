@@ -19,6 +19,7 @@ is
    end Equal;
 
    function Less (Left, Right : Key) return Boolean is
+      --  Derived exact common prefix; no separate comparison bound is chosen.
       Shared : constant Key_Length := Key_Length'Min (Left.Length, Right.Length);
    begin
       for Index in Key_Byte_Index range 1 .. Shared loop
@@ -230,6 +231,8 @@ is
       Upper     : Key;
       Result    : out Result_Code)
    is
+      --  Captures the caller's exact normalized scan predicate before the
+      --  bounded read-set admission; no hidden range policy is introduced.
       Candidate : constant Scan_Range :=
         (Family    => Family,
          Has_Lower => Has_Lower,

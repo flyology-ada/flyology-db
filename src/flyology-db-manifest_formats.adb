@@ -10,6 +10,8 @@ is
    use type Head_Policy.Transition_Ordinal;
    use type Head_Policy.Writer_Epoch;
 
+   --  Frozen persisted manifest magic `FLYCFM01`; v2 deliberately reuses it and
+   --  advances the independent version. Changing it breaks both versions.
    Magic : constant Formats.Byte_Array (0 .. 7) :=
      [Character'Pos ('F'),
       Character'Pos ('L'),
@@ -159,6 +161,8 @@ is
       Header : Formats.Byte_Array (0 .. Manifest_Header_Length - 1) :=
         Image (0 .. Manifest_Header_Length - 1);
    begin
+      --  Common-envelope bytes 40..43 are the frozen header CRC field and are
+      --  zeroed while calculating the exact v1 header checksum.
       Header (40 .. 43) := [others => 0];
       return Formats.CRC_32C (Header);
    end Header_Checksum;
@@ -168,6 +172,9 @@ is
       First  : Formats.Byte;
       Second : Formats.Byte;
    begin
+      --  Byte ranges below implement externally fixed UTF-8 validity: exclude
+      --  overlong sequences, surrogates, and values above U+10FFFF. Relaxing
+      --  them would change persisted family-name compatibility.
       if Item.Name_Length = 0 then
          return False;
       end if;
@@ -322,6 +329,9 @@ is
          return False;
       end if;
       declare
+         --  Derived reachability distances from exact persisted transition
+         --  ordinals/epochs; zero and one select identity-binding cases and are
+         --  not configurable thresholds.
          Ordinal_Gap : constant Interfaces.Unsigned_64 :=
            Current.Expected_Transition_Number - Previous.Publication_Transition_Number;
          Epoch_Gap   : constant Interfaces.Unsigned_64 := Current.Writer_Epoch - Previous.Writer_Epoch;
@@ -398,6 +408,9 @@ is
          return False;
       end if;
       declare
+         --  Derived reachability distances between this manifest publication
+         --  and the referencing HEAD; zero/one are exact identity-binding cases,
+         --  not policy tolerances.
          Ordinal_Gap : constant Interfaces.Unsigned_64 :=
            Interfaces.Unsigned_64 (Referencing_Head.Transition_Number) - Value.Publication_Transition_Number;
          Epoch_Gap   : constant Interfaces.Unsigned_64 :=
@@ -444,6 +457,9 @@ is
          return;
       end if;
       Length := Encoded_Length (Value);
+      --  Normative manifest-v1 offsets: common 0/8/10/11/12/28/32/40; IDs
+      --  44/60/76/100, ordinals 92/116, epoch/registry 124/132, counts/limits
+      --  140..188. Zero flags/reserved fields are frozen and incompatible to move.
       Image (0 .. 7) := Magic;
       Put_U16 (Image, 8, Manifest_Format_Version);
       Image (10) := Manifest_Object_Kind;
@@ -529,6 +545,8 @@ is
       end if;
       Fixed (0 .. Image'Length - 1) := Image;
       Payload_Length := Read_U64 (Fixed, 32);
+      --  Authenticate the same frozen common/header map and checksum coverage
+      --  before applying bounded reference-reader caps.
       if Payload_Length
         /= Interfaces.Unsigned_64 (Image'Length - Manifest_Header_Length - Manifest_Trailer_Length)
       then

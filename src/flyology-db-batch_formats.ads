@@ -15,17 +15,24 @@ is
    use type Head_Policy.Identifier;
    use type Head_Policy.Commit_Sequence;
 
+   --  Frozen batch-v1 wire authority: version 1, 156-byte header, 32-byte
+   --  transaction prefix, 14-byte mutation prefix, and 4-byte CRC trailer.
+   --  Changing any value is persisted-format incompatible.
    Batch_Format_Version : constant Interfaces.Unsigned_16 := 1;
    Batch_Header_Length : constant := 156;
    Batch_Trailer_Length : constant := 4;
    Transaction_Frame_Header_Length : constant := 32;
    Mutation_Frame_Header_Length : constant := 14;
 
-   --  These are reference-instance limits, not version-1 wire or production limits.
+   --  Maintained reference/proof dimensions. They are not wire limits,
+   --  production backpressure, or persisted database/family defaults; changes
+   --  alter fixture coverage and proof cost only.
    Max_Transactions : constant := 16;
    Max_Mutations : constant := 64;
    Max_Key_Bytes : constant := 64;
    Max_Value_Bytes : constant := 256;
+   --  Derived reference image/payload ceilings from the exact widths above.
+   --  Formula changes require reference goldens and proof to move together.
    Max_Batch_Image_Length : constant :=
      Batch_Header_Length + Batch_Trailer_Length
      + Max_Transactions * Transaction_Frame_Header_Length
@@ -44,6 +51,9 @@ is
 
    type Mutation_Kind is (Put, Delete);
 
+   --  Canonical vacant/decoder-failure state. Family zero is invalid, while
+   --  zero key/value lengths become meaningful only inside active validated
+   --  counts; Put is initialization, never an API operation default.
    type Mutation is record
       Column_Family : Interfaces.Unsigned_32 := 0;
       Operation     : Mutation_Kind := Put;
@@ -63,6 +73,8 @@ is
    type Transaction_Array is array (Transaction_Slot) of Transaction;
    type Mutation_Array is array (Mutation_Slot) of Mutation;
 
+   --  Commit_Batch likewise starts unpublishable; structural validation supplies
+   --  every exact identity, counter, and transition relationship.
    type Commit_Batch is record
       Database_ID                    : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
       Epoch                          : Head_Policy.Writer_Epoch := 0;
@@ -82,11 +94,14 @@ is
       Mutations                      : Mutation_Array := [others => <>];
    end record;
 
+   --  Canonical decoder rejection/unused-tail value, never a valid batch.
    Empty_Batch : constant Commit_Batch := (others => <>);
 
    subtype Batch_Image_Index is Natural range 0 .. Max_Batch_Image_Length - 1;
    subtype Batch_Image is Formats.Byte_Array (Batch_Image_Index);
 
+   --  Reference reader defaults admit its full bounded shape only; operational
+   --  decoding uses authenticated persisted caps.
    type Reader_Caps is record
       Transactions  : Transaction_Count := Transaction_Count'Last;
       Mutations     : Mutation_Count := Mutation_Count'Last;
@@ -95,6 +110,7 @@ is
       Payload_Bytes : Natural range 0 .. Max_Payload_Bytes := Max_Payload_Bytes;
    end record;
 
+   --  Convenience for the full reference corpus, not a database default.
    Default_Reader_Caps : constant Reader_Caps := (others => <>);
 
    type Decode_Status is

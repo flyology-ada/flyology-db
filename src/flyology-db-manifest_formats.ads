@@ -15,6 +15,9 @@ is
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
 
+   --  Frozen manifest-v1 wire authority: version 1, HEAD-v2 binding, kind 3,
+   --  196-byte header, 28-byte family prefix, and 4-byte CRC trailer. Changing
+   --  any value is persisted-format incompatible.
    Manifest_Format_Version    : constant Interfaces.Unsigned_16 := 1;
    Manifest_Head_Format       : constant Head_Policy.Format_Version := 2;
    Manifest_Object_Kind       : constant Formats.Byte := 3;
@@ -22,17 +25,24 @@ is
    Manifest_Trailer_Length    : constant := 4;
    Family_Frame_Header_Length : constant := 28;
 
+   --  Maintained bounded manifest reference/proof dimensions: 64 families,
+   --  255 UTF-8 name bytes, and 64 predecessor objects. They also describe the
+   --  current implementation compatibility boundary, not persisted defaults;
+   --  changing them requires runtime, fixture, format, and proof review.
    Max_Families               : constant := 64;
    Max_Family_Name_Bytes      : constant := 255;
    Max_Manifest_History       : constant := 64;
    Max_Batch_History          : constant := 64;
    --  Fixed reference-instance values used by golden and proof campaigns. The
    --  persisted U32 mutation/live budgets are operational resource authority
-   --  and are not narrowed to these values by the production decoder.
+   --  and are not narrowed to these values by the production decoder. Changing
+   --  them changes reference coverage and proof cost only.
    Max_Batch_Transactions     : constant := 16;
    Max_Transaction_Mutations  : constant := 64;
    Max_Batch_Mutations        : constant := 64;
    Max_Live_Entries           : constant := 4_096;
+   --  Derived maximum reference payload/image extents from the frozen family
+   --  frame and capacities above; formula changes require goldens and proof.
    Max_Manifest_Payload_Bytes : constant :=
      Max_Families * (Family_Frame_Header_Length + Max_Family_Name_Bytes);
    Max_Manifest_Image_Length  : constant :=
@@ -44,6 +54,9 @@ is
    subtype Family_Name_Index is Positive range 1 .. Max_Family_Name_Bytes;
    type Family_Name_Bytes is array (Family_Name_Index) of Formats.Byte;
 
+   --  Zero family fields are canonical vacant/decoder-failure state and are
+   --  structurally invalid until all persisted configuration is supplied. They
+   --  never provide default key/value limits; unused name tails stay zero.
    type Column_Family_Configuration is record
       ID              : Interfaces.Unsigned_32 := 0;
       Max_Key_Bytes   : Interfaces.Unsigned_64 := 0;
@@ -54,6 +67,9 @@ is
 
    type Family_Array is array (Family_Slot) of Column_Family_Configuration;
 
+   --  Every zero initializer is an invalid absence sentinel. A real manifest
+   --  must carry explicit nonzero persisted policy; the decoder never fills in
+   --  product defaults for omitted limits.
    type Database_Limits is record
       Maximum_Column_Families           : Interfaces.Unsigned_32 := 0;
       Maximum_Manifest_History          : Interfaces.Unsigned_32 := 0;
@@ -69,6 +85,9 @@ is
       Maximum_Live_State_Bytes          : Interfaces.Unsigned_64 := 0;
    end record;
 
+   --  Manifest defaults form an unpublishable decoder-failure value. All zero
+   --  identities/counters and empty families must be replaced and validated
+   --  before encoding or runtime activation.
    type Manifest is record
       Database_ID                   : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
       Manifest_ID                   : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
@@ -84,11 +103,15 @@ is
       Families                      : Family_Array := [others => <>];
    end record;
 
+   --  Canonical all-default decoder failure and unused-tail value; it is never
+   --  a valid manifest and prevents partial publication of decoded state.
    Empty_Manifest : constant Manifest := (others => <>);
 
    subtype Manifest_Image_Index is Natural range 0 .. Max_Manifest_Image_Length - 1;
    subtype Manifest_Image is Formats.Byte_Array (Manifest_Image_Index);
 
+   --  Reference-reader cap defaults admit the full maintained reference shape;
+   --  they do not override the limits decoded from a production manifest.
    type Reader_Caps is record
       Families      : Family_Count := Family_Count'Last;
       Name_Bytes    : Family_Name_Length := Family_Name_Length'Last;
@@ -97,6 +120,8 @@ is
       Value_Bytes   : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
    end record;
 
+   --  Reference-reader convenience admitting its complete bounded shape;
+   --  persisted database/family limits remain operational authority.
    Default_Reader_Caps : constant Reader_Caps := (others => <>);
 
    type Decode_Status is

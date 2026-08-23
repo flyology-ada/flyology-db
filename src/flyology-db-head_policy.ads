@@ -7,24 +7,33 @@ is
 
    use type Interfaces.Unsigned_64;
 
+   --  Persisted-format authority: every opaque identity is exactly 16 bytes;
+   --  width changes are incompatible with all stored objects.
    Identifier_Length : constant := 16;
    subtype Identifier_Index is Positive range 1 .. Identifier_Length;
    type Identifier is array (Identifier_Index) of Interfaces.Unsigned_8;
 
+   --  Frozen absence sentinel, never a usable identity. Reclassifying it would
+   --  break reachability and nonreuse predicates.
    Zero_Identifier : constant Identifier := (others => 0);
 
    --  Whether an identifier is the reserved absent value.
    function Is_Zero (Value : Identifier) return Boolean is (Value = Zero_Identifier);
 
    type Format_Version is new Interfaces.Unsigned_16 range 1 .. Interfaces.Unsigned_16'Last;
+   --  Typed persisted HEAD codes: v1 remains inspection-readable; v2 writable.
    Legacy_Format  : constant Format_Version := 1;
    Current_Format : constant Format_Version := 2;
 
    type Writer_Epoch is new Interfaces.Unsigned_64;
    type Commit_Sequence is new Interfaces.Unsigned_64;
    type Transition_Ordinal is new Interfaces.Unsigned_64 range 1 .. Interfaces.Unsigned_64'Last;
+   --  Bounded transition-policy reference domain. 4,096 is proof/model capacity,
+   --  not a persisted U32 limit or public group default.
    type Transaction_Count is new Interfaces.Unsigned_32 range 1 .. 4_096;
 
+   --  Canonical vacant/root shape: current format, zero absence sentinels, and
+   --  first transition ordinal. Structural validation supplies exact authority.
    type Head_State is record
       Database_ID             : Identifier := Zero_Identifier;
       Version                 : Format_Version := Current_Format;

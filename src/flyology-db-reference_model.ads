@@ -6,6 +6,9 @@ private package Flyology.DB.Reference_Model
   with SPARK_Mode => On
 is
 
+   --  Maintained oracle/proof state-space dimensions. They provide deterministic
+   --  isolation coverage, not public limits, persisted defaults, or production
+   --  allocation policy; changes alter fixtures and proof cost only.
    Max_Key_Bytes            : constant := 32;
    Max_Value_Bytes          : constant := 64;
    Max_Versions             : constant := 64;
@@ -21,6 +24,8 @@ is
    type Key_Bytes is array (Key_Byte_Index) of Formats.Byte;
    type Value_Bytes is array (Value_Byte_Index) of Formats.Byte;
 
+   --  Zero length and zero tails are canonical empty oracle values only; they
+   --  do not establish product key/value defaults.
    type Key is record
       Length : Key_Length := 0;
       Bytes  : Key_Bytes := [others => 0];
@@ -126,6 +131,9 @@ private
    subtype Point_Read_Index is Positive range 1 .. Max_Point_Reads;
    subtype Range_Index is Positive range 1 .. Max_Ranges;
 
+   --  Private defaults are inactive/vacant oracle state. Sequence zero means
+   --  absent and first-family placeholders are ignored beyond active counts;
+   --  none of these values is persisted or exposed as DB policy.
    type Version_Record is record
       Family   : Column_Family_ID := Column_Family_ID'First;
       Name     : Key;

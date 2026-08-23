@@ -10,11 +10,14 @@ is
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
 
+   --  Frozen batch-v1 magic and kind; changes are wire-incompatible.
    Magic : constant Formats.Byte_Array (0 .. 7) :=
      [Character'Pos ('F'), Character'Pos ('L'), Character'Pos ('Y'), Character'Pos ('B'),
       Character'Pos ('A'), Character'Pos ('T'), Character'Pos ('C'), Character'Pos ('1')];
 
    Batch_Kind : constant Formats.Byte := 2;
+   --  Derived largest reference mutation frame: frozen prefix plus maintained
+   --  reference key/value dimensions; it is not an operational payload limit.
    Max_Mutation_Image_Length : constant :=
      Mutation_Frame_Header_Length + Max_Key_Bytes + Max_Value_Bytes;
 
@@ -198,6 +201,7 @@ is
       Header : Formats.Byte_Array (0 .. Batch_Header_Length - 1) :=
         Image (0 .. Batch_Header_Length - 1);
    begin
+      --  Common-envelope bytes 40..43 are the frozen header CRC field.
       Header (40 .. 43) := [others => 0];
       return Formats.CRC_32C (Header);
    end Header_Checksum;
@@ -332,8 +336,10 @@ is
 
             for Offset in Natural range 0 .. Item.Mutations - 1 loop
                pragma Loop_Invariant
-                 (Next_Mutation + Offset <= Value.Mutation_Total);
+               (Next_Mutation + Offset <= Value.Mutation_Total);
                declare
+                  --  Derived active mutation slot from the transaction's first
+                  --  validated slot and local offset; no extra count is chosen.
                   Mutation_Index : constant Mutation_Slot := Mutation_Slot (Next_Mutation + Offset);
                   Change         : Mutation renames Value.Mutations (Mutation_Index);
                begin
@@ -362,6 +368,8 @@ is
    end Structurally_Valid;
 
    function Encoded_Length (Value : Commit_Batch) return Natural is
+      --  Derived exact fixed framing from the frozen object/transaction/mutation
+      --  widths and the batch's validated active counts; payload follows below.
       Base   : constant Natural :=
         ((Batch_Header_Length + Batch_Trailer_Length)
          + Value.Transaction_Total * Transaction_Frame_Header_Length)
@@ -493,6 +501,8 @@ is
       end if;
 
       Object_Length := Encoded_Length (Value);
+      --  Frozen batch-v1 header map: envelope 0..43, epoch/IDs/counters 44..147,
+      --  transaction/mutation counts 148..155, then framed body and trailer.
       Image (0 .. 7) := Magic;
       Put_U16 (Image, 8, Batch_Format_Version);
       Image (10) := Batch_Kind;
@@ -585,6 +595,8 @@ is
       end if;
 
       declare
+         --  Gaps derive solely from authenticated predecessor/current fields;
+         --  they introduce no independent transition ceiling.
          Ordinal_Gap : constant Interfaces.Unsigned_64 :=
            Interfaces.Unsigned_64
              (Current.Expected_Transition_Number - Previous.Publication_Transition_Number);
@@ -630,6 +642,8 @@ is
 
       Fixed (0 .. Image'Length - 1) := Image;
 
+      --  Decode the exact frozen offsets emitted above; moving any field is a
+      --  persisted-format revision, not an implementation refactor.
       Payload_Length := Read_U64 (Fixed, 32);
       if Payload_Length /= Interfaces.Unsigned_64
         (Image'Length - (Batch_Header_Length + Batch_Trailer_Length))
@@ -801,6 +815,8 @@ is
                pragma Loop_Invariant (Cursor <= Transaction_End);
                pragma Loop_Invariant (Transaction_End <= Payload_End);
                declare
+                  --  Derived next global slot from already parsed mutations and
+                  --  this transaction's local offset.
                   Mutation_Index : constant Mutation_Slot :=
                     Mutation_Slot (Parsed_Mutations + (Offset + 1));
                   Key_Wire       : Interfaces.Unsigned_32;
