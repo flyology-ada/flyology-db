@@ -11,8 +11,14 @@ is
    use type Head_Policy.Writer_Epoch;
 
    Magic : constant Formats.Byte_Array (0 .. 7) :=
-     [Character'Pos ('F'), Character'Pos ('L'), Character'Pos ('Y'), Character'Pos ('C'),
-      Character'Pos ('F'), Character'Pos ('M'), Character'Pos ('0'), Character'Pos ('1')];
+     [Character'Pos ('F'),
+      Character'Pos ('L'),
+      Character'Pos ('Y'),
+      Character'Pos ('C'),
+      Character'Pos ('F'),
+      Character'Pos ('M'),
+      Character'Pos ('0'),
+      Character'Pos ('1')];
 
    procedure Put_U16
      (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Interfaces.Unsigned_16)
@@ -26,22 +32,17 @@ is
      (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Interfaces.Unsigned_64)
    with Pre => Position <= Manifest_Image_Index'Last - 7;
 
-   function Read_U16
-     (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_16
+   function Read_U16 (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_16
    with Pre => Position <= Manifest_Image_Index'Last - 1;
 
-   function Read_U32
-     (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_32
+   function Read_U32 (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_32
    with Pre => Position <= Manifest_Image_Index'Last - 3;
 
-   function Read_U64
-     (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_64
+   function Read_U64 (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_64
    with Pre => Position <= Manifest_Image_Index'Last - 7;
 
    procedure Put_Identifier
-     (Image : in out Manifest_Image;
-      Position : Manifest_Image_Index;
-      Value : Head_Policy.Identifier)
+     (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Head_Policy.Identifier)
    with Pre => Position <= Manifest_Image_Index'Last - Head_Policy.Identifier_Length + 1;
 
    function Read_Identifier
@@ -68,34 +69,29 @@ is
        and then Left.Name (1 .. Left.Name_Length) = Right.Name (1 .. Right.Name_Length));
 
    function Valid_Limits (Value : Database_Limits; Families : Family_Count) return Boolean
-   is
-     (Value.Maximum_Column_Families in 1 .. Interfaces.Unsigned_32 (Max_Families)
-      and then Interfaces.Unsigned_32 (Families) <= Value.Maximum_Column_Families
-      and then Value.Maximum_Manifest_History in 1 .. Interfaces.Unsigned_32 (Max_Manifest_History)
-      and then Value.Maximum_Batch_History in 1 .. Interfaces.Unsigned_32 (Max_Batch_History)
-      and then Value.Maximum_Transactions_Per_Batch in
-        1 .. Interfaces.Unsigned_32 (Max_Batch_Transactions)
-      and then Value.Maximum_Mutations_Per_Transaction in
-        1 .. Interfaces.Unsigned_32 (Max_Transaction_Mutations)
-      and then Value.Maximum_Mutations_Per_Batch in 1 .. Interfaces.Unsigned_32 (Max_Batch_Mutations)
-      and then Value.Maximum_Transactions_Per_Batch <= Value.Maximum_Mutations_Per_Batch
-      and then Value.Maximum_Mutations_Per_Transaction <= Value.Maximum_Mutations_Per_Batch
-      and then Value.Maximum_Live_Entries in 1 .. Interfaces.Unsigned_32 (Max_Live_Entries)
-      and then Value.Maximum_Transaction_Payload_Bytes > 0
-      and then Value.Maximum_Batch_Payload_Bytes >= Value.Maximum_Transaction_Payload_Bytes
-      and then Value.Maximum_Live_State_Bytes > 0);
+   is (Value.Maximum_Column_Families in 1 .. Interfaces.Unsigned_32 (Max_Families)
+       and then Interfaces.Unsigned_32 (Families) <= Value.Maximum_Column_Families
+       and then Value.Maximum_Manifest_History in 1 .. Interfaces.Unsigned_32 (Max_Manifest_History)
+       and then Value.Maximum_Batch_History in 1 .. Interfaces.Unsigned_32 (Max_Batch_History)
+       and then Value.Maximum_Transactions_Per_Batch in 1 .. Interfaces.Unsigned_32 (Max_Batch_Transactions)
+       and then Value.Maximum_Mutations_Per_Transaction > 0
+       and then Value.Maximum_Mutations_Per_Batch > 0
+       and then Value.Maximum_Transactions_Per_Batch <= Value.Maximum_Mutations_Per_Batch
+       and then Value.Maximum_Mutations_Per_Transaction <= Value.Maximum_Mutations_Per_Batch
+       and then Value.Maximum_Live_Entries > 0
+       and then Value.Maximum_Transaction_Payload_Bytes > 0
+       and then Value.Maximum_Batch_Payload_Bytes >= Value.Maximum_Transaction_Payload_Bytes
+       and then Value.Maximum_Live_State_Bytes > 0);
 
    procedure Put_U16
-     (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Interfaces.Unsigned_16)
-   is
+     (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Interfaces.Unsigned_16) is
    begin
       Image (Position) := Formats.Byte (Interfaces.Shift_Right (Value, 8) and 16#FF#);
       Image (Position + 1) := Formats.Byte (Value and 16#FF#);
    end Put_U16;
 
    procedure Put_U32
-     (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Interfaces.Unsigned_32)
-   is
+     (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Interfaces.Unsigned_32) is
    begin
       for Offset in Natural range 0 .. 3 loop
          Image (Position + Offset) :=
@@ -104,8 +100,7 @@ is
    end Put_U32;
 
    procedure Put_U64
-     (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Interfaces.Unsigned_64)
-   is
+     (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Interfaces.Unsigned_64) is
    begin
       for Offset in Natural range 0 .. 7 loop
          Image (Position + Offset) :=
@@ -113,43 +108,36 @@ is
       end loop;
    end Put_U64;
 
-   function Read_U16
-     (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_16
+   function Read_U16 (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_16
    is
    begin
-      return Interfaces.Shift_Left (Interfaces.Unsigned_16 (Image (Position)), 8)
+      return
+        Interfaces.Shift_Left (Interfaces.Unsigned_16 (Image (Position)), 8)
         or Interfaces.Unsigned_16 (Image (Position + 1));
    end Read_U16;
 
-   function Read_U32
-     (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_32
+   function Read_U32 (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_32
    is
       Result : Interfaces.Unsigned_32 := 0;
    begin
       for Offset in Natural range 0 .. 3 loop
-         Result := Interfaces.Shift_Left (Result, 8)
-           or Interfaces.Unsigned_32 (Image (Position + Offset));
+         Result := Interfaces.Shift_Left (Result, 8) or Interfaces.Unsigned_32 (Image (Position + Offset));
       end loop;
       return Result;
    end Read_U32;
 
-   function Read_U64
-     (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_64
+   function Read_U64 (Image : Manifest_Image; Position : Manifest_Image_Index) return Interfaces.Unsigned_64
    is
       Result : Interfaces.Unsigned_64 := 0;
    begin
       for Offset in Natural range 0 .. 7 loop
-         Result := Interfaces.Shift_Left (Result, 8)
-           or Interfaces.Unsigned_64 (Image (Position + Offset));
+         Result := Interfaces.Shift_Left (Result, 8) or Interfaces.Unsigned_64 (Image (Position + Offset));
       end loop;
       return Result;
    end Read_U64;
 
    procedure Put_Identifier
-     (Image : in out Manifest_Image;
-      Position : Manifest_Image_Index;
-      Value : Head_Policy.Identifier)
-   is
+     (Image : in out Manifest_Image; Position : Manifest_Image_Index; Value : Head_Policy.Identifier) is
    begin
       for Index in Head_Policy.Identifier_Index loop
          Image (Position + Index - Head_Policy.Identifier_Index'First) := Value (Index);
@@ -190,9 +178,7 @@ is
          if First in 1 .. 16#7F# then
             Cursor := Cursor + 1;
          elsif First in 16#C2# .. 16#DF# then
-            if Cursor > Item.Name_Length - 1
-              or else Item.Name (Cursor + 1) not in 16#80# .. 16#BF#
-            then
+            if Cursor > Item.Name_Length - 1 or else Item.Name (Cursor + 1) not in 16#80# .. 16#BF# then
                return False;
             end if;
             Cursor := Cursor + 2;
@@ -252,21 +238,20 @@ is
         or else Head_Policy.Is_Zero (Value.Publication_Transition_ID)
         or else Value.Family_Total = 0
         or else not Valid_Limits (Value.Limits, Value.Family_Total)
-        or else
-          (if Is_Root (Value) then
-             False
-           elsif Head_Policy.Is_Zero (Value.Previous_Manifest_ID)
-             or else Value.Manifest_ID = Value.Previous_Manifest_ID
-             or else Head_Policy.Is_Zero (Value.Expected_Transition_ID)
-             or else Value.Expected_Transition_Number = 0
-             or else Value.Expected_Transition_Number = Interfaces.Unsigned_64'Last
-             or else Value.Writer_Epoch > Value.Expected_Transition_Number
-             or else Value.Publication_Transition_Number /= Value.Expected_Transition_Number + 1
-             or else Value.Publication_Transition_ID = Value.Expected_Transition_ID
-             or else Value.Writer_Epoch = 0
-             or else Value.Registry_Revision <= 1
-           then True
-           else False)
+        or else (if Is_Root (Value)
+                 then False
+                 elsif Head_Policy.Is_Zero (Value.Previous_Manifest_ID)
+                   or else Value.Manifest_ID = Value.Previous_Manifest_ID
+                   or else Head_Policy.Is_Zero (Value.Expected_Transition_ID)
+                   or else Value.Expected_Transition_Number = 0
+                   or else Value.Expected_Transition_Number = Interfaces.Unsigned_64'Last
+                   or else Value.Writer_Epoch > Value.Expected_Transition_Number
+                   or else Value.Publication_Transition_Number /= Value.Expected_Transition_Number + 1
+                   or else Value.Publication_Transition_ID = Value.Expected_Transition_ID
+                   or else Value.Writer_Epoch = 0
+                   or else Value.Registry_Revision <= 1
+                 then True
+                 else False)
       then
          return False;
       end if;
@@ -278,8 +263,8 @@ is
             if not Valid_Configuration (Item)
               or else Item.Max_Key_Bytes > Value.Limits.Maximum_Transaction_Payload_Bytes
               or else Item.Max_Value_Bytes > Value.Limits.Maximum_Transaction_Payload_Bytes
-              or else Item.Max_Key_Bytes >
-                Value.Limits.Maximum_Transaction_Payload_Bytes - Item.Max_Value_Bytes
+              or else Item.Max_Key_Bytes
+                      > Value.Limits.Maximum_Transaction_Payload_Bytes - Item.Max_Value_Bytes
               or else Item.Max_Key_Bytes > Value.Limits.Maximum_Live_State_Bytes
               or else Item.Max_Value_Bytes > Value.Limits.Maximum_Live_State_Bytes
               or else Item.Max_Key_Bytes > Value.Limits.Maximum_Live_State_Bytes - Item.Max_Value_Bytes
@@ -299,27 +284,15 @@ is
 
    function Runtime_Compatible (Value : Manifest) return Boolean is
    begin
-      if Value.Limits.Maximum_Column_Families > Maximum_Initial_Column_Families
-        or else Value.Limits.Maximum_Manifest_History > Maximum_History_Batches
-        or else Value.Limits.Maximum_Batch_History > Maximum_History_Batches
-        or else Value.Limits.Maximum_Transactions_Per_Batch > Maximum_Group_Transactions
-        or else Value.Limits.Maximum_Mutations_Per_Transaction > Maximum_Transaction_Mutations
-        or else Value.Limits.Maximum_Mutations_Per_Batch > Maximum_Transaction_Mutations
-        or else Value.Limits.Maximum_Live_Entries > Maximum_State_Entries
-        or else Value.Limits.Maximum_Transaction_Payload_Bytes > Maximum_Transaction_Bytes
-        or else Value.Limits.Maximum_Batch_Payload_Bytes > Maximum_Commit_Bytes
-        or else Value.Limits.Maximum_Live_State_Bytes > Maximum_Live_State_Bytes
-      then
-         return False;
-      end if;
-      for Index in Family_Slot range 1 .. Value.Family_Total loop
-         if Value.Families (Index).Max_Key_Bytes > Maximum_Key_Bytes
-           or else Value.Families (Index).Max_Value_Bytes > Maximum_Value_Bytes
-         then
-            return False;
-         end if;
-      end loop;
-      return True;
+      --  The persisted U32 format/history/group ceilings are structural. U64
+      --  byte budgets are policy authority, not eager allocation requests:
+      --  each actual arena/image performs checked Natural conversion before
+      --  lazy allocation, so a theoretical maximum is not itself incompatible.
+      return
+        Value.Limits.Maximum_Column_Families <= Maximum_Initial_Column_Families
+        and then Value.Limits.Maximum_Manifest_History <= Maximum_History_Batches
+        and then Value.Limits.Maximum_Batch_History <= Maximum_History_Batches
+        and then Value.Limits.Maximum_Transactions_Per_Batch <= Maximum_Group_Transactions;
    end Runtime_Compatible;
 
    function Valid_Predecessor (Current, Previous : Manifest) return Boolean is
@@ -351,31 +324,26 @@ is
       declare
          Ordinal_Gap : constant Interfaces.Unsigned_64 :=
            Current.Expected_Transition_Number - Previous.Publication_Transition_Number;
-         Epoch_Gap : constant Interfaces.Unsigned_64 := Current.Writer_Epoch - Previous.Writer_Epoch;
+         Epoch_Gap   : constant Interfaces.Unsigned_64 := Current.Writer_Epoch - Previous.Writer_Epoch;
       begin
-         return Epoch_Gap <= Ordinal_Gap
-           and then
-             (if Ordinal_Gap = 0 then
-                Current.Expected_Transition_ID = Previous.Publication_Transition_ID
-              elsif Ordinal_Gap = 1 then
-                Current.Expected_Transition_ID /= Previous.Publication_Transition_ID);
+         return
+           Epoch_Gap <= Ordinal_Gap
+           and then (if Ordinal_Gap = 0
+                     then Current.Expected_Transition_ID = Previous.Publication_Transition_ID
+                     elsif Ordinal_Gap = 1
+                     then Current.Expected_Transition_ID /= Previous.Publication_Transition_ID);
       end;
    end Valid_Predecessor;
 
-   function Manifest_Head_Structurally_Valid
-     (Candidate : Head_Policy.Head_State) return Boolean
-   is
+   function Manifest_Head_Structurally_Valid (Candidate : Head_Policy.Head_State) return Boolean is
    begin
-      return Candidate.Version = Manifest_Head_Format
-        and then Head_Policy.Structurally_Valid_V2 (Candidate);
+      return Candidate.Version = Manifest_Head_Format and then Head_Policy.Structurally_Valid_V2 (Candidate);
    end Manifest_Head_Structurally_Valid;
 
-   function Valid_Root_Publication
-     (Candidate : Head_Policy.Head_State;
-      Value     : Manifest) return Boolean
-   is
+   function Valid_Root_Publication (Candidate : Head_Policy.Head_State; Value : Manifest) return Boolean is
    begin
-      return Manifest_Head_Structurally_Valid (Candidate)
+      return
+        Manifest_Head_Structurally_Valid (Candidate)
         and then Structurally_Valid (Value)
         and then Is_Root (Value)
         and then Candidate.Database_ID = Value.Database_ID
@@ -386,16 +354,14 @@ is
         and then Candidate.Latest_Manifest = Value.Manifest_ID
         and then Candidate.Transition_ID = Value.Publication_Transition_ID
         and then Head_Policy.Is_Zero (Candidate.Predecessor_Transition)
-        and then Interfaces.Unsigned_64 (Candidate.Transition_Number) =
-          Value.Publication_Transition_Number;
+        and then Interfaces.Unsigned_64 (Candidate.Transition_Number) = Value.Publication_Transition_Number;
    end Valid_Root_Publication;
 
-   function Valid_Publication
-     (Current, Candidate : Head_Policy.Head_State;
-      Value              : Manifest) return Boolean
+   function Valid_Publication (Current, Candidate : Head_Policy.Head_State; Value : Manifest) return Boolean
    is
    begin
-      return Manifest_Head_Structurally_Valid (Current)
+      return
+        Manifest_Head_Structurally_Valid (Current)
         and then Manifest_Head_Structurally_Valid (Candidate)
         and then Structurally_Valid (Value)
         and then not Is_Root (Value)
@@ -414,42 +380,39 @@ is
         and then Candidate.Predecessor_Transition = Current.Transition_ID
         and then Candidate.Transition_ID = Value.Publication_Transition_ID
         and then Candidate.Transition_ID /= Current.Transition_ID
-        and then Interfaces.Unsigned_64 (Candidate.Transition_Number) =
-          Value.Publication_Transition_Number
+        and then Interfaces.Unsigned_64 (Candidate.Transition_Number) = Value.Publication_Transition_Number
         and then Current.Transition_Number < Head_Policy.Transition_Ordinal'Last
         and then Candidate.Transition_Number = Current.Transition_Number + 1;
    end Valid_Publication;
 
-   function Referenced_By
-     (Value            : Manifest;
-      Referencing_Head : Head_Policy.Head_State) return Boolean
-   is
+   function Referenced_By (Value : Manifest; Referencing_Head : Head_Policy.Head_State) return Boolean is
    begin
       if not Structurally_Valid (Value)
         or else not Manifest_Head_Structurally_Valid (Referencing_Head)
         or else Referencing_Head.Database_ID /= Value.Database_ID
         or else Referencing_Head.Latest_Manifest /= Value.Manifest_ID
         or else Interfaces.Unsigned_64 (Referencing_Head.Epoch) < Value.Writer_Epoch
-        or else Interfaces.Unsigned_64 (Referencing_Head.Transition_Number) <
-          Value.Publication_Transition_Number
+        or else Interfaces.Unsigned_64 (Referencing_Head.Transition_Number)
+                < Value.Publication_Transition_Number
       then
          return False;
       end if;
       declare
          Ordinal_Gap : constant Interfaces.Unsigned_64 :=
-           Interfaces.Unsigned_64 (Referencing_Head.Transition_Number)
-             - Value.Publication_Transition_Number;
-         Epoch_Gap : constant Interfaces.Unsigned_64 :=
+           Interfaces.Unsigned_64 (Referencing_Head.Transition_Number) - Value.Publication_Transition_Number;
+         Epoch_Gap   : constant Interfaces.Unsigned_64 :=
            Interfaces.Unsigned_64 (Referencing_Head.Epoch) - Value.Writer_Epoch;
       begin
-         return Epoch_Gap <= Ordinal_Gap
-           and then
-             (if Ordinal_Gap = 0 then
-                Referencing_Head.Transition_ID = Value.Publication_Transition_ID
-                  and then Referencing_Head.Predecessor_Transition = Value.Expected_Transition_ID
-              elsif Ordinal_Gap = 1 then
-                Referencing_Head.Transition_ID /= Value.Publication_Transition_ID
-                  and then Referencing_Head.Predecessor_Transition = Value.Publication_Transition_ID);
+         return
+           Epoch_Gap <= Ordinal_Gap
+           and then (if Ordinal_Gap = 0
+                     then
+                       Referencing_Head.Transition_ID = Value.Publication_Transition_ID
+                       and then Referencing_Head.Predecessor_Transition = Value.Expected_Transition_ID
+                     elsif Ordinal_Gap = 1
+                     then
+                       Referencing_Head.Transition_ID /= Value.Publication_Transition_ID
+                       and then Referencing_Head.Predecessor_Transition = Value.Publication_Transition_ID);
       end;
    end Referenced_By;
 
@@ -458,19 +421,19 @@ is
    begin
       for Index in Family_Slot range 1 .. Value.Family_Total loop
          pragma Loop_Invariant (Result >= Manifest_Header_Length + Manifest_Trailer_Length);
-         pragma Loop_Invariant
-           (Result <= Manifest_Header_Length + Manifest_Trailer_Length
-              + (Index - 1) * (Family_Frame_Header_Length + Max_Family_Name_Bytes));
+         pragma
+           Loop_Invariant
+             (Result
+                <= Manifest_Header_Length
+                   + Manifest_Trailer_Length
+                   + (Index - 1) * (Family_Frame_Header_Length + Max_Family_Name_Bytes));
          Result := Result + Family_Frame_Header_Length + Value.Families (Index).Name_Length;
       end loop;
       return Result;
    end Encoded_Length;
 
    procedure Encode_Manifest
-     (Value  : Manifest;
-      Image  : out Manifest_Image;
-      Length : out Natural;
-      Status : out Encode_Status)
+     (Value : Manifest; Image : out Manifest_Image; Length : out Natural; Status : out Encode_Status)
    is
       Cursor : Natural := Manifest_Header_Length;
    begin
@@ -487,9 +450,7 @@ is
       Image (11) := 0;
       Put_Identifier (Image, 12, Value.Database_ID);
       Put_U32 (Image, 28, Manifest_Header_Length);
-      Put_U64
-        (Image, 32,
-         Interfaces.Unsigned_64 (Length - Manifest_Header_Length - Manifest_Trailer_Length));
+      Put_U64 (Image, 32, Interfaces.Unsigned_64 (Length - Manifest_Header_Length - Manifest_Trailer_Length));
       Put_Identifier (Image, 44, Value.Manifest_ID);
       Put_Identifier (Image, 60, Value.Previous_Manifest_ID);
       Put_Identifier (Image, 76, Value.Expected_Transition_ID);
@@ -513,9 +474,11 @@ is
 
       for Index in Family_Slot range 1 .. Value.Family_Total loop
          pragma Loop_Invariant (Cursor >= Manifest_Header_Length);
-         pragma Loop_Invariant
-           (Cursor <= Manifest_Header_Length
-              + (Index - 1) * (Family_Frame_Header_Length + Max_Family_Name_Bytes));
+         pragma
+           Loop_Invariant
+             (Cursor
+                <= Manifest_Header_Length
+                   + (Index - 1) * (Family_Frame_Header_Length + Max_Family_Name_Bytes));
          declare
             Item : Column_Family_Configuration renames Value.Families (Index);
          begin
@@ -566,8 +529,8 @@ is
       end if;
       Fixed (0 .. Image'Length - 1) := Image;
       Payload_Length := Read_U64 (Fixed, 32);
-      if Payload_Length /= Interfaces.Unsigned_64
-        (Image'Length - Manifest_Header_Length - Manifest_Trailer_Length)
+      if Payload_Length
+        /= Interfaces.Unsigned_64 (Image'Length - Manifest_Header_Length - Manifest_Trailer_Length)
       then
          Status := Invalid_Length;
          return;
@@ -635,12 +598,8 @@ is
       if Candidate.Limits.Maximum_Column_Families > Interfaces.Unsigned_32 (Max_Families)
         or else Candidate.Limits.Maximum_Manifest_History > Interfaces.Unsigned_32 (Max_Manifest_History)
         or else Candidate.Limits.Maximum_Batch_History > Interfaces.Unsigned_32 (Max_Batch_History)
-        or else Candidate.Limits.Maximum_Transactions_Per_Batch >
-          Interfaces.Unsigned_32 (Max_Batch_Transactions)
-        or else Candidate.Limits.Maximum_Mutations_Per_Transaction >
-          Interfaces.Unsigned_32 (Max_Transaction_Mutations)
-        or else Candidate.Limits.Maximum_Mutations_Per_Batch > Interfaces.Unsigned_32 (Max_Batch_Mutations)
-        or else Candidate.Limits.Maximum_Live_Entries > Interfaces.Unsigned_32 (Max_Live_Entries)
+        or else Candidate.Limits.Maximum_Transactions_Per_Batch
+                > Interfaces.Unsigned_32 (Max_Batch_Transactions)
       then
          Status := Limit_Exceeded;
          return;

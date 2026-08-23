@@ -1,5 +1,36 @@
 package body Flyology.DB.Testing is
 
+   procedure Fail_Next_Allocation (Point : Allocation_Fault_Point) is
+   begin
+      Set_Test_Allocation_Fault
+        (case Point is
+           when Transaction_Arena   => Transaction_Arena_Allocation,
+           when Transaction_Payload => Transaction_Payload_Allocation,
+           when Batch_Descriptors   => Batch_Descriptor_Allocation,
+           when Storage_Sink        => Storage_Sink_Allocation,
+           when Recovery_History    => Recovery_History_Allocation,
+           when Engine_State        => Engine_State_Allocation,
+           when Identity_Tables     => Identity_Table_Allocation,
+           when Projection_Scratch  => Projection_Scratch_Allocation);
+   end Fail_Next_Allocation;
+
+   procedure Decode_Runtime_Image
+     (Data       : Byte_Array;
+      Wrong_DB   : Boolean := False;
+      Wrong_Head : Boolean := False;
+      Result     : out Outcome_Code) is
+   begin
+      Decode_Runtime_Image_For_Test (Data, Wrong_DB, Wrong_Head, Result);
+   end Decode_Runtime_Image;
+
+   procedure Check_Runtime_Reference_Parity (Result : out Outcome_Code) is
+   begin
+      Flyology.DB.Check_Runtime_Reference_Parity (Result);
+   end Check_Runtime_Reference_Parity;
+
+   function Group_Mutation_Total_Fits_Wire (Value : Natural) return Boolean
+   is (Flyology.DB.Group_Mutation_Total_Fits_Wire (Value));
+
    procedure Arm
      (Item : in out Storage_Context; Point : Fault_Point; Mode : Fault_Mode; Count : Positive := 1) is
    begin
@@ -12,7 +43,8 @@ package body Flyology.DB.Testing is
    end Clear;
 
    procedure Publication_Counts
-     (Item : in out Storage_Context; Batch_Puts : out Natural; Head_Puts : out Natural) is
+     (Item : in out Storage_Context; Batch_Puts : out Natural; Head_Puts : out Natural)
+   is
       Manifest_Puts : Natural;
    begin
       Item.Test_Control.Publication_Counts (Batch_Puts, Manifest_Puts, Head_Puts);
@@ -60,14 +92,27 @@ package body Flyology.DB.Testing is
       Set_Test_Get_Paused (Item, False);
    end Resume_Gets;
 
-   procedure Wait_For_Get
-     (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean) is
+   procedure Wait_For_Get (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean) is
    begin
       Wait_For_Test_Get (Item, Timeout, Arrived);
    end Wait_For_Get;
 
    function Get_Waiting (Item : Storage_Context) return Boolean
    is (Test_Get_Waiting (Item));
+
+   procedure Image_Statistics
+     (Allocated, Released, Arenas_Allocated, Arenas_Released, Transaction_Bytes, Source_Bytes, Sink_Bytes :
+        out Interfaces.Unsigned_64) is
+   begin
+      Test_Image_Statistics
+        (Allocated, Released, Arenas_Allocated, Arenas_Released, Transaction_Bytes, Source_Bytes, Sink_Bytes);
+   end Image_Statistics;
+
+   function Receipt_Retains_Image (Item : Commit_Receipt) return Boolean
+   is (Item.Retained_Image.Image /= null);
+
+   function Create_Receipt_Retains_Manifest (Item : Create_Receipt) return Boolean
+   is (Item.Retained_Manifest.Image /= null);
 
    procedure Install_Head
      (Item          : in out Storage_Context;
@@ -121,15 +166,7 @@ package body Flyology.DB.Testing is
       Result               : out Outcome_Code) is
    begin
       Rewrite_Test_Manifest
-        (Item,
-         Manifest_ID,
-         Expected_Database_ID,
-         Replacement_Database,
-         Oversize_Family,
-         False,
-         0,
-         0,
-         Result);
+        (Item, Manifest_ID, Expected_Database_ID, Replacement_Database, Oversize_Family, False, 0, 0, Result);
    end Rewrite_Manifest;
 
    procedure Restrict_Manifest

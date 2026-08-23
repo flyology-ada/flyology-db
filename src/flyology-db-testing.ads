@@ -2,6 +2,25 @@ with Interfaces;
 
 private package Flyology.DB.Testing is
 
+   type Allocation_Fault_Point is
+     (Transaction_Arena,
+      Transaction_Payload,
+      Batch_Descriptors,
+      Storage_Sink,
+      Recovery_History,
+      Engine_State,
+      Identity_Tables,
+      Projection_Scratch);
+
+   procedure Fail_Next_Allocation (Point : Allocation_Fault_Point);
+   procedure Decode_Runtime_Image
+     (Data       : Byte_Array;
+      Wrong_DB   : Boolean := False;
+      Wrong_Head : Boolean := False;
+      Result     : out Outcome_Code);
+   procedure Check_Runtime_Reference_Parity (Result : out Outcome_Code);
+   function Group_Mutation_Total_Fits_Wire (Value : Natural) return Boolean;
+
    subtype Fault_Point is Storage_Fault_Point;
    subtype Fault_Mode is Storage_Fault_Mode;
 
@@ -28,9 +47,13 @@ private package Flyology.DB.Testing is
    procedure Fail_Next_Install (Item : in out Database; Result : out Outcome_Code);
    procedure Pause_Gets (Item : in out Storage_Context);
    procedure Resume_Gets (Item : in out Storage_Context);
-   procedure Wait_For_Get
-     (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean);
+   procedure Wait_For_Get (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean);
    function Get_Waiting (Item : Storage_Context) return Boolean;
+   procedure Image_Statistics
+     (Allocated, Released, Arenas_Allocated, Arenas_Released, Transaction_Bytes, Source_Bytes, Sink_Bytes :
+        out Interfaces.Unsigned_64);
+   function Receipt_Retains_Image (Item : Commit_Receipt) return Boolean;
+   function Create_Receipt_Retains_Manifest (Item : Create_Receipt) return Boolean;
    procedure Install_Head
      (Item          : in out Storage_Context;
       Database_ID   : Database_Identifier;

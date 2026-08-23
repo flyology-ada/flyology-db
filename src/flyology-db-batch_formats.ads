@@ -2,7 +2,9 @@ with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
 with Interfaces;
 
---  Defines the bounded operational representation and wire codec for commit batches.
+--  Defines the deliberately small bounded reference/proof representation and wire codec
+--  for commit batches.  The operational runtime codec accepts manifest-declared counts
+--  and byte limits within the wire widths and the host address space.
 private package Flyology.DB.Batch_Formats
   with SPARK_Mode => On
 is
@@ -19,7 +21,7 @@ is
    Transaction_Frame_Header_Length : constant := 32;
    Mutation_Frame_Header_Length : constant := 14;
 
-   --  These are version-1 reader and in-memory limits, not wire-format limits.
+   --  These are reference-instance limits, not version-1 wire or production limits.
    Max_Transactions : constant := 16;
    Max_Mutations : constant := 64;
    Max_Key_Bytes : constant := 64;

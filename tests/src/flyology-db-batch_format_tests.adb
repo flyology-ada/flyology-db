@@ -76,39 +76,241 @@ package body Flyology.DB.Batch_Format_Tests is
    --  Frozen independently from the Ada encoder. It exercises empty Put values,
    --  a zero byte in a key, a high-bit byte, Delete, and two column families.
    Golden : constant Formats.Byte_Array (0 .. Fixture_Length - 1) :=
-     [16#46#, 16#4C#, 16#59#, 16#42#, 16#41#, 16#54#, 16#43#, 16#31#,
-      16#00#, 16#01#, 16#02#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#01#, 16#00#, 16#00#, 16#00#, 16#9C#,
-      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#3F#,
-      16#69#, 16#DB#, 16#B5#, 16#EB#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#01#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#03#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#02#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#01#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#04#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#02#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#01#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#01#, 16#00#, 16#00#, 16#00#, 16#01#,
-      16#00#, 16#00#, 16#00#, 16#02#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#05#, 16#00#, 16#00#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#01#, 16#00#, 16#00#, 16#00#, 16#02#,
-      16#00#, 16#00#, 16#00#, 16#1F#, 16#00#, 16#00#, 16#00#, 16#01#,
-      16#01#, 16#00#, 16#00#, 16#00#, 16#00#, 16#02#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#00#, 16#FF#, 16#00#, 16#00#, 16#00#, 16#02#,
-      16#02#, 16#00#, 16#00#, 16#00#, 16#00#, 16#01#, 16#00#, 16#00#,
-      16#00#, 16#00#, 16#80#, 16#73#, 16#F3#, 16#4A#, 16#66#];
+     [16#46#,
+      16#4C#,
+      16#59#,
+      16#42#,
+      16#41#,
+      16#54#,
+      16#43#,
+      16#31#,
+      16#00#,
+      16#01#,
+      16#02#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#01#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#9C#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#3F#,
+      16#69#,
+      16#DB#,
+      16#B5#,
+      16#EB#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#01#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#03#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#02#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#01#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#04#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#02#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#01#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#01#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#01#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#02#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#05#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#01#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#02#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#1F#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#01#,
+      16#01#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#02#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#FF#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#02#,
+      16#02#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#01#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#00#,
+      16#80#,
+      16#73#,
+      16#F3#,
+      16#4A#,
+      16#66#];
+
+   function Frozen_Golden return Byte_Array is
+   begin
+      return Result : Byte_Array (1 .. Golden'Length) do
+         for Offset in Natural range 0 .. Golden'Length - 1 loop
+            Result (Offset + 1) := Byte (Golden (Golden'First + Offset));
+         end loop;
+      end return;
+   end Frozen_Golden;
 
    procedure Put_U32
-     (Item     : in out Batches.Batch_Image;
-      Position : Batches.Batch_Image_Index;
-      Value    : Interfaces.Unsigned_32)
+     (Item : in out Batches.Batch_Image; Position : Batches.Batch_Image_Index; Value : Interfaces.Unsigned_32)
    is
    begin
       for Offset in Natural range 0 .. 3 loop
@@ -118,9 +320,7 @@ package body Flyology.DB.Batch_Format_Tests is
    end Put_U32;
 
    procedure Put_U64
-     (Item     : in out Batches.Batch_Image;
-      Position : Batches.Batch_Image_Index;
-      Value    : Interfaces.Unsigned_64)
+     (Item : in out Batches.Batch_Image; Position : Batches.Batch_Image_Index; Value : Interfaces.Unsigned_64)
    is
    begin
       for Offset in Natural range 0 .. 7 loop
@@ -129,10 +329,7 @@ package body Flyology.DB.Batch_Format_Tests is
       end loop;
    end Put_U64;
 
-   procedure Repair_Checksums
-     (Item   : in out Batches.Batch_Image;
-      Length : Natural)
-   is
+   procedure Repair_Checksums (Item : in out Batches.Batch_Image; Length : Natural) is
    begin
       Item (40 .. 43) := [others => 0];
       Put_U32 (Item, 40, Formats.CRC_32C (Item (0 .. Batches.Batch_Header_Length - 1)));
@@ -149,8 +346,7 @@ package body Flyology.DB.Batch_Format_Tests is
       Value  : Batches.Commit_Batch;
       Status : Batches.Decode_Status;
    begin
-      Batches.Decode_Latest_Batch
-        (Item, Fixture.Database_ID, Observed_Head, Limits, Value, Status);
+      Batches.Decode_Latest_Batch (Item, Fixture.Database_ID, Observed_Head, Limits, Value, Status);
       if Status /= Expected then
          raise Program_Error with Context & ": " & Batches.Decode_Status'Image (Status);
       elsif Status /= Batches.Decoded and then Value /= Batches.Empty_Batch then
@@ -159,18 +355,13 @@ package body Flyology.DB.Batch_Format_Tests is
    end Expect_Decode;
 
    procedure Expect_Default_Decode
-     (Item     : Formats.Byte_Array;
-      Expected : Batches.Decode_Status;
-      Context  : String)
-   is
+     (Item : Formats.Byte_Array; Expected : Batches.Decode_Status; Context : String) is
    begin
       Expect_Decode (Item, Referencing_Head, Batches.Default_Reader_Caps, Expected, Context);
    end Expect_Default_Decode;
 
    procedure Encode_Checked
-     (Value  : Batches.Commit_Batch;
-      Image  : out Batches.Batch_Image;
-      Length : out Natural)
+     (Value : Batches.Commit_Batch; Image : out Batches.Batch_Image; Length : out Natural)
    is
       Status : Batches.Encode_Status;
    begin
@@ -181,10 +372,10 @@ package body Flyology.DB.Batch_Format_Tests is
    end Encode_Checked;
 
    procedure Test_Golden_And_Extent is
-      Image   : Batches.Batch_Image;
-      Length  : Natural;
-      Value   : Batches.Commit_Batch;
-      Status  : Batches.Decode_Status;
+      Image  : Batches.Batch_Image;
+      Length : Natural;
+      Value  : Batches.Commit_Batch;
+      Status : Batches.Decode_Status;
    begin
       if not Batches.Structurally_Valid (Fixture) then
          raise Program_Error with "minimal batch was structurally invalid";
@@ -220,7 +411,7 @@ package body Flyology.DB.Batch_Format_Tests is
    end Test_Golden_And_Extent;
 
    procedure Test_Envelope_And_Semantics is
-      Corrupt : Batches.Batch_Image := [others => 0];
+      Corrupt               : Batches.Batch_Image := [others => 0];
       Required_Field_Starts : constant array (Positive range 1 .. 7) of Natural :=
         [44, 52, 84, 100, 108, 124, 132];
    begin
@@ -278,12 +469,11 @@ package body Flyology.DB.Batch_Format_Tests is
 
       for First of Required_Field_Starts loop
          Corrupt (0 .. Fixture_Length - 1) := Golden;
-         Corrupt
-           (First .. First
-              + (if First in 44 | 100 | 124 | 132 then 7 else 15)) := [others => 0];
+         Corrupt (First .. First + (if First in 44 | 100 | 124 | 132 then 7 else 15)) := [others => 0];
          Repair_Checksums (Corrupt, Fixture_Length);
          Expect_Default_Decode
-           (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Batch_State,
+           (Corrupt (0 .. Fixture_Length - 1),
+            Batches.Invalid_Batch_State,
             "zero required batch field survived repair");
       end loop;
 
@@ -297,14 +487,16 @@ package body Flyology.DB.Batch_Format_Tests is
       Corrupt (83) := 9;
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Batch_State,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Invalid_Batch_State,
          "first batch accepted a predecessor ID");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Corrupt (147) := 2;
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Batch_State,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Invalid_Batch_State,
          "sequence interval disagreed with transaction count");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
@@ -329,7 +521,8 @@ package body Flyology.DB.Batch_Format_Tests is
       Corrupt (179) := 2;
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Transaction,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Invalid_Transaction,
          "wrong transaction sequence accepted");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
@@ -370,64 +563,91 @@ package body Flyology.DB.Batch_Format_Tests is
    end Test_Envelope_And_Semantics;
 
    procedure Test_Caps is
-      Exact : constant Batches.Reader_Caps :=
+      Exact   : constant Batches.Reader_Caps :=
         (Transactions => 1, Mutations => 2, Key_Bytes => 2, Value_Bytes => 0, Payload_Bytes => 63);
       Corrupt : Batches.Batch_Image := [others => 0];
    begin
       Expect_Decode (Golden, Referencing_Head, Exact, Batches.Decoded, "exact reader caps rejected fixture");
       Expect_Decode
-        (Golden, Referencing_Head, (Exact with delta Transactions => 0), Batches.Limit_Exceeded,
+        (Golden,
+         Referencing_Head,
+         (Exact with delta Transactions => 0),
+         Batches.Limit_Exceeded,
          "transaction cap was not distinct");
       Expect_Decode
-        (Golden, Referencing_Head, (Exact with delta Mutations => 1), Batches.Limit_Exceeded,
+        (Golden,
+         Referencing_Head,
+         (Exact with delta Mutations => 1),
+         Batches.Limit_Exceeded,
          "mutation cap was not distinct");
       Expect_Decode
-        (Golden, Referencing_Head, (Exact with delta Key_Bytes => 1), Batches.Limit_Exceeded,
+        (Golden,
+         Referencing_Head,
+         (Exact with delta Key_Bytes => 1),
+         Batches.Limit_Exceeded,
          "key cap was not distinct");
       Expect_Decode
-        (Golden, Referencing_Head, (Exact with delta Payload_Bytes => 62), Batches.Limit_Exceeded,
+        (Golden,
+         Referencing_Head,
+         (Exact with delta Payload_Bytes => 62),
+         Batches.Limit_Exceeded,
          "payload cap was not distinct");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Put_U32 (Corrupt, 148, Interfaces.Unsigned_32 (Batches.Max_Transactions + 1));
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Limit_Exceeded,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Limit_Exceeded,
          "wire transaction count above the operational cap was called corruption");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Put_U32 (Corrupt, 152, Interfaces.Unsigned_32 (Batches.Max_Mutations + 1));
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Limit_Exceeded,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Limit_Exceeded,
          "wire mutation count above the operational cap was called corruption");
 
       declare
-         Batch  : Batches.Commit_Batch := Fixture;
-         Image  : Batches.Batch_Image;
-         Length : Natural;
+         Batch            : Batches.Commit_Batch := Fixture;
+         Image            : Batches.Batch_Image;
+         Length           : Natural;
          Publication_Head : constant Head.Head_State := Referencing_Head;
       begin
          Batch.Mutations (1).Value_Size := 1;
          Batch.Mutations (1).Value (1) := 16#7F#;
          Encode_Checked (Batch, Image, Length);
          Expect_Decode
-           (Image (0 .. Length - 1), Publication_Head,
-            (Transactions => 1, Mutations => 2, Key_Bytes => 2, Value_Bytes => 1,
+           (Image (0 .. Length - 1),
+            Publication_Head,
+            (Transactions  => 1,
+             Mutations     => 2,
+             Key_Bytes     => 2,
+             Value_Bytes   => 1,
              Payload_Bytes => Length - Batches.Batch_Header_Length - Batches.Batch_Trailer_Length),
-            Batches.Decoded, "exact value cap rejected fixture");
+            Batches.Decoded,
+            "exact value cap rejected fixture");
          Expect_Decode
-           (Image (0 .. Length - 1), Publication_Head,
-            (Transactions => 1, Mutations => 2, Key_Bytes => 2, Value_Bytes => 0,
+           (Image (0 .. Length - 1),
+            Publication_Head,
+            (Transactions  => 1,
+             Mutations     => 2,
+             Key_Bytes     => 2,
+             Value_Bytes   => 0,
              Payload_Bytes => Length - Batches.Batch_Header_Length - Batches.Batch_Trailer_Length),
-            Batches.Limit_Exceeded, "value cap was not distinct");
+            Batches.Limit_Exceeded,
+            "value cap was not distinct");
 
          Batch := Fixture;
          Batch.Mutations (1).Key_Size := 0;
          Encode_Checked (Batch, Image, Length);
          Expect_Decode
-           (Image (0 .. Length - 1), Publication_Head, Batches.Default_Reader_Caps,
-            Batches.Decoded, "empty key was rejected");
+           (Image (0 .. Length - 1),
+            Publication_Head,
+            Batches.Default_Reader_Caps,
+            Batches.Decoded,
+            "empty key was rejected");
       end;
    end Test_Caps;
 
@@ -437,16 +657,32 @@ package body Flyology.DB.Batch_Format_Tests is
       for Dimension in Positive range 1 .. 7 loop
          Wrong := Referencing_Head;
          case Dimension is
-            when 1 => Wrong.Database_ID := ID (9);
-            when 2 => Wrong.Epoch := 2;
-            when 3 => Wrong.Latest_Batch := ID (9);
-            when 4 => Wrong.Transition_ID := ID (9);
-            when 5 => Wrong.Predecessor_Transition := ID (9);
-            when 6 => Wrong.Highest_Visible := 2;
-            when 7 => Wrong.Transition_Number := 3;
+            when 1 =>
+               Wrong.Database_ID := ID (9);
+
+            when 2 =>
+               Wrong.Epoch := 2;
+
+            when 3 =>
+               Wrong.Latest_Batch := ID (9);
+
+            when 4 =>
+               Wrong.Transition_ID := ID (9);
+
+            when 5 =>
+               Wrong.Predecessor_Transition := ID (9);
+
+            when 6 =>
+               Wrong.Highest_Visible := 2;
+
+            when 7 =>
+               Wrong.Transition_Number := 3;
          end case;
          Expect_Decode
-           (Golden, Wrong, Batches.Default_Reader_Caps, Batches.Head_Mismatch,
+           (Golden,
+            Wrong,
+            Batches.Default_Reader_Caps,
+            Batches.Head_Mismatch,
             "head mismatch dimension was accepted");
       end loop;
    end Test_Head_Binding;
@@ -458,56 +694,62 @@ package body Flyology.DB.Batch_Format_Tests is
       Put_U64 (Corrupt, 32, Interfaces.Unsigned_64'Last);
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Length,
-         "maximum payload length was accepted");
+        (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Length, "maximum payload length was accepted");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Put_U32 (Corrupt, 148, Interfaces.Unsigned_32'Last);
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Limit_Exceeded,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Limit_Exceeded,
          "maximum transaction count was not classified as a limit");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Put_U32 (Corrupt, 152, Interfaces.Unsigned_32'Last);
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Limit_Exceeded,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Limit_Exceeded,
          "maximum mutation count was not classified as a limit");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Put_U32 (Corrupt, 184, Interfaces.Unsigned_32'Last);
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Transaction,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Invalid_Transaction,
          "maximum transaction body length was accepted");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Put_U32 (Corrupt, 194, Interfaces.Unsigned_32'Last);
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Limit_Exceeded,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Limit_Exceeded,
          "maximum key length was not classified as a limit");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Put_U32 (Corrupt, 198, Interfaces.Unsigned_32'Last);
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Limit_Exceeded,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Limit_Exceeded,
          "maximum value length was not classified as a limit");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Put_U64 (Corrupt, 100, Interfaces.Unsigned_64'Last);
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Batch_State,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Invalid_Batch_State,
          "maximum expected transition number was accepted");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
       Put_U64 (Corrupt, 124, 3);
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Batch_State,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Invalid_Batch_State,
          "non-successor publication number was accepted");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
@@ -515,7 +757,8 @@ package body Flyology.DB.Batch_Format_Tests is
       Put_U64 (Corrupt, 124, 3);
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
-        (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Batch_State,
+        (Corrupt (0 .. Fixture_Length - 1),
+         Batches.Invalid_Batch_State,
          "first-batch expected number did not equal its epoch");
    end Test_Extreme_Wire_Values;
 
@@ -552,15 +795,22 @@ package body Flyology.DB.Batch_Format_Tests is
       Encode_Checked (Previous, Previous_Image, Previous_Length);
       Encode_Checked (Current, Current_Image, Current_Length);
       Batches.Decode_Latest_Batch
-        (Current_Image (0 .. Current_Length - 1), Fixture.Database_ID, Live_Head,
-         Batches.Default_Reader_Caps, Current_Decoded, Current_Status);
+        (Current_Image (0 .. Current_Length - 1),
+         Fixture.Database_ID,
+         Live_Head,
+         Batches.Default_Reader_Caps,
+         Current_Decoded,
+         Current_Status);
       if Current_Status /= Batches.Decoded then
          raise Program_Error with "live HEAD did not decode the latest batch";
       end if;
 
       Batches.Decode_Batch
-        (Previous_Image (0 .. Previous_Length - 1), Fixture.Database_ID,
-         Batches.Default_Reader_Caps, Previous_Decoded, Previous_Status);
+        (Previous_Image (0 .. Previous_Length - 1),
+         Fixture.Database_ID,
+         Batches.Default_Reader_Caps,
+         Previous_Decoded,
+         Previous_Status);
       if Previous_Status /= Batches.Decoded then
          raise Program_Error with "predecessor required an unavailable historical HEAD";
       elsif not Batches.Valid_Predecessor (Current_Decoded, Previous_Decoded) then
@@ -569,11 +819,11 @@ package body Flyology.DB.Batch_Format_Tests is
    end Test_Cacheless_Traversal;
 
    procedure Test_Maximum_Batch is
-      Batch  : Batches.Commit_Batch := Batches.Empty_Batch;
-      Image  : Batches.Batch_Image;
-      Length : Natural;
-      Value  : Batches.Commit_Batch;
-      Status : Batches.Decode_Status;
+      Batch     : Batches.Commit_Batch := Batches.Empty_Batch;
+      Image     : Batches.Batch_Image;
+      Length    : Natural;
+      Value     : Batches.Commit_Batch;
+      Status    : Batches.Decode_Status;
       Live_Head : Head.Head_State := Referencing_Head;
    begin
       Batch.Database_ID := ID (1);
@@ -591,26 +841,22 @@ package body Flyology.DB.Batch_Format_Tests is
       for Transaction_Index in Batches.Transaction_Slot loop
          Batch.Transactions (Transaction_Index).Transaction_ID :=
            ID (Interfaces.Unsigned_8 (32 + Transaction_Index));
-         Batch.Transactions (Transaction_Index).Sequence :=
-           Head.Commit_Sequence (Transaction_Index);
+         Batch.Transactions (Transaction_Index).Sequence := Head.Commit_Sequence (Transaction_Index);
          Batch.Transactions (Transaction_Index).First_Mutation :=
            Batches.Mutation_Count ((Transaction_Index - 1) * 4 + 1);
          Batch.Transactions (Transaction_Index).Mutations := 4;
       end loop;
 
       for Mutation_Index in Batches.Mutation_Slot loop
-         Batch.Mutations (Mutation_Index).Column_Family :=
-           Interfaces.Unsigned_32 (Mutation_Index);
+         Batch.Mutations (Mutation_Index).Column_Family := Interfaces.Unsigned_32 (Mutation_Index);
          Batch.Mutations (Mutation_Index).Operation := Batches.Put;
          Batch.Mutations (Mutation_Index).Key_Size := Batches.Max_Key_Bytes;
          Batch.Mutations (Mutation_Index).Value_Size := Batches.Max_Value_Bytes;
          for Index in Batch.Mutations (Mutation_Index).Key'Range loop
-            Batch.Mutations (Mutation_Index).Key (Index) :=
-              Formats.Byte ((Mutation_Index + Index) mod 256);
+            Batch.Mutations (Mutation_Index).Key (Index) := Formats.Byte ((Mutation_Index + Index) mod 256);
          end loop;
          for Index in Batch.Mutations (Mutation_Index).Value'Range loop
-            Batch.Mutations (Mutation_Index).Value (Index) :=
-              Formats.Byte ((Mutation_Index + Index) mod 256);
+            Batch.Mutations (Mutation_Index).Value (Index) := Formats.Byte ((Mutation_Index + Index) mod 256);
          end loop;
       end loop;
 
@@ -623,20 +869,19 @@ package body Flyology.DB.Batch_Format_Tests is
          raise Program_Error with "maximum batch did not fill the exact bounded image";
       end if;
       Batches.Decode_Latest_Batch
-        (Image (0 .. Length - 1), Batch.Database_ID, Live_Head,
-         Batches.Default_Reader_Caps, Value, Status);
+        (Image (0 .. Length - 1), Batch.Database_ID, Live_Head, Batches.Default_Reader_Caps, Value, Status);
       if Status /= Batches.Decoded or else Value /= Batch then
          raise Program_Error with "maximum batch did not round-trip";
       end if;
    end Test_Maximum_Batch;
 
    procedure Test_Duplicates_And_Predecessor is
-      Previous : constant Batches.Commit_Batch := Fixture;
-      Current  : Batches.Commit_Batch := Fixture;
-      Image    : Batches.Batch_Image;
-      Length   : Natural;
+      Previous         : constant Batches.Commit_Batch := Fixture;
+      Current          : Batches.Commit_Batch := Fixture;
+      Image            : Batches.Batch_Image;
+      Length           : Natural;
       Publication_Head : Head.Head_State := Referencing_Head;
-      Corrupt  : Batches.Batch_Image;
+      Corrupt          : Batches.Batch_Image;
    begin
       Current.Batch_ID := ID (6);
       Current.Previous_Batch_ID := Previous.Batch_ID;
@@ -759,14 +1004,20 @@ package body Flyology.DB.Batch_Format_Tests is
       Publication_Head.Highest_Visible := 2;
       Encode_Checked (Current, Image, Length);
       Expect_Decode
-        (Image (0 .. Length - 1), Publication_Head, Batches.Default_Reader_Caps,
-         Batches.Decoded, "valid multi-transaction batch was rejected");
+        (Image (0 .. Length - 1),
+         Publication_Head,
+         Batches.Default_Reader_Caps,
+         Batches.Decoded,
+         "valid multi-transaction batch was rejected");
       Corrupt := Image;
       Corrupt (204 .. 219) := Corrupt (156 .. 171);
       Repair_Checksums (Corrupt, Length);
       Expect_Decode
-        (Corrupt (0 .. Length - 1), Publication_Head, Batches.Default_Reader_Caps,
-         Batches.Duplicate_Transaction, "duplicate transaction ID accepted");
+        (Corrupt (0 .. Length - 1),
+         Publication_Head,
+         Batches.Default_Reader_Caps,
+         Batches.Duplicate_Transaction,
+         "duplicate transaction ID accepted");
 
       Current := Fixture;
       Current.Mutations (1).Column_Family := 1;
@@ -782,8 +1033,11 @@ package body Flyology.DB.Batch_Format_Tests is
       Corrupt (217) := 16#61#;
       Repair_Checksums (Corrupt, Length);
       Expect_Decode
-        (Corrupt (0 .. Length - 1), Publication_Head, Batches.Default_Reader_Caps,
-         Batches.Duplicate_Key, "duplicate column-family key accepted");
+        (Corrupt (0 .. Length - 1),
+         Publication_Head,
+         Batches.Default_Reader_Caps,
+         Batches.Duplicate_Key,
+         "duplicate column-family key accepted");
    end Test_Duplicates_And_Predecessor;
 
    procedure Run is

@@ -1,5 +1,24 @@
 # Review record
 
+## Pending owned synchronous byte-spine candidate
+
+- Parent: accepted operational HEAD-v2/root-family commit `6b9f29fd5a4f9df6395ed2f8bafb8e34effd9610`.
+- Scope: borrowed public byte-array mutation input, owned unbounded Get output, dynamically sized transaction/state/
+  identity/history descriptors, exact reference-counted immutable batch images, offset/view live state, and
+  allocation-failure classification for the synchronous memory/files engine.
+- Evidence: `tests/scripts/test.sh` covers deterministic memory/files 20/400 and 4 KiB/1 MiB CRUD/group/cacheless
+  reopen, exact/one-over family/transaction/batch/live budgets, 257-mutation/live-entry dynamic tables, whole-image
+  ownership accounting, injected allocation failures, subprocess crash/recovery, and pinned TidesDB conformance.
+  The repository gate and unchanged TLA+/TLAPS gate pass. A root-owned warning-strict GNATprove run proves 643/643
+  checks across the five selected format/policy/reference units with zero warnings, unproved/justified checks, or
+  `pragma Assume`. Independent review remains pending; no acceptance claim is made.
+- Review of exact candidate `defa21e` rejected two P1 and two P2 findings: Resolve could wait behind queued callers'
+  lifecycle leases, the runtime decoder could allocate from structurally impossible admitted counts, group mutation
+  totals narrowed through U32 before a wider-`Natural` guard, and proof/milestone wording overstated the selected-unit
+  boundary. The amendment drains queued slots before resolution quiescence, rejects impossible framing before image
+  allocation, validates the group wire width before conversion, and narrows the documentation. Committed and rejected
+  resolution campaigns include queued singleton/group work. Re-review of the amended candidate remains mandatory.
+
 ## Pending operational HEAD-v2 root-family candidate
 
 - Parent: accepted manifest-v1 format/policy commit `a02a569a932230ed28c4559c17f9352d94410007`.

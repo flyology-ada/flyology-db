@@ -58,15 +58,17 @@ channels, and unique buffers over this same semantic core. CPU-heavy sorting, co
 bounded native Ada tasks or an explicitly isolated process with detached owned input. The engine will not create
 detached C threads.
 
-The planned production encoder does not inline every configured maximum value or allocate one maximum-size object
-buffer. An immutable owned group arena supplies a measured/CRC pass and one-shot streaming encode to the synchronous
-provider; recovery streams into a bounded arena, validates the complete object, then installs atomically. Later
-composable overloads may move `Unique_Buffer` tokens while reusing the same semantic state machine.
+The synchronous runtime does not inline configured maximum values or allocate a theoretical maximum-history image
+product. A caller's borrowed bytes are copied once into a transaction-owned arena, atomically moved into a coordinator
+slot, and encoded into one exact reference-counted immutable batch image. The provider source borrows that image for
+the synchronous call; it does not clone it. Recovery sinks own exact response images, and live state stores image
+offsets/views. Outcome-unknown receipts retain a shared exact image until conclusive byte-for-byte reconciliation.
+Later composable overloads may move `Unique_Buffer` tokens while reusing this semantic core.
 
-The current fixed-array recovery path retains up to 64 complete batch records on the caller stack. The deterministic
-exclusive-resolution test therefore gives its native Ada task an explicit 8 MiB stack. This is bounded evidence for
-the present reference instance, not the production owned-byte design; replacing that footprint with the owned
-streaming spine is a prerequisite before widening family key/value limits.
+Recovery allocates descriptor history from the persisted history limit and allocates each reached image lazily.
+Engine state, identity ledgers, and final-state projection scratch are sized from persisted database limits before
+protected publication. Checked arithmetic and `Storage_Error` handling leave Open closed and protected state
+unchanged on allocation failure. The small SPARK batch codec remains a separate reference instance.
 
 `Get`, `Put`, and `Delete` take the owning `Database` so each call acquires the same lifecycle lease used by commit
 admission. They reject fenced or uncertain engine state before observing or changing transaction-local data.
@@ -74,16 +76,14 @@ admission. They reject fenced or uncertain engine state before observing or chan
 close or fence. This is an experimental 0.1 API correction; no compatibility promise exists for the earlier
 transaction-only `Put` and `Delete` declarations.
 
-The current build accepts persisted family configurations only when every key limit is at most 64 bytes, every value
-limit is at most 256 bytes, and the database limits fit the fixed runtime ceilings. A valid manifest above those
-physical ceilings returns `Capacity_Exceeded` before engine activation; lower persisted limits remain authoritative
-for mutation admission and recovery. The local slice fixes recovery at 64 batches, 512 published transaction IDs,
-and 256 live entries. Eight completion
-slots and eight transactions per explicit group make the published seen-ID bound exactly `64 * 8 = 512`. A separate
-open-engine reservation ledger holds at most `64 * (8 + 1) = 576` identities: eight member transaction IDs and one
-distinct group ID for every admitted group; a singleton transaction/batch ID counts once. The queue byte budget is
-16 KiB. Admission proves both identity capacities before publication so every acknowledged history remains reopenable
-under the same caps. These are operational limits, not wire-format widths.
+Persisted per-family key/value limits and database mutation/payload/live-state limits are executable authority.
+The runtime accepts the required 20-byte/400-byte profile and the 4 KiB/1 MiB profile without introducing replacement
+key/value ceilings. Actual byte images must fit the wire's U32 key/value/count fields and the host's `Natural`-sized
+owned container; checked failure is classified before publication. The current manifest format still bounds history
+at 64 and the public synchronous group surface at eight members. Seen and reservation ledgers are sized as
+`Maximum_Batch_History * Maximum_Transactions_Per_Batch` and history times one additional group identity; singletons
+count once. Queue bytes are bounded by the persisted batch payload budget. Admission proves capacities before
+publication so every acknowledged history remains reopenable under the same persisted limits.
 
 ## Recovery and retention
 

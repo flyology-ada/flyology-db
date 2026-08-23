@@ -1,7 +1,11 @@
 with Ada.Directories;
 with Ada.Real_Time;
+with Ada.Unchecked_Deallocation;
 with Interfaces;
 with Flyology.Cancellation;
+with Flyology.Bytes;
+with Flyology.DB.Batch_Format_Tests;
+with Flyology.DB.Formats;
 with Flyology.DB.Object_Storage;
 with Flyology.DB.Testing;
 with Flyology.Object_Storage;
@@ -12,6 +16,9 @@ with Flyology.Object_Storage.Backends.Memory;
 package body Flyology.DB.Engine_Tests is
 
    package Binding renames Flyology.DB.Object_Storage;
+   package Batch_Tests renames Flyology.DB.Batch_Format_Tests;
+   package Formats renames Flyology.DB.Formats;
+   package Root_DB renames Flyology.DB;
    package Testing renames Flyology.DB.Testing;
    package OS renames Flyology.Object_Storage;
    package Backends renames Flyology.Object_Storage.Backends;
@@ -20,10 +27,58 @@ package body Flyology.DB.Engine_Tests is
 
    use type Byte;
    use type Ada.Real_Time.Time;
+   use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
    use type OS.Status;
 
-   Bucket : constant String := "flyology-db-tests";
+   Bucket              : constant String := "flyology-db-tests";
+   Maximum_Key_Bytes   : constant := Reference_Maximum_Key_Bytes;
+   Maximum_Value_Bytes : constant := Reference_Maximum_Value_Bytes;
+
+   subtype Test_Key_Length is Natural range 0 .. Reference_Maximum_Key_Bytes;
+   subtype Test_Value_Length is Natural range 0 .. Reference_Maximum_Value_Bytes;
+   type Key is record
+      Length : Test_Key_Length := 0;
+      Bytes  : Byte_Array (1 .. Reference_Maximum_Key_Bytes) := [others => 0];
+   end record;
+   type Value is record
+      Length : Test_Value_Length := 0;
+      Bytes  : Byte_Array (1 .. Reference_Maximum_Value_Bytes) := [others => 0];
+   end record;
+
+   function To_Key (Data : Byte_Array) return Key is
+   begin
+      return Result : Key do
+         Result.Length := Data'Length;
+         for Offset in Natural range 0 .. Data'Length - 1 loop
+            Result.Bytes (Offset + 1) := Data (Data'First + Offset);
+         end loop;
+      end return;
+   end To_Key;
+
+   function To_Value (Data : Byte_Array) return Value is
+   begin
+      return Result : Value do
+         Result.Length := Data'Length;
+         for Offset in Natural range 0 .. Data'Length - 1 loop
+            Result.Bytes (Offset + 1) := Data (Data'First + Offset);
+         end loop;
+      end return;
+   end To_Value;
+
+   function Key_Data (Item : Key) return Byte_Array is
+   begin
+      return Result : Byte_Array (1 .. Item.Length) do
+         Result := Item.Bytes (1 .. Item.Length);
+      end return;
+   end Key_Data;
+
+   function Value_Data (Item : Value) return Byte_Array is
+   begin
+      return Result : Byte_Array (1 .. Item.Length) do
+         Result := Item.Bytes (1 .. Item.Length);
+      end return;
+   end Value_Data;
 
    function ID (Last : Byte) return Identifier is
       Result : Identifier := [others => 0];
@@ -55,6 +110,42 @@ package body Flyology.DB.Engine_Tests is
          raise Program_Error with Context & ": " & Outcome_Code'Image (Actual);
       end if;
    end Expect;
+
+   type Ownership_Snapshot is record
+      Images_Allocated : Interfaces.Unsigned_64;
+      Images_Released  : Interfaces.Unsigned_64;
+      Arenas_Allocated : Interfaces.Unsigned_64;
+      Arenas_Released  : Interfaces.Unsigned_64;
+   end record;
+
+   function Current_Ownership return Ownership_Snapshot is
+      Result            : Ownership_Snapshot;
+      Transaction_Bytes : Interfaces.Unsigned_64;
+      Source_Bytes      : Interfaces.Unsigned_64;
+      Sink_Bytes        : Interfaces.Unsigned_64;
+   begin
+      Testing.Image_Statistics
+        (Result.Images_Allocated,
+         Result.Images_Released,
+         Result.Arenas_Allocated,
+         Result.Arenas_Released,
+         Transaction_Bytes,
+         Source_Bytes,
+         Sink_Bytes);
+      return Result;
+   end Current_Ownership;
+
+   procedure Expect_No_Owner_Growth (Before : Ownership_Snapshot; Context : String) is
+      After : constant Ownership_Snapshot := Current_Ownership;
+   begin
+      if After.Images_Allocated - After.Images_Released /= Before.Images_Allocated - Before.Images_Released
+      then
+         raise Program_Error with Context & ": leaked a shared image owner";
+      elsif After.Arenas_Allocated - After.Arenas_Released /= Before.Arenas_Allocated - Before.Arenas_Released
+      then
+         raise Program_Error with Context & ": leaked a transaction arena";
+      end if;
+   end Expect_No_Owner_Growth;
 
    function Visible (Item : in out Database) return Sequence_Number is
       Value  : Sequence_Number;
@@ -131,10 +222,22 @@ package body Flyology.DB.Engine_Tests is
       Result   : out Outcome_Code)
    is
       Handle : Column_Family;
+      Owned  : Flyology.Bytes.Unbounded_Bytes;
    begin
       Open_Column_Family (Item, Family, Handle, Result);
       if Result = Success then
-         Flyology.DB.Get (Item, Txn, Handle, Item_Key, Data, Result);
+         Root_DB.Get (Item, Txn, Handle, Key_Data (Item_Key), Owned, Result);
+         Data := (others => <>);
+         if Result = Success then
+            if Flyology.Bytes.Length (Owned) > Test_Value_Length'Last then
+               Result := Capacity_Exceeded;
+            else
+               Data.Length := Flyology.Bytes.Length (Owned);
+               for Index in Positive range 1 .. Data.Length loop
+                  Data.Bytes (Index) := Byte (Flyology.Bytes.Element (Owned, Index));
+               end loop;
+            end if;
+         end if;
       end if;
    end Get;
 
@@ -150,7 +253,7 @@ package body Flyology.DB.Engine_Tests is
    begin
       Open_Column_Family (Item, Family, Handle, Result);
       if Result = Success then
-         Flyology.DB.Put (Item, Txn, Handle, Item_Key, Data, Result);
+         Root_DB.Put (Item, Txn, Handle, Key_Data (Item_Key), Value_Data (Data), Result);
       end if;
    end Put;
 
@@ -165,8 +268,53 @@ package body Flyology.DB.Engine_Tests is
    begin
       Open_Column_Family (Item, Family, Handle, Result);
       if Result = Success then
-         Flyology.DB.Delete (Item, Txn, Handle, Item_Key, Result);
+         Root_DB.Delete (Item, Txn, Handle, Key_Data (Item_Key), Result);
       end if;
+   end Delete;
+
+   procedure Get
+     (Item     : in out Database;
+      Txn      : in out Transaction;
+      Family   : Column_Family;
+      Item_Key : Key;
+      Data     : out Value;
+      Result   : out Outcome_Code)
+   is
+      Owned : Flyology.Bytes.Unbounded_Bytes;
+   begin
+      Root_DB.Get (Item, Txn, Family, Key_Data (Item_Key), Owned, Result);
+      Data := (others => <>);
+      if Result = Success then
+         if Flyology.Bytes.Length (Owned) > Test_Value_Length'Last then
+            Result := Capacity_Exceeded;
+         else
+            Data.Length := Flyology.Bytes.Length (Owned);
+            for Index in Positive range 1 .. Data.Length loop
+               Data.Bytes (Index) := Byte (Flyology.Bytes.Element (Owned, Index));
+            end loop;
+         end if;
+      end if;
+   end Get;
+
+   procedure Put
+     (Item     : in out Database;
+      Txn      : in out Transaction;
+      Family   : Column_Family;
+      Item_Key : Key;
+      Data     : Value;
+      Result   : out Outcome_Code) is
+   begin
+      Root_DB.Put (Item, Txn, Family, Key_Data (Item_Key), Value_Data (Data), Result);
+   end Put;
+
+   procedure Delete
+     (Item     : in out Database;
+      Txn      : in out Transaction;
+      Family   : Column_Family;
+      Item_Key : Key;
+      Result   : out Outcome_Code) is
+   begin
+      Root_DB.Delete (Item, Txn, Family, Key_Data (Item_Key), Result);
    end Delete;
 
    procedure Test_CRUD_And_Recovery
@@ -326,23 +474,712 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "recovered close failed");
    end Test_CRUD_And_Recovery;
 
-   procedure Test_Manifest_And_Family_API
-     (Backend : not null access Backends.Backend'Class) is
-      Context     : aliased Storage_Context;
-      Other_Ctx   : aliased Storage_Context;
-      Over_Ctx    : aliased Storage_Context;
-      Item        : Database;
-      Retry       : Database;
-      Other       : Database;
-      Over_Item   : Database;
-      Txn         : Transaction;
-      Receipt     : Commit_Receipt;
-      Create_Info : Create_Receipt;
+   procedure Test_Runtime_Sized_Value
+     (Backend : not null access Backends.Backend'Class; Prefix : String; Tag : Byte)
+   is
+      Context      : aliased Storage_Context;
+      Lost_Context : aliased Storage_Context;
+      Item         : Database;
+      Reopened     : Database;
+      Txn          : Transaction;
+      Reader       : Transaction;
+      Family       : Column_Family;
+      Receipt      : Commit_Receipt;
+      Create_Info  : Create_Receipt;
+      Result       : Outcome_Code;
+      Data         : Flyology.Bytes.Unbounded_Bytes;
+      Key_Data     : Byte_Array (1 .. 20);
+      Value_Data   : Byte_Array (1 .. 400);
+      Limits       : constant Database_Limits :=
+        (Maximum_Column_Families           => 1,
+         Maximum_Manifest_History          => 4,
+         Maximum_Batch_History             => 8,
+         Maximum_Transactions_Per_Batch    => 2,
+         Maximum_Mutations_Per_Transaction => 4,
+         Maximum_Mutations_Per_Batch       => 8,
+         Maximum_Live_Entries              => 8,
+         Maximum_Transaction_Payload_Bytes => 1_100_000,
+         Maximum_Batch_Payload_Bytes       => 2_200_000,
+         Maximum_Live_State_Bytes          => 4_400_000);
+      Families     : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family (17, [16#72#, 16#75#, 16#6E#], 4_096, 1_048_576)];
+      Database_ID  : constant Database_Identifier := DB_ID (Tag);
+   begin
+      for Index in Key_Data'Range loop
+         Key_Data (Index) := Byte ((Natural (Tag) + Index * 3) mod 256);
+      end loop;
+      Key_Data (1) := 0;
+      for Index in Value_Data'Range loop
+         Value_Data (Index) := Byte ((Natural (Tag) + Index * 7) mod 256);
+      end loop;
+      Value_Data (1) := 0;
+
+      Bind_Context (Context, Backend, Prefix);
+      Create
+        (Item,
+         Context'Access,
+         Database_ID,
+         Numbered_ID (40_000 + Natural (Tag)),
+         Numbered_ID (41_000 + Natural (Tag)),
+         Limits,
+         Families,
+         10.0,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "runtime-sized database create failed");
+      Open_Column_Family (Item, 17, Family, Result);
+      Expect (Result, Success, "runtime-sized family open failed");
+      Begin_Transaction (Item, Numbered_TX_ID (42_000 + Natural (Tag)), Txn, Result);
+      Expect (Result, Success, "runtime-sized transaction begin failed");
+      Root_DB.Put (Item, Txn, Family, Key_Data, Value_Data, Result);
+      Expect (Result, Success, "400-byte value put failed");
+      Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "400-byte value commit failed");
+      Close (Item, Result);
+      Expect (Result, Success, "runtime-sized database close failed");
+
+      Bind_Context (Lost_Context, Backend, Prefix);
+      Open (Reopened, Lost_Context'Access, Database_ID, 10.0, Result => Result);
+      Expect (Result, Success, "400-byte value cacheless reopen failed");
+      Open_Column_Family (Reopened, 17, Family, Result);
+      Expect (Result, Success, "runtime-sized reopened family failed");
+      Begin_Transaction (Reopened, Numbered_TX_ID (43_000 + Natural (Tag)), Reader, Result);
+      Expect (Result, Success, "runtime-sized reader begin failed");
+      Root_DB.Get (Reopened, Reader, Family, Key_Data, Data, Result);
+      Expect (Result, Success, "400-byte value reopen read failed");
+      if Flyology.Bytes.Length (Data) /= Value_Data'Length then
+         raise Program_Error with "400-byte value reopen length changed";
+      end if;
+      for Index in Value_Data'Range loop
+         if Byte (Flyology.Bytes.Element (Data, Index)) /= Value_Data (Index) then
+            raise Program_Error with "400-byte value reopen bytes changed";
+         end if;
+      end loop;
+      Rollback (Reader, Result);
+      Close (Reopened, Result);
+      Expect (Result, Success, "runtime-sized reopened close failed");
+   end Test_Runtime_Sized_Value;
+
+   procedure Test_Large_Production_Profile
+     (Backend : not null access Backends.Backend'Class; Prefix : String; Tag : Byte)
+   is
+      type Byte_Array_Access is access Byte_Array;
+      procedure Free_Bytes is new Ada.Unchecked_Deallocation (Byte_Array, Byte_Array_Access);
+
+      Key_Bytes       : constant Natural := 4_096;
+      Value_Bytes     : constant Natural := 1_048_576;
+      Entry_Bytes     : constant Interfaces.Unsigned_64 := Interfaces.Unsigned_64 (Key_Bytes + Value_Bytes);
+      Exact_Two_Bytes : constant Interfaces.Unsigned_64 := 2 * Entry_Bytes - 1;
+      Context         : aliased Storage_Context;
+      Lost_Context    : aliased Storage_Context;
+      Item            : Database;
+      Reopened        : Database;
+      Txn             : Transaction;
+      Reader          : Transaction;
+      Family_A        : Column_Family;
+      Family_B        : Column_Family;
+      Receipt         : Commit_Receipt;
+      Create_Info     : Create_Receipt;
+      Result          : Outcome_Code;
+      Data            : Flyology.Bytes.Unbounded_Bytes;
+      Key_A           : Byte_Array_Access := new Byte_Array (1 .. Key_Bytes);
+      Key_B           : Byte_Array_Access := new Byte_Array (1 .. Key_Bytes);
+      Key_C           : Byte_Array_Access := new Byte_Array (1 .. Key_Bytes);
+      Key_Over        : Byte_Array_Access := new Byte_Array (1 .. Key_Bytes + 1);
+      Value_Max       : Byte_Array_Access := new Byte_Array (1 .. Value_Bytes);
+      Value_Short     : Byte_Array_Access := new Byte_Array (1 .. Value_Bytes - 1);
+      Value_Over      : Byte_Array_Access := new Byte_Array (1 .. Value_Bytes + 1);
+      Limits          : constant Database_Limits :=
+        (Maximum_Column_Families           => 2,
+         Maximum_Manifest_History          => 4,
+         Maximum_Batch_History             => 12,
+         Maximum_Transactions_Per_Batch    => 8,
+         Maximum_Mutations_Per_Transaction => 8,
+         Maximum_Mutations_Per_Batch       => 16,
+         Maximum_Live_Entries              => 2,
+         Maximum_Transaction_Payload_Bytes => Entry_Bytes,
+         Maximum_Batch_Payload_Bytes       => Exact_Two_Bytes,
+         Maximum_Live_State_Bytes          => Exact_Two_Bytes);
+      Families        : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family
+           (17, [16#6C#, 16#61#], Interfaces.Unsigned_64 (Key_Bytes), Interfaces.Unsigned_64 (Value_Bytes)),
+         Configure_Column_Family
+           (18, [16#6C#, 16#62#], Interfaces.Unsigned_64 (Key_Bytes), Interfaces.Unsigned_64 (Value_Bytes))];
+      Database_ID     : constant Database_Identifier := DB_ID (Tag);
+
+      procedure Check_Bytes (Actual : Flyology.Bytes.Unbounded_Bytes; Expected : Byte_Array; Context : String)
+      is
+      begin
+         if Flyology.Bytes.Length (Actual) /= Expected'Length then
+            raise Program_Error with Context & ": length changed";
+         end if;
+         for Offset in Natural range 0 .. Expected'Length - 1 loop
+            if Byte (Flyology.Bytes.Element (Actual, Offset + 1)) /= Expected (Expected'First + Offset) then
+               raise Program_Error with Context & ": bytes changed";
+            end if;
+         end loop;
+      end Check_Bytes;
+
+      procedure Start_Txn (Identity : Natural; Target : out Transaction) is
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (Identity), Target, Result);
+         Expect (Result, Success, "large-profile transaction begin failed");
+      end Start_Txn;
+
+      procedure Release_Test_Bytes is
+      begin
+         Free_Bytes (Key_A);
+         Free_Bytes (Key_B);
+         Free_Bytes (Key_C);
+         Free_Bytes (Key_Over);
+         Free_Bytes (Value_Max);
+         Free_Bytes (Value_Short);
+         Free_Bytes (Value_Over);
+      end Release_Test_Bytes;
+   begin
+      for Index in 1 .. Key_Bytes loop
+         Key_A (Index) := Byte ((Index * 3 + Natural (Tag)) mod 256);
+         Key_B (Index) := Byte ((Index * 5 + Natural (Tag)) mod 256);
+         Key_C (Index) := Byte ((Index * 11 + Natural (Tag)) mod 256);
+         Key_Over (Index) := Key_A (Index);
+      end loop;
+      Key_A (1) := 0;
+      Key_B (2) := 0;
+      Key_C (3) := 0;
+      Key_Over (Key_Over'Last) := 1;
+      for Index in 1 .. Value_Bytes loop
+         Value_Max (Index) := Byte ((Index * 7 + Natural (Tag)) mod 256);
+         Value_Over (Index) := Value_Max (Index);
+         if Index < Value_Bytes then
+            Value_Short (Index) := Byte ((Index * 13 + Natural (Tag)) mod 256);
+         end if;
+      end loop;
+      Value_Max (1) := 0;
+      Value_Over (Value_Over'Last) := 1;
+
+      Bind_Context (Context, Backend, Prefix);
+      Create
+        (Item,
+         Context'Access,
+         Database_ID,
+         Numbered_ID (44_000 + Natural (Tag)),
+         Numbered_ID (45_000 + Natural (Tag)),
+         Limits,
+         Families,
+         10.0,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "large-profile database create failed");
+      Open_Column_Family (Item, 17, Family_A, Result);
+      Expect (Result, Success, "large-profile family A open failed");
+      Open_Column_Family (Item, 18, Family_B, Result);
+      Expect (Result, Success, "large-profile family B open failed");
+
+      declare
+         Transactions : Transaction_Array (1 .. 2);
+         Receipts     : Commit_Receipt_Array (Transactions'Range);
+      begin
+         Start_Txn (46_000 + Natural (Tag), Transactions (1));
+         Root_DB.Put (Item, Transactions (1), Family_A, Key_A.all, Value_Max.all, Result);
+         Expect (Result, Success, "4KiB/1MiB family A put failed");
+         Start_Txn (47_000 + Natural (Tag), Transactions (2));
+         Root_DB.Put (Item, Transactions (2), Family_B, Key_B.all, Value_Short.all, Result);
+         Expect (Result, Success, "4KiB/(1MiB-1) family B put failed");
+         Commit_Group
+           (Item,
+            Numbered_ID (48_000 + Natural (Tag)),
+            Transactions,
+            20.0,
+            Receipts => Receipts,
+            Result   => Result);
+         Expect (Result, Success, "exact batch/live byte group failed");
+      end;
+
+      Start_Txn (49_000 + Natural (Tag), Txn);
+      Root_DB.Put (Item, Txn, Family_A, Key_Over.all, [1], Result);
+      Expect (Result, Capacity_Exceeded, "4KiB+1 family key was admitted");
+      Root_DB.Put (Item, Txn, Family_A, [1], Value_Over.all, Result);
+      Expect (Result, Capacity_Exceeded, "1MiB+1 family value was admitted");
+      Root_DB.Put (Item, Txn, Family_A, Key_A.all, Value_Max.all, Result);
+      Expect (Result, Success, "exact transaction payload was rejected");
+      Root_DB.Put (Item, Txn, Family_A, [1], [], Result);
+      Expect (Result, Capacity_Exceeded, "transaction payload one-over was admitted");
+      Rollback (Txn, Result);
+      Expect (Result, Success, "transaction-cap rejection consumed transaction");
+
+      declare
+         Transactions : Transaction_Array (1 .. 2);
+         Receipts     : Commit_Receipt_Array (Transactions'Range);
+      begin
+         Start_Txn (50_000 + Natural (Tag), Transactions (1));
+         Root_DB.Put (Item, Transactions (1), Family_A, Key_A.all, Value_Max.all, Result);
+         Start_Txn (51_000 + Natural (Tag), Transactions (2));
+         Root_DB.Put (Item, Transactions (2), Family_B, Key_B.all, Value_Max.all, Result);
+         Commit_Group
+           (Item,
+            Numbered_ID (52_000 + Natural (Tag)),
+            Transactions,
+            20.0,
+            Receipts => Receipts,
+            Result   => Result);
+         Expect (Result, Capacity_Exceeded, "batch payload one-over was admitted");
+         for Index in Transactions'Range loop
+            Rollback (Transactions (Index), Result);
+            Expect (Result, Success, "batch-cap rejection consumed a group member");
+         end loop;
+      end;
+
+      declare
+         Before_Batch, Before_Manifest, Before_Head : Natural;
+         After_Batch, After_Manifest, After_Head    : Natural;
+      begin
+         Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
+         Start_Txn (53_000 + Natural (Tag), Txn);
+         Root_DB.Put (Item, Txn, Family_B, Key_B.all, Value_Max.all, Result);
+         Commit (Item, Txn, 20.0, Receipt => Receipt, Result => Result);
+         Expect (Result, Capacity_Exceeded, "live byte cap one-over was published");
+         Rollback (Txn, Result);
+         Expect (Result, Invalid_State, "post-admission live-byte rejection left transaction active");
+         Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+         if After_Batch /= Before_Batch
+           or else After_Manifest /= Before_Manifest
+           or else After_Head /= Before_Head
+         then
+            raise Program_Error with "live-byte rejection caused storage effects";
+         end if;
+
+         Start_Txn (54_000 + Natural (Tag), Txn);
+         Root_DB.Put (Item, Txn, Family_A, [], [], Result);
+         Expect (Result, Success, "empty key/value was rejected before live-entry projection");
+         Commit (Item, Txn, 20.0, Receipt => Receipt, Result => Result);
+         Expect (Result, Capacity_Exceeded, "live entry cap one-over was published");
+         Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+         if After_Batch /= Before_Batch
+           or else After_Manifest /= Before_Manifest
+           or else After_Head /= Before_Head
+         then
+            raise Program_Error with "live-entry rejection caused storage effects";
+         end if;
+      end;
+
+      Start_Txn (55_000 + Natural (Tag), Txn);
+      Root_DB.Put (Item, Txn, Family_A, Key_A.all, Value_Max.all, Result);
+      Commit (Item, Txn, 20.0, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "overwrite at exact live cap failed");
+
+      declare
+         Transactions : Transaction_Array (1 .. 2);
+         Receipts     : Commit_Receipt_Array (Transactions'Range);
+      begin
+         Start_Txn (56_000 + Natural (Tag), Transactions (1));
+         Root_DB.Delete (Item, Transactions (1), Family_A, Key_A.all, Result);
+         Start_Txn (57_000 + Natural (Tag), Transactions (2));
+         Root_DB.Put (Item, Transactions (2), Family_A, Key_C.all, Value_Max.all, Result);
+         Commit_Group
+           (Item,
+            Numbered_ID (58_000 + Natural (Tag)),
+            Transactions,
+            20.0,
+            Receipts => Receipts,
+            Result   => Result);
+         Expect (Result, Success, "delete+put final-state projection at cap failed");
+      end;
+
+      declare
+         Transactions : Transaction_Array (1 .. 2);
+         Receipts     : Commit_Receipt_Array (Transactions'Range);
+      begin
+         Start_Txn (59_000 + Natural (Tag), Transactions (1));
+         Root_DB.Delete (Item, Transactions (1), Family_B, Key_B.all, Result);
+         Start_Txn (60_000 + Natural (Tag), Transactions (2));
+         Root_DB.Put (Item, Transactions (2), Family_B, [], [], Result);
+         Commit_Group
+           (Item,
+            Numbered_ID (61_000 + Natural (Tag)),
+            Transactions,
+            20.0,
+            Receipts => Receipts,
+            Result   => Result);
+         Expect (Result, Success, "empty key/value replacement group failed");
+      end;
+      Close (Item, Result);
+      Expect (Result, Success, "large-profile close failed");
+
+      Bind_Context (Lost_Context, Backend, Prefix);
+      Open (Reopened, Lost_Context'Access, Database_ID, 20.0, Result => Result);
+      Expect (Result, Success, "large-profile complete-loss reopen failed");
+      Open_Column_Family (Reopened, 17, Family_A, Result);
+      Open_Column_Family (Reopened, 18, Family_B, Result);
+      Begin_Transaction (Reopened, Numbered_TX_ID (62_000 + Natural (Tag)), Reader, Result);
+      Root_DB.Get (Reopened, Reader, Family_A, Key_C.all, Data, Result);
+      Expect (Result, Success, "large-profile recovered 1MiB read failed");
+      Check_Bytes (Data, Value_Max.all, "large-profile recovered 1MiB value");
+      Root_DB.Get (Reopened, Reader, Family_B, [], Data, Result);
+      Expect (Result, Success, "large-profile recovered empty key read failed");
+      if Flyology.Bytes.Length (Data) /= 0 then
+         raise Program_Error with "large-profile recovered empty value changed";
+      end if;
+      Rollback (Reader, Result);
+      Close (Reopened, Result);
+      Expect (Result, Success, "large-profile recovered close failed");
+      Release_Test_Bytes;
+   exception
+      when others =>
+         Release_Test_Bytes;
+         raise;
+   end Test_Large_Production_Profile;
+
+   procedure Test_Dynamic_Mutation_Descriptors
+     (Backend : not null access Backends.Backend'Class; Prefix : String; Tag : Byte)
+   is
+      Context      : aliased Storage_Context;
+      Lost_Context : aliased Storage_Context;
+      Item         : Database;
+      Reopened     : Database;
+      Txn          : Transaction;
+      Family       : Column_Family;
+      Receipt      : Commit_Receipt;
+      Create_Info  : Create_Receipt;
+      Result       : Outcome_Code;
+      Limits       : constant Database_Limits :=
+        (Maximum_Column_Families           => 1,
+         Maximum_Manifest_History          => 2,
+         Maximum_Batch_History             => 2,
+         Maximum_Transactions_Per_Batch    => 2,
+         Maximum_Mutations_Per_Transaction => 257,
+         Maximum_Mutations_Per_Batch       => 257,
+         Maximum_Live_Entries              => 257,
+         Maximum_Transaction_Payload_Bytes => 514,
+         Maximum_Batch_Payload_Bytes       => 514,
+         Maximum_Live_State_Bytes          => 514);
+      Families     : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family (23, [16#64#, 16#79#, 16#6E#], 2, 1)];
+      Database_ID  : constant Database_Identifier := DB_ID (Tag);
+   begin
+      Bind_Context (Context, Backend, Prefix);
+      Create
+        (Item,
+         Context'Access,
+         Database_ID,
+         Numbered_ID (63_000 + Natural (Tag)),
+         Numbered_ID (63_100 + Natural (Tag)),
+         Limits,
+         Families,
+         10.0,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "dynamic-mutation database create failed");
+      Open_Column_Family (Item, 23, Family, Result);
+
+      declare
+         Transactions : Transaction_Array (1 .. 2);
+         Receipts     : Commit_Receipt_Array (Transactions'Range);
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (63_150 + Natural (Tag)), Transactions (1), Result);
+         for Index in 1 .. 128 loop
+            Root_DB.Put
+              (Item, Transactions (1), Family, [Byte (Index / 256), Byte (Index mod 256)], [], Result);
+            Expect (Result, Success, "first dynamic batch-cap member failed");
+         end loop;
+         Begin_Transaction (Item, Numbered_TX_ID (63_160 + Natural (Tag)), Transactions (2), Result);
+         for Index in 129 .. 258 loop
+            Root_DB.Put
+              (Item, Transactions (2), Family, [Byte (Index / 256), Byte (Index mod 256)], [], Result);
+            Expect (Result, Success, "second dynamic batch-cap member failed");
+         end loop;
+         Commit_Group
+           (Item,
+            Numbered_ID (63_170 + Natural (Tag)),
+            Transactions,
+            10.0,
+            Receipts => Receipts,
+            Result   => Result);
+         Expect (Result, Capacity_Exceeded, "dynamic batch mutation/payload one-over was admitted");
+         for Index in Transactions'Range loop
+            Rollback (Transactions (Index), Result);
+            Expect (Result, Success, "dynamic batch-cap rejection consumed a member");
+         end loop;
+      end;
+
+      Begin_Transaction (Item, Numbered_TX_ID (63_200 + Natural (Tag)), Txn, Result);
+      for Index in 1 .. 257 loop
+         Root_DB.Put (Item, Txn, Family, [Byte (Index / 256), Byte (Index mod 256)], [], Result);
+         Expect (Result, Success, "257-mutation transaction was narrowed to the reference instance");
+      end loop;
+      Root_DB.Put (Item, Txn, Family, [1, 2], [], Result);
+      Expect (Result, Capacity_Exceeded, "dynamic transaction mutation one-over was admitted");
+      Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "257-mutation/live-entry runtime batch failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (63_300 + Natural (Tag)), Txn, Result);
+      Root_DB.Put (Item, Txn, Family, [1, 2], [], Result);
+      Expect (Result, Success, "dynamic live-entry one-over mutation was rejected before projection");
+      Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
+      Expect (Result, Capacity_Exceeded, "dynamic live-entry one-over was published");
+      Rollback (Txn, Result);
+      Expect (Result, Invalid_State, "post-admission dynamic live rejection left transaction active");
+      Close (Item, Result);
+
+      Bind_Context (Lost_Context, Backend, Prefix);
+      Open (Reopened, Lost_Context'Access, Database_ID, 10.0, Result => Result);
+      Expect (Result, Success, "257-mutation runtime batch did not cachelessly reopen");
+      Open_Column_Family (Reopened, 23, Family, Result);
+      Begin_Transaction (Reopened, Numbered_TX_ID (63_400 + Natural (Tag)), Txn, Result);
+      declare
+         Data : Flyology.Bytes.Unbounded_Bytes;
+      begin
+         Root_DB.Get (Reopened, Txn, Family, [1, 1], Data, Result);
+         Expect (Result, Success, "dynamic state table lost its last exact entry");
+         if Flyology.Bytes.Length (Data) /= 0 then
+            raise Program_Error with "dynamic state table changed an empty value";
+         end if;
+      end;
+      Rollback (Txn, Result);
+      Close (Reopened, Result);
+      Expect (Result, Success, "dynamic-mutation reopened close failed");
+   end Test_Dynamic_Mutation_Descriptors;
+
+   procedure Test_Allocation_Failures (Backend : not null access Backends.Backend'Class) is
+      Context      : aliased Storage_Context;
+      Item         : Database;
+      Probe        : Database;
+      Txn          : Transaction;
+      Receipt      : Commit_Receipt;
+      Result       : Outcome_Code;
+      Before       : Ownership_Snapshot;
+      Before_Batch : Natural;
+      Before_Head  : Natural;
+      After_Batch  : Natural;
+      After_Head   : Natural;
+
+      procedure Expect_Closed_Allocation_Failure
+        (Point : Testing.Allocation_Fault_Point; Context_Text : String) is
+      begin
+         Before := Current_Ownership;
+         Testing.Fail_Next_Allocation (Point);
+         Open (Probe, Context'Access, DB_ID (24), 10.0, Result => Result);
+         Expect (Result, Capacity_Exceeded, Context_Text & " was not typed capacity");
+         Expect_No_Owner_Growth (Before, Context_Text);
+         Close (Probe, Result);
+         Expect (Result, Invalid_State, Context_Text & " partially opened the database");
+      end Expect_Closed_Allocation_Failure;
+   begin
+      Bind_Context (Context, Backend, "allocation-failures");
+      Create_DB (Item, Context'Access, DB_ID (24), ID (25), Result);
+      Expect (Result, Success, "allocation-failure database create failed");
+
+      Testing.Fail_Next_Allocation (Testing.Transaction_Arena);
+      Begin_Transaction (Item, TX_ID (26), Txn, Result);
+      Expect (Result, Capacity_Exceeded, "transaction arena allocation failure was not typed capacity");
+
+      Begin_Transaction (Item, TX_ID (27), Txn, Result);
+      Expect (Result, Success, "allocation payload transaction begin failed");
+      Testing.Fail_Next_Allocation (Testing.Transaction_Payload);
+      Put (Item, Txn, Default_Families (1).ID, To_Key ([1]), To_Value ([1]), Result);
+      Expect (Result, Capacity_Exceeded, "transaction payload allocation failure was not typed capacity");
+      Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
+      Expect (Result, Invalid_State, "empty transaction after allocation failure was admitted");
+      if Receipt_Transaction_ID (Receipt) /= Zero_Transaction_ID
+        or else Receipt_Batch_ID (Receipt) /= Zero_Identifier
+      then
+         raise Program_Error with "pre-admission allocation failure returned a nonempty receipt";
+      end if;
+      Rollback (Txn, Result);
+      Expect (Result, Success, "pre-admission allocation failure consumed transaction");
+
+      Begin_Transaction (Item, TX_ID (28), Txn, Result);
+      Put (Item, Txn, 1, To_Key ([2]), To_Value ([2]), Result);
+      Testing.Publication_Counts (Context, Before_Batch, Before_Head);
+      Testing.Fail_Next_Allocation (Testing.Batch_Descriptors);
+      Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
+      Expect (Result, Capacity_Exceeded, "post-admission encoder allocation failure was not typed capacity");
+      if Receipt_Transaction_ID (Receipt) /= TX_ID (28) or else Receipt_Batch_ID (Receipt) /= ID (28) then
+         raise Program_Error with "post-admission encoder failure lost stable receipt identity";
+      end if;
+      Rollback (Txn, Result);
+      Expect (Result, Invalid_State, "post-admission encoder failure left transaction active");
+      Testing.Publication_Counts (Context, After_Batch, After_Head);
+      if After_Batch /= Before_Batch or else After_Head /= Before_Head then
+         raise Program_Error with "encoder allocation failure reached storage publication";
+      end if;
+
+      Begin_Transaction (Item, TX_ID (29), Txn, Result);
+      Put (Item, Txn, 1, To_Key ([3]), To_Value ([3]), Result);
+      Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "allocation recovery fixture commit failed");
+      Close (Item, Result);
+
+      Expect_Closed_Allocation_Failure (Testing.Storage_Sink, "storage sink allocation failure");
+      Expect_Closed_Allocation_Failure (Testing.Recovery_History, "recovery history allocation failure");
+      Expect_Closed_Allocation_Failure (Testing.Engine_State, "engine state allocation failure");
+      Expect_Closed_Allocation_Failure (Testing.Identity_Tables, "identity-table allocation failure");
+      Expect_Closed_Allocation_Failure (Testing.Projection_Scratch, "projection-scratch allocation failure");
+
+      Open (Probe, Context'Access, DB_ID (24), 10.0, Result => Result);
+      Expect (Result, Success, "database did not reopen after allocation-failure campaign");
+      Close (Probe, Result);
+   end Test_Allocation_Failures;
+
+   procedure Test_Runtime_Codec is
+      Golden        : constant Byte_Array := Batch_Tests.Frozen_Golden;
+      Wire_Boundary : constant Natural :=
+        Natural
+          (Interfaces.Unsigned_64'Min
+             (Interfaces.Unsigned_64 (Natural'Last), Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)));
+      Result        : Outcome_Code;
+
+      procedure Put_U32 (Data : in out Byte_Array; Position : Natural; Value : Interfaces.Unsigned_32) is
+      begin
+         for Offset in Natural range 0 .. 3 loop
+            Data (Data'First + Position + Offset) :=
+              Byte (Interfaces.Shift_Right (Value, (3 - Offset) * 8) and 16#FF#);
+         end loop;
+      end Put_U32;
+
+      procedure Repair_Checksums (Data : in out Byte_Array) is
+         Header : Formats.Byte_Array (0 .. 155);
+         Whole  : Formats.Byte_Array (0 .. Data'Length - 5);
+      begin
+         Data (Data'First + 40 .. Data'First + 43) := [others => 0];
+         for Offset in Header'Range loop
+            Header (Offset) := Data (Data'First + Offset);
+         end loop;
+         Put_U32 (Data, 40, Formats.CRC_32C (Header));
+         for Offset in Whole'Range loop
+            Whole (Offset) := Data (Data'First + Offset);
+         end loop;
+         Put_U32 (Data, Data'Length - 4, Formats.CRC_32C (Whole));
+      end Repair_Checksums;
+
+      procedure Expect_Runtime
+        (Data       : Byte_Array;
+         Expected   : Outcome_Code;
+         Context    : String;
+         Wrong_DB   : Boolean := False;
+         Wrong_Head : Boolean := False) is
+      begin
+         Testing.Decode_Runtime_Image (Data, Wrong_DB, Wrong_Head, Result);
+         Expect (Result, Expected, Context);
+      end Expect_Runtime;
+
+      procedure Expect_Runtime_No_Image_Allocation
+        (Data : Byte_Array; Expected : Outcome_Code; Context : String)
+      is
+         Before : constant Ownership_Snapshot := Current_Ownership;
+         After  : Ownership_Snapshot;
+      begin
+         Expect_Runtime (Data, Expected, Context);
+         After := Current_Ownership;
+         if After.Images_Allocated /= Before.Images_Allocated then
+            raise Program_Error with Context & ": allocated an image before structural rejection";
+         end if;
+         Expect_No_Owner_Growth (Before, Context);
+      end Expect_Runtime_No_Image_Allocation;
+   begin
+      if not Testing.Group_Mutation_Total_Fits_Wire (Wire_Boundary) then
+         raise Program_Error with "wire-sized group mutation total was rejected";
+      end if;
+      --  Natural'Last is below U32'Last on the qualified runtime, so a
+      --  representable one-over value does not exist in this campaign.
+      Expect_Runtime (Golden, Success, "independent golden runtime decode");
+      Testing.Check_Runtime_Reference_Parity (Result);
+      Expect (Result, Success, "generated operational/reference codec parity");
+
+      for Size in Natural range 0 .. Golden'Length - 1 loop
+         declare
+            Short : Byte_Array (1 .. Size);
+         begin
+            for Offset in Natural range 0 .. Size - 1 loop
+               Short (Offset + 1) := Golden (Golden'First + Offset);
+            end loop;
+            Expect_Runtime (Short, Corrupt, "runtime truncation");
+         end;
+      end loop;
+      declare
+         Trailing : Byte_Array (1 .. Golden'Length + 1) := [others => 0];
+      begin
+         Trailing (1 .. Golden'Length) := Golden;
+         Expect_Runtime (Trailing, Corrupt, "runtime trailing byte");
+      end;
+      declare
+         Mutated : Byte_Array := Golden;
+      begin
+         Mutated (Mutated'Last) := Mutated (Mutated'Last) xor 1;
+         Expect_Runtime (Mutated, Corrupt, "runtime whole-object checksum");
+
+         Mutated := Golden;
+         Mutated (Mutated'First + 40) := Mutated (Mutated'First + 40) xor 1;
+         Expect_Runtime (Mutated, Corrupt, "runtime header checksum");
+
+         Mutated := Golden;
+         Mutated (Mutated'First) := Mutated (Mutated'First) xor 1;
+         Repair_Checksums (Mutated);
+         Expect_Runtime (Mutated, Corrupt, "runtime repaired magic");
+
+         Mutated := Golden;
+         Mutated (Mutated'First + 9) := 2;
+         Repair_Checksums (Mutated);
+         Expect_Runtime (Mutated, Corrupt, "runtime repaired version");
+
+         Mutated := Golden;
+         Mutated (Mutated'First + 10) := 1;
+         Repair_Checksums (Mutated);
+         Expect_Runtime (Mutated, Corrupt, "runtime repaired kind");
+
+         Mutated := Golden;
+         Mutated (Mutated'First + 11) := 1;
+         Repair_Checksums (Mutated);
+         Expect_Runtime (Mutated, Corrupt, "runtime repaired flags");
+
+         Mutated := Golden;
+         Mutated (Mutated'First + 52 .. Mutated'First + 67) := [others => 0];
+         Repair_Checksums (Mutated);
+         Expect_Runtime (Mutated, Corrupt, "runtime zero batch identity");
+
+         Mutated := Golden;
+         Put_U32 (Mutated, 148, Interfaces.Unsigned_32'Last);
+         Repair_Checksums (Mutated);
+         Expect_Runtime (Mutated, Capacity_Exceeded, "runtime transaction-count resource overflow");
+
+         Mutated := Golden;
+         Put_U32 (Mutated, 148, 257);
+         Put_U32 (Mutated, 152, 257);
+         Repair_Checksums (Mutated);
+         Expect_Runtime_No_Image_Allocation
+           (Mutated, Corrupt, "runtime admitted counts exceeded the available framing");
+
+         Mutated := Golden;
+         Put_U32 (Mutated, 148, 2);
+         Put_U32 (Mutated, 152, 1);
+         Repair_Checksums (Mutated);
+         Expect_Runtime_No_Image_Allocation
+           (Mutated, Corrupt, "runtime transaction count exceeded mutation count");
+
+         Mutated := Golden;
+         Mutated (Mutated'First + 192) := 3;
+         Repair_Checksums (Mutated);
+         Expect_Runtime (Mutated, Corrupt, "runtime invalid mutation operation");
+      end;
+      Expect_Runtime (Golden, Corrupt, "runtime wrong database binding", Wrong_DB => True);
+      Expect_Runtime (Golden, Corrupt, "runtime wrong HEAD binding", Wrong_Head => True);
+   end Test_Runtime_Codec;
+
+   procedure Test_Manifest_And_Family_API (Backend : not null access Backends.Backend'Class) is
+      Context                                    : aliased Storage_Context;
+      Other_Ctx                                  : aliased Storage_Context;
+      Over_Ctx                                   : aliased Storage_Context;
+      Item                                       : Database;
+      Retry                                      : Database;
+      Other                                      : Database;
+      Over_Item                                  : Database;
+      Txn                                        : Transaction;
+      Receipt                                    : Commit_Receipt;
+      Create_Info                                : Create_Receipt;
       Family_By_ID, Family_By_Name, Stale_Family : Column_Family;
-      Result      : Outcome_Code;
-      Data        : Value;
-      Batch_Puts, Manifest_Puts, Head_Puts : Natural;
-      Limits      : constant Database_Limits :=
+      Result                                     : Outcome_Code;
+      Data                                       : Value;
+      Batch_Puts, Manifest_Puts, Head_Puts       : Natural;
+      Limits                                     : constant Database_Limits :=
         (Maximum_Column_Families           => 2,
          Maximum_Manifest_History          => 4,
          Maximum_Batch_History             => 8,
@@ -353,19 +1190,19 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Transaction_Payload_Bytes => 16,
          Maximum_Batch_Payload_Bytes       => 32,
          Maximum_Live_State_Bytes          => 24);
-      Families : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family (7, [16#77#], 8, 8),
-         Configure_Column_Family (2, [16#C3#, 16#A9#], 2, 3)];
-      Permuted : constant Column_Family_Configuration_Array := [Families (2), Families (1)];
-      Different : constant Column_Family_Configuration_Array :=
+      Families                                   : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family (7, [16#77#], 8, 8), Configure_Column_Family (2, [16#C3#, 16#A9#], 2, 3)];
+      Permuted                                   : constant Column_Family_Configuration_Array :=
+        [Families (2), Families (1)];
+      Different                                  : constant Column_Family_Configuration_Array :=
         [Configure_Column_Family (2, [16#C3#, 16#A9#], 2, 4), Families (1)];
-      Over_Families : constant Column_Family_Configuration_Array :=
+      Over_Families                              : constant Column_Family_Configuration_Array :=
         [Configure_Column_Family (1, [16#78#], Maximum_Key_Bytes + 1, 1)];
-      Over_Limits : constant Database_Limits :=
-        (Default_Limits with delta Maximum_Column_Families => 1);
-      Database_ID : constant Database_Identifier := DB_ID (200);
-      Manifest_ID : constant Identifier := ID (201);
-      Transition  : constant Identifier := ID (202);
+      Over_Limits                                : constant Database_Limits :=
+        (Default_Limits with delta Maximum_Column_Families => 1, Maximum_Live_Entries => 257);
+      Database_ID                                : constant Database_Identifier := DB_ID (200);
+      Manifest_ID                                : constant Identifier := ID (201);
+      Transition                                 : constant Identifier := ID (202);
    begin
       Bind_Context (Context, Backend, "manifest-family-api");
       Create
@@ -417,14 +1254,11 @@ package body Flyology.DB.Engine_Tests is
 
       Begin_Transaction (Item, TX_ID (203), Txn, Result);
       Expect (Result, Success, "family-limit transaction begin failed");
-      Flyology.DB.Put
-        (Item, Txn, Family_By_ID, To_Key ([16#00#, 16#FF#]), To_Value ([1, 2, 3]), Result);
+      Put (Item, Txn, Family_By_ID, To_Key ([16#00#, 16#FF#]), To_Value ([1, 2, 3]), Result);
       Expect (Result, Success, "exact family key/value limits were rejected");
-      Flyology.DB.Put
-        (Item, Txn, Family_By_ID, To_Key ([1, 2, 3]), To_Value ([1]), Result);
+      Put (Item, Txn, Family_By_ID, To_Key ([1, 2, 3]), To_Value ([1]), Result);
       Expect (Result, Capacity_Exceeded, "family key limit plus one was admitted");
-      Flyology.DB.Put
-        (Item, Txn, Family_By_Name, To_Key ([1]), To_Value ([1, 2, 3, 4]), Result);
+      Put (Item, Txn, Family_By_Name, To_Key ([1]), To_Value ([1, 2, 3, 4]), Result);
       Expect (Result, Capacity_Exceeded, "family value limit plus one was admitted");
       Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
       Expect (Result, Success, "family-limit rejection changed the exact admitted mutation");
@@ -434,10 +1268,10 @@ package body Flyology.DB.Engine_Tests is
       Open (Item, Context'Access, Database_ID, 10.0, Result => Result);
       Expect (Result, Success, "family-handle database reopen failed");
       Begin_Transaction (Item, TX_ID (204), Txn, Result);
-      Flyology.DB.Get (Item, Txn, Stale_Family, To_Key ([16#00#, 16#FF#]), Data, Result);
+      Get (Item, Txn, Stale_Family, To_Key ([16#00#, 16#FF#]), Data, Result);
       Expect (Result, Invalid_State, "stale family handle survived engine incarnation change");
       Open_Column_Family (Item, [16#C3#, 16#A9#], Family_By_Name, Result);
-      Flyology.DB.Get (Item, Txn, Family_By_Name, To_Key ([16#00#, 16#FF#]), Data, Result);
+      Get (Item, Txn, Family_By_Name, To_Key ([16#00#, 16#FF#]), Data, Result);
       Expect (Result, Success, "reopened exact-name family handle could not read persisted data");
       Rollback (Txn, Result);
 
@@ -445,7 +1279,7 @@ package body Flyology.DB.Engine_Tests is
       Create_DB (Other, Other_Ctx'Access, DB_ID (205), ID (206), Result);
       Expect (Result, Success, "cross-database handle setup failed");
       Begin_Transaction (Other, TX_ID (207), Txn, Result);
-      Flyology.DB.Put (Other, Txn, Family_By_Name, To_Key ([1]), To_Value ([1]), Result);
+      Put (Other, Txn, Family_By_Name, To_Key ([1]), To_Value ([1]), Result);
       Expect (Result, Invalid_State, "cross-database family handle was accepted");
       Rollback (Txn, Result);
       Close (Other, Result);
@@ -464,18 +1298,20 @@ package body Flyology.DB.Engine_Tests is
          10.0,
          Receipt => Create_Info,
          Result  => Result);
-      Expect (Result, Capacity_Exceeded, "above-build family configuration was not typed capacity");
+      Expect (Result, Success, "persisted descriptor capacity was not allocated dynamically");
       declare
          After_Batch, After_Manifest, After_Head : Natural;
       begin
          Testing.Publication_Counts (Over_Ctx, After_Batch, After_Manifest, After_Head);
          if After_Batch /= Batch_Puts
-           or else After_Manifest /= Manifest_Puts
-           or else After_Head /= Head_Puts
+           or else After_Manifest /= Manifest_Puts + 1
+           or else After_Head /= Head_Puts + 1
          then
-            raise Program_Error with "above-build family configuration caused storage effects";
+            raise Program_Error with "dynamic descriptor create publication counts changed";
          end if;
       end;
+      Close (Over_Item, Result);
+      Expect (Result, Success, "dynamic descriptor database close failed");
    end Test_Manifest_And_Family_API;
 
    procedure Test_Create_Publication (Backend : not null access Backends.Backend'Class) is
@@ -494,9 +1330,20 @@ package body Flyology.DB.Engine_Tests is
       Testing.Arm (Context, After_Manifest_Put, Unknown_After_Entry);
       Testing.Arm (Context, Before_Manifest_Get, Definite_Failure);
       Create
-        (Item, Context'Access, DB_ID (211), ID (212), ID (213), Default_Limits, Default_Families,
-         10.0, Receipt => Receipt, Result => Result);
+        (Item,
+         Context'Access,
+         DB_ID (211),
+         ID (212),
+         ID (213),
+         Default_Limits,
+         Default_Families,
+         10.0,
+         Receipt => Receipt,
+         Result  => Result);
       Expect (Result, Outcome_Unknown, "stored manifest lost response was falsely classified");
+      if not Testing.Create_Receipt_Retains_Manifest (Receipt) then
+         raise Program_Error with "ambiguous manifest create lost its exact owned image";
+      end if;
       if Create_Receipt_Manifest_ID (Receipt) /= ID (212)
         or else Create_Receipt_Transition_ID (Receipt) /= Zero_Identifier
       then
@@ -504,6 +1351,9 @@ package body Flyology.DB.Engine_Tests is
       end if;
       Resolve_Create (Item, Context'Access, Receipt, 10.0, Result => Result);
       Expect (Result, Success, "stored manifest create did not resume from receipt");
+      if Testing.Create_Receipt_Retains_Manifest (Receipt) then
+         raise Program_Error with "conclusive create resolution retained its manifest image";
+      end if;
       Close (Item, Result);
 
       declare
@@ -524,6 +1374,9 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Receipt,
             Result  => Result);
          Expect (Result, Outcome_Unknown, "absent ambiguous manifest was falsely classified");
+         if not Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "absent ambiguous manifest lost its resumable image";
+         end if;
          Resolve_Create (Missing_Item, Missing_Context'Access, Receipt, 10.0, Result => Result);
          Expect (Result, Storage_Failure, "absent ambiguous manifest was falsely confirmed");
       end;
@@ -546,10 +1399,16 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Receipt,
             Result  => Result);
          Expect (Result, Storage_Failure, "pre-HEAD create failure was not definite");
+         if not Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "confirmed orphan manifest lost its resumable image";
+         end if;
          Open (Probe, Orphan_Context'Access, DB_ID (217), 10.0, Result => Result);
          Expect (Result, Not_Found, "orphan root manifest became visible without HEAD");
          Resolve_Create (Orphan_Item, Orphan_Context'Access, Receipt, 10.0, Result => Result);
          Expect (Result, Success, "confirmed orphan manifest could not resume exact HEAD publication");
+         if Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "resumed orphan create retained its manifest image";
+         end if;
          Close (Orphan_Item, Result);
       end;
 
@@ -572,11 +1431,17 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Receipt,
             Result  => Result);
          Expect (Result, Outcome_Unknown, "lost root HEAD response was falsely classified");
+         if not Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "unknown root HEAD lost its exact manifest image";
+         end if;
          if Create_Receipt_Transition_ID (Receipt) /= ID (222) then
             raise Program_Error with "post-admission create receipt lost HEAD identity";
          end if;
          Resolve_Create (Head_Item, Head_Context'Access, Receipt, 10.0, Result => Result);
          Expect (Result, Success, "lost root HEAD response did not resolve read-only");
+         if Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "resolved root HEAD retained its manifest image";
+         end if;
          Close (Head_Item, Result);
       end;
 
@@ -598,6 +1463,9 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Receipt,
             Result  => Result);
          Expect (Result, Local_Activation_Failed, "durable HEAD lost local activation outcome");
+         if Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "durable create retained manifest after local activation failure";
+         end if;
          Open (Activation_Item, Activation_Context'Access, DB_ID (223), 10.0, Result => Result);
          Expect (Result, Success, "durable create did not recover through ordinary open");
          Close (Activation_Item, Result);
@@ -627,7 +1495,7 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, "later-commit create setup failed");
          Open_Column_Family (Writer, 1, Family, Result);
          Begin_Transaction (Writer, TX_ID (153), Txn, Result);
-         Flyology.DB.Put (Writer, Txn, Family, To_Key ([1]), To_Value ([2]), Result);
+         Put (Writer, Txn, Family, To_Key ([1]), To_Value ([2]), Result);
          Commit (Writer, Txn, 10.0, Receipt => Commit_Info, Result => Result);
          Expect (Result, Success, "later-commit setup publication failed");
          Close (Writer, Result);
@@ -673,18 +1541,24 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Receipt,
             Result  => Result);
          Expect (Result, Outcome_Unknown, "later-chain create did not retain an unknown receipt");
+         if not Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "later-chain create lost its exact manifest image";
+         end if;
          Open (Writer, Later_Context'Access, DB_ID (154), 10.0, Result => Result);
          Expect (Result, Success, "later-chain writer open failed");
          Open_Column_Family (Writer, 1, Family, Result);
          for Number in Byte range 157 .. 158 loop
             Begin_Transaction (Writer, TX_ID (Number), Txn, Result);
-            Flyology.DB.Put (Writer, Txn, Family, To_Key ([Number]), To_Value ([Number]), Result);
+            Put (Writer, Txn, Family, To_Key ([Number]), To_Value ([Number]), Result);
             Commit (Writer, Txn, 10.0, Receipt => Commit_Info, Result => Result);
             Expect (Result, Success, "later-chain commit failed");
          end loop;
          Close (Writer, Result);
          Resolve_Create (Lost_Item, Later_Context'Access, Receipt, 10.0, Result => Result);
          Expect (Result, Success, "create receipt did not resolve through two later transitions");
+         if Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "later-chain resolution retained its manifest image";
+         end if;
          if Visible (Lost_Item) /= 2 then
             raise Program_Error with "resolved create did not activate the complete later chain";
          end if;
@@ -713,6 +1587,9 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, "confirmed manifest removal fixture failed");
          Resolve_Create (Missing_Item, Missing_Context'Access, Receipt, 10.0, Result => Result);
          Expect (Result, Corrupt, "missing confirmed manifest was trusted from receipt bytes");
+         if Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "corrupt missing-manifest receipt retained its image";
+         end if;
       end;
 
       declare
@@ -734,11 +1611,13 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Receipt,
             Result  => Result);
          Expect (Result, Outcome_Unknown, "different-manifest resume setup failed");
-         Testing.Rewrite_Manifest
-           (Different_Context, ID (163), DB_ID (162), DB_ID (165), False, Result);
+         Testing.Rewrite_Manifest (Different_Context, ID (163), DB_ID (162), DB_ID (165), False, Result);
          Expect (Result, Success, "different manifest fixture rewrite failed");
          Resolve_Create (Different_Item, Different_Context'Access, Receipt, 10.0, Result => Result);
          Expect (Result, Corrupt, "different immutable manifest was trusted from receipt bytes");
+         if Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "corrupt different-manifest receipt retained its image";
+         end if;
       end;
 
       declare
@@ -763,8 +1642,14 @@ package body Flyology.DB.Engine_Tests is
          Testing.Arm (Unavailable_Context, Before_Manifest_Get, Definite_Failure);
          Resolve_Create (Unavailable_Item, Unavailable_Context'Access, Receipt, 10.0, Result => Result);
          Expect (Result, Outcome_Unknown, "unavailable confirmed manifest was falsely classified");
+         if not Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "transient manifest read lost its resumable image";
+         end if;
          Resolve_Create (Unavailable_Item, Unavailable_Context'Access, Receipt, 10.0, Result => Result);
          Expect (Result, Success, "available confirmed manifest did not resume after transient failure");
+         if Testing.Create_Receipt_Retains_Manifest (Receipt) then
+            raise Program_Error with "resumed transient create retained its manifest image";
+         end if;
          Close (Unavailable_Item, Result);
       end;
 
@@ -825,23 +1710,24 @@ package body Flyology.DB.Engine_Tests is
          Live_Bytes    : Interfaces.Unsigned_64;
          Context_Text  : String)
       is
-         Context     : aliased Storage_Context;
-         Item        : Database;
-         Txn         : Transaction;
-         Reader      : Transaction;
-         Receipt     : Commit_Receipt;
-         Create_Info : Create_Receipt;
-         Family      : Column_Family;
-         Data        : Value;
-         Result      : Outcome_Code;
+         Context                                    : aliased Storage_Context;
+         Item                                       : Database;
+         Txn                                        : Transaction;
+         Reader                                     : Transaction;
+         Receipt                                    : Commit_Receipt;
+         Create_Info                                : Create_Receipt;
+         Family                                     : Column_Family;
+         Data                                       : Value;
+         Result                                     : Outcome_Code;
          Before_Batch, Before_Manifest, Before_Head : Natural;
-         After_Batch, After_Manifest, After_Head : Natural;
-         Limits : constant Database_Limits :=
-           (Default_Limits with delta
+         After_Batch, After_Manifest, After_Head    : Natural;
+         Limits                                     : constant Database_Limits :=
+           (Default_Limits
+            with delta
               Maximum_Column_Families  => 1,
               Maximum_Live_Entries     => Live_Entries,
               Maximum_Live_State_Bytes => Live_Bytes);
-         Families : constant Column_Family_Configuration_Array :=
+         Families                                   : constant Column_Family_Configuration_Array :=
            [Configure_Column_Family (1, [16#61#], 2, 3)];
       begin
          Bind_Context (Context, Backend, Prefix);
@@ -859,15 +1745,14 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, Context_Text & " create failed");
          Open_Column_Family (Item, 1, Family, Result);
          Begin_Transaction (Item, TX_ID (Database_Last + 3), Txn, Result);
-         Flyology.DB.Put
-           (Item, Txn, Family, To_Key ([16#00#, 16#FF#]), To_Value ([1, 2, 3]), Result);
+         Put (Item, Txn, Family, To_Key ([16#00#, 16#FF#]), To_Value ([1, 2, 3]), Result);
          Expect (Result, Success, Context_Text & " exact mutation rejected");
          Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
          Expect (Result, Success, Context_Text & " exact live budget rejected");
 
          Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
          Begin_Transaction (Item, TX_ID (Database_Last + 4), Txn, Result);
-         Flyology.DB.Put (Item, Txn, Family, To_Key ([2]), To_Value ([4]), Result);
+         Put (Item, Txn, Family, To_Key ([2]), To_Value ([4]), Result);
          Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
          Expect (Result, Capacity_Exceeded, Context_Text & " one-over mutation was published");
          Rollback (Txn, Result);
@@ -881,10 +1766,9 @@ package body Flyology.DB.Engine_Tests is
          end if;
 
          Begin_Transaction (Item, TX_ID (Database_Last + 5), Reader, Result);
-         Flyology.DB.Get
-           (Item, Reader, Family, To_Key ([16#00#, 16#FF#]), Data, Result);
+         Get (Item, Reader, Family, To_Key ([16#00#, 16#FF#]), Data, Result);
          Expect (Result, Success, Context_Text & " exact value was not retained atomically");
-         Flyology.DB.Get (Item, Reader, Family, To_Key ([2]), Data, Result);
+         Get (Item, Reader, Family, To_Key ([2]), Data, Result);
          Expect (Result, Not_Found, Context_Text & " rejected value entered live state");
          Rollback (Reader, Result);
          Close (Item, Result);
@@ -894,28 +1778,29 @@ package body Flyology.DB.Engine_Tests is
       end Run_Case;
 
       procedure Run_Projection_Case is
-         Context     : aliased Storage_Context;
-         Item        : Database;
-         Txn         : Transaction;
-         Reader      : Transaction;
-         Group       : Transaction_Array (1 .. 2);
-         Receipt     : Commit_Receipt;
-         Receipts    : Commit_Receipt_Array (Group'Range);
-         Create_Info : Create_Receipt;
-         Family      : Column_Family;
-         Data        : Value;
-         Result      : Outcome_Code;
+         Context                                    : aliased Storage_Context;
+         Item                                       : Database;
+         Txn                                        : Transaction;
+         Reader                                     : Transaction;
+         Group                                      : Transaction_Array (1 .. 2);
+         Receipt                                    : Commit_Receipt;
+         Receipts                                   : Commit_Receipt_Array (Group'Range);
+         Create_Info                                : Create_Receipt;
+         Family                                     : Column_Family;
+         Data                                       : Value;
+         Result                                     : Outcome_Code;
          Batch_Before, Manifest_Before, Head_Before : Natural;
-         Batch_After, Manifest_After, Head_After : Natural;
-         Limits : constant Database_Limits :=
-           (Default_Limits with delta
+         Batch_After, Manifest_After, Head_After    : Natural;
+         Limits                                     : constant Database_Limits :=
+           (Default_Limits
+            with delta
               Maximum_Column_Families  => 1,
               Maximum_Live_Entries     => 1,
               Maximum_Live_State_Bytes => 5);
-         Families : constant Column_Family_Configuration_Array :=
+         Families                                   : constant Column_Family_Configuration_Array :=
            [Configure_Column_Family (1, [16#61#], 2, 3)];
-         Old_Key : constant Key := To_Key ([16#00#, 16#FF#]);
-         New_Key : constant Key := To_Key ([16#80#, 16#81#]);
+         Old_Key                                    : constant Key := To_Key ([16#00#, 16#FF#]);
+         New_Key                                    : constant Key := To_Key ([16#80#, 16#81#]);
       begin
          Bind_Context (Context, Backend, "live-cap-projection");
          Create
@@ -933,13 +1818,13 @@ package body Flyology.DB.Engine_Tests is
          Open_Column_Family (Item, 1, Family, Result);
 
          Begin_Transaction (Item, TX_ID (172), Txn, Result);
-         Flyology.DB.Put (Item, Txn, Family, Old_Key, To_Value ([1, 2, 3]), Result);
+         Put (Item, Txn, Family, Old_Key, To_Value ([1, 2, 3]), Result);
          Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
          Expect (Result, Success, "live-cap initial exact state failed");
 
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          Begin_Transaction (Item, TX_ID (173), Txn, Result);
-         Flyology.DB.Put (Item, Txn, Family, Old_Key, To_Value ([3, 2, 1]), Result);
+         Put (Item, Txn, Family, Old_Key, To_Value ([3, 2, 1]), Result);
          Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
          Expect (Result, Success, "overwrite at exact entry and byte cap was rejected");
          Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
@@ -951,9 +1836,9 @@ package body Flyology.DB.Engine_Tests is
          end if;
 
          Begin_Transaction (Item, TX_ID (174), Group (1), Result);
-         Flyology.DB.Delete (Item, Group (1), Family, Old_Key, Result);
+         Delete (Item, Group (1), Family, Old_Key, Result);
          Begin_Transaction (Item, TX_ID (175), Group (2), Result);
-         Flyology.DB.Put (Item, Group (2), Family, New_Key, To_Value ([4, 5, 6]), Result);
+         Put (Item, Group (2), Family, New_Key, To_Value ([4, 5, 6]), Result);
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          Commit_Group (Item, ID (176), Group, 10.0, Receipts => Receipts, Result => Result);
          Expect (Result, Success, "delete-plus-put group at exact live caps was rejected");
@@ -969,9 +1854,9 @@ package body Flyology.DB.Engine_Tests is
          end if;
 
          Begin_Transaction (Item, TX_ID (177), Reader, Result);
-         Flyology.DB.Get (Item, Reader, Family, Old_Key, Data, Result);
+         Get (Item, Reader, Family, Old_Key, Data, Result);
          Expect (Result, Not_Found, "exact-cap group retained its deleted key");
-         Flyology.DB.Get (Item, Reader, Family, New_Key, Data, Result);
+         Get (Item, Reader, Family, New_Key, Data, Result);
          Expect (Result, Success, "exact-cap group lost its replacement key");
          if Data /= To_Value ([4, 5, 6]) then
             raise Program_Error with "exact-cap group installed the wrong replacement value";
@@ -979,9 +1864,9 @@ package body Flyology.DB.Engine_Tests is
          Rollback (Reader, Result);
 
          Begin_Transaction (Item, TX_ID (179), Group (1), Result);
-         Flyology.DB.Put (Item, Group (1), Family, Old_Key, To_Value ([7, 8, 9]), Result);
+         Put (Item, Group (1), Family, Old_Key, To_Value ([7, 8, 9]), Result);
          Begin_Transaction (Item, TX_ID (180), Group (2), Result);
-         Flyology.DB.Delete (Item, Group (2), Family, New_Key, Result);
+         Delete (Item, Group (2), Family, New_Key, Result);
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          Commit_Group (Item, ID (181), Group, 10.0, Receipts => Receipts, Result => Result);
          Expect (Result, Success, "put-before-delete group at exact live caps was rejected");
@@ -996,12 +1881,12 @@ package body Flyology.DB.Engine_Tests is
             raise Program_Error with "put-before-delete group assigned an inconsistent sequence range";
          end if;
          Begin_Transaction (Item, TX_ID (182), Reader, Result);
-         Flyology.DB.Get (Item, Reader, Family, Old_Key, Data, Result);
+         Get (Item, Reader, Family, Old_Key, Data, Result);
          Expect (Result, Success, "put-before-delete group lost its replacement key");
          if Data /= To_Value ([7, 8, 9]) then
             raise Program_Error with "put-before-delete group installed the wrong value";
          end if;
-         Flyology.DB.Get (Item, Reader, Family, New_Key, Data, Result);
+         Get (Item, Reader, Family, New_Key, Data, Result);
          Expect (Result, Not_Found, "put-before-delete group retained its deleted key");
          Rollback (Reader, Result);
 
@@ -1010,12 +1895,12 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, "exact-cap projected state did not reopen");
          Open_Column_Family (Item, 1, Family, Result);
          Begin_Transaction (Item, TX_ID (178), Reader, Result);
-         Flyology.DB.Get (Item, Reader, Family, Old_Key, Data, Result);
+         Get (Item, Reader, Family, Old_Key, Data, Result);
          Expect (Result, Success, "reopen lost the put-before-delete replacement key");
          if Data /= To_Value ([7, 8, 9]) then
             raise Program_Error with "reopen changed the put-before-delete replacement value";
          end if;
-         Flyology.DB.Get (Item, Reader, Family, New_Key, Data, Result);
+         Get (Item, Reader, Family, New_Key, Data, Result);
          Expect (Result, Not_Found, "reopen restored the put-before-delete deleted key");
          Rollback (Reader, Result);
          Close (Item, Result);
@@ -1030,10 +1915,10 @@ package body Flyology.DB.Engine_Tests is
       Result : Outcome_Code;
    begin
       declare
-         Context : aliased Storage_Context;
-         Item    : Database;
+         Context                                    : aliased Storage_Context;
+         Item                                       : Database;
          Batch_Before, Manifest_Before, Head_Before : Natural;
-         Batch_After, Manifest_After, Head_After : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
       begin
          Bind_Context (Context, Backend, "open-v1-unsupported");
          Testing.Install_Head (Context, DB_ID (226), Zero_Identifier, ID (227), True, Result);
@@ -1051,10 +1936,10 @@ package body Flyology.DB.Engine_Tests is
       end;
 
       declare
-         Context : aliased Storage_Context;
-         Item    : Database;
+         Context                                    : aliased Storage_Context;
+         Item                                       : Database;
          Batch_Before, Manifest_Before, Head_Before : Natural;
-         Batch_After, Manifest_After, Head_After : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
       begin
          Bind_Context (Context, Backend, "open-unknown-head-version");
          Testing.Install_Unsupported_Head (Context, DB_ID (179), ID (180), ID (181), Result);
@@ -1072,17 +1957,20 @@ package body Flyology.DB.Engine_Tests is
       end;
 
       declare
-         Context : aliased Storage_Context;
-         Item    : Database;
+         Context                                    : aliased Storage_Context;
+         Item                                       : Database;
          Batch_Before, Manifest_Before, Head_Before : Natural;
-         Batch_After, Manifest_After, Head_After : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
+         Before                                     : Ownership_Snapshot;
       begin
          Bind_Context (Context, Backend, "open-invalid-v2-head");
          Testing.Install_Invalid_V2_Head (Context, DB_ID (185), ID (186), ID (187), Result);
          Expect (Result, Success, "invalid-v2 HEAD fixture installation failed");
+         Before := Current_Ownership;
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          Open (Item, Context'Access, DB_ID (185), 10.0, Result => Result);
          Expect (Result, Corrupt, "operational Open misclassified malformed known HEAD v2");
+         Expect_No_Owner_Growth (Before, "malformed HEAD open");
          Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
          if Batch_After /= Batch_Before
            or else Manifest_After /= Manifest_Before
@@ -1095,25 +1983,31 @@ package body Flyology.DB.Engine_Tests is
       declare
          Context : aliased Storage_Context;
          Item    : Database;
+         Before  : Ownership_Snapshot;
       begin
          Bind_Context (Context, Backend, "open-missing-manifest");
          Testing.Install_Head (Context, DB_ID (228), ID (229), ID (230), False, Result);
          Expect (Result, Success, "missing-manifest HEAD fixture installation failed");
+         Before := Current_Ownership;
          Open (Item, Context'Access, DB_ID (228), 10.0, Result => Result);
          Expect (Result, Corrupt, "HEAD with missing latest manifest was accepted");
+         Expect_No_Owner_Growth (Before, "missing manifest open");
       end;
 
       declare
          Context : aliased Storage_Context;
          Item    : Database;
+         Before  : Ownership_Snapshot;
       begin
          Bind_Context (Context, Backend, "open-corrupt-manifest");
          Create_DB (Item, Context'Access, DB_ID (231), ID (232), Result);
          Close (Item, Result);
          Testing.Corrupt_Manifest (Context, Manifest_ID_For (ID (232)), Result);
          Expect (Result, Success, "manifest corruption fixture installation failed");
+         Before := Current_Ownership;
          Open (Item, Context'Access, DB_ID (231), 10.0, Result => Result);
          Expect (Result, Corrupt, "corrupt latest manifest was accepted");
+         Expect_No_Owner_Growth (Before, "corrupt manifest open");
       end;
 
       declare
@@ -1124,12 +2018,7 @@ package body Flyology.DB.Engine_Tests is
          Create_DB (Item, Context'Access, DB_ID (233), ID (234), Result);
          Close (Item, Result);
          Testing.Rewrite_Manifest
-           (Context,
-            Manifest_ID_For (ID (234)),
-            DB_ID (233),
-            DB_ID (235),
-            False,
-            Result);
+           (Context, Manifest_ID_For (ID (234)), DB_ID (233), DB_ID (235), False, Result);
          Expect (Result, Success, "wrong-database manifest fixture installation failed");
          Open (Item, Context'Access, DB_ID (233), 10.0, Result => Result);
          Expect (Result, Corrupt, "wrong-database latest manifest was accepted");
@@ -1138,20 +2027,20 @@ package body Flyology.DB.Engine_Tests is
       declare
          Context : aliased Storage_Context;
          Item    : Database;
+         Before  : Ownership_Snapshot;
       begin
-         Bind_Context (Context, Backend, "open-over-build-manifest");
+         Bind_Context (Context, Backend, "open-runtime-sized-manifest");
          Create_DB (Item, Context'Access, DB_ID (236), ID (237), Result);
          Close (Item, Result);
          Testing.Rewrite_Manifest
-           (Context,
-            Manifest_ID_For (ID (237)),
-            DB_ID (236),
-            Zero_Database_ID,
-            True,
-            Result);
-         Expect (Result, Success, "over-build manifest fixture installation failed");
+           (Context, Manifest_ID_For (ID (237)), DB_ID (236), Zero_Database_ID, True, Result);
+         Expect (Result, Success, "runtime-sized manifest fixture installation failed");
+         Before := Current_Ownership;
          Open (Item, Context'Access, DB_ID (236), 10.0, Result => Result);
-         Expect (Result, Capacity_Exceeded, "valid over-build manifest was classified corrupt");
+         Expect (Result, Success, "valid runtime-sized manifest was not activated");
+         Close (Item, Result);
+         Expect (Result, Success, "runtime-sized manifest close failed");
+         Expect_No_Owner_Growth (Before, "runtime-sized manifest open/close");
       end;
 
       declare
@@ -1159,6 +2048,7 @@ package body Flyology.DB.Engine_Tests is
          Item    : Database;
          Txn     : Transaction;
          Receipt : Commit_Receipt;
+         Before  : Ownership_Snapshot;
       begin
          Bind_Context (Context, Backend, "open-batch-unknown-family");
          Create_DB (Item, Context'Access, DB_ID (244), ID (245), Result);
@@ -1167,17 +2057,12 @@ package body Flyology.DB.Engine_Tests is
          Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
          Expect (Result, Success, "unknown-family recovery fixture commit failed");
          Close (Item, Result);
-         Testing.Restrict_Manifest
-           (Context,
-            Manifest_ID_For (ID (245)),
-            DB_ID (244),
-            True,
-            0,
-            0,
-            Result);
+         Testing.Restrict_Manifest (Context, Manifest_ID_For (ID (245)), DB_ID (244), True, 0, 0, Result);
          Expect (Result, Success, "unknown-family recovery fixture rewrite failed");
+         Before := Current_Ownership;
          Open (Item, Context'Access, DB_ID (244), 10.0, Result => Result);
          Expect (Result, Corrupt, "batch referencing an unregistered family was partially applied");
+         Expect_No_Owner_Growth (Before, "unknown-family batch recovery");
       end;
 
       declare
@@ -1185,6 +2070,7 @@ package body Flyology.DB.Engine_Tests is
          Item    : Database;
          Txn     : Transaction;
          Receipt : Commit_Receipt;
+         Before  : Ownership_Snapshot;
       begin
          Bind_Context (Context, Backend, "open-batch-family-limit");
          Create_DB (Item, Context'Access, DB_ID (247), ID (248), Result);
@@ -1193,28 +2079,21 @@ package body Flyology.DB.Engine_Tests is
          Commit (Item, Txn, 10.0, Receipt => Receipt, Result => Result);
          Expect (Result, Success, "family-limit recovery fixture commit failed");
          Close (Item, Result);
-         Testing.Restrict_Manifest
-           (Context,
-            Manifest_ID_For (ID (248)),
-            DB_ID (247),
-            False,
-            2,
-            1,
-            Result);
+         Testing.Restrict_Manifest (Context, Manifest_ID_For (ID (248)), DB_ID (247), False, 2, 1, Result);
          Expect (Result, Success, "family-limit recovery fixture rewrite failed");
+         Before := Current_Ownership;
          Open (Item, Context'Access, DB_ID (247), 10.0, Result => Result);
          Expect (Result, Corrupt, "batch exceeding recovered family limits was partially applied");
+         Expect_No_Owner_Growth (Before, "family-limit batch recovery");
       end;
 
       declare
-         Context : aliased Storage_Context;
-         Item    : Database;
+         Context     : aliased Storage_Context;
+         Item        : Database;
          Create_Info : Create_Receipt;
-         Limits : constant Database_Limits :=
-           (Default_Limits with delta
-              Maximum_Column_Families  => 3,
-              Maximum_Manifest_History => 2);
-         Families : constant Column_Family_Configuration_Array :=
+         Limits      : constant Database_Limits :=
+           (Default_Limits with delta Maximum_Column_Families => 3, Maximum_Manifest_History => 2);
+         Families    : constant Column_Family_Configuration_Array :=
            [Configure_Column_Family (1, [16#61#], 1, 1)];
       begin
          Bind_Context (Context, Backend, "open-overlong-manifest-chain");
@@ -1238,14 +2117,12 @@ package body Flyology.DB.Engine_Tests is
       end;
 
       declare
-         Context : aliased Storage_Context;
-         Item    : Database;
+         Context     : aliased Storage_Context;
+         Item        : Database;
          Create_Info : Create_Receipt;
-         Limits : constant Database_Limits :=
-           (Default_Limits with delta
-              Maximum_Column_Families  => 2,
-              Maximum_Manifest_History => 2);
-         Families : constant Column_Family_Configuration_Array :=
+         Limits      : constant Database_Limits :=
+           (Default_Limits with delta Maximum_Column_Families => 2, Maximum_Manifest_History => 2);
+         Families    : constant Column_Family_Configuration_Array :=
            [Configure_Column_Family (1, [16#61#], 1, 1)];
       begin
          Bind_Context (Context, Backend, "open-exact-manifest-chain");
@@ -1267,6 +2144,27 @@ package body Flyology.DB.Engine_Tests is
          Open (Item, Context'Access, DB_ID (241), 10.0, Result => Result);
          Expect (Result, Success, "manifest history exact cap was rejected");
          Close (Item, Result);
+      end;
+
+      declare
+         Context : aliased Storage_Context;
+         Item    : Database;
+         Stop    : aliased Flyology.Cancellation.Token;
+         Before  : Ownership_Snapshot;
+      begin
+         Bind_Context (Context, Backend, "open-cancel-timeout-ownership");
+         Create_DB (Item, Context'Access, DB_ID (250), ID (251), Result);
+         Expect (Result, Success, "cancel/timeout ownership fixture create failed");
+         Close (Item, Result);
+         Stop.Request;
+         Before := Current_Ownership;
+         Open (Item, Context'Access, DB_ID (250), 10.0, Stop'Access, Result);
+         Expect (Result, Cancelled, "cancelled open was not classified before activation");
+         Expect_No_Owner_Growth (Before, "cancelled open");
+         Before := Current_Ownership;
+         Open (Item, Context'Access, DB_ID (250), 0.0, Result => Result);
+         Expect (Result, Timed_Out, "expired open was not classified before activation");
+         Expect_No_Owner_Growth (Before, "expired open");
       end;
    end Test_Recovery_Format_Edges;
 
@@ -1389,6 +2287,9 @@ package body Flyology.DB.Engine_Tests is
          if Receipt_Outcome (Receipt) /= Outcome_Unknown then
             raise Program_Error with "ambiguous receipt lost its outcome";
          end if;
+         if not Testing.Receipt_Retains_Image (Receipt) then
+            raise Program_Error with "ambiguous receipt did not retain its exact batch image";
+         end if;
 
          Get (Item, Reader, 1, Key_A, Data, Result);
          Expect (Result, Outcome_Unknown, "active reader bypassed uncertain writer state");
@@ -1398,8 +2299,7 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Outcome_Unknown, "active transaction buffered Put while uncertain");
          Delete (Item, Group (1), 1, To_Key ([16#72#]), Result);
          Expect (Result, Outcome_Unknown, "active transaction buffered Delete while uncertain");
-         Commit
-           (Item, Singleton, 10.0, Receipt => Rejected_Receipt, Result => Result);
+         Commit (Item, Singleton, 10.0, Receipt => Rejected_Receipt, Result => Result);
          Expect (Result, Outcome_Unknown, "singleton commit entered admission while uncertain");
          if Receipt_Transaction_ID (Rejected_Receipt) /= Zero_Transaction_ID
            or else Receipt_Batch_ID (Rejected_Receipt) /= Zero_Identifier
@@ -1408,8 +2308,7 @@ package body Flyology.DB.Engine_Tests is
          end if;
          Rollback (Singleton, Result);
          Expect (Result, Success, "uncertain singleton rejection consumed its transaction");
-         Commit_Group
-           (Item, ID (Tag + 24), Group, 10.0, Receipts => Rejected_Receipts, Result => Result);
+         Commit_Group (Item, ID (Tag + 24), Group, 10.0, Receipts => Rejected_Receipts, Result => Result);
          Expect (Result, Outcome_Unknown, "group commit entered admission while uncertain");
          for Index in Group'Range loop
             if Receipt_Transaction_ID (Rejected_Receipts (Index)) /= Zero_Transaction_ID
@@ -1431,6 +2330,9 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "uncertain database did not recover after reopen");
       Resolve (Item, Receipt, 10.0, Result => Result);
       Expect (Result, Success, "self-contained receipt did not resolve after reopen");
+      if Testing.Receipt_Retains_Image (Receipt) then
+         raise Program_Error with "conclusively resolved receipt retained its batch image";
+      end if;
       if Receipt_Sequence (Receipt) /= 2 then
          raise Program_Error with "resolved receipt lost its sequence";
       end if;
@@ -1449,6 +2351,9 @@ package body Flyology.DB.Engine_Tests is
       Resolve (Item, Receipt, 10.0, Result => Result);
       Expect (Result, Outcome_Unknown, "unreachable HEAD attempt was falsely confirmed");
       Unaccepted_Receipt := Receipt;
+      if not Testing.Receipt_Retains_Image (Unaccepted_Receipt) then
+         raise Program_Error with "unaccepted receipt copy lost its exact batch image";
+      end if;
       Close (Item, Result);
       Expect (Result, Success, "unresolved database did not close cleanly");
       Open (Item, Context'Access, Database_ID, 10.0, Result => Result);
@@ -1470,6 +2375,9 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Stale_Writer, "stale generation was not fenced");
       Resolve (Item, Unaccepted_Receipt, 10.0, Result => Result);
       Expect (Result, Stale_Writer, "later validated successor chain did not reject lost attempt");
+      if Testing.Receipt_Retains_Image (Unaccepted_Receipt) then
+         raise Program_Error with "conclusively rejected receipt retained its batch image";
+      end if;
 
       Close (Other, Result);
       Expect (Result, Success, "stale writer close failed");
@@ -1957,6 +2865,274 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "admission database close failed");
    end Test_Admission_Group_And_Lifecycle;
 
+   procedure Test_Resolve_Drains_Queued (Backend : not null access Backends.Backend'Class) is
+      Context                            : aliased Storage_Context;
+      Item                               : aliased Database;
+      Ambiguous_Receipt, Drained_Receipt : Commit_Receipt;
+      Result                             : Outcome_Code;
+      Before_Batch, Before_Head          : Natural;
+      After_Batch, After_Head            : Natural;
+      Database_ID                        : constant Database_Identifier := DB_ID (170);
+
+      procedure Wait_For_Queue (Minimum : Natural) is
+         Depth : Natural := 0;
+         Query : Outcome_Code;
+      begin
+         for Attempt in 1 .. 2_000 loop
+            Testing.Queue_Depth (Item, Depth, Query);
+            Expect (Query, Success, "resolve-drain queue-depth query failed");
+            exit when Depth >= Minimum;
+            delay 0.001;
+         end loop;
+         if Depth < Minimum then
+            raise Program_Error with "resolve-drain queue did not reach expected depth";
+         end if;
+      end Wait_For_Queue;
+   begin
+      Bind_Context (Context, Backend, "resolve-drains-queued");
+      Create_DB (Item, Context'Access, Database_ID, ID (171), Result);
+      Expect (Result, Success, "resolve-drain database create failed");
+      Testing.Publication_Counts (Context, Before_Batch, Before_Head);
+      Testing.Pause_Coordinator (Item, Result);
+      Expect (Result, Success, "resolve-drain coordinator pause failed");
+      declare
+         task Ambiguous_Call is
+            entry Start;
+            entry Finish (Call_Result : out Outcome_Code);
+         end Ambiguous_Call;
+
+         task Drained_Call is
+            entry Start;
+            entry Finish (Call_Result, Rollback_Result : out Outcome_Code);
+         end Drained_Call;
+
+         task body Ambiguous_Call is
+            Txn          : Transaction;
+            Local_Result : Outcome_Code;
+         begin
+            accept Start;
+            Begin_Transaction (Item, TX_ID (172), Txn, Local_Result);
+            Put (Item, Txn, 1, To_Key ([172]), To_Value ([1]), Local_Result);
+            Commit (Item, Txn, 10.0, Receipt => Ambiguous_Receipt, Result => Local_Result);
+            accept Finish (Call_Result : out Outcome_Code) do
+               Call_Result := Local_Result;
+            end Finish;
+         end Ambiguous_Call;
+
+         task body Drained_Call is
+            Txn            : Transaction;
+            Local_Result   : Outcome_Code;
+            Local_Rollback : Outcome_Code;
+         begin
+            accept Start;
+            Begin_Transaction (Item, TX_ID (173), Txn, Local_Result);
+            Put (Item, Txn, 1, To_Key ([173]), To_Value ([2]), Local_Result);
+            Commit (Item, Txn, 10.0, Receipt => Drained_Receipt, Result => Local_Result);
+            Rollback (Txn, Local_Rollback);
+            accept Finish (Call_Result, Rollback_Result : out Outcome_Code) do
+               Call_Result := Local_Result;
+               Rollback_Result := Local_Rollback;
+            end Finish;
+         end Drained_Call;
+
+         Ambiguous_Result, Drained_Result, Rollback_Result : Outcome_Code;
+         Probe                                             : Transaction;
+      begin
+         Ambiguous_Call.Start;
+         Wait_For_Queue (1);
+         Drained_Call.Start;
+         Wait_For_Queue (2);
+         Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+         Testing.Resume_Coordinator (Item, Result);
+         Expect (Result, Success, "resolve-drain coordinator resume failed");
+         Ambiguous_Call.Finish (Ambiguous_Result);
+         Expect (Ambiguous_Result, Outcome_Unknown, "resolve-drain HEAD ambiguity was not retained");
+         Begin_Transaction (Item, TX_ID (173), Probe, Result);
+         Expect (Result, Outcome_Unknown, "unresolved engine admitted a queued identity replay");
+
+         Resolve (Item, Ambiguous_Receipt, 10.0, Result => Result);
+         Expect (Result, Success, "resolve deadlocked or rejected the accepted HEAD transition");
+         Drained_Call.Finish (Drained_Result, Rollback_Result);
+         Expect (Drained_Result, Storage_Failure, "resolution did not classify queued work definitely");
+         Expect (Rollback_Result, Invalid_State, "resolution-drained transaction was not consumed");
+         if Receipt_Transaction_ID (Drained_Receipt) /= TX_ID (173)
+           or else Receipt_Batch_ID (Drained_Receipt) /= ID (173)
+           or else Receipt_Outcome (Drained_Receipt) /= Storage_Failure
+         then
+            raise Program_Error with "resolution drain lost the queued receipt identity";
+         end if;
+      end;
+      Testing.Publication_Counts (Context, After_Batch, After_Head);
+      if After_Batch /= Before_Batch + 1 or else After_Head /= Before_Head + 1 then
+         raise Program_Error with "resolution-drained work reached object publication";
+      end if;
+      if Visible (Item) /= 1 then
+         raise Program_Error with "resolved accepted HEAD did not install exactly one transaction";
+      end if;
+      declare
+         Reader : Transaction;
+         Data   : Value;
+      begin
+         Begin_Transaction (Item, TX_ID (174), Reader, Result);
+         Expect (Result, Success, "resolve-drain verification transaction failed");
+         Get (Item, Reader, 1, To_Key ([172]), Data, Result);
+         Expect (Result, Success, "resolved ambiguous value was not visible");
+         if Data /= To_Value ([1]) then
+            raise Program_Error with "resolved ambiguous value changed";
+         end if;
+         Get (Item, Reader, 1, To_Key ([173]), Data, Result);
+         Expect (Result, Not_Found, "resolution-drained queued value became visible");
+         Rollback (Reader, Result);
+      end;
+      --  The drained ID remains a local reservation only while the old uncertain
+      --  engine exists.  After replacement or total local loss, never reusing it
+      --  remains the caller's obligation because no immutable batch records it.
+      Close (Item, Result);
+      Expect (Result, Success, "resolve-drain database close failed");
+   end Test_Resolve_Drains_Queued;
+
+   procedure Test_Unaccepted_Resolve_Drains_Queued (Backend : not null access Backends.Backend'Class) is
+      Context                          : aliased Storage_Context;
+      Item                             : aliased Database;
+      Rival                            : Database;
+      Ambiguous_Receipt, Rival_Receipt : Commit_Receipt;
+      Drained_Receipts                 : Commit_Receipt_Array (1 .. 2);
+      Result                           : Outcome_Code;
+      Before_Batch, Before_Head        : Natural;
+      After_Batch, After_Head          : Natural;
+      Database_ID                      : constant Database_Identifier := DB_ID (175);
+
+      procedure Wait_For_Queue (Minimum : Natural) is
+         Depth : Natural := 0;
+         Query : Outcome_Code;
+      begin
+         for Attempt in 1 .. 2_000 loop
+            Testing.Queue_Depth (Item, Depth, Query);
+            Expect (Query, Success, "unaccepted-drain queue-depth query failed");
+            exit when Depth >= Minimum;
+            delay 0.001;
+         end loop;
+         if Depth < Minimum then
+            raise Program_Error with "unaccepted-drain queue did not reach expected depth";
+         end if;
+      end Wait_For_Queue;
+   begin
+      Bind_Context (Context, Backend, "unaccepted-resolve-drains-queued");
+      Create_DB (Item, Context'Access, Database_ID, ID (176), Result);
+      Expect (Result, Success, "unaccepted-drain database create failed");
+      Open (Rival, Context'Access, Database_ID, 10.0, Result => Result);
+      Expect (Result, Success, "unaccepted-drain rival open failed");
+      Testing.Publication_Counts (Context, Before_Batch, Before_Head);
+      Testing.Pause_Coordinator (Item, Result);
+      Expect (Result, Success, "unaccepted-drain coordinator pause failed");
+      declare
+         task Ambiguous_Call is
+            entry Start;
+            entry Finish (Call_Result : out Outcome_Code);
+         end Ambiguous_Call;
+
+         task Drained_Call is
+            entry Start;
+            entry Finish (Call_Result, Rollback_Result : out Outcome_Code);
+         end Drained_Call;
+
+         task body Ambiguous_Call is
+            Txn          : Transaction;
+            Local_Result : Outcome_Code;
+         begin
+            accept Start;
+            Begin_Transaction (Item, TX_ID (177), Txn, Local_Result);
+            Put (Item, Txn, 1, To_Key ([177]), To_Value ([1]), Local_Result);
+            Commit (Item, Txn, 10.0, Receipt => Ambiguous_Receipt, Result => Local_Result);
+            accept Finish (Call_Result : out Outcome_Code) do
+               Call_Result := Local_Result;
+            end Finish;
+         end Ambiguous_Call;
+
+         task body Drained_Call is
+            Transactions   : Transaction_Array (1 .. 2);
+            Local_Result   : Outcome_Code;
+            Local_Rollback : Outcome_Code;
+         begin
+            accept Start;
+            for Index in Transactions'Range loop
+               Begin_Transaction (Item, TX_ID (Byte (177 + Index)), Transactions (Index), Local_Result);
+               Put
+                 (Item,
+                  Transactions (Index),
+                  1,
+                  To_Key ([Byte (177 + Index)]),
+                  To_Value ([Byte (1 + Index)]),
+                  Local_Result);
+            end loop;
+            Commit_Group
+              (Item, ID (181), Transactions, 10.0, Receipts => Drained_Receipts, Result => Local_Result);
+            Local_Rollback := Invalid_State;
+            for Index in Transactions'Range loop
+               declare
+                  Member_Rollback : Outcome_Code;
+               begin
+                  Rollback (Transactions (Index), Member_Rollback);
+                  if Member_Rollback /= Invalid_State then
+                     Local_Rollback := Member_Rollback;
+                  end if;
+               end;
+            end loop;
+            accept Finish (Call_Result, Rollback_Result : out Outcome_Code) do
+               Call_Result := Local_Result;
+               Rollback_Result := Local_Rollback;
+            end Finish;
+         end Drained_Call;
+
+         Ambiguous_Result, Drained_Result, Rollback_Result : Outcome_Code;
+      begin
+         Ambiguous_Call.Start;
+         Wait_For_Queue (1);
+         Drained_Call.Start;
+         Wait_For_Queue (3);
+         Testing.Arm (Context, Before_Head_Put, Unknown_After_Entry);
+         Testing.Resume_Coordinator (Item, Result);
+         Expect (Result, Success, "unaccepted-drain coordinator resume failed");
+         Ambiguous_Call.Finish (Ambiguous_Result);
+         Expect (Ambiguous_Result, Outcome_Unknown, "unaccepted HEAD ambiguity was not retained");
+
+         Resolve (Item, Ambiguous_Receipt, 10.0, Result => Result);
+         Expect (Result, Outcome_Unknown, "unaccepted resolve was falsely made conclusive");
+         Drained_Call.Finish (Drained_Result, Rollback_Result);
+         Expect (Drained_Result, Storage_Failure, "unresolved resolve did not drain the queued group");
+         Expect (Rollback_Result, Invalid_State, "unresolved-drained group transactions were not consumed");
+         for Index in Drained_Receipts'Range loop
+            if Receipt_Transaction_ID (Drained_Receipts (Index)) /= TX_ID (Byte (177 + Index))
+              or else Receipt_Batch_ID (Drained_Receipts (Index)) /= ID (181)
+              or else Receipt_Outcome (Drained_Receipts (Index)) /= Storage_Failure
+            then
+               raise Program_Error with "unresolved resolution drain lost a group receipt identity";
+            end if;
+         end loop;
+
+         declare
+            Rival_Txn : Transaction;
+         begin
+            Begin_Transaction (Rival, TX_ID (180), Rival_Txn, Result);
+            Put (Rival, Rival_Txn, 1, To_Key ([180]), To_Value ([4]), Result);
+            Commit (Rival, Rival_Txn, 10.0, Receipt => Rival_Receipt, Result => Result);
+            Expect (Result, Success, "unaccepted-drain rival successor commit failed");
+         end;
+         Resolve (Item, Ambiguous_Receipt, 10.0, Result => Result);
+         Expect (Result, Stale_Writer, "validated rival successor did not reject the lost attempt");
+      end;
+      Testing.Publication_Counts (Context, After_Batch, After_Head);
+      if After_Batch /= Before_Batch + 2 or else After_Head /= Before_Head + 1 then
+         raise Program_Error with "rejected resolution-drained group reached publication";
+      end if;
+      --  Neither orphan identity is discoverable after complete local-state loss;
+      --  the caller's never-reuse obligation therefore remains authoritative.
+      Close (Item, Result);
+      Expect (Result, Success, "unaccepted-drain database close failed");
+      Close (Rival, Result);
+      Expect (Result, Success, "unaccepted-drain rival close failed");
+   end Test_Unaccepted_Resolve_Drains_Queued;
+
    procedure Test_Shared_Context_Synchronization (Backend : not null access Backends.Backend'Class) is
       Context                                            : aliased Storage_Context;
       First                                              : aliased Database;
@@ -2082,7 +3258,7 @@ package body Flyology.DB.Engine_Tests is
             function Done return Boolean;
             function Value return Outcome_Code;
          private
-            Ready : Boolean := False;
+            Ready  : Boolean := False;
             Stored : Outcome_Code := Invalid_State;
          end Resolution_Box;
 
@@ -2093,9 +3269,11 @@ package body Flyology.DB.Engine_Tests is
                Ready := True;
             end Set;
 
-            function Done return Boolean is (Ready);
+            function Done return Boolean
+            is (Ready);
 
-            function Value return Outcome_Code is (Stored);
+            function Value return Outcome_Code
+            is (Stored);
          end Resolution_Box;
 
          task type Resolver_Task is
@@ -2116,7 +3294,7 @@ package body Flyology.DB.Engine_Tests is
          Resolver : Resolver_Task;
 
          Resolve_Result : Outcome_Code;
-         Wait_Deadline : constant Ada.Real_Time.Time :=
+         Wait_Deadline  : constant Ada.Real_Time.Time :=
            Ada.Real_Time.Clock + Ada.Real_Time.To_Time_Span (2.0);
       begin
          loop
@@ -2133,9 +3311,10 @@ package body Flyology.DB.Engine_Tests is
                Resolve_Result := Storage_Failure;
             end if;
             Close (Item, Close_Result);
-            raise Program_Error with
-              "resolve did not reach the deterministic storage barrier: " &
-              Outcome_Code'Image (Resolve_Result);
+            raise Program_Error
+              with
+                "resolve did not reach the deterministic storage barrier: "
+                & Outcome_Code'Image (Resolve_Result);
          end if;
 
          Close (Item, Close_Result);
@@ -2384,24 +3563,47 @@ package body Flyology.DB.Engine_Tests is
    end Test_Cap_Boundaries;
 
    procedure Run is
-      Status : OS.Status;
+      Status                   : OS.Status;
+      Before_Images_Allocated  : Interfaces.Unsigned_64;
+      Before_Images_Released   : Interfaces.Unsigned_64;
+      Before_Arenas_Allocated  : Interfaces.Unsigned_64;
+      Before_Arenas_Released   : Interfaces.Unsigned_64;
+      Before_Transaction_Bytes : Interfaces.Unsigned_64;
+      Before_Source_Bytes      : Interfaces.Unsigned_64;
+      Before_Sink_Bytes        : Interfaces.Unsigned_64;
+      After_Images_Allocated   : Interfaces.Unsigned_64;
+      After_Images_Released    : Interfaces.Unsigned_64;
+      After_Arenas_Allocated   : Interfaces.Unsigned_64;
+      After_Arenas_Released    : Interfaces.Unsigned_64;
+      After_Transaction_Bytes  : Interfaces.Unsigned_64;
+      After_Source_Bytes       : Interfaces.Unsigned_64;
+      After_Sink_Bytes         : Interfaces.Unsigned_64;
    begin
+      Test_Runtime_Codec;
+      Testing.Image_Statistics
+        (Before_Images_Allocated,
+         Before_Images_Released,
+         Before_Arenas_Allocated,
+         Before_Arenas_Released,
+         Before_Transaction_Bytes,
+         Before_Source_Bytes,
+         Before_Sink_Bytes);
       declare
-         Store : aliased Memory.Store (4, 512, 1_000_000);
+         Store : aliased Memory.Store (4, 512, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then
             raise Program_Error with "memory bucket create failed";
          end if;
          declare
-            Unbound : aliased Storage_Context;
-            Invalid : Storage_Context;
-            Boundary : Storage_Context;
-            Overlong : Storage_Context;
-            Item    : Database;
-            Result  : Outcome_Code;
-            Raised  : Boolean := False;
-            Maximum_Prefix : constant String (1 .. 981) := [others => 'a'];
+            Unbound         : aliased Storage_Context;
+            Invalid         : Storage_Context;
+            Boundary        : Storage_Context;
+            Overlong        : Storage_Context;
+            Item            : Database;
+            Result          : Outcome_Code;
+            Raised          : Boolean := False;
+            Maximum_Prefix  : constant String (1 .. 981) := [others => 'a'];
             Too_Long_Prefix : constant String (1 .. 982) := [others => 'a'];
          begin
             Create_DB (Item, Unbound'Access, DB_ID (1), ID (2), Result);
@@ -2428,12 +3630,18 @@ package body Flyology.DB.Engine_Tests is
             end if;
          end;
          Test_CRUD_And_Recovery (Store'Access, "memory-basic", 10);
+         Test_Runtime_Sized_Value (Store'Access, "memory-runtime-sized", 11);
+         Test_Large_Production_Profile (Store'Access, "memory-large-profile", 12);
+         Test_Dynamic_Mutation_Descriptors (Store'Access, "memory-dynamic-mutations", 13);
+         Test_Allocation_Failures (Store'Access);
          Test_Manifest_And_Family_API (Store'Access);
          Test_Create_Publication (Store'Access);
          Test_Lower_Live_Budgets (Store'Access);
          Test_Recovery_Format_Edges (Store'Access);
          Test_Faults (Store'Access, "memory-faults", 40);
          Test_Admission_Group_And_Lifecycle (Store'Access);
+         Test_Resolve_Drains_Queued (Store'Access);
+         Test_Unaccepted_Resolve_Drains_Queued (Store'Access);
          Test_Shared_Context_Synchronization (Store'Access);
          Test_Resolve_Lifecycle (Store'Access);
          Test_Cap_Boundaries (Store'Access);
@@ -2449,17 +3657,52 @@ package body Flyology.DB.Engine_Tests is
          end if;
          declare
             Store : aliased Files.Store :=
-              Files.Open (Root, Maximum_Object_Size => 100_000, Commit => Files.Process_Crash_Atomic);
+              Files.Open (Root, Maximum_Object_Size => 8_000_000, Commit => Files.Process_Crash_Atomic);
          begin
             Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
             if Status /= OS.Success then
                raise Program_Error with "files bucket create failed";
             end if;
             Test_CRUD_And_Recovery (Store'Access, "files-basic", 20);
+            Test_Runtime_Sized_Value (Store'Access, "files-runtime-sized", 21);
+            Test_Large_Production_Profile (Store'Access, "files-large-profile", 22);
+            Test_Dynamic_Mutation_Descriptors (Store'Access, "files-dynamic-mutations", 23);
             Test_Faults (Store'Access, "files-faults", 140);
          end;
          Ada.Directories.Delete_Tree (Root);
       end;
+
+      Testing.Image_Statistics
+        (After_Images_Allocated,
+         After_Images_Released,
+         After_Arenas_Allocated,
+         After_Arenas_Released,
+         After_Transaction_Bytes,
+         After_Source_Bytes,
+         After_Sink_Bytes);
+      if After_Images_Allocated - Before_Images_Allocated /= After_Images_Released - Before_Images_Released
+      then
+         raise Program_Error
+           with
+             "shared batch image owner leaked across the engine suite: allocated"
+             & Interfaces.Unsigned_64'Image (After_Images_Allocated - Before_Images_Allocated)
+             & ", released"
+             & Interfaces.Unsigned_64'Image (After_Images_Released - Before_Images_Released);
+      elsif After_Arenas_Allocated - Before_Arenas_Allocated /= After_Arenas_Released - Before_Arenas_Released
+      then
+         raise Program_Error
+           with
+             "transaction arena leaked across the engine suite: allocated"
+             & Interfaces.Unsigned_64'Image (After_Arenas_Allocated - Before_Arenas_Allocated)
+             & ", released"
+             & Interfaces.Unsigned_64'Image (After_Arenas_Released - Before_Arenas_Released);
+      elsif After_Transaction_Bytes = Before_Transaction_Bytes then
+         raise Program_Error with "caller-to-transaction ownership copy was not observed";
+      elsif After_Source_Bytes = Before_Source_Bytes then
+         raise Program_Error with "borrowed storage source did not stream an owned image";
+      elsif After_Sink_Bytes = Before_Sink_Bytes then
+         raise Program_Error with "owned recovery sink did not receive an image";
+      end if;
    end Run;
 
 end Flyology.DB.Engine_Tests;

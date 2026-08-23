@@ -1,5 +1,7 @@
 with Ada.Command_Line;
 with Ada.Real_Time;
+with Ada.Streams;
+with Flyology.Bytes;
 with Flyology.DB.Object_Storage;
 with Flyology.DB.Testing;
 with Flyology.Object_Storage;
@@ -12,6 +14,7 @@ procedure Flyology.DB.Files_Crash_Probe is
    package Testing renames Flyology.DB.Testing;
 
    use type OS.Status;
+   use type Ada.Streams.Stream_Element;
 
    Bucket : constant String := "flyology-db-crash";
    Prefix : constant String := "group";
@@ -29,7 +32,7 @@ procedure Flyology.DB.Files_Crash_Probe is
    function TX_ID (Last : Flyology.DB.Byte) return Flyology.DB.Transaction_Identifier
    is (Flyology.DB.Transaction_Identifier (ID (Last)));
 
-   Limits : constant Flyology.DB.Database_Limits :=
+   Limits   : constant Flyology.DB.Database_Limits :=
      (Maximum_Column_Families           => 2,
       Maximum_Manifest_History          => 64,
       Maximum_Batch_History             => 64,
@@ -85,17 +88,16 @@ begin
             declare
                Family : Flyology.DB.Column_Family;
             begin
-            Flyology.DB.Begin_Transaction
-              (Item, TX_ID (Flyology.DB.Byte (10 + Index)), Transactions (Index), Result);
-            Flyology.DB.Open_Column_Family
-              (Item, Flyology.DB.Column_Family_ID (Index), Family, Result);
-            Flyology.DB.Put
-              (Item,
-               Transactions (Index),
-               Family,
-               Flyology.DB.To_Key ([Flyology.DB.Byte (Index)]),
-               Flyology.DB.To_Value ([Flyology.DB.Byte (Index + 20)]),
-               Result);
+               Flyology.DB.Begin_Transaction
+                 (Item, TX_ID (Flyology.DB.Byte (10 + Index)), Transactions (Index), Result);
+               Flyology.DB.Open_Column_Family (Item, Flyology.DB.Column_Family_ID (Index), Family, Result);
+               Flyology.DB.Put
+                 (Item,
+                  Transactions (Index),
+                  Family,
+                  [Flyology.DB.Byte (Index)],
+                  [Flyology.DB.Byte (Index + 20)],
+                  Result);
             end;
          end loop;
          Flyology.DB.Commit_Group (Item, ID (30), Transactions, 10.0, Receipts => Receipts, Result => Result);
@@ -107,7 +109,7 @@ begin
          Context : aliased Flyology.DB.Storage_Context;
          Item    : Flyology.DB.Database;
          Txn     : Flyology.DB.Transaction;
-         Value   : Flyology.DB.Value;
+         Value   : Flyology.Bytes.Unbounded_Bytes;
          Result  : Flyology.DB.Outcome_Code;
       begin
          Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, Prefix);
@@ -118,19 +120,13 @@ begin
             declare
                Family : Flyology.DB.Column_Family;
             begin
-            Flyology.DB.Open_Column_Family
-              (Item, Flyology.DB.Column_Family_ID (Index), Family, Result);
-            Flyology.DB.Get
-              (Item,
-               Txn,
-               Family,
-               Flyology.DB.To_Key ([Flyology.DB.Byte (Index)]),
-               Value,
-               Result);
-            Require
-              (Result = Flyology.DB.Success
-               and then Value = Flyology.DB.To_Value ([Flyology.DB.Byte (Index + 20)]),
-               "crash recovery exposed a partial group");
+               Flyology.DB.Open_Column_Family (Item, Flyology.DB.Column_Family_ID (Index), Family, Result);
+               Flyology.DB.Get (Item, Txn, Family, [Flyology.DB.Byte (Index)], Value, Result);
+               Require
+                 (Result = Flyology.DB.Success
+                  and then Flyology.Bytes.Length (Value) = 1
+                  and then Flyology.Bytes.Element (Value, 1) = Ada.Streams.Stream_Element (Index + 20),
+                  "crash recovery exposed a partial group");
             end;
          end loop;
          Flyology.DB.Rollback (Txn, Result);

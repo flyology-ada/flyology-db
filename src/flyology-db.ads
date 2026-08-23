@@ -1,5 +1,6 @@
 with Interfaces;
 with Flyology.Cancellation;
+with Flyology.Bytes;
 private with Ada.Finalization;
 private with Ada.Strings.Unbounded;
 private with Flyology.Object_Storage.Backends;
@@ -45,49 +46,19 @@ package Flyology.DB is
    end record;
 
    type Column_Family_Configuration is private;
-   type Column_Family_Configuration_Array is
-     array (Positive range <>) of Column_Family_Configuration;
+   type Column_Family_Configuration_Array is array (Positive range <>) of Column_Family_Configuration;
    type Column_Family is private;
 
    --  Construct one immutable family configuration. Name must contain one to
    --  255 exact UTF-8 bytes, contain no NUL, and Max_Key_Bytes and
    --  Max_Value_Bytes must be nonzero. Invalid input raises Constraint_Error
-   --  before storage effects. Valid limits above this build's runtime capacity
-   --  remain representable so Create can return Capacity_Exceeded.
+   --  before storage effects. Persisted limits remain U64 policy authority;
+   --  each actual runtime allocation is checked for host representability.
    function Configure_Column_Family
      (ID              : Column_Family_ID;
       Name            : Byte_Array;
       Max_Key_Bytes   : Interfaces.Unsigned_64;
       Max_Value_Bytes : Interfaces.Unsigned_64) return Column_Family_Configuration;
-
-   Maximum_Key_Bytes   : constant := 64;
-   Maximum_Value_Bytes : constant := 256;
-   subtype Key_Length is Natural range 0 .. Maximum_Key_Bytes;
-   subtype Value_Length is Natural range 0 .. Maximum_Value_Bytes;
-   type Key_Storage is array (Positive range 1 .. Maximum_Key_Bytes) of Byte;
-   type Value_Storage is array (Positive range 1 .. Maximum_Value_Bytes) of Byte;
-
-   type Key is record
-      Length : Key_Length := 0;
-      Bytes  : Key_Storage := [others => 0];
-   end record;
-
-   type Value is record
-      Length : Value_Length := 0;
-      Bytes  : Value_Storage := [others => 0];
-   end record;
-
-   --  Construct one arbitrary-byte key within the version-1 operational cap.
-   --  @param Data Exact key bytes; an empty array constructs an empty key
-   --  @return Bounded key value
-   --  @exception Constraint_Error Data exceeds Maximum_Key_Bytes
-   function To_Key (Data : Byte_Array) return Key;
-
-   --  Construct one arbitrary-byte value within the version-1 operational cap.
-   --  @param Data Exact value bytes; an empty array constructs an empty value
-   --  @return Bounded value
-   --  @exception Constraint_Error Data exceeds Maximum_Value_Bytes
-   function To_Value (Data : Byte_Array) return Value;
 
    type Outcome_Code is
      (Success,
@@ -170,42 +141,39 @@ package Flyology.DB is
 
    --  Open one stable family handle by its persisted numeric ID.
    procedure Open_Column_Family
-     (Item   : in out Database;
-      ID     : Column_Family_ID;
-      Family : out Column_Family;
-      Result : out Outcome_Code);
+     (Item : in out Database; ID : Column_Family_ID; Family : out Column_Family; Result : out Outcome_Code);
 
    --  Open one stable family handle by its exact persisted UTF-8 name bytes.
    procedure Open_Column_Family
-     (Item   : in out Database;
-      Name   : Byte_Array;
-      Family : out Column_Family;
-      Result : out Outcome_Code);
+     (Item : in out Database; Name : Byte_Array; Family : out Column_Family; Result : out Outcome_Code);
 
-   --  Read a buffered mutation or the latest confirmed committed value.
+   --  Read a buffered mutation or latest confirmed committed value into owned
+   --  bytes. Data is empty on every non-Success outcome.
    procedure Get
      (Item     : in out Database;
       Txn      : in out Transaction;
       Family   : Column_Family;
-      Item_Key : Key;
-      Data     : out Value;
+      Item_Key : Byte_Array;
+      Data     : out Flyology.Bytes.Unbounded_Bytes;
       Result   : out Outcome_Code);
 
-   --  Buffer or replace one Put mutation while Item remains safely usable.
+   --  Borrow Item_Key/Data for this call and copy them once into the
+   --  transaction-owned arena; no caller bytes are retained after return.
    procedure Put
      (Item     : in out Database;
       Txn      : in out Transaction;
       Family   : Column_Family;
-      Item_Key : Key;
-      Data     : Value;
+      Item_Key : Byte_Array;
+      Data     : Byte_Array;
       Result   : out Outcome_Code);
 
-   --  Buffer or replace one Delete mutation while Item remains safely usable.
+   --  Borrow Item_Key for this call and copy it once into the transaction-owned
+   --  arena; no caller bytes are retained after return.
    procedure Delete
      (Item     : in out Database;
       Txn      : in out Transaction;
       Family   : Column_Family;
-      Item_Key : Key;
+      Item_Key : Byte_Array;
       Result   : out Outcome_Code);
 
    --  Consume an active transaction without publishing it.
@@ -272,22 +240,16 @@ package Flyology.DB is
 
 private
 
-   Maximum_Transaction_Mutations : constant := 64;
-   Maximum_Transaction_Bytes     : constant := 4_096;
-   Maximum_Commit_Slots          : constant := 8;
-   Maximum_Commit_Bytes          : constant := 16_384;
-   Maximum_History_Batches       : constant := 64;
-   Maximum_State_Entries         : constant := 256;
-   Maximum_Live_State_Bytes      : constant :=
-     Maximum_State_Entries * (Maximum_Key_Bytes + Maximum_Value_Bytes);
-   Maximum_Seen_Transactions     : constant := 512;
-   Maximum_Reserved_Identities   : constant := Maximum_History_Batches * (Maximum_Group_Transactions + 1);
-   Maximum_Generation_Bytes      : constant := 256;
-   Maximum_Batch_Image_Bytes     : constant := 22_048;
+   Maximum_Commit_Slots     : constant := 8;
+   Maximum_History_Batches  : constant := 64;
+   Maximum_Generation_Bytes : constant := 256;
+
+   Reference_Maximum_Key_Bytes        : constant := 64;
+   Reference_Maximum_Value_Bytes      : constant := 256;
+   Maximum_Small_Metadata_Image_Bytes : constant := 22_048;
 
    subtype Column_Family_Name_Length is Natural range 0 .. Maximum_Column_Family_Name_Bytes;
-   type Column_Family_Name_Storage is
-     array (Positive range 1 .. Maximum_Column_Family_Name_Bytes) of Byte;
+   type Column_Family_Name_Storage is array (Positive range 1 .. Maximum_Column_Family_Name_Bytes) of Byte;
 
    type Column_Family_Configuration is record
       ID              : Column_Family_ID := Column_Family_ID'First;
@@ -300,6 +262,22 @@ private
    type Engine_Incarnation is new Interfaces.Unsigned_64;
    No_Incarnation : constant Engine_Incarnation := 0;
 
+   type Internal_Allocation_Fault_Point is
+     (No_Allocation_Fault,
+      Transaction_Arena_Allocation,
+      Transaction_Payload_Allocation,
+      Batch_Descriptor_Allocation,
+      Storage_Sink_Allocation,
+      Recovery_History_Allocation,
+      Engine_State_Allocation,
+      Identity_Table_Allocation,
+      Projection_Scratch_Allocation);
+   procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
+   procedure Decode_Runtime_Image_For_Test
+     (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code);
+   procedure Check_Runtime_Reference_Parity (Result : out Outcome_Code);
+   function Group_Mutation_Total_Fits_Wire (Value : Natural) return Boolean;
+
    type Column_Family is record
       Valid         : Boolean := False;
       Database_ID   : Database_Identifier := Zero_Database_ID;
@@ -308,23 +286,59 @@ private
    end record;
 
    type Mutation_Kind is (Put_Mutation, Delete_Mutation);
-   type Pending_Mutation is record
-      Family    : Column_Family_ID := Column_Family_ID'First;
-      Operation : Mutation_Kind := Put_Mutation;
-      Item_Key  : Key;
-      Data      : Value;
+
+   protected type Shared_Image_References is
+      procedure Retain;
+      procedure Release (Last : out Boolean);
+   private
+      Count : Positive := 1;
+   end Shared_Image_References;
+
+   type Shared_Image_Record is limited record
+      References : Shared_Image_References;
+      Data       : Flyology.Bytes.Unbounded_Bytes;
    end record;
-   subtype Mutation_Slot is Positive range 1 .. Maximum_Transaction_Mutations;
-   type Pending_Mutation_Array is array (Mutation_Slot) of Pending_Mutation;
+   type Shared_Image_Access is access Shared_Image_Record;
+
+   type Shared_Image_Lease is new Ada.Finalization.Controlled with record
+      Image : Shared_Image_Access := null;
+   end record;
+
+   overriding
+   procedure Adjust (Item : in out Shared_Image_Lease);
+   overriding
+   procedure Finalize (Item : in out Shared_Image_Lease);
+
+   type Owned_Mutation is record
+      Family       : Column_Family_ID := Column_Family_ID'First;
+      Operation    : Mutation_Kind := Put_Mutation;
+      Key_Length   : Natural := 0;
+      Value_Length : Natural := 0;
+      Payload      : Flyology.Bytes.Unbounded_Bytes;
+   end record;
+   type Owned_Mutation_Array is array (Positive range <>) of Owned_Mutation;
+   type Owned_Mutation_Array_Access is access Owned_Mutation_Array;
+
+   type Transaction_Arena is limited record
+      Mutations  : Owned_Mutation_Array_Access := null;
+      Count      : Natural := 0;
+      Bytes_Used : Interfaces.Unsigned_64 := 0;
+   end record;
+   type Transaction_Arena_Access is access Transaction_Arena;
+
+   type Transaction_Arena_Owner is new Ada.Finalization.Limited_Controlled with record
+      Arena : Transaction_Arena_Access := null;
+   end record;
+
+   overriding
+   procedure Finalize (Item : in out Transaction_Arena_Owner);
 
    type Transaction is limited record
       Active         : Boolean := False;
       Database_ID    : Database_Identifier := Zero_Database_ID;
       Incarnation    : Engine_Incarnation := No_Incarnation;
       Transaction_ID : Transaction_Identifier := Zero_Transaction_ID;
-      Mutation_Count : Natural range 0 .. Maximum_Transaction_Mutations := 0;
-      Bytes_Used     : Natural range 0 .. Maximum_Transaction_Bytes := 0;
-      Mutations      : Pending_Mutation_Array;
+      Owner          : Transaction_Arena_Owner;
    end record;
 
    type Head_Snapshot is record
@@ -339,8 +353,7 @@ private
       Transition_Number      : Interfaces.Unsigned_64 := 1;
    end record;
 
-   subtype Batch_Receipt_Index is Natural range 0 .. Maximum_Batch_Image_Bytes - 1;
-   type Batch_Receipt_Image is array (Batch_Receipt_Index) of Byte;
+   subtype Small_Metadata_Index is Natural range 0 .. Maximum_Small_Metadata_Image_Bytes - 1;
    type Receipt_Phase is (No_Publication, Head_Publication_Unknown, Resolved);
 
    type Commit_Receipt is record
@@ -349,8 +362,7 @@ private
       Transaction_ID    : Transaction_Identifier := Zero_Transaction_ID;
       Assigned_Sequence : Sequence_Number := 0;
       Batch_ID          : Identifier := Zero_Identifier;
-      Batch_Length      : Natural range 0 .. Maximum_Batch_Image_Bytes := 0;
-      Batch_Image       : Batch_Receipt_Image := [others => 0];
+      Retained_Image    : Shared_Image_Lease;
       Expected_Head     : Head_Snapshot;
       Attempted_Head    : Head_Snapshot;
    end record;
@@ -359,13 +371,12 @@ private
      (No_Create_Publication, Manifest_Confirmed, Head_Publication_Unknown, Head_Confirmed);
 
    type Create_Receipt is record
-      Current_Outcome : Outcome_Code := Invalid_State;
-      Phase           : Create_Receipt_Phase := No_Create_Publication;
-      Database_ID     : Database_Identifier := Zero_Database_ID;
-      Manifest_ID     : Identifier := Zero_Identifier;
-      Manifest_Length : Natural range 0 .. Maximum_Batch_Image_Bytes := 0;
-      Manifest_Image  : Batch_Receipt_Image := [others => 0];
-      Attempted_Head  : Head_Snapshot;
+      Current_Outcome   : Outcome_Code := Invalid_State;
+      Phase             : Create_Receipt_Phase := No_Create_Publication;
+      Database_ID       : Database_Identifier := Zero_Database_ID;
+      Manifest_ID       : Identifier := Zero_Identifier;
+      Retained_Manifest : Shared_Image_Lease;
+      Attempted_Head    : Head_Snapshot;
    end record;
 
    type Storage_Fault_Point is
@@ -395,13 +406,13 @@ private
       entry Continue_Get;
       function Get_Waiting return Boolean;
    private
-      Fault_Counts : Storage_Fault_Count := [others => 0];
-      Fault_Modes  : Storage_Fault_Modes := [others => No_Fault];
-      Batch_Puts   : Natural := 0;
+      Fault_Counts  : Storage_Fault_Count := [others => 0];
+      Fault_Modes   : Storage_Fault_Modes := [others => No_Fault];
+      Batch_Puts    : Natural := 0;
       Manifest_Puts : Natural := 0;
-      Head_Puts    : Natural := 0;
-      Get_Paused   : Boolean := False;
-      Waiting_Gets : Natural := 0;
+      Head_Puts     : Natural := 0;
+      Get_Paused    : Boolean := False;
+      Waiting_Gets  : Natural := 0;
    end Storage_Test_Control;
 
    type Storage_Context is limited record
@@ -411,7 +422,7 @@ private
       Test_Control : Storage_Test_Control;
    end record;
 
-   type Engine_State;
+   type Engine_State (<>);
    type Engine_State_Access is access Engine_State;
 
    type Database_Lifecycle_Mode is (Closed, Opening, Opened, Closing, Resolving);
@@ -450,9 +461,11 @@ private
    procedure Test_Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
    procedure Fail_Next_Test_Install (Item : in out Database; Result : out Outcome_Code);
    procedure Set_Test_Get_Paused (Item : in out Storage_Context; Value : Boolean);
-   procedure Wait_For_Test_Get
-     (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean);
+   procedure Wait_For_Test_Get (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean);
    function Test_Get_Waiting (Item : Storage_Context) return Boolean;
+   procedure Test_Image_Statistics
+     (Allocated, Released, Arenas_Allocated, Arenas_Released, Transaction_Bytes, Source_Bytes, Sink_Bytes :
+        out Interfaces.Unsigned_64);
    procedure Install_Test_Head
      (Item          : in out Storage_Context;
       Database_ID   : Database_Identifier;
@@ -487,11 +500,11 @@ private
       Restricted_Max_Key   : Interfaces.Unsigned_64;
       Result               : out Outcome_Code);
    procedure Extend_Test_Manifest_Chain
-     (Item          : in out Storage_Context;
-      Database_ID   : Database_Identifier;
-      Root_ID       : Identifier;
-      Successors    : Positive;
-      Result        : out Outcome_Code);
+     (Item        : in out Storage_Context;
+      Database_ID : Database_Identifier;
+      Root_ID     : Identifier;
+      Successors  : Positive;
+      Result      : out Outcome_Code);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB;

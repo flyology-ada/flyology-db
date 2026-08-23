@@ -97,15 +97,19 @@ or transition IDs disagree with the head that references it. Recovery validates 
 identity, sequence adjacency, and checksum before following it. Sequence decreases strictly during the backward walk,
 so a valid chain cannot cycle.
 
-The version-1 wire widths permit 32-bit counts and lengths and a 64-bit payload length. The initial private Ada reader
-is deliberately narrower: at most 16 transactions, 64 mutations, 64 bytes per key, 256 bytes per value, 21,888
-payload bytes, and 22,048 total bytes. These are operational backpressure limits, not wire-format changes. The total
-image admission limit is checked before copying into the bounded representation. For an admitted image, exact extent,
+The version-1 wire widths permit 32-bit counts and key/value lengths and a 64-bit payload length. The private SPARK
+reference codec remains deliberately small: at most 16 transactions, 64 mutations, 64 bytes per key, 256 bytes per
+value, 21,888 payload bytes, and 22,048 total bytes. These are reference/proof-instance limits, not production
+backpressure or wire-format changes. Its total image admission limit is checked before copying into the bounded
+representation. For an admitted image, exact extent,
 magic, version, kind, flags, database identity, and both checksums are checked before declared reader caps. A
-`Limit_Exceeded` result reports a declared resource requirement; it does not certify transaction or mutation structure
-that the reader deliberately skipped. Corruption has separate results, and every decode failure returns an empty batch
-value. Raising these caps later does not require a format-version change, but does require renewed memory-budget,
-test, and proof evidence.
+`Limit_Exceeded` result reports a declared reference-instance requirement; it does not certify transaction or mutation
+structure that the reader deliberately skipped. Corruption has separate results, and every decode failure returns an
+empty batch value. The operational synchronous codec validates the same v1 fields and checks each extent/count/wire
+conversion before allocating dynamic descriptors and one exact immutable image. After integrity and declared-resource
+admission, it rejects a transaction count greater than the mutation count or minimum transaction/mutation framing
+greater than the exact payload extent as corruption, before allocation. Golden cross-checks keep its bytes aligned
+with the reference codec.
 
 A latest batch is visible only when the live head has the same database and writer epoch, names the batch ID, ends at
 the batch's last sequence, and carries its exact expected/publication transition identities. Historical predecessor
@@ -184,11 +188,12 @@ extent, magic, kind/version/flags, database identity, and checksums precede decl
 other decode failure also returns an empty value.
 
 This is the initial manifest encoding and has no prior manifest migration obligation. Operational HEAD v2 names the
-latest manifest as recovery authority. The initial runtime accepts only manifests within its fixed physical ceilings;
-valid larger configurations return `Capacity_Exceeded`, while a reachable history longer than its own persisted cap
-is `Corrupt`. The later owned runtime will measure and checksum an immutable transaction arena before one-shot
-streaming encode and will stream recovery into a bounded arena before atomic install. A future composable provider
-path may additionally use `Unique_Buffer` while sharing these format and publication predicates.
+latest manifest as recovery authority. Mutation/live counts are persisted U32 resource authority; the values 64 and
+4,096 remain reference-campaign sizes rather than production semantic ceilings. Key/value and aggregate byte budgets
+remain persisted U64 authority. The synchronous owned runtime lazily checks and allocates each actual arena/image;
+reachable history longer than its own persisted cap is `Corrupt`, while an unrepresentable or failed local allocation
+is `Capacity_Exceeded` and Open remains closed. A future composable provider path may additionally use `Unique_Buffer`
+while sharing these format and publication predicates.
 
 ## Evolution
 

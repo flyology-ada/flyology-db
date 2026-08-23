@@ -43,11 +43,12 @@ The proof does not establish provider atomicity, read freshness, transport behav
 concrete I/O adapter supplies bytes faithfully. Object Storage conformance and executable boundary tests gate those
 trusted boundaries.
 
-`Flyology.DB.Batch_Formats` is one private bounded operational instance rather than a public generic. Its helper
-contracts split header, transaction, and mutation encoding, and split bounded count, extent, and byte-copy decoding,
-so GNATprove checks each bound without constructing one monolithic verification condition. The persisted
-32-bit/64-bit wire widths remain independent of those operational caps; a future larger instance must repeat the
-memory-budget, corruption-test, and proof gates.
+`Flyology.DB.Batch_Formats` is one private bounded reference/proof representation rather than a public generic. Its
+helper contracts split header, transaction, and mutation encoding, and split bounded count, extent, and byte-copy
+decoding, so GNATprove checks each bound without constructing one monolithic verification condition. The operational
+runtime codec is a separate dynamically allocated v1 implementation governed by persisted resource limits. The
+persisted 32-bit/64-bit wire widths remain independent of the reference-instance caps; widening either implementation
+must repeat its applicable memory-budget, corruption-test, and proof or executable-boundary gates.
 
 Executable golden-byte, corruption, boundary, HEAD-binding, and cacheless-recovery tests establish byte ordering,
 CRC-32C behavior, semantic rejection classes, and concrete publication/predecessor predicate examples. The current
@@ -70,6 +71,15 @@ checks, or `pragma Assume` statements. The amendment after independent review ch
 the exact proved `71329fe` tree, so that evidence carries forward without another prover run. Protected
 lifecycle/tasking, storage I/O, create reconciliation, and manifest-aware runtime replay remain trusted
 executable-test boundaries.
+
+The owned synchronous runtime candidate changes `Manifest_Formats` mutation/live-count semantics and therefore does
+not inherit the 644/644 selected-unit result above. A fresh root-owned forced run on 2026-08-23 used FSF GNATprove
+16.1.0, `--mode=all --level=1 -j0 --output=oneline --output-header --report=all --warnings=error -f`, and the same five
+selected units. It proved 643/643 checks: 66 initialization, 309 run-time checks, 54 assertions, 160 functional
+contracts, and 54 termination checks; 119 were discharged by flow analysis and 524 by provers. There were zero
+reported warnings, unproved or justified checks, and zero `pragma Assume` statements. Runtime codec behavior,
+ownership/refcounting, dynamic allocation, the protected coordinator, tasking, and storage source/sink I/O remain
+trusted executable-test boundaries. Independent review is pending; no acceptance claim is made for this candidate.
 
 ## TLA+ state-machine assurance
 
