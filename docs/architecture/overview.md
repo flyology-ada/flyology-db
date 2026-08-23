@@ -25,8 +25,9 @@ The executable slice remains log-only: recovery follows `HEAD.Latest_Batch` and 
 immutable commit object, then rebuilds logical state in sequence order without local state or listing. HEAD version 2
 names an immutable root column-family manifest before any batch is decoded. New Create operations encode that root as
 manifest version 2 with an empty checkpoint partition and explicit database-wide run/identity plus per-family
-memtable/L0 authority. Existing manifest-v1 roots remain readable for log-only operation. Create requires all initial
-identities, limits, and families explicitly and canonicalizes families by numeric ID before effects. Open reads the
+memtable/L0 authority. Activation retains that authenticated policy in live engine state rather than reconstructing
+it from handles or defaults. Existing manifest-v1 roots remain readable for log-only operation. Create requires all
+initial identities, limits, and families explicitly and canonicalizes families by numeric ID before effects. Open reads the
 complete manifest chain before the batch chain and installs neither partial registry nor partial state. HEAD version
 1 remains decodable for inspection but operational Open returns `Unsupported_Format`; no migration or write path
 silently upgrades an existing manifest-v1 database.

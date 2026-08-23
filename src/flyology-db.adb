@@ -1321,6 +1321,64 @@ package body Flyology.DB is
    type History_Image_Array is array (Positive range <>) of Shared_Image_Access;
    type Reserved_Identity_Array is array (Positive range <>) of Identifier;
 
+   type Family_LSM_Authority is record
+      ID    : Interfaces.Unsigned_32 := 0;
+      State : LSM_Runtime.Family_LSM_State := (others => <>);
+   end record;
+   --  This table follows the frozen manifest base's 64 family slots. It retains
+   --  only registry policy, not keys, values, runs, identities, or an allocation
+   --  ceiling beyond that existing persisted-format compatibility boundary.
+   type Family_LSM_Authority_Array is array (Manifests.Family_Slot) of Family_LSM_Authority;
+   type Engine_LSM_Authority is record
+      Enabled                       : Boolean := False;
+      Replay_Boundary               : Interfaces.Unsigned_64 := 0;
+      Maximum_Total_L0_Runs         : Interfaces.Unsigned_32 := 0;
+      Maximum_Checkpoint_Identities : Interfaces.Unsigned_32 := 0;
+      Families                      : Family_LSM_Authority_Array := [others => (others => <>)];
+   end record;
+
+   --  Legacy manifest-v1 state carries no LSM extension. This sentinel keeps
+   --  such databases readable for log-only operation without supplying any
+   --  memtable, run, or identity fallback authority.
+   No_LSM_Authority : constant Engine_LSM_Authority := (others => <>);
+
+   function To_Engine_LSM_Authority (Value : LSM_Runtime.Checkpoint_Manifest) return Engine_LSM_Authority is
+      Result : Engine_LSM_Authority :=
+        (Enabled                       => True,
+         Replay_Boundary               => Value.Replay_Boundary,
+         Maximum_Total_L0_Runs         => Value.Maximum_Total_L0_Runs,
+         Maximum_Checkpoint_Identities => Value.Maximum_Checkpoint_Identities,
+         Families                      => [others => (others => <>)]);
+   begin
+      for Index in Value.Families'Range loop
+         Result.Families (Index) := (ID => Value.Base.Families (Index).ID, State => Value.Families (Index));
+      end loop;
+      return Result;
+   end To_Engine_LSM_Authority;
+
+   function Same_LSM_Policy (Left, Right : Engine_LSM_Authority) return Boolean is
+   begin
+      if not Left.Enabled
+        or else not Right.Enabled
+        or else Left.Maximum_Total_L0_Runs /= Right.Maximum_Total_L0_Runs
+        or else Left.Maximum_Checkpoint_Identities /= Right.Maximum_Checkpoint_Identities
+      then
+         return False;
+      end if;
+      for Index in Manifests.Family_Slot loop
+         if Left.Families (Index).ID /= Right.Families (Index).ID
+           or else Left.Families (Index).State.Memtable_Max_Bytes
+                   /= Right.Families (Index).State.Memtable_Max_Bytes
+           or else Left.Families (Index).State.Memtable_Max_Entries
+                   /= Right.Families (Index).State.Memtable_Max_Entries
+           or else Left.Families (Index).State.Maximum_L0_Runs /= Right.Families (Index).State.Maximum_L0_Runs
+         then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end Same_LSM_Policy;
+
    protected type Coordinator
      (Entry_Capacity    : Positive;
       Seen_Capacity     : Positive;
@@ -2575,10 +2633,11 @@ package body Flyology.DB is
       History_Capacity  : Positive;
       Reserved_Capacity : Positive)
    is limited record
-      Storage : access Storage_Context;
-      Life    : Database_Lifecycle_Access := null;
-      Gate    : Coordinator (Entry_Capacity, Seen_Capacity, History_Capacity, Reserved_Capacity);
-      Worker  : Commit_Worker_Access := null;
+      Storage       : access Storage_Context;
+      Life          : Database_Lifecycle_Access := null;
+      LSM_Authority : Engine_LSM_Authority := No_LSM_Authority;
+      Gate          : Coordinator (Entry_Capacity, Seen_Capacity, History_Capacity, Reserved_Capacity);
+      Worker        : Commit_Worker_Access := null;
    end record;
 
    protected body Database_Lifecycle is
@@ -3805,11 +3864,12 @@ package body Flyology.DB is
       Count := 0;
    end Release_History;
 
-   procedure Decode_Stored_Manifest
+   procedure Decode_Stored_Manifest_With_Authority
      (Data              : Small_Metadata_Buffer;
       Length            : Natural;
       Expected_Database : Database_Identifier;
       Value             : out Manifests.Manifest;
+      LSM_Authority     : out Engine_LSM_Authority;
       Result            : out Outcome_Code)
    is
       Status     : Manifests.Decode_Status;
@@ -3817,6 +3877,7 @@ package body Flyology.DB is
       Checkpoint : LSM_Runtime.Checkpoint_Manifest_Access := null;
    begin
       Value := Manifests.Empty_Manifest;
+      LSM_Authority := No_LSM_Authority;
       if Length = 0 or else Length > Small_Metadata_Buffer'Length then
          Result := Corrupt;
          return;
@@ -3844,6 +3905,7 @@ package body Flyology.DB is
                   Result := Unsupported_Format;
                else
                   Value := Checkpoint.Base;
+                  LSM_Authority := To_Engine_LSM_Authority (Checkpoint.all);
                   Result := Success;
                end if;
             elsif LSM_Status
@@ -3878,6 +3940,18 @@ package body Flyology.DB is
       when others =>
          LSM_Runtime.Release (Checkpoint);
          raise;
+   end Decode_Stored_Manifest_With_Authority;
+
+   procedure Decode_Stored_Manifest
+     (Data              : Small_Metadata_Buffer;
+      Length            : Natural;
+      Expected_Database : Database_Identifier;
+      Value             : out Manifests.Manifest;
+      Result            : out Outcome_Code)
+   is
+      Ignored : Engine_LSM_Authority;
+   begin
+      Decode_Stored_Manifest_With_Authority (Data, Length, Expected_Database, Value, Ignored, Result);
    end Decode_Stored_Manifest;
 
    procedure Decode_Stored_Batch
@@ -3897,17 +3971,18 @@ package body Flyology.DB is
    end Decode_Stored_Batch;
 
    procedure Read_Recovery
-     (Storage     : in out Storage_Context;
-      Database_ID : Database_Identifier;
-      Deadline    : Ada.Real_Time.Time;
-      Token       : access Flyology.Cancellation.Token;
-      Head        : out Head_Snapshot;
-      Generation  : out Generation_Value;
-      Manifest    : out Manifests.Manifest;
-      Root        : out Manifests.Manifest;
-      History     : out Batch_History_Access;
-      Count       : out Natural;
-      Result      : out Outcome_Code)
+     (Storage       : in out Storage_Context;
+      Database_ID   : Database_Identifier;
+      Deadline      : Ada.Real_Time.Time;
+      Token         : access Flyology.Cancellation.Token;
+      Head          : out Head_Snapshot;
+      Generation    : out Generation_Value;
+      Manifest      : out Manifests.Manifest;
+      Root          : out Manifests.Manifest;
+      LSM_Authority : out Engine_LSM_Authority;
+      History       : out Batch_History_Access;
+      Count         : out Natural;
+      Result        : out Outcome_Code)
    is
       Data                : Small_Metadata_Buffer;
       Length              : Natural;
@@ -3926,6 +4001,7 @@ package body Flyology.DB is
          Generation := (others => <>);
          Manifest := Manifests.Empty_Manifest;
          Root := Manifests.Empty_Manifest;
+         LSM_Authority := No_LSM_Authority;
          History := null;
          Count := 0;
          Storage_Port.Get_Whole
@@ -4020,7 +4096,12 @@ package body Flyology.DB is
                return;
             end if;
             Manifest_Count := Manifest_Count + 1;
-            Decode_Stored_Manifest (Data, Length, Database_ID, Manifests_Seen (Manifest_Count), Result);
+            if Manifest_Count = 1 then
+               Decode_Stored_Manifest_With_Authority
+                 (Data, Length, Database_ID, Manifests_Seen (Manifest_Count), LSM_Authority, Result);
+            else
+               Decode_Stored_Manifest (Data, Length, Database_ID, Manifests_Seen (Manifest_Count), Result);
+            end if;
             if Result /= Success then
                return;
             elsif To_Identifier (Manifests_Seen (Manifest_Count).Manifest_ID) /= Current_Manifest_ID then
@@ -4140,6 +4221,7 @@ package body Flyology.DB is
    procedure Reconcile_Create_Head
      (Storage         : in out Storage_Context;
       Expected_Root   : Manifests.Manifest;
+      Expected_LSM    : Engine_LSM_Authority;
       Observed_Data   : Small_Metadata_Buffer;
       Observed_Length : Natural;
       Deadline        : Ada.Real_Time.Time;
@@ -4147,6 +4229,7 @@ package body Flyology.DB is
       Head            : out Head_Snapshot;
       Generation      : out Generation_Value;
       Manifest        : out Manifests.Manifest;
+      LSM_Authority   : out Engine_LSM_Authority;
       History         : out Batch_History_Access;
       Count           : out Natural;
       Result          : out Outcome_Code)
@@ -4158,6 +4241,7 @@ package body Flyology.DB is
       Head := (others => <>);
       Generation := (others => <>);
       Manifest := Manifests.Empty_Manifest;
+      LSM_Authority := No_LSM_Authority;
       History := null;
       Count := 0;
       if Observed_Length /= Formats.Head_Image_Length then
@@ -4178,11 +4262,15 @@ package body Flyology.DB is
          Generation,
          Manifest,
          Root,
+         LSM_Authority,
          History,
          Count,
          Read_Result);
       if Read_Result = Success then
-         if Observed_Database = To_Database_ID (Expected_Root.Database_ID) and then Root = Expected_Root then
+         if Observed_Database = To_Database_ID (Expected_Root.Database_ID)
+           and then Root = Expected_Root
+           and then Same_LSM_Policy (LSM_Authority, Expected_LSM)
+         then
             Result := Success;
          else
             Release_History (History, Count);
@@ -4203,16 +4291,17 @@ package body Flyology.DB is
    end Reconcile_Create_Head;
 
    procedure Allocate_Engine
-     (Life        : not null Database_Lifecycle_Access;
-      Storage     : not null access Storage_Context;
-      Head        : Head_Snapshot;
-      Generation  : Generation_Value;
-      Manifest    : Manifests.Manifest;
-      Incarnation : Engine_Incarnation;
-      History     : in out Batch_History_Access;
-      Count       : in out Natural;
-      State       : out Engine_State_Access;
-      Result      : out Outcome_Code)
+     (Life          : not null Database_Lifecycle_Access;
+      Storage       : not null access Storage_Context;
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Manifest      : Manifests.Manifest;
+      LSM_Authority : Engine_LSM_Authority;
+      Incarnation   : Engine_Incarnation;
+      History       : in out Batch_History_Access;
+      Count         : in out Natural;
+      State         : out Engine_State_Access;
+      Result        : out Outcome_Code)
    is
       --  All allocation dimensions below come directly from the authenticated
       --  persisted manifest. Seen = history * transactions; reserved = history
@@ -4276,6 +4365,7 @@ package body Flyology.DB is
       --  Database retains this caller-owned context only until Close/Finalize.
       State.Storage := Storage.all'Unchecked_Access;
       State.Life := Life;
+      State.LSM_Authority := LSM_Authority;
       State.Gate.Initialize (Head, Generation, Manifest, Incarnation);
       for Index in reverse Positive range 1 .. Count loop
          State.Gate.Recover_Batch (History (Index), Result);
@@ -4322,15 +4412,16 @@ package body Flyology.DB is
    end Allocate_Engine;
 
    procedure Start_Engine
-     (Item        : in out Database;
-      Storage     : not null access Storage_Context;
-      Head        : Head_Snapshot;
-      Generation  : Generation_Value;
-      Manifest    : Manifests.Manifest;
-      Incarnation : Engine_Incarnation;
-      History     : in out Batch_History_Access;
-      Count       : in out Natural;
-      Result      : out Outcome_Code)
+     (Item          : in out Database;
+      Storage       : not null access Storage_Context;
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Manifest      : Manifests.Manifest;
+      LSM_Authority : Engine_LSM_Authority;
+      Incarnation   : Engine_Incarnation;
+      History       : in out Batch_History_Access;
+      Count         : in out Natural;
+      Result        : out Outcome_Code)
    is
       State : Engine_State_Access;
    begin
@@ -4340,6 +4431,7 @@ package body Flyology.DB is
          Head,
          Generation,
          Manifest,
+         LSM_Authority,
          Incarnation,
          History,
          Count,
@@ -4539,6 +4631,7 @@ package body Flyology.DB is
       Head_Image       : Formats.Head_Image;
       Head_Data        : Small_Metadata_Buffer;
       Manifest_Value   : Manifests.Manifest;
+      LSM_Authority    : Engine_LSM_Authority := No_LSM_Authority;
       Checkpoint_Value : LSM_Runtime.Checkpoint_Manifest_Access := null;
       Manifest_Image   : LSM_Runtime.Image_Access := null;
       Manifest_Length  : Natural := 0;
@@ -4562,6 +4655,7 @@ package body Flyology.DB is
         (Activated_Head       : Head_Snapshot;
          Activated_Generation : Generation_Value;
          Activated_Manifest   : Manifests.Manifest;
+         Activated_LSM        : Engine_LSM_Authority;
          Activated_History    : in out Batch_History_Access;
          Activated_Count      : in out Natural) is
       begin
@@ -4583,6 +4677,7 @@ package body Flyology.DB is
                Activated_Head,
                Activated_Generation,
                Activated_Manifest,
+               Activated_LSM,
                Stamp,
                Activated_History,
                Activated_Count,
@@ -4620,7 +4715,7 @@ package body Flyology.DB is
             Generation,
             Put_Result);
          if Put_Result = Object_Published then
-            Finish_Activation (Head, Generation, Manifest_Value, History, History_Count);
+            Finish_Activation (Head, Generation, Manifest_Value, LSM_Authority, History, History_Count);
          elsif Put_Result in Put_Outcome_Unknown | Put_Precondition_Failed then
             if Put_Result = Put_Outcome_Unknown then
                Receipt.Phase := Head_Publication_Unknown;
@@ -4639,17 +4734,20 @@ package body Flyology.DB is
               and then Exact_Bytes (Head_Data, Formats.Head_Image_Length, Read_Data, Length)
             then
                Generation := Read_Generation;
-               Finish_Activation (Head, Read_Generation, Manifest_Value, History, History_Count);
+               Finish_Activation
+                 (Head, Read_Generation, Manifest_Value, LSM_Authority, History, History_Count);
             elsif Read_Result = Object_Read then
                declare
                   Observed_Head     : Head_Snapshot;
                   Observed_Manifest : Manifests.Manifest;
+                  Observed_LSM      : Engine_LSM_Authority;
                   Observed_History  : Batch_History_Access;
                   Observed_Count    : Natural;
                begin
                   Reconcile_Create_Head
                     (Storage.all,
                      Manifest_Value,
+                     LSM_Authority,
                      Read_Data,
                      Length,
                      Deadline,
@@ -4657,12 +4755,18 @@ package body Flyology.DB is
                      Observed_Head,
                      Read_Generation,
                      Observed_Manifest,
+                     Observed_LSM,
                      Observed_History,
                      Observed_Count,
                      Result);
                   if Result = Success then
                      Finish_Activation
-                       (Observed_Head, Read_Generation, Observed_Manifest, Observed_History, Observed_Count);
+                       (Observed_Head,
+                        Read_Generation,
+                        Observed_Manifest,
+                        Observed_LSM,
+                        Observed_History,
+                        Observed_Count);
                   else
                      Receipt.Current_Outcome := Result;
                   end if;
@@ -4694,6 +4798,7 @@ package body Flyology.DB is
          return;
       end if;
       Manifest_Value := Checkpoint_Value.Base;
+      LSM_Authority := To_Engine_LSM_Authority (Checkpoint_Value.all);
       begin
          Allocation_Faults.Check (Root_Checkpoint_Image_Allocation);
          LSM_Runtime.Encode_Checkpoint_Manifest (Checkpoint_Value.all, Manifest_Image, Encode_Result);
@@ -4852,6 +4957,7 @@ package body Flyology.DB is
       --  caller-supplied Timeout; there is no hidden default or retry budget.
       Deadline         : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Manifest_Value   : Manifests.Manifest;
+      LSM_Authority    : Engine_LSM_Authority := No_LSM_Authority;
       Decode_Result    : Outcome_Code;
       Manifest_Data    : Small_Metadata_Buffer := [others => 0];
       Manifest_Length  : Natural := 0;
@@ -4874,6 +4980,7 @@ package body Flyology.DB is
         (Activated_Head       : Head_Snapshot;
          Activated_Generation : Generation_Value;
          Activated_Manifest   : Manifests.Manifest;
+         Activated_LSM        : Engine_LSM_Authority;
          Activated_History    : in out Batch_History_Access;
          Activated_Count      : in out Natural) is
       begin
@@ -4895,6 +5002,7 @@ package body Flyology.DB is
                Activated_Head,
                Activated_Generation,
                Activated_Manifest,
+               Activated_LSM,
                Stamp,
                Activated_History,
                Activated_Count,
@@ -4933,8 +5041,8 @@ package body Flyology.DB is
          Receipt.Current_Outcome := Result;
          return;
       end if;
-      Decode_Stored_Manifest
-        (Manifest_Data, Manifest_Length, Receipt.Database_ID, Manifest_Value, Decode_Result);
+      Decode_Stored_Manifest_With_Authority
+        (Manifest_Data, Manifest_Length, Receipt.Database_ID, Manifest_Value, LSM_Authority, Decode_Result);
       if Decode_Result /= Success
         or else To_Identifier (Manifest_Value.Manifest_ID) /= Receipt.Manifest_ID
         or else not Manifests.Valid_Root_Publication (To_Head (Receipt.Attempted_Head), Manifest_Value)
@@ -5023,7 +5131,8 @@ package body Flyology.DB is
             Generation,
             Put_Result);
          if Put_Result = Object_Published then
-            Activate (Receipt.Attempted_Head, Generation, Manifest_Value, History, History_Count);
+            Activate
+              (Receipt.Attempted_Head, Generation, Manifest_Value, LSM_Authority, History, History_Count);
             return;
          elsif Put_Result = Put_Outcome_Unknown then
             Receipt.Phase := Head_Publication_Unknown;
@@ -5056,17 +5165,19 @@ package body Flyology.DB is
       if Read_Result = Object_Read
         and then Exact_Bytes (Head_Data, Formats.Head_Image_Length, Read_Data, Length)
       then
-         Activate (Receipt.Attempted_Head, Generation, Manifest_Value, History, History_Count);
+         Activate (Receipt.Attempted_Head, Generation, Manifest_Value, LSM_Authority, History, History_Count);
       elsif Read_Result = Object_Read then
          declare
             Observed_Head     : Head_Snapshot;
             Observed_Manifest : Manifests.Manifest;
+            Observed_LSM      : Engine_LSM_Authority;
             Observed_History  : Batch_History_Access;
             Observed_Count    : Natural;
          begin
             Reconcile_Create_Head
               (Storage.all,
                Manifest_Value,
+               LSM_Authority,
                Read_Data,
                Length,
                Deadline,
@@ -5074,11 +5185,18 @@ package body Flyology.DB is
                Observed_Head,
                Generation,
                Observed_Manifest,
+               Observed_LSM,
                Observed_History,
                Observed_Count,
                Result);
             if Result = Success then
-               Activate (Observed_Head, Generation, Observed_Manifest, Observed_History, Observed_Count);
+               Activate
+                 (Observed_Head,
+                  Generation,
+                  Observed_Manifest,
+                  Observed_LSM,
+                  Observed_History,
+                  Observed_Count);
             else
                Receipt.Current_Outcome := Result;
             end if;
@@ -5124,6 +5242,7 @@ package body Flyology.DB is
       Generation    : Generation_Value;
       Manifest      : Manifests.Manifest;
       Root          : Manifests.Manifest;
+      LSM_Authority : Engine_LSM_Authority;
       History       : Batch_History_Access := null;
       History_Count : Natural;
       Bucket_Result : Outcome_Code;
@@ -5155,6 +5274,7 @@ package body Flyology.DB is
          Generation,
          Manifest,
          Root,
+         LSM_Authority,
          History,
          History_Count,
          Result);
@@ -5162,7 +5282,8 @@ package body Flyology.DB is
          Incarnation_Source.Allocate (Stamp, Result);
       end if;
       if Result = Success then
-         Start_Engine (Item, Storage, Head, Generation, Manifest, Stamp, History, History_Count, Result);
+         Start_Engine
+           (Item, Storage, Head, Generation, Manifest, LSM_Authority, Stamp, History, History_Count, Result);
       end if;
       if Result = Success then
          Guard.Active := False;
@@ -5675,25 +5796,37 @@ package body Flyology.DB is
    type Receipt_Resolution is (Receipt_Committed, Receipt_Rejected, Receipt_Unresolved);
 
    procedure Reconcile_Receipt
-     (Storage     : in out Storage_Context;
-      Database_ID : Database_Identifier;
-      Receipt     : Commit_Receipt;
-      Deadline    : Ada.Real_Time.Time;
-      Token       : access Flyology.Cancellation.Token;
-      Observed    : out Head_Snapshot;
-      Generation  : out Generation_Value;
-      Manifest    : out Manifests.Manifest;
-      History     : out Batch_History_Access;
-      Count       : out Natural;
-      Resolution  : out Receipt_Resolution;
-      Result      : out Outcome_Code)
+     (Storage       : in out Storage_Context;
+      Database_ID   : Database_Identifier;
+      Receipt       : Commit_Receipt;
+      Deadline      : Ada.Real_Time.Time;
+      Token         : access Flyology.Cancellation.Token;
+      Observed      : out Head_Snapshot;
+      Generation    : out Generation_Value;
+      Manifest      : out Manifests.Manifest;
+      LSM_Authority : out Engine_LSM_Authority;
+      History       : out Batch_History_Access;
+      Count         : out Natural;
+      Resolution    : out Receipt_Resolution;
+      Result        : out Outcome_Code)
    is
       Exact : Boolean := False;
       Root  : Manifests.Manifest;
    begin
       Resolution := Receipt_Unresolved;
       Read_Recovery
-        (Storage, Database_ID, Deadline, Token, Observed, Generation, Manifest, Root, History, Count, Result);
+        (Storage,
+         Database_ID,
+         Deadline,
+         Token,
+         Observed,
+         Generation,
+         Manifest,
+         Root,
+         LSM_Authority,
+         History,
+         Count,
+         Result);
       if Result /= Success then
          return;
       end if;
@@ -5747,6 +5880,7 @@ package body Flyology.DB is
       History       : Batch_History_Access := null;
       History_Count : Natural;
       Manifest      : Manifests.Manifest;
+      LSM_Authority : Engine_LSM_Authority;
       Stamp         : Engine_Incarnation;
       Resolution    : Receipt_Resolution;
       Guard         : Resolve_Guard;
@@ -5780,6 +5914,7 @@ package body Flyology.DB is
          Observed,
          Generation,
          Manifest,
+         LSM_Authority,
          History,
          History_Count,
          Resolution,
@@ -5799,6 +5934,7 @@ package body Flyology.DB is
             Observed,
             Generation,
             Manifest,
+            LSM_Authority,
             Stamp,
             History,
             History_Count,
@@ -6426,6 +6562,47 @@ package body Flyology.DB is
          LSM_Runtime.Release (Checkpoint);
          Result := Corrupt;
    end Read_Test_Root_LSM_Limits;
+
+   procedure Read_Test_Live_LSM_Limits
+     (Item                   : in out Database;
+      Family_ID              : Column_Family_ID;
+      Replay_Boundary        : out Interfaces.Unsigned_64;
+      Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
+      Maximum_Identities     : out Interfaces.Unsigned_32;
+      Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
+      Memtable_Max_Entries   : out Interfaces.Unsigned_32;
+      Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
+      Result                 : out Outcome_Code)
+   is
+      Lease : Lifecycle_Lease;
+   begin
+      Replay_Boundary := 0;
+      Maximum_Total_L0_Runs := 0;
+      Maximum_Identities := 0;
+      Memtable_Max_Bytes := 0;
+      Memtable_Max_Entries := 0;
+      Maximum_Family_L0_Runs := 0;
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         return;
+      elsif not Lease.State.LSM_Authority.Enabled then
+         Result := Unsupported_Format;
+         return;
+      end if;
+      Replay_Boundary := Lease.State.LSM_Authority.Replay_Boundary;
+      Maximum_Total_L0_Runs := Lease.State.LSM_Authority.Maximum_Total_L0_Runs;
+      Maximum_Identities := Lease.State.LSM_Authority.Maximum_Checkpoint_Identities;
+      for Family of Lease.State.LSM_Authority.Families loop
+         if Family.ID = Interfaces.Unsigned_32 (Family_ID) then
+            Memtable_Max_Bytes := Family.State.Memtable_Max_Bytes;
+            Memtable_Max_Entries := Family.State.Memtable_Max_Entries;
+            Maximum_Family_L0_Runs := Family.State.Maximum_L0_Runs;
+            Result := Success;
+            return;
+         end if;
+      end loop;
+      Result := Not_Found;
+   end Read_Test_Live_LSM_Limits;
 
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code)

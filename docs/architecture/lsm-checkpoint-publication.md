@@ -16,6 +16,10 @@ caller. The later Flush upgrade writes complete immutable SST runs and a success
 exact conditional HEAD transition. Exact wire widths, offsets, checksums, goldens, corruption fixtures, decoder
 proofs, and dynamic admission are already active without making that publication path live.
 
+Create, Open, create reconciliation, and ambiguous-commit resolution retain the authenticated manifest-v2 policy
+in live engine state. Legacy v1 activation retains an explicit no-LSM sentinel and never synthesizes replacement
+policy. This is the authority used by the staged Flush path; public handles are not a second source.
+
 Manifest v2 preserves the complete immutable family registry and every existing database and family limit. It adds,
 at minimum, for each family:
 

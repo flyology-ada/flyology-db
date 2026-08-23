@@ -580,6 +580,16 @@ private
       Memtable_Max_Entries   : out Interfaces.Unsigned_32;
       Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
       Result                 : out Outcome_Code);
+   procedure Read_Test_Live_LSM_Limits
+     (Item                   : in out Database;
+      Family_ID              : Column_Family_ID;
+      Replay_Boundary        : out Interfaces.Unsigned_64;
+      Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
+      Maximum_Identities     : out Interfaces.Unsigned_32;
+      Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
+      Memtable_Max_Entries   : out Interfaces.Unsigned_32;
+      Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
+      Result                 : out Outcome_Code);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB;

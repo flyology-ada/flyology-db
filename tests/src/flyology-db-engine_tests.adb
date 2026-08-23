@@ -1299,6 +1299,10 @@ package body Flyology.DB.Engine_Tests is
         [Families (2), Families (1)];
       Different                                  : constant Column_Family_Configuration_Array :=
         [Configure_Test_Family (2, [16#C3#, 16#A9#], 2, 4), Families (1)];
+      --  Six bytes deliberately changes only family 2's persisted memtable
+      --  policy; its registry/name/key/value base projection remains exact.
+      Different_LSM                              : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family (2, [16#C3#, 16#A9#], 2, 3, 6, 1, 1), Families (1)];
       Over_Families                              : constant Column_Family_Configuration_Array :=
         [Configure_Test_Family (1, [16#78#], Maximum_Key_Bytes + 1, 1)];
       Over_Limits                                : constant Database_Limits :=
@@ -1317,6 +1321,33 @@ package body Flyology.DB.Engine_Tests is
       Database_ID                                : constant Database_Identifier := DB_ID (200);
       Manifest_ID                                : constant Identifier := ID (201);
       Transition                                 : constant Identifier := ID (202);
+
+      procedure Expect_Live_LSM_Authority (Target : in out Database; Context_Text : String) is
+         Replay, Memtable_Bytes                                    : Interfaces.Unsigned_64;
+         Total_Runs, Identity_Total, Memtable_Entries, Family_Runs : Interfaces.Unsigned_32;
+         Inspect                                                   : Outcome_Code;
+      begin
+         Testing.Live_LSM_Limits
+           (Target,
+            2,
+            Replay,
+            Total_Runs,
+            Identity_Total,
+            Memtable_Bytes,
+            Memtable_Entries,
+            Family_Runs,
+            Inspect);
+         if Inspect /= Success
+           or else Replay /= 0
+           or else Total_Runs /= Limits.Maximum_Total_L0_Runs
+           or else Identity_Total /= Limits.Maximum_Checkpoint_Identities
+           or else Memtable_Bytes /= 5
+           or else Memtable_Entries /= 1
+           or else Family_Runs /= 1
+         then
+            raise Program_Error with Context_Text & " lost authenticated live LSM authority";
+         end if;
+      end Expect_Live_LSM_Authority;
    begin
       Bind_Context (Context, Backend, "manifest-family-api");
       Create
@@ -1331,6 +1362,7 @@ package body Flyology.DB.Engine_Tests is
          Receipt => Create_Info,
          Result  => Result);
       Expect (Result, Success, "multi-family manifest create failed");
+      Expect_Live_LSM_Authority (Item, "create activation");
       declare
          --  Family 2's fixture authority is exactly one maximum 2+3-byte
          --  entry and one run, as derived by Configure_Test_Family above.
@@ -1386,6 +1418,19 @@ package body Flyology.DB.Engine_Tests is
          Result  => Result);
       Expect (Result, Already_Exists, "different family configuration matched existing manifest");
 
+      Create
+        (Retry,
+         Context'Access,
+         Database_ID,
+         ID (220),
+         ID (221),
+         Limits,
+         Different_LSM,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Already_Exists, "different LSM policy matched the existing root");
+
       Open_Column_Family (Item, 2, Family_By_ID, Result);
       Expect (Result, Success, "family ID lookup failed");
       Open_Column_Family (Item, [16#C3#, 16#A9#], Family_By_Name, Result);
@@ -1408,6 +1453,7 @@ package body Flyology.DB.Engine_Tests is
       Close (Item, Result);
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "family-handle database reopen failed");
+      Expect_Live_LSM_Authority (Item, "cacheless reopen");
       Begin_Transaction (Item, TX_ID (204), Txn, Result);
       Get (Item, Txn, Stale_Family, To_Key ([16#00#, 16#FF#]), Data, Result);
       Expect (Result, Invalid_State, "stale family handle survived engine incarnation change");

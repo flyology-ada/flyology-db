@@ -1,5 +1,21 @@
 # Review record
 
+## Accepted live LSM-authority retention candidate
+
+- Parent: operational manifest-v2 root commit `5e9ed61`.
+- Scope: retain the authenticated manifest-v2 database/family LSM policy across direct Create activation,
+  cacheless Open, create reconciliation, and ambiguous-commit resolution. The fixed family table mirrors the frozen
+  base registry only; it stores no key/value/run/identity data and adds no runtime allocation default. Nonempty
+  checkpoints and Flush I/O remain unsupported in this unit.
+- Verification: the focused engine suite exercises direct and cacheless activation of the exact persisted policy,
+  legacy no-LSM state, and a competing root whose base projection is identical but memtable policy differs. The
+  latter must be `Already_Exists`, never accepted as the same database. The authoritative repository suite remains
+  the acceptance gate for the exact commit.
+- Findings cycle: review found and fixed one P1 reconciliation defect where equality of manifest-v1 base projections
+  could hide different LSM policy. Follow-up review binds reconciliation to database and per-family policy while
+  deliberately excluding replay/run successor state. The final sweep finds no remaining P0, P1, P2, or P3 issue in
+  this retention boundary.
+
 ## Accepted operational manifest-v2 root candidate
 
 - Parent: accepted operational first-LSM codec commit `6bc7abe`.
