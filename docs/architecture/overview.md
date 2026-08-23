@@ -30,6 +30,10 @@ Open reads the complete manifest chain before the batch chain and installs neith
 HEAD version 1 remains decodable for inspection but operational Open returns `Unsupported_Format`; no migration or
 write path silently upgrades it.
 
+The staged first-checkpoint protocol is specified separately in
+[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). It chooses a future immutable manifest-v2 object and
+new SST object kind without making either operational or changing the current persisted-format support matrix.
+
 ## Transaction semantics
 
 A transaction reads from one global snapshot and sees its own buffered mutations. Snapshot isolation rejects a

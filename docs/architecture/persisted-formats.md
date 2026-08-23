@@ -6,6 +6,12 @@ column-family-manifest encodings. Each object kind advances its own version cons
 Byte strings are length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is
 persisted.
 
+The staged first-LSM design chooses a future manifest object version 2 and a new SST object kind, but freezes no byte
+layout here and does not make either version operational. See
+[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). The kind-specific supported versions in this
+document remain unchanged until the separate persisted-format unit supplies exact offsets, golden bytes, corruption
+tests, and decoder proof.
+
 ## Common envelope
 
 Every object begins with:

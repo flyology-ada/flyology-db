@@ -193,6 +193,99 @@ done
   >"$temporary_root/tlaps-manifest.log" 2>&1
 grep -q 'All 12 obligations proved.' "$temporary_root/tlaps-manifest.log"
 
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-checkpoint-states" \
+  -config CheckpointPublication.cfg CheckpointPublication \
+  >"$temporary_root/tlc-checkpoint.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-checkpoint.log"
+! grep -q '^Warning:' "$temporary_root/tlc-checkpoint.log"
+grep -q '819 distinct states found' "$temporary_root/tlc-checkpoint.log"
+grep -q 'The depth of the complete state graph search is 19.' \
+  "$temporary_root/tlc-checkpoint.log"
+for action in ReserveFailedIdentity CommitPrefix \
+  FamilyRunCapacityBackpressure DatabaseRunCapacityBackpressure \
+  IdentityCapacityBackpressure BeginFlush StoreRun ConfirmRun StoreManifest \
+  ConfirmManifest PublishFlush LoseAcceptedFlushResponse \
+  LoseUnacceptedFlushResponse ObserveFlushSuccess ExternalCommitLater \
+  RivalTransition ResolveCommitted ResolveRejected \
+  ExternalAdvanceBeforeFlushPublication HideRun CorruptRunRead Crash Recover \
+  RejectRecovery
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-checkpoint.log"
+done
+
+for checkpoint_probe in stale partial family ledger
+do
+  case "$checkpoint_probe" in
+    stale)
+      checkpoint_probe_module=CheckpointStalePublicationProbe
+      checkpoint_probe_invariant=StaleFlushCannotPublish
+      ;;
+    partial)
+      checkpoint_probe_module=CheckpointPartialRunProbe
+      checkpoint_probe_invariant=HeadReferencesConfirmedManifestAndRuns
+      ;;
+    family)
+      checkpoint_probe_module=CheckpointWrongFamilyProbe
+      checkpoint_probe_invariant=FamilyPlacementIsExact
+      ;;
+    ledger)
+      checkpoint_probe_module=CheckpointWrongLedgerProbe
+      checkpoint_probe_invariant=CheckpointContentsAreExact
+      ;;
+  esac
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-checkpoint-$checkpoint_probe-states" \
+    -config "$checkpoint_probe_module.cfg" "$checkpoint_probe_module" \
+    >"$temporary_root/tlc-checkpoint-$checkpoint_probe.log" 2>&1
+  checkpoint_probe_status=$?
+  set -e
+  test "$checkpoint_probe_status" -eq 12
+  grep -q "Invariant $checkpoint_probe_invariant is violated" \
+    "$temporary_root/tlc-checkpoint-$checkpoint_probe.log"
+  ! grep -q '^Warning:' "$temporary_root/tlc-checkpoint-$checkpoint_probe.log"
+done
+
+for checkpoint_witness in committed rejected recovery
+do
+  case "$checkpoint_witness" in
+    committed)
+      checkpoint_witness_module=CheckpointPublicationCommittedWitness
+      ;;
+    rejected)
+      checkpoint_witness_module=CheckpointPublicationRejectedWitness
+      ;;
+    recovery)
+      checkpoint_witness_module=CheckpointPublicationRecoveryWitness
+      ;;
+  esac
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-checkpoint-$checkpoint_witness-states" \
+    -config "$checkpoint_witness_module.cfg" \
+    -dumpTrace json "$temporary_root/checkpoint-$checkpoint_witness.json" \
+    "$checkpoint_witness_module" \
+    >"$temporary_root/tlc-checkpoint-$checkpoint_witness.log" 2>&1
+  checkpoint_witness_status=$?
+  set -e
+  test "$checkpoint_witness_status" -eq 12
+  grep -q 'Invariant WitnessPending is violated.' \
+    "$temporary_root/tlc-checkpoint-$checkpoint_witness.log"
+  ! grep -q '^Warning:' "$temporary_root/tlc-checkpoint-$checkpoint_witness.log"
+  "$model_root/validate_checkpoint_witnesses.py" \
+    "$checkpoint_witness" \
+    "$temporary_root/checkpoint-$checkpoint_witness.json"
+done
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-checkpoint-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/CheckpointSafetyProof.tla" \
+  >"$temporary_root/tlaps-checkpoint.log" 2>&1
+grep -q 'All 43 obligations proved.' "$temporary_root/tlaps-checkpoint.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -204,3 +297,7 @@ printf '%s\n' "  Manifest TLC 286 distinct states, depth 10"
 printf '%s\n' "  Manifest TLAPS 12/12 obligations"
 printf '%s\n' "  Manifest committed/failed reconciliation witnesses validated"
 printf '%s\n' "  Negative manifest registry-mutation probe detected"
+printf '%s\n' "  Checkpoint TLC 819 distinct states, depth 19"
+printf '%s\n' "  Checkpoint TLAPS 43/43 obligations"
+printf '%s\n' "  Checkpoint committed/rejected/recovery witnesses validated"
+printf '%s\n' "  Negative checkpoint stale/partial/family/ledger probes detected"

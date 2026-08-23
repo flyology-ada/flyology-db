@@ -1,6 +1,20 @@
 # Review record
 
-## Pending owned synchronous byte-spine candidate
+## Pending first-LSM checkpoint model/design candidate
+
+- Parent: owned synchronous byte-spine candidate `c909c57227596a49e4d4dedd793fd615e15bd149`.
+- Scope: a staged future manifest-v2/SST semantic decision, bounded two-family checkpoint-publication TLC model,
+  committed/rejected/cacheless-recovery witness validation, four integrated unsafe-action probes, and a smaller
+  unbounded TLAPS safety kernel.
+- Boundary: this candidate changes no Ada production code or current supported persisted-format version. It freezes
+  no binary offsets or golden bytes and does not implement memtables, SST reads, flush, compaction, scans, GC, remote
+  providers, or composable I/O. The proof kernel is not a codec or implementation refinement proof.
+- Verification status: the focused lane exhausts 819 TLC states at depth 19, validates three deterministic witnesses,
+  pins nonzero coverage for every normal action, rejects four integrated unsafe-action probes, and proves all 43
+  strict TLAPS obligations. The repository-shape gate also passes. Independent review remains pending; no acceptance
+  claim is made.
+
+## Accepted owned synchronous byte-spine candidate
 
 - Parent: accepted operational HEAD-v2/root-family commit `6b9f29fd5a4f9df6395ed2f8bafb8e34effd9610`.
 - Scope: borrowed public byte-array mutation input, owned unbounded Get output, dynamically sized transaction/state/
@@ -11,13 +25,15 @@
   ownership accounting, injected allocation failures, subprocess crash/recovery, and pinned TidesDB conformance.
   The repository gate and unchanged TLA+/TLAPS gate pass. A root-owned warning-strict GNATprove run proves 643/643
   checks across the five selected format/policy/reference units with zero warnings, unproved/justified checks, or
-  `pragma Assume`. Independent review remains pending; no acceptance claim is made.
+  `pragma Assume`.
 - Review of exact candidate `defa21e` rejected two P1 and two P2 findings: Resolve could wait behind queued callers'
   lifecycle leases, the runtime decoder could allocate from structurally impossible admitted counts, group mutation
   totals narrowed through U32 before a wider-`Natural` guard, and proof/milestone wording overstated the selected-unit
   boundary. The amendment drains queued slots before resolution quiescence, rejects impossible framing before image
   allocation, validates the group wire width before conversion, and narrows the documentation. Committed and rejected
-  resolution campaigns include queued singleton/group work. Re-review of the amended candidate remains mandatory.
+  resolution campaigns include queued singleton/group work. Independent re-review accepted exact amended commit
+  `c909c57227596a49e4d4dedd793fd615e15bd149` with no P0, P1, P2, or P3 findings; local `main` was fast-forwarded to
+  that commit.
 
 ## Pending operational HEAD-v2 root-family candidate
 

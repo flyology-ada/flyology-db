@@ -79,7 +79,8 @@ selected units. It proved 643/643 checks: 66 initialization, 309 run-time checks
 contracts, and 54 termination checks; 119 were discharged by flow analysis and 524 by provers. There were zero
 reported warnings, unproved or justified checks, and zero `pragma Assume` statements. Runtime codec behavior,
 ownership/refcounting, dynamic allocation, the protected coordinator, tasking, and storage source/sink I/O remain
-trusted executable-test boundaries. Independent review is pending; no acceptance claim is made for this candidate.
+trusted executable-test boundaries. Independent re-review accepted exact commit `c909c572` with no P0-P3 findings;
+that review does not expand the selected-unit proof boundary.
 
 ## TLA+ state-machine assurance
 
@@ -106,6 +107,17 @@ trusted executable-test boundaries. Independent review is pending; no acceptance
   both reconciliation conclusions, and a negative registry-mutation probe must fail. Its focused TLAPS kernel proves
   12/12 inductive obligations for stored/confirmed publication, predecessor storage, immutable existing
   configuration, and disposable local cache state.
+- The staged first-LSM checkpoint model exhausts 819 states at depth 19. It covers exact two-family L0 placement and
+  reconstruction, separate family/aggregate run and identity capacity, an exact captured ledger including admitted
+  nonvisible identities, accepted and unaccepted lost HEAD responses, a real external prepublication advance, later
+  manifest-preserving commit, crash, cacheless recovery, and missing/corrupt named-run rejection. Three independent
+  validators check committed, rejected, and recovery traces. Integrated stale-publication, partial-run, wrong-family,
+  and wrong-ledger probes must fail after reachable prefixes, and every normal action has nonzero TLC coverage. Its
+  smaller unbounded kernel proves 43/43 strict TLAPS obligations for
+  abstract stored-before-confirmed ordering, confirmed HEAD references, immutable registry, exact expected-generation
+  publication, disjoint checkpoint/later authority, no replay overlap, exact recovery, and disposable local cache.
+  It does not prove concrete run construction, sorting, corruption, capacity arithmetic, reconciliation, codecs, or
+  refinement to Ada.
 
 The TLAPS kernel is a batch-atomic abstraction assigning every batch an arbitrary nonempty transaction set, with
 pairwise-disjoint ownership between batches. It proves publication-epoch monotonicity, acknowledged whole-batch
