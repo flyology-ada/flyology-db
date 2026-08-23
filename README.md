@@ -10,6 +10,8 @@ transaction.
 
 This repository is under active development. The current acceptance state and remaining work are recorded in
 [the milestone plan](docs/architecture/milestones.md). No production qualification or performance claim is made.
+The present operational slice covers provider-neutral memory/files backends and provisional numeric column-family
+IDs; authenticated remote binding and immutable family descriptors are still separate review units.
 
 ## Durability rule
 

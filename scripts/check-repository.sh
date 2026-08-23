@@ -26,6 +26,7 @@ test -x scripts/check-tla.sh
 test -f formal/tla/CommitPublication.tla
 test -f formal/tla/PublicationSafetyProof.tla
 grep -q '^name = "flyology_db"$' alire.toml
+grep -q '^gnat = ">=13 & <=16[.]1[.]0"$' alire.toml
 grep -q '^package Flyology.DB is$' src/flyology-db.ads
 grep -q 'flyology_object_storage = { path=' alire.toml
 dependency_commit=$(git -C .deps/flyology-object-storage rev-parse HEAD)

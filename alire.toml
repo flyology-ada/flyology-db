@@ -13,6 +13,12 @@ project-files = ["flyology_db.gpr"]
 [[depends-on]]
 flyology_object_storage = "*"
 
+[[depends-on]]
+flyology = "*"
+
+[[depends-on]]
+gnat = ">=13 & <=16.1.0"
+
 [build-switches]
 "*".ada_version = "Ada2022"
 development.optimization = "Debug"

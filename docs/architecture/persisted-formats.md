@@ -64,6 +64,16 @@ mutation frame has a 14-byte prefix: stable nonzero column-family ID (4), operat
 Delete), zero flags (1), key length (4), and value length (4), followed by the exact key and value bytes. Delete has
 value length zero; a Put value and every key may be empty. The final four bytes hold CRC-32C over every preceding byte.
 
+The operational writer uses a singleton transaction ID directly as its batch ID. An explicit transaction group uses
+a caller-stable nonzero group ID. Both kinds occupy one shared never-reused identity namespace. The open engine
+reserves every admitted group ID and member transaction ID, including definite failures and orphans. Recovery imports
+every transaction and batch ID in the reachable history and fails closed on cross-kind reuse. It cannot rediscover
+member IDs belonging only to unreachable orphan batches because normal recovery deliberately does not list. After
+complete local-state loss, callers therefore remain responsible for globally never reusing every admitted ID;
+conditional create additionally rejects replay when the reused identity is itself the immutable orphan's batch key.
+Exact-byte reconciliation is limited to the original admitted operation whose Put outcome was unknown. This is
+allocation policy over the existing 16-byte wire field, not a second encoding or probabilistic hash.
+
 Transactions and mutations are encoded in proposed commit order. Sequences are contiguous and strictly increasing;
 keys and values must fit configured bounds; counts and summed lengths are checked before slicing. A decoder rejects a
 batch whose internal counts, sequence interval, transaction boundaries, checksums, database ID, epoch, predecessor,

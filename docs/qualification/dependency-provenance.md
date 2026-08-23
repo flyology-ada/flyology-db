@@ -5,14 +5,24 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `a8e22e999cd12d0d51ddc07fe0563a48031dff24`
-- Commit subject: `Add atomic conditional object publication`
+- Commit: `8e6e435250433c06528ead054cebf613eabbb4ba`
+- Commit subject: `Expose synchronous conditional object recovery`
 - Pin: root `alire.toml` filesystem path pin
 - Observed: 2026-08-22, America/Vancouver
 
 The dependency is local-only. Before a deterministic campaign, update the clean clone by fast-forward from its local
 origin, verify it is clean, and replace this record with the exact commit used. Do not update it during a running
 test, proof, or benchmark campaign.
+
+Flyology.DB names `Flyology.Cancellation` and the native task model directly, so its root manifest declares
+`flyology` directly instead of relying on transitive visibility. The pinned Flyology 0.1.0 implementation at commit
+`8e0461080e0f110b3bf70dbff283af9ca5e53a2c` recognizes the qualified Alire GNAT toolchain through 16.1 only. The root
+constraint `gnat = ">=13 & <=16.1.0"` records that compatibility boundary; dependency/toolchain upgrades must widen
+it deliberately after the Flyology runtime preparer and this repository's gates qualify the newer compiler.
+
+The dependency includes the reviewed backend-neutral conditional publication contract plus narrow synchronous S3
+`Put_If_Absent`, `Put_If_Matches`, and same-response `Get_Whole` operations. This local DB unit intentionally binds
+the backend-neutral interface; authenticated S3 binding remains an additive review unit over the same outcome core.
 
 The landed conditional-publication campaign reports `./tests/scripts/test.sh`,
 `./sqlite/tests/scripts/test.sh`, `FLYOLOGY_S3_MATRIX_REPEATS=3 ./tests/scripts/test-s3-matrix.sh`, and

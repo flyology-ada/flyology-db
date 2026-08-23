@@ -1,5 +1,6 @@
 with Ada.Text_IO;
 with Flyology.DB.Batch_Format_Tests;
+with Flyology.DB.Engine_Tests;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
 with Flyology.DB.Reference_Model;
@@ -502,6 +503,7 @@ begin
 
    Test_Reference_Model;
    Flyology.DB.Batch_Format_Tests.Run;
+   Flyology.DB.Engine_Tests.Run;
 
-   Ada.Text_IO.Put_Line ("Flyology.DB head/batch formats, policy, and reference model: OK");
+   Ada.Text_IO.Put_Line ("Flyology.DB formats, policy, model, and local log engine: OK");
 end Flyology.DB.Tests;

@@ -1,5 +1,30 @@
 # Review record
 
+## Accepted local-provider log-only slice
+
+- Parent: accepted Slate/pooling contract commit `865f02e20be129c73b15e26d73570e6168ea16e5`.
+- Accepted implementation candidate: `7387c66ab173d647494c282edf3fbbb0f55189d1`.
+- Scope: provider-neutral memory/files adapter, bounded native group coordinator, log-only publication/recovery,
+  provisional numeric-family CRUD, receipts, and deterministic storage faults.
+- Acceptance boundary: this candidate does not claim authenticated remote-provider qualification, stable family
+  creation authority, full Milestone 2 acceptance, MVCC isolation, or production durability/performance.
+- Verification: on the final rebased source, `./scripts/check-repository.sh` validates canonical-state vectors,
+  workloads, provenance, and repository shape; `./scripts/check-tla.sh` reports 112,031 TLC states at depth 14 and
+  23/23 TLAPS obligations; and `./tests/scripts/test.sh` passes against memory/files, including a fresh-process files
+  group crash/reopen probe. The warning-strict `./scripts/prove.sh` gate proves 421/421 checks: 84 flow and 337
+  prover checks, with zero reported warnings, unproved or justified checks, or `pragma Assume` statements. The SPARK
+  boundary is limited to selected deterministic packages documented in `proof-status.md`; storage I/O, lifecycle
+  synchronization, and tasking are executable-test boundaries.
+- Review status: accepted. The first implementation revision was rejected with P1 lifecycle, admission,
+  reconciliation, deadline-isolation, identity, cap, and fault-evidence findings. Follow-up amendments reserve every
+  admitted group/member identity, serialize shared storage-context fault controls and counters with a protected
+  object, retain receipt identities on every admitted terminal path, and reject transaction-local reads and mutation
+  buffering after a writer fence or uncertain publication. Expanded executable gates cover the 576-identity
+  reservation boundary, a concurrent two-database shared-context case, and active read, buffered mutation,
+  singleton/group admission, rollback, resolution, and recovery while a lost HEAD response leaves publication
+  uncertain. Independent final re-review of the exact accepted candidate against the stated parent reports no
+  P0, P1, P2, or P3 findings.
+
 ## Foundation root commit
 
 - Parent: empty tree.

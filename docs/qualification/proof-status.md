@@ -12,8 +12,12 @@ Authoritative command:
 ```
 
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
-from retained tool output and are not hard-coded here. No assumptions, false-positive suppressions, or imported ghost
-axioms are admitted.
+from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
+
+The final local-provider log-only candidate reports 421/421 checks: 84 flow checks and 337 prover checks, with zero
+reported warnings, unproved or justified checks, or `pragma Assume` statements. This result applies only to the
+selected deterministic packages below. The operational storage port, protected lifecycle/coordinator, native task,
+filesystem behavior, and fault scheduling remain trusted integration boundaries covered by executable tests.
 
 Current selected packages:
 
