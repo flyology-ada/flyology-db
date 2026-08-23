@@ -1,5 +1,25 @@
 # Review record
 
+## Accepted exact first-SST snapshot candidate
+
+- Parent: live-entry sequence retention commit `772d969`.
+- Scope: an exclusive checkpoint lifecycle and reusable first-run builder that measures actual family state, checks
+  persisted memtable/run authority, allocates exact transient references and SST storage, sorts arbitrary byte keys,
+  rejects duplicate live keys, retains exact write sequences, and passes the complete result through the operational
+  SST encoder. This unit performs no object write, manifest transition, public Flush, or recovery change.
+- Constant authority: the builder introduces no key/value, entry, payload, run, timeout, or task default. Allocation
+  extents come from the quiescent live snapshot and are admitted by persisted family/database limits. Zero fields are
+  documented transient sentinels; the three-entry/48-byte test family derives its memtable extent from its explicit
+  key/value/count corpus, and the run identity is an operation fixture.
+- Verification: `./tests/scripts/test.sh` passes after regenerating ignored Alire state for the released HTTP graph:
+  root/test builds, repository/provenance checks, deterministic engine/format suites, filesystem subprocess recovery,
+  32 comparative cases, pinned TidesDB 4/4, and every adapter fixture against Object Storage
+  `00ac6b925ea884fb94853a0e315556b9d94c1bd1`. The test builds a canonical encoded SST from deliberately unsorted keys
+  and proves both allocation faults return `Capacity_Exceeded` without changing batch/manifest/HEAD publication counts.
+- Findings cycle: review fixed one P1 unwinding defect by separating cancellable checkpoint admission from
+  success-only completion, and one P2 integrity gap by rejecting duplicate live keys before SST construction.
+  Follow-up review finds no remaining P0, P1, P2, or P3 issue in this unpublished snapshot boundary.
+
 ## Accepted live-entry sequence retention candidate
 
 - Parent: live LSM-authority retention commit `2270798`.

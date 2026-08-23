@@ -1320,6 +1320,23 @@ package body Flyology.DB is
       Sequence     : Sequence_Number := 0;
    end record;
    type State_Entry_Array is array (Positive range <>) of State_Entry;
+   type Snapshot_Entry_Reference is record
+      --  Defaults describe an unfilled transient slot only. Populated slots
+      --  borrow engine-owned immutable batch images during exclusive snapshot
+      --  construction and retain exact live-entry offsets and sequence.
+      Image        : Shared_Image_Access := null;
+      Key_Offset   : Natural := 0;
+      Key_Length   : Natural := 0;
+      Value_Offset : Natural := 0;
+      Value_Length : Natural := 0;
+      Sequence     : Sequence_Number := 0;
+   end record;
+   type Snapshot_Entry_Reference_Array is array (Positive range <>) of Snapshot_Entry_Reference;
+   type Snapshot_Entry_Reference_Array_Access is access Snapshot_Entry_Reference_Array;
+   procedure Free_Snapshot_References is new
+     Ada.Unchecked_Deallocation
+       (Object => Snapshot_Entry_Reference_Array,
+        Name   => Snapshot_Entry_Reference_Array_Access);
    type Seen_Transaction_Array is array (Positive range <>) of Transaction_Identifier;
    type Used_Batch_ID_Array is array (Positive range <>) of Identifier;
    type History_Image_Array is array (Positive range <>) of Shared_Image_Access;
@@ -1464,6 +1481,17 @@ package body Flyology.DB is
          Item_Key : Byte_Array;
          Sequence : out Sequence_Number;
          Result   : out Outcome_Code);
+
+      procedure Family_Snapshot_Requirements
+        (Family        : Column_Family_ID;
+         Entry_Total   : out Natural;
+         Payload_Bytes : out Natural;
+         Result        : out Outcome_Code);
+
+      procedure Copy_Family_Snapshot
+        (Family     : Column_Family_ID;
+         References : not null Snapshot_Entry_Reference_Array_Access;
+         Result     : out Outcome_Code);
 
       procedure Find_Family
         (ID : Column_Family_ID; Configuration : out Column_Family_Configuration; Result : out Outcome_Code);
@@ -2516,6 +2544,73 @@ package body Flyology.DB is
          Result := Not_Found;
       end Lookup_Sequence;
 
+      procedure Family_Snapshot_Requirements
+        (Family        : Column_Family_ID;
+         Entry_Total   : out Natural;
+         Payload_Bytes : out Natural;
+         Result        : out Outcome_Code)
+      is
+         Total : Interfaces.Unsigned_64 := 0;
+      begin
+         Entry_Total := 0;
+         Payload_Bytes := 0;
+         for Index in Positive range 1 .. Entry_Count loop
+            if Entries (Index).Family = Family then
+               if Entries (Index).Image = null
+                 or else Entries (Index).Sequence = 0
+                 or else Entries (Index).Sequence > Current_Head.Highest
+                 or else Entries (Index).Key_Length > Natural'Last - Entries (Index).Value_Length
+                 or else Total
+                         > Interfaces.Unsigned_64'Last
+                           - Interfaces.Unsigned_64
+                               (Entries (Index).Key_Length + Entries (Index).Value_Length)
+               then
+                  Result := Corrupt;
+                  return;
+               end if;
+               if Entry_Total = Natural'Last then
+                  Result := Capacity_Exceeded;
+                  return;
+               end if;
+               Entry_Total := Entry_Total + 1;
+               Total :=
+                 Total + Interfaces.Unsigned_64 (Entries (Index).Key_Length + Entries (Index).Value_Length);
+            end if;
+         end loop;
+         if Total > Interfaces.Unsigned_64 (Natural'Last) then
+            Result := Capacity_Exceeded;
+            return;
+         end if;
+         Payload_Bytes := Natural (Total);
+         Result := (if Entry_Total = 0 then Not_Found else Success);
+      end Family_Snapshot_Requirements;
+
+      procedure Copy_Family_Snapshot
+        (Family     : Column_Family_ID;
+         References : not null Snapshot_Entry_Reference_Array_Access;
+         Result     : out Outcome_Code)
+      is
+         Next : Natural := 0;
+      begin
+         for Index in Positive range 1 .. Entry_Count loop
+            if Entries (Index).Family = Family then
+               if Next = References'Length then
+                  Result := Invalid_State;
+                  return;
+               end if;
+               Next := Next + 1;
+               References (References'First + Next - 1) :=
+                 (Image        => Entries (Index).Image,
+                  Key_Offset   => Entries (Index).Key_Offset,
+                  Key_Length   => Entries (Index).Key_Length,
+                  Value_Offset => Entries (Index).Value_Offset,
+                  Value_Length => Entries (Index).Value_Length,
+                  Sequence     => Entries (Index).Sequence);
+            end if;
+         end loop;
+         Result := (if Next = References'Length then Success else Invalid_State);
+      end Copy_Family_Snapshot;
+
       procedure Find_Family
         (ID : Column_Family_ID; Configuration : out Column_Family_Configuration; Result : out Outcome_Code) is
       begin
@@ -2708,6 +2803,180 @@ package body Flyology.DB is
       Worker        : Commit_Worker_Access := null;
    end record;
 
+   function Snapshot_Key_Less (Left, Right : Snapshot_Entry_Reference) return Boolean is
+      Shared : constant Natural := Natural'Min (Left.Key_Length, Right.Key_Length);
+   begin
+      for Offset in Natural range 0 .. Shared - 1 loop
+         declare
+            Left_Byte  : constant Byte :=
+              Byte (Flyology.Bytes.Element (Left.Image.Data, Left.Key_Offset + Offset + 1));
+            Right_Byte : constant Byte :=
+              Byte (Flyology.Bytes.Element (Right.Image.Data, Right.Key_Offset + Offset + 1));
+         begin
+            if Left_Byte < Right_Byte then
+               return True;
+            elsif Left_Byte > Right_Byte then
+               return False;
+            end if;
+         end;
+      end loop;
+      return Left.Key_Length < Right.Key_Length;
+   end Snapshot_Key_Less;
+
+   procedure Sort_Snapshot_References (References : in out Snapshot_Entry_Reference_Array) is
+   begin
+      for Index in References'First + 1 .. References'Last loop
+         declare
+            Item   : constant Snapshot_Entry_Reference := References (Index);
+            Cursor : Positive := Index;
+         begin
+            while Cursor > References'First and then Snapshot_Key_Less (Item, References (Cursor - 1)) loop
+               References (Cursor) := References (Cursor - 1);
+               Cursor := Cursor - 1;
+            end loop;
+            References (Cursor) := Item;
+         end;
+      end loop;
+   end Sort_Snapshot_References;
+
+   procedure Build_Family_SST
+     (State     : not null Engine_State_Access;
+      Family_ID : Column_Family_ID;
+      Run_ID    : Identifier;
+      Value     : out LSM_Runtime.SST_Access;
+      Result    : out Outcome_Code)
+   is
+      References      : Snapshot_Entry_Reference_Array_Access := null;
+      Entry_Total     : Natural;
+      Payload_Bytes   : Natural;
+      Head            : Head_Snapshot;
+      Generation      : Generation_Value;
+      Uncertain       : Boolean;
+      Fenced          : Boolean;
+      Authority_Found : Boolean := False;
+      Authority       : LSM_Runtime.Family_LSM_State := (others => <>);
+      Allocation      : LSM_Runtime.Allocation_Status;
+      Payload_Cursor  : Positive := 1;
+      Lowest          : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
+      Highest         : Interfaces.Unsigned_64 := 0;
+   begin
+      Value := null;
+      if Is_Zero (Run_ID) or else not State.LSM_Authority.Enabled then
+         Result := Invalid_State;
+         return;
+      elsif State.LSM_Authority.Replay_Boundary /= 0 then
+         Result := Unsupported_Format;
+         return;
+      end if;
+      for Family of State.LSM_Authority.Families loop
+         if Family.ID = Interfaces.Unsigned_32 (Family_ID) then
+            Authority := Family.State;
+            Authority_Found := True;
+            exit;
+         end if;
+      end loop;
+      if not Authority_Found then
+         Result := Not_Found;
+         return;
+      elsif Authority.Run_Total /= 0 then
+         Result := Unsupported_Format;
+         return;
+      end if;
+
+      State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+         return;
+      elsif Fenced then
+         Result := Stale_Writer;
+         return;
+      end if;
+      State.Gate.Family_Snapshot_Requirements (Family_ID, Entry_Total, Payload_Bytes, Result);
+      if Result /= Success then
+         return;
+      elsif Interfaces.Unsigned_64 (Entry_Total) > Interfaces.Unsigned_64 (Authority.Memtable_Max_Entries)
+        or else Interfaces.Unsigned_64 (Payload_Bytes) > Authority.Memtable_Max_Bytes
+        or else Authority.Maximum_L0_Runs = 0
+        or else State.LSM_Authority.Maximum_Total_L0_Runs = 0
+      then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Checkpoint_Reference_Allocation);
+      References := new Snapshot_Entry_Reference_Array (1 .. Entry_Total);
+      State.Gate.Copy_Family_Snapshot (Family_ID, References, Result);
+      if Result /= Success then
+         Free_Snapshot_References (References);
+         return;
+      end if;
+      Sort_Snapshot_References (References.all);
+      for Index in References'First + 1 .. References'Last loop
+         if not Snapshot_Key_Less (References (Index - 1), References (Index)) then
+            Free_Snapshot_References (References);
+            Result := Corrupt;
+            return;
+         end if;
+      end loop;
+
+      Allocation_Faults.Check (Checkpoint_SST_Allocation);
+      LSM_Runtime.Create_SST (Entry_Total, Payload_Bytes, Value, Allocation);
+      if Allocation /= LSM_Runtime.Allocated then
+         Free_Snapshot_References (References);
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+      Value.Database_ID := To_Head_ID (Head.Database_ID);
+      Value.Run_ID := To_Head_ID (Run_ID);
+      Value.Family_ID := Interfaces.Unsigned_32 (Family_ID);
+      Value.Logical_Payload_Bytes := Interfaces.Unsigned_64 (Payload_Bytes);
+      for Index in References'Range loop
+         declare
+            Reference : Snapshot_Entry_Reference renames References (Index);
+            Target    : LSM_Runtime.SST_Entry renames Value.Entries (Index);
+         begin
+            Target.Sequence := Interfaces.Unsigned_64 (Reference.Sequence);
+            Target.Operation := LSM_Runtime.LSM.Put_Operation;
+            Target.Key_Offset := Payload_Cursor;
+            Target.Key_Byte_Total := Reference.Key_Length;
+            for Offset in Natural range 0 .. Reference.Key_Length - 1 loop
+               Value.Payload (Payload_Cursor + Offset) :=
+                 Formats.Byte
+                   (Flyology.Bytes.Element (Reference.Image.Data, Reference.Key_Offset + Offset + 1));
+            end loop;
+            Payload_Cursor := Payload_Cursor + Reference.Key_Length;
+            Target.Value_Offset := Payload_Cursor;
+            Target.Value_Byte_Total := Reference.Value_Length;
+            for Offset in Natural range 0 .. Reference.Value_Length - 1 loop
+               Value.Payload (Payload_Cursor + Offset) :=
+                 Formats.Byte
+                   (Flyology.Bytes.Element (Reference.Image.Data, Reference.Value_Offset + Offset + 1));
+            end loop;
+            Payload_Cursor := Payload_Cursor + Reference.Value_Length;
+            Lowest := Interfaces.Unsigned_64'Min (Lowest, Target.Sequence);
+            Highest := Interfaces.Unsigned_64'Max (Highest, Target.Sequence);
+         end;
+      end loop;
+      Value.Lowest_Sequence := Lowest;
+      Value.Highest_Sequence := Highest;
+      Free_Snapshot_References (References);
+      if Payload_Cursor /= Payload_Bytes + 1 or else not LSM_Runtime.Structurally_Valid (Value.all) then
+         LSM_Runtime.Release (Value);
+         Result := Corrupt;
+         return;
+      end if;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Free_Snapshot_References (References);
+         LSM_Runtime.Release (Value);
+         Result := Capacity_Exceeded;
+      when others =>
+         Free_Snapshot_References (References);
+         LSM_Runtime.Release (Value);
+         raise;
+   end Build_Family_SST;
+
    protected body Database_Lifecycle is
 
       procedure Begin_Open (Result : out Outcome_Code) is
@@ -2786,7 +3055,19 @@ package body Flyology.DB is
          end if;
       end Begin_Resolve;
 
-      entry Await_Quiescent when Mode in Closing | Resolving and then Active_Calls = 0 is
+      procedure Begin_Checkpoint (State : out Engine_State_Access; Result : out Outcome_Code) is
+      begin
+         State := null;
+         if Mode /= Opened or else Current = null then
+            Result := Invalid_State;
+         else
+            Mode := Checkpointing;
+            State := Current;
+            Result := Success;
+         end if;
+      end Begin_Checkpoint;
+
+      entry Await_Quiescent when Mode in Closing | Resolving | Checkpointing and then Active_Calls = 0 is
       begin
          null;
       end Await_Quiescent;
@@ -2817,6 +3098,22 @@ package body Flyology.DB is
          end if;
          Mode := Opened;
       end Cancel_Resolve;
+
+      procedure Finish_Checkpoint is
+      begin
+         if Mode /= Checkpointing or else Active_Calls /= 0 or else Current = null then
+            raise Program_Error with "invalid database checkpoint completion";
+         end if;
+         Mode := Opened;
+      end Finish_Checkpoint;
+
+      procedure Cancel_Checkpoint is
+      begin
+         if Mode /= Checkpointing or else Current = null then
+            raise Program_Error with "invalid database checkpoint cancellation";
+         end if;
+         Mode := Opened;
+      end Cancel_Checkpoint;
 
       procedure Set_Visible (Value : Sequence_Number) is
       begin
@@ -2885,6 +3182,20 @@ package body Flyology.DB is
    begin
       if Item.Active and then Item.Life /= null then
          Item.Life.Cancel_Resolve;
+         Item.Active := False;
+      end if;
+   end Finalize;
+
+   type Checkpoint_Guard is new Ada.Finalization.Limited_Controlled with record
+      Life   : Database_Lifecycle_Access := null;
+      Active : Boolean := False;
+   end record;
+
+   overriding
+   procedure Finalize (Item : in out Checkpoint_Guard) is
+   begin
+      if Item.Active and then Item.Life /= null then
+         Item.Life.Cancel_Checkpoint;
          Item.Active := False;
       end if;
    end Finalize;
@@ -6687,6 +6998,58 @@ package body Flyology.DB is
          Lease.State.Gate.Lookup_Sequence (Family_ID, Item_Key, Sequence, Result);
       end if;
    end Read_Test_Live_Entry_Sequence;
+
+   procedure Build_Test_First_SST
+     (Item             : in out Database;
+      Family_ID        : Column_Family_ID;
+      Run_ID           : Identifier;
+      Entry_Total      : out Natural;
+      Lowest_Sequence  : out Sequence_Number;
+      Highest_Sequence : out Sequence_Number;
+      Result           : out Outcome_Code)
+   is
+      State         : Engine_State_Access;
+      Value         : LSM_Runtime.SST_Access := null;
+      Image         : LSM_Runtime.Image_Access := null;
+      Encode_Result : LSM_Runtime.Encode_Status;
+      Guard         : Checkpoint_Guard;
+      pragma Unreferenced (Guard);
+   begin
+      Entry_Total := 0;
+      Lowest_Sequence := 0;
+      Highest_Sequence := 0;
+      Item.Life.Begin_Checkpoint (State, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Item.Life.Await_Quiescent;
+      Build_Family_SST (State, Family_ID, Run_ID, Value, Result);
+      if Result = Success then
+         LSM_Runtime.Encode_SST (Value.all, Image, Encode_Result);
+         if Encode_Result /= LSM_Runtime.Encoded then
+            Result := Corrupt;
+         else
+            Entry_Total := Value.Entry_Total;
+            Lowest_Sequence := Sequence_Number (Value.Lowest_Sequence);
+            Highest_Sequence := Sequence_Number (Value.Highest_Sequence);
+         end if;
+      end if;
+      LSM_Runtime.Release (Image);
+      LSM_Runtime.Release (Value);
+      Item.Life.Finish_Checkpoint;
+      Guard.Active := False;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Image);
+         LSM_Runtime.Release (Value);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Image);
+         LSM_Runtime.Release (Value);
+         raise;
+   end Build_Test_First_SST;
 
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code)

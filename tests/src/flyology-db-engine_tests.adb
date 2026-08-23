@@ -1271,6 +1271,7 @@ package body Flyology.DB.Engine_Tests is
       Receipt                                    : Commit_Receipt;
       Create_Info                                : Create_Receipt;
       Family_By_ID, Family_By_Name, Stale_Family : Column_Family;
+      Family_Seven                               : Column_Family;
       Result                                     : Outcome_Code;
       Data                                       : Value;
       Live_Sequence                              : Sequence_Number;
@@ -1281,7 +1282,8 @@ package body Flyology.DB.Engine_Tests is
       --  family value, and Over_* isolate explicit admission/capacity failures;
       --  none is an implicit configuration default. Two first-L0 runs match
       --  the families; 24 identities derive from 8 histories * (2 transaction
-      --  IDs + one group ID).
+      --  IDs + one group ID). Family 7's 48-byte memtable derives from three
+      --  entries * (8 key + 8 value bytes) for the ordering corpus.
       Limits                                     : constant Database_Limits :=
         (Maximum_Column_Families           => 2,
          Maximum_Manifest_History          => 4,
@@ -1296,7 +1298,8 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Total_L0_Runs             => 2,
          Maximum_Checkpoint_Identities     => 24);
       Families                                   : constant Column_Family_Configuration_Array :=
-        [Configure_Test_Family (7, [16#77#], 8, 8), Configure_Test_Family (2, [16#C3#, 16#A9#], 2, 3)];
+        [Configure_Column_Family (7, [16#77#], 8, 8, 48, 3, 1),
+         Configure_Test_Family (2, [16#C3#, 16#A9#], 2, 3)];
       Permuted                                   : constant Column_Family_Configuration_Array :=
         [Families (2), Families (1)];
       Different                                  : constant Column_Family_Configuration_Array :=
@@ -1326,6 +1329,9 @@ package body Flyology.DB.Engine_Tests is
       --  This same-width replacement isolates last-write sequence retention;
       --  it adds no key/value capacity or public default.
       Replacement_Value                          : constant Value := To_Value ([3, 2, 1]);
+      --  This stable test run identity is supplied by the operation fixture;
+      --  changing it affects only the unpublished SST-builder corpus.
+      First_Run_ID                               : constant Identifier := ID (223);
 
       procedure Expect_Live_LSM_Authority (Target : in out Database; Context_Text : String) is
          Replay, Memtable_Bytes                                    : Interfaces.Unsigned_64;
@@ -1447,6 +1453,8 @@ package body Flyology.DB.Engine_Tests is
 
       Open_Column_Family (Item, 2, Family_By_ID, Result);
       Expect (Result, Success, "family ID lookup failed");
+      Open_Column_Family (Item, 7, Family_Seven, Result);
+      Expect (Result, Success, "second family ID lookup failed");
       Open_Column_Family (Item, [16#C3#, 16#A9#], Family_By_Name, Result);
       Expect (Result, Success, "exact UTF-8 family name lookup failed");
       Open_Column_Family (Item, [16#C3#, 16#A8#], Stale_Family, Result);
@@ -1460,10 +1468,52 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Capacity_Exceeded, "family key limit plus one was admitted");
       Put (Item, Txn, Family_By_Name, To_Key ([1]), To_Value ([1, 2, 3, 4]), Result);
       Expect (Result, Capacity_Exceeded, "family value limit plus one was admitted");
+      --  Insert in deliberately descending/noncanonical order. Snapshot
+      --  construction must sort exact arbitrary bytes before SST encoding.
+      Put (Item, Txn, Family_Seven, To_Key ([16#FF#]), To_Value ([30]), Result);
+      Expect (Result, Success, "first snapshot-order mutation failed");
+      Put (Item, Txn, Family_Seven, To_Key ([]), To_Value ([10]), Result);
+      Expect (Result, Success, "second snapshot-order mutation failed");
+      Put (Item, Txn, Family_Seven, To_Key ([16#80#]), To_Value ([20]), Result);
+      Expect (Result, Success, "third snapshot-order mutation failed");
       Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
       Expect (Result, Success, "family-limit rejection changed the exact admitted mutation");
       Expected_Live_Sequence := Receipt_Sequence (Receipt);
       Expect_Live_Entry_Sequence (Item, "first commit");
+
+      declare
+         Snapshot_Entries                               : Natural;
+         Snapshot_Low, Snapshot_High                    : Sequence_Number;
+         Before_Batches, Before_Manifests, Before_Heads : Natural;
+         After_Batches, After_Manifests, After_Heads    : Natural;
+         Snapshot_Allocation_Points                     :
+           constant array (Positive range 1 .. 2) of Testing.Allocation_Fault_Point :=
+             [Testing.Checkpoint_References, Testing.Checkpoint_SST];
+      begin
+         Testing.Publication_Counts (Context, Before_Batches, Before_Manifests, Before_Heads);
+         for Point of Snapshot_Allocation_Points loop
+            Testing.Fail_Next_Allocation (Point);
+            Testing.Build_First_SST
+              (Item, 7, First_Run_ID, Snapshot_Entries, Snapshot_Low, Snapshot_High, Result);
+            Expect (Result, Capacity_Exceeded, "snapshot allocation failure was not typed capacity");
+         end loop;
+         Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Manifests /= Before_Manifests
+           or else After_Heads /= Before_Heads
+         then
+            raise Program_Error with "snapshot allocation failure published an object";
+         end if;
+         Testing.Build_First_SST
+           (Item, 7, First_Run_ID, Snapshot_Entries, Snapshot_Low, Snapshot_High, Result);
+         if Result /= Success
+           or else Snapshot_Entries /= 3
+           or else Snapshot_Low /= Expected_Live_Sequence
+           or else Snapshot_High /= Expected_Live_Sequence
+         then
+            raise Program_Error with "exact first-SST snapshot construction failed";
+         end if;
+      end;
 
       Begin_Transaction (Item, TX_ID (204), Txn, Result);
       Expect (Result, Success, "replacement transaction begin failed");

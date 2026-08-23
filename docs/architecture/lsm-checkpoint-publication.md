@@ -4,7 +4,8 @@ This document freezes the semantic checkpoint-publication decision. The format l
 SST-v1 bytes, a private SPARK reference decoder, and a byte-identical dynamically sized operational codec. The codec
 is the allocation and validation boundary. New Create operations now publish an empty manifest-v2 root carrying the
 explicit LSM policy, while the engine remains log-only: no SST, nonzero replay boundary, or checkpoint publication is
-live yet. Existing manifest-v1 databases remain readable for log-only operation.
+live yet. The internal first-SST builder is active but cannot publish an object. Existing manifest-v1 databases
+remain readable for log-only operation.
 
 ## Staged compatibility decision
 
@@ -65,6 +66,14 @@ There is no automatic flush task, task per run, detached helper, or compaction t
 flush follows one absolute deadline and retains a self-contained receipt with the stable run and manifest IDs, exact
 expected HEAD generation/transition, attempted transition identity, replay boundary, and phase.
 
+Before storage admission, the lifecycle enters an exclusive checkpoint mode and waits for every already-admitted
+database call to finish. The builder reads actual per-family entry and payload totals, checks them against that
+family's persisted memtable limits, then allocates an exact transient reference array and exact SST object. References
+borrow immutable engine images only while checkpoint mode excludes close and mutation. Arbitrary byte keys are sorted
+canonically, duplicate live keys fail closed, exact retained last-write sequences populate the run, and the operational
+SST encoder revalidates the complete result. Allocation failure is typed capacity and cannot publish an object. This
+work is designed for the bounded native coordinator; it creates no per-flush, per-run, or per-entry helper task.
+
 Publication order is strict:
 
 1. Snapshot the committed boundary and the exact identity authority covered by it.
@@ -118,4 +127,5 @@ TLC or future gates.
 
 This unit does not implement Ada checkpoint publication, automatic flushing, compaction, run pruning, garbage
 collection, scans, MVCC, snapshots, remote-provider qualification, S3, asynchronous/composable I/O, or an LSM
-performance claim. The operational scope is limited to manifest-v2 root creation and empty-checkpoint recovery.
+performance claim. The operational scope is limited to manifest-v2 root creation, empty-checkpoint recovery, and an
+unpublished exact first-SST snapshot builder.

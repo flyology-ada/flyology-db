@@ -320,7 +320,9 @@ private
       Projection_Scratch_Allocation,
       Root_Checkpoint_State_Allocation,
       Root_Checkpoint_Image_Allocation,
-      Root_Manifest_Retention_Allocation);
+      Root_Manifest_Retention_Allocation,
+      Checkpoint_Reference_Allocation,
+      Checkpoint_SST_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code);
@@ -484,7 +486,10 @@ private
    type Engine_State (<>);
    type Engine_State_Access is access Engine_State;
 
-   type Database_Lifecycle_Mode is (Closed, Opening, Opened, Closing, Resolving);
+   --  In-memory lifecycle policy only; enumeration positions are never
+   --  persisted. Checkpointing excludes new calls while a synchronous flush
+   --  waits for earlier leases and borrows immutable live-state images.
+   type Database_Lifecycle_Mode is (Closed, Opening, Opened, Closing, Resolving, Checkpointing);
 
    protected type Database_Lifecycle is
       procedure Begin_Open (Result : out Outcome_Code);
@@ -495,10 +500,13 @@ private
       procedure Release;
       procedure Begin_Close (State : out Engine_State_Access; Result : out Outcome_Code);
       procedure Begin_Resolve (State : out Engine_State_Access; Result : out Outcome_Code);
+      procedure Begin_Checkpoint (State : out Engine_State_Access; Result : out Outcome_Code);
       entry Await_Quiescent;
       procedure Finish_Close;
       procedure Finish_Resolve (State : not null Engine_State_Access; Visible : Sequence_Number);
       procedure Cancel_Resolve;
+      procedure Finish_Checkpoint;
+      procedure Cancel_Checkpoint;
       procedure Set_Visible (Value : Sequence_Number);
       function Highest (Result : out Outcome_Code) return Sequence_Number;
    private
@@ -596,6 +604,14 @@ private
       Item_Key  : Byte_Array;
       Sequence  : out Sequence_Number;
       Result    : out Outcome_Code);
+   procedure Build_Test_First_SST
+     (Item             : in out Database;
+      Family_ID        : Column_Family_ID;
+      Run_ID           : Identifier;
+      Entry_Total      : out Natural;
+      Lowest_Sequence  : out Sequence_Number;
+      Highest_Sequence : out Sequence_Number;
+      Result           : out Outcome_Code);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB;
