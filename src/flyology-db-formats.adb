@@ -178,7 +178,7 @@ is
       Result : Head_Image := [others => 0];
    begin
       Result (0 .. 7) := Magic;
-      Put_U16 (Result, 8, Interfaces.Unsigned_16 (Value.Version));
+      Put_U16 (Result, 8, Head_Format_Version);
       Result (10) := Head_Kind;
       Result (11) := 0;
       Put_Identifier (Result, 12, Value.Database_ID);
@@ -218,7 +218,7 @@ is
 
       if Fixed (0 .. 7) /= Magic then
          Status := Invalid_Magic;
-      elsif Read_U16 (Fixed, 8) /= Interfaces.Unsigned_16 (Head_Policy.Current_Format) then
+      elsif Read_U16 (Fixed, 8) /= Head_Format_Version then
          Status := Unsupported_Version;
       elsif Fixed (10) /= Head_Kind then
          Status := Invalid_Object_Kind;

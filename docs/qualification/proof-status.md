@@ -31,6 +31,9 @@ Current selected packages:
 - `Flyology.DB.Batch_Formats`, covering runtime safety and definite initialization of the bounded encoder and
   structural/latest decoders, helper contracts for lengths and byte copies, decoder success/failure postconditions,
   and predecessor-policy arithmetic; and
+- `Flyology.DB.Manifest_Formats`, an additive bounded manifest-v1 candidate covering runtime safety, definite
+  initialization, length/UTF-8 arithmetic, decoder success/failure postconditions, and publication/predecessor
+  predicate arithmetic; and
 - `Flyology.DB.Reference_Model`, covering absence of runtime checks and definite initialization in bounded MVCC state
   transitions. Executable tests, rather than current functional proof contracts, establish the model's fixed-snapshot,
   conflict, atomic-commit, and rollback examples. Exact duplicate scan predicates are deduplicated; full range-union
@@ -49,6 +52,15 @@ memory-budget, corruption-test, and proof gates.
 Executable golden-byte, corruption, boundary, HEAD-binding, and cacheless-recovery tests establish byte ordering,
 CRC-32C behavior, semantic rejection classes, and concrete publication/predecessor predicate examples. The current
 SPARK contracts do not claim functional equivalence between those byte-level behaviors and an independent codec.
+
+Manifest golden-byte, every-truncation, repaired semantic corruption, cap, UTF-8, publication, and predecessor tests
+likewise establish concrete byte/predicate behavior. The manifest proof boundary does not claim CRC correctness,
+semantic completeness of the corruption corpus, provider publication, or operational HEAD-v2 refinement.
+
+The final warning-strict forced five-unit gate on the amended, rebased candidate proves 639/639 checks: 65
+initialization checks, 309 runtime checks, 54 assertions, 161 functional contracts, and 50 termination checks; 114
+are discharged by flow analysis and 525 by provers. It reports zero warnings, unproved or justified checks, or
+`pragma Assume` statements. Independent re-review remains required before acceptance.
 
 ## TLA+ state-machine assurance
 
@@ -69,6 +81,12 @@ SPARK contracts do not claim functional equivalence between those byte-level beh
 - TLAPS, in strict mode with its SMT backend, proves all 23 obligations in the unbounded inductive safety kernel.
   These obligations cover initialization and preservation by every abstract action, pairwise-disjoint transaction
   ownership across batches, and the derived transaction-level no-active-replay theorem.
+- A separate manifest model exhausts 286 states at depth 10. It checks exact-byte confirmation after an ambiguous
+  immutable Put, stored-before-HEAD publication, append-only registry configuration, committed and failed lost-HEAD
+  reconciliation, later-writer successor publication, crash, and cacheless recovery. Checked witness traces cover
+  both reconciliation conclusions, and a negative registry-mutation probe must fail. Its focused TLAPS kernel proves
+  12/12 inductive obligations for stored/confirmed publication, predecessor storage, immutable existing
+  configuration, and disposable local cache state.
 
 The TLAPS kernel is a batch-atomic abstraction assigning every batch an arbitrary nonempty transaction set, with
 pairwise-disjoint ownership between batches. It proves publication-epoch monotonicity, acknowledged whole-batch

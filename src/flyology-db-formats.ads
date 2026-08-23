@@ -11,6 +11,7 @@ is
    subtype Byte is Interfaces.Unsigned_8;
    type Byte_Array is array (Natural range <>) of Byte;
 
+   Head_Format_Version : constant Interfaces.Unsigned_16 := 1;
    Head_Image_Length : constant := 136;
    subtype Head_Image_Index is Natural range 0 .. Head_Image_Length - 1;
    subtype Head_Image is Byte_Array (Head_Image_Index);

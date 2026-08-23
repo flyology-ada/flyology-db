@@ -128,6 +128,71 @@ cmp "$temporary_root/workload.ndjson" "$expected_workload"
   >"$temporary_root/tlaps.log" 2>&1
 grep -q 'All 23 obligations proved.' "$temporary_root/tlaps.log"
 
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-manifest-states" \
+  -config ManifestPublication.cfg ManifestPublication \
+  >"$temporary_root/tlc-manifest.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-manifest.log"
+! grep -q '^Warning:' "$temporary_root/tlc-manifest.log"
+grep -q '286 distinct states found' "$temporary_root/tlc-manifest.log"
+grep -q 'The depth of the complete state graph search is 10.' \
+  "$temporary_root/tlc-manifest.log"
+for action in StoreRoot LoseRootPutResponseStored LoseRootPutResponseAbsent \
+  ConfirmRootBytes ResolveRootPutAbsent PublishRoot LoseAcceptedRootResponse \
+  LoseUnacceptedRootResponse ExternalStoreSuccessor ExternalPublishSuccessor \
+  StoreCompetingRoot PublishCompetingRoot ObserveSuccess ResolveCommitted \
+  ResolveFailed Crash Recover
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-manifest.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-manifest-mutation-states" \
+  -config ManifestRegistryMutationProbe.cfg ManifestRegistryMutationProbe \
+  >"$temporary_root/tlc-manifest-mutation.log" 2>&1
+manifest_mutation_status=$?
+set -e
+test "$manifest_mutation_status" -eq 12
+grep -q 'Invariant RegistryIsMonotonic is violated' \
+  "$temporary_root/tlc-manifest-mutation.log"
+! grep -q '^Warning:' "$temporary_root/tlc-manifest-mutation.log"
+
+for reconciliation in committed failed
+do
+  if test "$reconciliation" = committed
+  then
+    manifest_witness_module=ManifestPublicationWitness
+    manifest_witness_invariant=WitnessPending
+  else
+    manifest_witness_module=ManifestPublicationFailureWitness
+    manifest_witness_invariant=FailureWitnessPending
+  fi
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-manifest-$reconciliation-states" \
+    -config "$manifest_witness_module.cfg" \
+    -dumpTrace json "$temporary_root/manifest-$reconciliation.json" \
+    "$manifest_witness_module" \
+    >"$temporary_root/tlc-manifest-$reconciliation.log" 2>&1
+  manifest_witness_status=$?
+  set -e
+  test "$manifest_witness_status" -eq 12
+  grep -q "Invariant $manifest_witness_invariant is violated." \
+    "$temporary_root/tlc-manifest-$reconciliation.log"
+  ! grep -q '^Warning:' "$temporary_root/tlc-manifest-$reconciliation.log"
+  "$model_root/validate_manifest_witnesses.py" \
+    "$reconciliation" "$temporary_root/manifest-$reconciliation.json"
+done
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-manifest-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/ManifestSafetyProof.tla" \
+  >"$temporary_root/tlaps-manifest.log" 2>&1
+grep -q 'All 12 obligations proved.' "$temporary_root/tlaps-manifest.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -135,3 +200,7 @@ printf '%s\n' "  Negative stale-publication probe detected"
 printf '%s\n' "  Negative overlapping-transaction ownership probe detected"
 printf '%s\n' "  Deep committed/failed reconciliation witnesses validated"
 printf '%s\n' "  Witness pooled accepted-response loss, reconciliation, crash, recovery"
+printf '%s\n' "  Manifest TLC 286 distinct states, depth 10"
+printf '%s\n' "  Manifest TLAPS 12/12 obligations"
+printf '%s\n' "  Manifest committed/failed reconciliation witnesses validated"
+printf '%s\n' "  Negative manifest registry-mutation probe detected"

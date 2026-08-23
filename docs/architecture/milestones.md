@@ -24,6 +24,11 @@ Milestone 2. The accepted pooled TLA+ lane models whole-batch outcomes and no ac
 unit covers CRUD/reopen, cross-family group atomicity, cacheless recovery, stale generations, lost-response
 reconciliation, and pre/post-publication faults; it remains subject to independent review.
 
+An additive manifest-v1 candidate now defines the immutable family registry, persisted per-family key/value limits,
+append-only transition predicates, and a separate formal publication model. It deliberately does not change public
+Create/Open, current HEAD-v1 validity, or operational recovery. HEAD-v2 activation and owned production arenas remain
+separate reviewed units, so this format candidate alone does not satisfy the Milestone 2 descriptor gate.
+
 ## Formal state-machine lane
 
 TLA+ models single- and bounded pooled-transaction publication, ambiguous outcomes, fencing, cache loss, and recovery

@@ -52,6 +52,25 @@ proof kernel, workload projection, or future Ada implementation, so the gate doe
 TLAPS epoch property is monotonicity; stale-writer exclusion is checked by the executable model and is not attributed
 to that proof-kernel property.
 
+## Manifest registry lane
+
+`ManifestPublication.tla` is a separate bounded two-manifest model for the additive manifest-v1 contract. It makes
+ambiguous immutable-object publication explicit: an unknown Put must be confirmed as the exact stored manifest bytes
+before any HEAD action is enabled. It then explores accepted and unaccepted lost HEAD responses. A committed witness
+resolves the attempted root through a later reachable manifest; the action names say `ExternalStoreSuccessor` and
+`ExternalPublishSuccessor` because the fenced unknown writer never continues publication. A failed witness resolves
+an unaccepted attempt from a competing root at the attempted ordinal. Both paths discard all local state and recover
+the exact registry named by HEAD, and `validate_manifest_witnesses.py` independently checks the critical action order
+and final projection.
+
+The exhaustive manifest model checks stored/confirmed ordering, predecessor storage, immutable existing family
+configuration, sound committed/failed reconciliation, and cacheless recovery snapshots. The deliberately invalid
+`ManifestRegistryMutationProbe.tla` changes an existing configuration and must violate monotonicity.
+`ManifestSafetyProof.tla` is a smaller unbounded inductive kernel over arbitrary manifest, family, and configuration
+sets. TLAPS proves stored-before-confirmed/HEAD, predecessor storage, append-only configuration, and disposable local
+cache state. It intentionally omits byte encoding, UTF-8, ordinals, liveness, provider behavior, and any refinement
+theorem to the Ada codec or future engine.
+
 ## Witness projection
 
 `CommitPublicationWitness.tla` adds a deliberate invariant violation that asks TLC for one useful path. The
@@ -82,5 +101,6 @@ Install the pinned tools under ignored `.deps/tla` as recorded in
 
 The checked configuration uses one TLC worker for deterministic breadth-first witness selection. The exhaustive
 gate must report 112,031 distinct states at depth 14, record a successful `PreparePooled` transition in coverage, and
-strict TLAPS must prove 23 of 23 obligations. Larger state spaces belong to qualification campaigns and must not
-replace this fast per-change gate.
+strict TLAPS must prove 23 of 23 obligations. The manifest lane adds 286 distinct states at depth 10 and 12 of 12
+strict TLAPS obligations. Larger state spaces belong to qualification campaigns and must not replace this fast
+per-change gate.

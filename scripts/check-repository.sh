@@ -22,6 +22,7 @@ test -x oracles/adapters/slatedb/scripts/test.sh
 test -x oracles/adapters/slatedb/tests/test_adapter.py
 test -x formal/tla/witness_to_workload.py
 test -x formal/tla/validate_reconciliation_witnesses.py
+test -x formal/tla/validate_manifest_witnesses.py
 test -x scripts/check-tla.sh
 test -f formal/tla/CommitPublication.tla
 test -f formal/tla/PublicationSafetyProof.tla
@@ -31,6 +32,15 @@ test -x oracles/adapters/tidesdb/scripts/build.sh
 test -x oracles/adapters/tidesdb/scripts/run.sh
 test -x oracles/adapters/tidesdb/scripts/test.sh
 test -x oracles/adapters/tidesdb/scripts/test-upstream.sh
+test -f formal/tla/ManifestPublication.tla
+test -f formal/tla/ManifestPublication.cfg
+test -f formal/tla/ManifestPublicationWitness.tla
+test -f formal/tla/ManifestPublicationFailureWitness.tla
+test -f formal/tla/ManifestRegistryMutationProbe.tla
+test -f formal/tla/ManifestSafetyProof.tla
+test -f src/flyology-db-manifest_formats.ads
+test -f src/flyology-db-manifest_formats.adb
+test -f tests/src/flyology-db-manifest_format_tests.adb
 grep -q '^name = "flyology_db"$' alire.toml
 grep -q '^gnat = ">=13 & <=16[.]1[.]0"$' alire.toml
 grep -q '^package Flyology.DB is$' src/flyology-db.ads

@@ -494,7 +494,7 @@ is
 
       Object_Length := Encoded_Length (Value);
       Image (0 .. 7) := Magic;
-      Put_U16 (Image, 8, Interfaces.Unsigned_16 (Head_Policy.Current_Format));
+      Put_U16 (Image, 8, Batch_Format_Version);
       Image (10) := Batch_Kind;
       Image (11) := 0;
       Put_Identifier (Image, 12, Value.Database_ID);
@@ -639,7 +639,7 @@ is
       elsif Fixed (0 .. 7) /= Magic then
          Status := Invalid_Magic;
          return;
-      elsif Read_U16 (Fixed, 8) /= Interfaces.Unsigned_16 (Head_Policy.Current_Format) then
+      elsif Read_U16 (Fixed, 8) /= Batch_Format_Version then
          Status := Unsupported_Version;
          return;
       elsif Fixed (10) /= Batch_Kind then

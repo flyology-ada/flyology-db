@@ -1,7 +1,9 @@
 # Persisted formats
 
-This document is normative for format version 1. All multibyte integers are unsigned big-endian. Byte strings are
-length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is persisted.
+This document is normative for the independent version-1 HEAD, commit-batch, and column-family-manifest encodings.
+Each object kind advances its own version constant; adding manifest version 1 does not redefine batch or HEAD
+version 1. All multibyte integers are unsigned big-endian. Byte strings are length-prefixed and contain arbitrary
+bytes. No Ada record image or enumeration position is persisted.
 
 ## Common envelope
 
@@ -35,6 +37,10 @@ A valid successor preserves the database UUID and version, increases the writer 
 acquisition, never decreases sequence, names the prior transition ID as predecessor, advances the transition ordinal,
 and has a nonzero transition ID different from its immediate predecessor. A commit transition keeps the writer epoch,
 advances sequence by the exact batch transaction count, and names the published batch.
+
+Current operational HEAD version 1 retains an all-zero latest-manifest field in its initial state. The additive
+manifest codec below reserves a separate manifest-bearing HEAD version 2 contract, but this unit does not activate,
+encode, publish, or recover that HEAD version. Activation requires a later reviewed engine transition.
 
 ## Commit batch
 
@@ -100,9 +106,83 @@ and requires equal transition IDs. A gap of one is the immediate successor trans
 gap of two or more permits intervening metadata or writer-acquisition HEAD transitions and does not constrain IDs,
 because a historical opaque ID may recur after another transition.
 
+## Column-family manifest
+
+Column-family manifests use magic `FLYCFM01`, kind code `3`, and a 196-byte header. The common envelope occupies
+bytes 0 through 43. Version 1 freezes these kind-specific fields:
+
+| Field | Offset | Bytes |
+| --- | ---: | ---: |
+| manifest ID | 44 | 16 |
+| previous manifest ID | 60 | 16 |
+| expected HEAD transition ID | 76 | 16 |
+| expected HEAD transition number | 92 | 8 |
+| publication transition ID | 100 | 16 |
+| publication transition number | 116 | 8 |
+| writer epoch | 124 | 8 |
+| registry revision | 132 | 8 |
+| family count | 140 | 4 |
+| maximum column families | 144 | 4 |
+| maximum manifest history | 148 | 4 |
+| maximum batch history | 152 | 4 |
+| maximum transactions per batch | 156 | 4 |
+| maximum mutations per transaction | 160 | 4 |
+| maximum mutations per batch | 164 | 4 |
+| maximum live entries | 168 | 4 |
+| maximum logical transaction payload bytes | 172 | 8 |
+| maximum logical batch payload bytes | 180 | 8 |
+| maximum logical live-state bytes | 188 | 8 |
+
+Every family frame starts with an exact 28-byte prefix: nonzero numeric family ID (4), zero flags (4), maximum key
+bytes (8), maximum value bytes (8), UTF-8 name length (2), and zero reserved bits (2), followed by the exact name
+bytes. IDs are strictly increasing and never reused. Names are unique by exact UTF-8 byte sequence, contain one to
+255 bytes, and reject NUL, overlong encodings, surrogates, and code points above U+10FFFF. No Unicode normalization
+is implied: canonically equivalent byte sequences are distinct names. The bounded Ada record representation is
+canonical: every fixed-array byte after `Name_Length` is zero. Unused family slots remain outside the persisted
+registry and are ignored.
+
+`Max_Key_Bytes` and `Max_Value_Bytes` are nonzero per-family semantic authorities. The manifest-level transaction
+and batch payload budgets count logical key bytes plus Put-value bytes, not wire framing. A family key/value pair
+must fit both the transaction logical-payload budget and live-state byte budget. The codec does not prescribe a
+4 KiB/1 MiB default; that policy belongs to the later public family-creation API. The format ceiling permits 16
+transactions per batch, while the current log-only runtime admits at most eight. Count and logical-byte budgets are
+persisted configuration, not native allocation sizes. A valid configuration cannot admit more transactions per
+batch than total mutations per batch, because every transaction in a batch contains at least one mutation.
+
+A root manifest has revision one, epoch one, no predecessor or expected HEAD identity, and publication transition
+number one. A successor has revision `previous + 1`, appends exactly one higher family ID without changing any prior
+family or database limit, and carries exact expected/publication HEAD identities whose ordinals differ by one. An
+ordinal gap from the predecessor manifest permits intervening metadata or writer-acquisition HEAD transitions under
+the same recurrence and epoch-gap rules as commit batches.
+
+`Valid_Root_Publication` describes the future initial manifest-bearing HEAD version 2. Three-way
+`Valid_Publication(Current, Candidate, Manifest)` additionally requires exact current expected identity, candidate
+publication identity, one ordinal step, and preservation of database, epoch, highest sequence, and latest batch.
+`Referenced_By` is deliberately narrower: it establishes that a current or later HEAD still names one decoded
+manifest for recovery; it is not evidence that the exact publication transition was valid. An exact publication
+HEAD binds its predecessor to the manifest's expected transition ID (zero for the root); an immediate successor
+binds its predecessor to the manifest's publication transition ID. A gap of two or more retains only the documented
+ordinal/epoch reachability rule because intervening transitions are not available from the current HEAD alone.
+
+The private bounded codec instance accepts at most 64 families and 255 name bytes, so the largest image is exactly
+`196 + 64 * (28 + 255) + 4 = 18,312` bytes including the final whole-object CRC-32C. These are implementation/proof
+resource ceilings, not narrower wire widths or family key/value policy. Reader key/value ceilings default to unsigned
+64-bit maximum and are compared without converting to `Natural`. Total representation admission rejects an image
+larger than 18,312 bytes before copying or inspecting its envelope or integrity fields. For an admitted image, exact
+extent, magic, kind/version/flags, database identity, and checksums precede declared reader-cap classification.
+`Limit_Exceeded` therefore remains distinct from corruption but does not certify the skipped family structure. Every
+other decode failure also returns an empty value.
+
+This is the initial manifest encoding and has no prior encoding or migration obligation. The additive unit does not
+switch operational HEAD or recovery authority. The later runtime will use an owned bounded transaction arena, measure
+and checksum before a one-shot streaming encode, and stream recovery into a bounded batch arena before atomic install;
+it does not require one fixed 16 MiB object buffer. Receipts retain immutable object digest/identity and attempted HEAD
+identity rather than the complete image. A future composable provider path may additionally use `Unique_Buffer` while
+sharing these format and publication predicates.
+
 ## Evolution
 
-This is the initial Flyology.DB commit-batch encoding. No earlier batch encoding was released or persisted, so version
-1 has no legacy migration obligation. A future format change records whether existing readers reject, read, or migrate
-it. Golden byte fixtures and explicit corruption cases gate each supported version. Migration never rewrites a
-reachable immutable object in place.
+These are the initial Flyology.DB batch and manifest encodings. No earlier encoding was released or persisted, so
+version 1 has no legacy migration obligation. A future kind-specific format change records whether existing readers
+reject, read, or migrate it. Golden byte fixtures and explicit corruption cases gate each supported version.
+Migration never rewrites a reachable immutable object in place.

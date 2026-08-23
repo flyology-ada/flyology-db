@@ -1,5 +1,22 @@
 # Review record
 
+## Pending additive manifest-v1 candidate
+
+- Parent: accepted TidesDB comparative-adapter commit `a641f89157a64a48142f041db5b40c0dfcee3a07`.
+- Scope: private manifest-v1 codec/policy, independent golden and corruption/cap tests, future HEAD-v2 publication
+  predicates, and a focused TLC/TLAPS registry-publication model.
+- Boundary: this candidate does not activate operational manifests, change public Create/Open, qualify a remote
+  provider, allocate production transaction arenas, or claim full Milestone 2 acceptance.
+- Verification status: deterministic Ada and repository tests plus the combined TLC/TLAPS gate are green. The final
+  amended, rebased five-unit warning-strict SPARK gate proves 639/639 checks: 114 flow checks and 525 prover checks,
+  with zero warnings, unproved or justified checks, or `pragma Assume` statements. Independent re-review remains
+  pending; no acceptance is claimed.
+- Initial independent-review findings: an exact or immediate-successor recovery reference did not bind the HEAD
+  predecessor identity; transaction count could exceed the total batch mutation count; fixed family-name tails were
+  not canonicalized; and decoder precedence wording omitted the total representation-admission check. The amended
+  candidate binds both recovery edges, enforces the count relation, rejects nonzero name tails, and aligns the spec,
+  tests, and format document with the implementation's admission order. Re-review remains pending.
+
 ## Accepted local-provider log-only slice
 
 - Parent: accepted Slate/pooling contract commit `865f02e20be129c73b15e26d73570e6168ea16e5`.

@@ -13,6 +13,7 @@ is
    use type Head_Policy.Identifier;
    use type Head_Policy.Commit_Sequence;
 
+   Batch_Format_Version : constant Interfaces.Unsigned_16 := 1;
    Batch_Header_Length : constant := 156;
    Batch_Trailer_Length : constant := 4;
    Transaction_Frame_Header_Length : constant := 32;

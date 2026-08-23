@@ -27,6 +27,12 @@ numeric column-family IDs demonstrate provisional namespace isolation; create-ti
 configuration require the later immutable family descriptor. Later milestones checkpoint that chain through
 immutable manifests and SSTs without changing the publication rule.
 
+The first family-registry contract is an additive immutable manifest format only. It persists stable numeric IDs,
+exact UTF-8 names, per-family key/value admission limits, and database resource budgets. Operational HEAD version 1
+continues to carry no initial manifest; a separately reviewed HEAD version 2 activation will publish the root manifest
+and route Create/Open/recovery through it. Until that activation, the accepted local engine still uses provisional
+numeric family IDs and the manifest is not storage authority.
+
 ## Transaction semantics
 
 A transaction reads from one global snapshot and sees its own buffered mutations. Snapshot isolation rejects a
@@ -54,6 +60,11 @@ storage deadline. Future sustained remote I/O will compose bounded Flyology scop
 channels, and unique buffers over this same semantic core. CPU-heavy sorting, compression, and merging will use
 bounded native Ada tasks or an explicitly isolated process with detached owned input. The engine will not create
 detached C threads.
+
+The planned production encoder does not inline every configured maximum value or allocate one maximum-size object
+buffer. An immutable owned group arena supplies a measured/CRC pass and one-shot streaming encode to the synchronous
+provider; recovery streams into a bounded arena, validates the complete object, then installs atomically. Later
+composable overloads may move `Unique_Buffer` tokens while reusing the same semantic state machine.
 
 `Get`, `Put`, and `Delete` take the owning `Database` so each call acquires the same lifecycle lease used by commit
 admission. They reject fenced or uncertain engine state before observing or changing transaction-local data.
