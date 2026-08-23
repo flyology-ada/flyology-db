@@ -42,3 +42,34 @@ The exact Object Storage commit used by the current campaign is recorded in
 
 The TLA+ gate exhausts the bounded commit-publication state machine, checks the unbounded safety kernel with TLAPS,
 and regenerates a workload witness for later replay against the Ada model, Flyology.DB, and comparative oracles.
+
+## Agent setup
+
+Flyology.DB provisions shared Ada agent instructions and skills through
+[APM](https://microsoft.github.io/apm/). Install the validated APM release and the exact dependency revision
+recorded in `apm.lock.yaml`, then generate resources for Codex and Claude:
+
+```sh
+curl -sSL https://aka.ms/apm-unix | sh -s -- @v0.28.0
+apm --version
+
+apm install --frozen
+apm compile --target codex
+```
+
+The compiled `AGENTS.md` is committed so Codex can use the repository without a setup step. Claude rules and
+both clients' native skill trees are generated locally from the same locked package graph. Repository-specific
+rules remain in `agent-packages/repository`; general Ada and workflow resources come from the shared profile.
+
+The root package follows the shared profile's `main` update channel, while `apm.lock.yaml` pins the exact reviewed
+commit used by normal and frozen installs. Upgrade that lock deliberately, never as part of validation CI:
+
+```sh
+apm outdated
+apm update flyology-ada/agents
+apm compile --target codex
+apm compile --validate
+apm install --frozen
+apm audit --ci
+git diff --check
+```

@@ -1,4 +1,8 @@
 .deps/
+.agents/
+.claude/rules/
+.claude/skills/
+apm_modules/
 .tlacache/
 __pycache__/
 alire/
