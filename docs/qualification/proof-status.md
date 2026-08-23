@@ -18,6 +18,9 @@ The final local-provider log-only candidate reports 421/421 checks: 84 flow chec
 reported warnings, unproved or justified checks, or `pragma Assume` statements. This result applies only to the
 selected deterministic packages below. The operational storage port, protected lifecycle/coordinator, native task,
 filesystem behavior, and fault scheduling remain trusted integration boundaries covered by executable tests.
+The proof project exposes the pinned Object Storage source directory only so GNATprove can resolve the
+HTTP-independent backend interfaces named by `Flyology.DB`'s private representation. It intentionally does not
+import or analyze the complete Object Storage client/server build, its HTTP closure, or its XmlAda dependencies.
 
 Current selected packages:
 
