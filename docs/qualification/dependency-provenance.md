@@ -5,11 +5,11 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `00ac6b925ea884fb94853a0e315556b9d94c1bd1`
-- Commit subject: `Problem: provisional composable HTTP baseline is superseded`
+- Commit: `386865021321bf95b133efbaab4d8e77086cac0b`
+- Commit subject: `Problem: Object generations cannot be retained or selected`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC source: immutable Flyology.HTTP commit
-  `4147160562b14d8ca9db8f7ba9758258781eeca9`
+  `db0346bbd5866a740362381c72ba2f9b4579c12d`
 - Observed: 2026-08-23, America/Vancouver
 
 The dependency is local-only. Before a deterministic campaign, update the clean clone by fast-forward from its local
@@ -23,9 +23,11 @@ the Object Storage pin's immutable Flyology.HTTP/QUIC revision above. The root c
 deliberately after the Flyology runtime preparer and this repository's gates qualify the newer compiler.
 
 The dependency includes the reviewed backend-neutral conditional publication contract, synchronous conditional Put
-and whole Get operations, and the provisional composable client baseline. This DB slice still binds only the
-backend-neutral synchronous interface; adopting the composable surface remains a later focused review unit over the
-same outcome and ownership core.
+and whole Get operations, and caller-owned `Client.Scoped` conditional Put plus generation-bound whole/range Get and
+Head operations. This DB slice still binds only the backend-neutral synchronous interface; adopting the composable
+surface remains a later focused review unit over the same outcome and ownership core. The dependency currently pins
+the temporary HTTP PR #33 commit above and neither repository may be published from this campaign until Object
+Storage records the merged/dev-index no-pin handoff.
 
 The dependency's retained proof report at its qualified final base proves 936/936 checks: 180 flow and 756 prover,
 with zero warnings, unproved or justified checks, or `Assume` statements. Flyology.DB reruns its own repository,

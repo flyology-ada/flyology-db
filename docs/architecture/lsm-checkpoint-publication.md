@@ -82,6 +82,13 @@ The ledger is sorted by identifier bytes before structural validation. Family, a
 limits come only from the authenticated manifest-v2 policy. Any validation or allocation failure releases the whole
 plan and leaves batch, manifest, and HEAD publication counts unchanged.
 
+The caller supplies an exact family-to-run identity map with one entry for every persisted family. Input order is not
+authority: the planner joins by stable family ID and emits canonical registry order. Every run ID is nonzero, unique
+within the operation, and distinct from the operation's manifest and transition identities. Duplicate, missing,
+unknown, or colliding mappings fail before checkpoint allocation or object I/O. Empty families publish no run, so
+their mapped identities are not consumed by this checkpoint. The planner copies selected IDs into owned SSTs and
+retains no pointer to the caller's array.
+
 Publication order is strict:
 
 1. Snapshot the committed boundary and the exact identity authority covered by it.
@@ -136,4 +143,4 @@ TLC or future gates.
 This unit does not implement object I/O or Ada checkpoint publication, automatic flushing, compaction, run pruning, garbage
 collection, scans, MVCC, snapshots, remote-provider qualification, S3, asynchronous/composable I/O, or an LSM
 performance claim. The operational scope is limited to manifest-v2 root creation, empty-checkpoint recovery, and an
-unpublished exact whole-checkpoint planner whose current structural run IDs are test-only.
+unpublished exact whole-checkpoint planner with caller-owned object identities.

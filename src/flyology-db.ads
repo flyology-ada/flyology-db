@@ -65,6 +65,8 @@ package Flyology.DB is
    type Column_Family_Configuration is private;
    type Column_Family_Configuration_Array is array (Positive range <>) of Column_Family_Configuration;
    type Column_Family is private;
+   type Checkpoint_Run_Identity is private;
+   type Checkpoint_Run_Identity_Array is array (Positive range <>) of Checkpoint_Run_Identity;
 
    --  Construct one immutable family configuration. Name must contain one to
    --  255 exact UTF-8 bytes and contain no NUL. Key/value and memtable limits
@@ -79,6 +81,18 @@ package Flyology.DB is
       Memtable_Max_Bytes   : Interfaces.Unsigned_64;
       Memtable_Max_Entries : Interfaces.Unsigned_32;
       Maximum_L0_Runs      : Interfaces.Unsigned_32) return Column_Family_Configuration;
+
+   --  Bind one configured family to the immutable run identity selected by a
+   --  checkpoint operation. Run_ID must be nonzero. Flush requires one mapping
+   --  for every persisted family, rejects duplicate families or run IDs, and
+   --  publishes only mappings whose family snapshot is nonempty. The mapping
+   --  is borrowed only for the call and is never retained.
+   --  @param Family_ID Stable persisted family identifier
+   --  @param Run_ID Caller-owned stable immutable run identity
+   --  @return Valid immutable family/run mapping
+   --  @exception Constraint_Error Run_ID is zero
+   function Configure_Checkpoint_Run
+     (Family_ID : Column_Family_ID; Run_ID : Identifier) return Checkpoint_Run_Identity;
 
    type Outcome_Code is
      (Success,
@@ -301,6 +315,14 @@ private
       Memtable_Max_Bytes   : Interfaces.Unsigned_64 := 0;
       Memtable_Max_Entries : Interfaces.Unsigned_32 := 0;
       Maximum_L0_Runs      : Interfaces.Unsigned_32 := 0;
+   end record;
+
+   --  Zero fields are vacant construction sentinels only. The public
+   --  constructor replaces them and the planner revalidates exact registry
+   --  coverage before allocating or publishing anything.
+   type Checkpoint_Run_Identity is record
+      Family_ID : Column_Family_ID := Column_Family_ID'First;
+      Run_ID    : Identifier := Zero_Identifier;
    end record;
 
    type Engine_Incarnation is new Interfaces.Unsigned_64;
@@ -615,6 +637,9 @@ private
       Result           : out Outcome_Code);
    procedure Build_Test_First_Checkpoint
      (Item            : in out Database;
+      Runs            : Checkpoint_Run_Identity_Array;
+      Manifest_ID     : Identifier;
+      Transition_ID   : Identifier;
       Run_Total       : out Natural;
       Identity_Total  : out Natural;
       Replay_Boundary : out Sequence_Number;

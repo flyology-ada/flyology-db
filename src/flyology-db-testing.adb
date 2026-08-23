@@ -287,12 +287,16 @@ package body Flyology.DB.Testing is
 
    procedure Build_First_Checkpoint
      (Item            : in out Database;
+      Runs            : Checkpoint_Run_Identity_Array;
+      Manifest_ID     : Identifier;
+      Transition_ID   : Identifier;
       Run_Total       : out Natural;
       Identity_Total  : out Natural;
       Replay_Boundary : out Sequence_Number;
       Result          : out Outcome_Code) is
    begin
-      Build_Test_First_Checkpoint (Item, Run_Total, Identity_Total, Replay_Boundary, Result);
+      Build_Test_First_Checkpoint
+        (Item, Runs, Manifest_ID, Transition_ID, Run_Total, Identity_Total, Replay_Boundary, Result);
    end Build_First_Checkpoint;
 
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier

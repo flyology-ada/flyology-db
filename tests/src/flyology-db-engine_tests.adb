@@ -1332,6 +1332,15 @@ package body Flyology.DB.Engine_Tests is
       --  This stable test run identity is supplied by the operation fixture;
       --  changing it affects only the unpublished SST-builder corpus.
       First_Run_ID                               : constant Identifier := ID (223);
+      --  The exact caller-owned map covers both persisted families. Family 2
+      --  and family 7 are nonempty in this corpus, so both IDs become named
+      --  immutable runs; changing them affects only this operation fixture.
+      Checkpoint_Run_Map                         : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (7, ID (224)), Configure_Checkpoint_Run (2, First_Run_ID)];
+      --  Stable caller-owned checkpoint object and transition identities.
+      --  They are operation fixtures, not library-generated defaults.
+      Checkpoint_Manifest_ID                     : constant Identifier := ID (225);
+      Checkpoint_Transition_ID                   : constant Identifier := ID (226);
 
       procedure Expect_Live_LSM_Authority (Target : in out Database; Context_Text : String) is
          Replay, Memtable_Bytes                                    : Interfaces.Unsigned_64;
@@ -1369,6 +1378,24 @@ package body Flyology.DB.Engine_Tests is
          end if;
       end Expect_Live_Entry_Sequence;
    begin
+      declare
+         Raised : Boolean := False;
+      begin
+         begin
+            declare
+               Invalid : constant Checkpoint_Run_Identity := Configure_Checkpoint_Run (2, Zero_Identifier);
+               pragma Unreferenced (Invalid);
+            begin
+               null;
+            end;
+         exception
+            when Constraint_Error =>
+               Raised := True;
+         end;
+         if not Raised then
+            raise Program_Error with "zero checkpoint run identity was accepted";
+         end if;
+      end;
       Bind_Context (Context, Backend, "manifest-family-api");
       Create
         (Item,
@@ -1491,8 +1518,43 @@ package body Flyology.DB.Engine_Tests is
          Snapshot_Allocation_Points                     :
            constant array (Positive range 1 .. 2) of Testing.Allocation_Fault_Point :=
              [Testing.Checkpoint_References, Testing.Checkpoint_SST];
+
+         procedure Expect_Invalid_Run_Map (Map : Checkpoint_Run_Identity_Array; Context_Text : String) is
+         begin
+            Testing.Build_First_Checkpoint
+              (Item,
+               Map,
+               Checkpoint_Manifest_ID,
+               Checkpoint_Transition_ID,
+               Checkpoint_Runs,
+               Checkpoint_Identities,
+               Checkpoint_Replay,
+               Result);
+            Expect (Result, Invalid_State, Context_Text);
+            Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
+            if After_Batches /= Before_Batches
+              or else After_Manifests /= Before_Manifests
+              or else After_Heads /= Before_Heads
+            then
+               raise Program_Error with Context_Text & " published an object";
+            end if;
+         end Expect_Invalid_Run_Map;
       begin
          Testing.Publication_Counts (Context, Before_Batches, Before_Manifests, Before_Heads);
+         Expect_Invalid_Run_Map
+           ([Configure_Checkpoint_Run (2, First_Run_ID)], "incomplete checkpoint run map was accepted");
+         Expect_Invalid_Run_Map
+           ([Configure_Checkpoint_Run (2, First_Run_ID), Configure_Checkpoint_Run (2, ID (224))],
+            "duplicate checkpoint family was accepted");
+         Expect_Invalid_Run_Map
+           ([Configure_Checkpoint_Run (2, First_Run_ID), Configure_Checkpoint_Run (7, First_Run_ID)],
+            "duplicate checkpoint run identity was accepted");
+         Expect_Invalid_Run_Map
+           ([Configure_Checkpoint_Run (2, First_Run_ID), Configure_Checkpoint_Run (8, ID (224))],
+            "unknown checkpoint family was accepted");
+         Expect_Invalid_Run_Map
+           ([Configure_Checkpoint_Run (2, Checkpoint_Manifest_ID), Configure_Checkpoint_Run (7, ID (224))],
+            "checkpoint run/manifest identity collision was accepted");
          for Point of Snapshot_Allocation_Points loop
             Testing.Fail_Next_Allocation (Point);
             Testing.Build_First_SST
@@ -1518,7 +1580,14 @@ package body Flyology.DB.Engine_Tests is
 
          Testing.Fail_Next_Allocation (Testing.Checkpoint_Manifest);
          Testing.Build_First_Checkpoint
-           (Item, Checkpoint_Runs, Checkpoint_Identities, Checkpoint_Replay, Result);
+           (Item,
+            Checkpoint_Run_Map,
+            Checkpoint_Manifest_ID,
+            Checkpoint_Transition_ID,
+            Checkpoint_Runs,
+            Checkpoint_Identities,
+            Checkpoint_Replay,
+            Result);
          Expect (Result, Capacity_Exceeded, "checkpoint-plan allocation failure was not typed capacity");
          Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
          if After_Batches /= Before_Batches
@@ -1528,7 +1597,14 @@ package body Flyology.DB.Engine_Tests is
             raise Program_Error with "checkpoint-plan allocation failure published an object";
          end if;
          Testing.Build_First_Checkpoint
-           (Item, Checkpoint_Runs, Checkpoint_Identities, Checkpoint_Replay, Result);
+           (Item,
+            Checkpoint_Run_Map,
+            Checkpoint_Manifest_ID,
+            Checkpoint_Transition_ID,
+            Checkpoint_Runs,
+            Checkpoint_Identities,
+            Checkpoint_Replay,
+            Result);
          if Result /= Success
            or else Checkpoint_Runs /= 2
            or else Checkpoint_Identities /= 1

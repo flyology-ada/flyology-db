@@ -1,5 +1,25 @@
 # Review record
 
+## Accepted caller-owned checkpoint identity candidate
+
+- Parent: exact whole-checkpoint plan commit `f5c0355`.
+- Scope: a public immutable family/run mapping value and planner admission that requires exact coverage of the
+  persisted family registry, joins mappings by family ID, rejects missing/unknown/duplicate families, rejects zero or
+  duplicate run IDs and collisions with the manifest/transition IDs, and copies only nonempty-family IDs into owned
+  SSTs. This unit still performs no object I/O, HEAD transition, public Flush, recovery change, or composable work.
+- Constant authority: the library invents no identity, count, default, or allocation ceiling. Every run, manifest,
+  and transition ID is caller-owned; authenticated registry size and family IDs determine exact map admission. The
+  two run IDs and successor IDs in the regression are stable operation fixtures with no persisted-format authority.
+- Verification: `./tests/scripts/test.sh` passes root/test builds, repository/provenance checks, deterministic Ada,
+  filesystem crash/recovery, 32 comparative cases, pinned TidesDB 4/4, and all adapter fixtures against Object
+  Storage `386865021321bf95b133efbaab4d8e77086cac0b`. The focused corpus accepts a permuted exact map, builds both
+  nonempty-family runs, and rejects zero, incomplete, duplicate-family, duplicate-run, unknown-family, and
+  manifest-colliding inputs without changing batch/manifest/HEAD publication counts. Selected SPARK units and
+  TLA+/TLAPS models are unchanged.
+- Findings cycle: the sweep confirms the public constructor cannot manufacture zero identity state, planner
+  validation occurs before exact checkpoint allocations, caller storage is never retained, and canonical output is
+  independent of input order. Follow-up review finds no remaining P0, P1, P2, or P3 issue in this identity boundary.
+
 ## Accepted exact whole-checkpoint plan candidate
 
 - Parent: exact first-SST snapshot commit `3d16863`.

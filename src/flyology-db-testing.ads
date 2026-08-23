@@ -148,6 +148,9 @@ private package Flyology.DB.Testing is
       Result           : out Outcome_Code);
    procedure Build_First_Checkpoint
      (Item            : in out Database;
+      Runs            : Checkpoint_Run_Identity_Array;
+      Manifest_ID     : Identifier;
+      Transition_ID   : Identifier;
       Run_Total       : out Natural;
       Identity_Total  : out Natural;
       Replay_Boundary : out Sequence_Number;

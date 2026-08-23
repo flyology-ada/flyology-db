@@ -1347,12 +1347,6 @@ package body Flyology.DB is
       SSTs                : Checkpoint_SST_Array := [others => null];
       Expected_Generation : Generation_Value;
    end record;
-   --  These disjoint structural-ID tags identify only unpublished test plans.
-   --  They are reference-fixture policy, never public or persisted-format
-   --  authority; changing them changes fixture object identities only.
-   Test_Checkpoint_Run_Tag        : constant Byte := 16#D1#;
-   Test_Checkpoint_Manifest_Tag   : constant Byte := 16#D2#;
-   Test_Checkpoint_Transition_Tag : constant Byte := 16#D3#;
    type Seen_Transaction_Array is array (Positive range <>) of Transaction_Identifier;
    type Used_Batch_ID_Array is array (Positive range <>) of Identifier;
    type History_Image_Array is array (Positive range <>) of Shared_Image_Access;
@@ -3059,6 +3053,7 @@ package body Flyology.DB is
 
    procedure Build_First_Checkpoint_Plan
      (State         : not null Engine_State_Access;
+      Runs          : Checkpoint_Run_Identity_Array;
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
       Plan          : out Checkpoint_Plan;
@@ -3073,6 +3068,16 @@ package body Flyology.DB is
       Run_Total      : Natural := 0;
       Run_Index      : Natural := 0;
       Allocation     : LSM_Runtime.Allocation_Status;
+
+      function Run_For (Family_ID : Column_Family_ID) return Identifier is
+      begin
+         for Run of Runs loop
+            if Run.Family_ID = Family_ID then
+               return Run.Run_ID;
+            end if;
+         end loop;
+         return Zero_Identifier;
+      end Run_For;
    begin
       Plan := (others => <>);
       if Is_Zero (Manifest_ID)
@@ -3112,16 +3117,45 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
          return;
       end if;
+
+      if Runs'Length /= Natural (Base.Family_Total) then
+         Result := Invalid_State;
+         return;
+      end if;
+      for Index in Runs'Range loop
+         declare
+            Family_Found : Boolean := False;
+         begin
+            for Family_Index in Manifests.Family_Slot range 1 .. Base.Family_Total loop
+               if Runs (Index).Family_ID = Column_Family_ID (Base.Families (Family_Index).ID) then
+                  Family_Found := True;
+                  exit;
+               end if;
+            end loop;
+            if not Family_Found
+              or else Is_Zero (Runs (Index).Run_ID)
+              or else Runs (Index).Run_ID = Manifest_ID
+              or else Runs (Index).Run_ID = Transition_ID
+            then
+               Result := Invalid_State;
+               return;
+            end if;
+            for Previous in Runs'First .. Index - 1 loop
+               if Runs (Previous).Family_ID = Runs (Index).Family_ID
+                 or else Runs (Previous).Run_ID = Runs (Index).Run_ID
+               then
+                  Result := Invalid_State;
+                  return;
+               end if;
+            end loop;
+         end;
+      end loop;
       Plan.Expected_Generation := Generation;
 
       for Family_Index in Manifests.Family_Slot range 1 .. Base.Family_Total loop
          declare
             Family_ID : constant Column_Family_ID := Column_Family_ID (Base.Families (Family_Index).ID);
-            --  Test and internal planning use a stable per-family domain only;
-            --  the public Flush surface will supply caller-owned run IDs.
-            Run_ID    : constant Identifier :=
-              Structural_ID
-                (Test_Checkpoint_Run_Tag, Interfaces.Unsigned_64 (Base.Families (Family_Index).ID));
+            Run_ID    : constant Identifier := Run_For (Family_ID);
          begin
             Build_Family_SST (State, Family_ID, Run_ID, Plan.SSTs (Family_Index), Result);
             if Result = Success then
@@ -5106,6 +5140,15 @@ package body Flyology.DB is
          return Result;
       end;
    end Configure_Column_Family;
+
+   function Configure_Checkpoint_Run
+     (Family_ID : Column_Family_ID; Run_ID : Identifier) return Checkpoint_Run_Identity is
+   begin
+      if Is_Zero (Run_ID) then
+         raise Constraint_Error with "checkpoint run identity must be nonzero";
+      end if;
+      return (Family_ID => Family_ID, Run_ID => Run_ID);
+   end Configure_Checkpoint_Run;
 
    procedure Build_Root_Manifest
      (Database_ID           : Database_Identifier;
@@ -7295,6 +7338,9 @@ package body Flyology.DB is
 
    procedure Build_Test_First_Checkpoint
      (Item            : in out Database;
+      Runs            : Checkpoint_Run_Identity_Array;
+      Manifest_ID     : Identifier;
+      Transition_ID   : Identifier;
       Run_Total       : out Natural;
       Identity_Total  : out Natural;
       Replay_Boundary : out Sequence_Number;
@@ -7306,10 +7352,6 @@ package body Flyology.DB is
       Encode_Result : LSM_Runtime.Encode_Status;
       Guard         : Checkpoint_Guard;
       pragma Unreferenced (Guard);
-      --  Stable test-only successor IDs isolate complete plan construction.
-      --  Production Flush will receive both from its caller-owned operation.
-      Manifest_ID   : constant Identifier := Structural_ID (Test_Checkpoint_Manifest_Tag, 1);
-      Transition_ID : constant Identifier := Structural_ID (Test_Checkpoint_Transition_Tag, 1);
    begin
       Run_Total := 0;
       Identity_Total := 0;
@@ -7321,7 +7363,7 @@ package body Flyology.DB is
       Guard.Life := Item.Life'Unchecked_Access;
       Guard.Active := True;
       Item.Life.Await_Quiescent;
-      Build_First_Checkpoint_Plan (State, Manifest_ID, Transition_ID, Plan, Result);
+      Build_First_Checkpoint_Plan (State, Runs, Manifest_ID, Transition_ID, Plan, Result);
       if Result = Success then
          LSM_Runtime.Encode_Checkpoint_Manifest (Plan.Manifest.all, Image, Encode_Result);
          if Encode_Result /= LSM_Runtime.Encoded then
