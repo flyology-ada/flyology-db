@@ -47,16 +47,24 @@ SPARK contracts do not claim functional equivalence between those byte-level beh
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:
 
-- TLC exhausts 105,663 distinct states of the bounded two-writer, two-transaction commit-publication model and checks
-  type, reachable-chain, durable-acknowledgment, no-replay, explicit stale-publication history, and
-  cacheless-recovery invariants. A separate negative model deliberately applies the shared publication-history
-  function after a writer becomes stale and must violate the stale-publication invariant.
-- A deliberate witness predicate emits an accepted-but-response-lost publication path. A checked converter validates
-  every state and projects the scenario to `oracles/workloads/tla_commit_publication_witness.ndjson`.
-- TLAPS, in strict mode with its SMT backend, proves all 20 obligations in the unbounded inductive safety kernel.
-  These obligations cover initialization and preservation by every abstract action.
+- TLC exhausts 112,031 distinct states of the bounded two-writer, two-transaction commit-publication model and checks
+  type, reachable-chain, transaction-count sequence advancement, whole-batch visibility and outcomes,
+  durable-acknowledgment, no-replay, explicit stale-publication history, and cacheless all-or-none recovery. The gate
+  separately requires successful pooled-batch coverage. A negative model deliberately applies the shared
+  publication-history function after a writer becomes stale and must violate the stale-publication invariant. A
+  second negative model overlaps one transaction between an ever-unknown batch and an active batch and must violate
+  the transaction-level no-active-replay invariant.
+- A deliberate witness predicate emits a two-transaction, cross-family, accepted-but-response-lost publication path.
+  A checked converter validates every state and projects the scenario to
+  `oracles/workloads/tla_commit_publication_witness.ndjson`.
+- Two additional checked witnesses require committed and failed reconciliation after two later valid HEAD
+  transitions, guarding chain-descendant reasoning rather than only exact or immediate HEAD matching.
+- TLAPS, in strict mode with its SMT backend, proves all 23 obligations in the unbounded inductive safety kernel.
+  These obligations cover initialization and preservation by every abstract action, pairwise-disjoint transaction
+  ownership across batches, and the derived transaction-level no-active-replay theorem.
 
-The TLAPS kernel is an abstraction of the executable TLC model. It proves publication-epoch monotonicity, while the
-executable TLC model separately checks stale-writer exclusion with a history monitor. The mapping and deliberately
-excluded claims are documented in `formal/tla/README.md`; a machine-checked refinement theorem between the two
-models is not yet claimed.
+The TLAPS kernel is a batch-atomic abstraction assigning every batch an arbitrary nonempty transaction set, with
+pairwise-disjoint ownership between batches. It proves publication-epoch monotonicity, acknowledged whole-batch
+visibility, and derives transaction-level no-active-replay from batch no-replay plus ownership. The executable TLC
+model separately checks sequence arithmetic, recovery, and stale-writer exclusion. The mapping and deliberately
+excluded claims are documented in `formal/tla/README.md`; no machine-checked refinement theorem is claimed.

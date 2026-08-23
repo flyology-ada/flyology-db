@@ -1,20 +1,26 @@
 ------------------------ MODULE PublicationSafetyProof -----------------------
 EXTENDS Naturals
 
-CONSTANTS BatchIds, Txns, NoBatch
+CONSTANTS BatchIds, Txns, BatchTransactions
 
-ASSUME
+BatchTransactionsAreDisjoint ==
+    \A left, right \in BatchIds :
+        left # right => BatchTransactions[left] \intersect BatchTransactions[right] = {}
+
+OwnershipAssumptions ==
     /\ BatchIds # {}
     /\ Txns # {}
-    /\ NoBatch \notin BatchIds
+    /\ BatchTransactions \in [BatchIds -> SUBSET Txns]
+    /\ \A b \in BatchIds : BatchTransactions[b] # {}
+    /\ BatchTransactionsAreDisjoint
+
+ASSUME OwnershipAssumptions
 
 Phases == {"Idle", "Active", "Stored", "Accepted", "Unknown", "Committed", "Failed"}
 
 VARIABLES
     remote,
     visible,
-    visibleTxns,
-    txnBatch,
     phase,
     acknowledged,
     everUnknown,
@@ -25,8 +31,6 @@ VARIABLES
 vars == <<
     remote,
     visible,
-    visibleTxns,
-    txnBatch,
     phase,
     acknowledged,
     everUnknown,
@@ -35,118 +39,105 @@ vars == <<
     local
 >>
 
+VisibleTxns == UNION {BatchTransactions[b] : b \in visible}
+AcknowledgedTxns == UNION {BatchTransactions[b] : b \in acknowledged}
+ActiveBatches == {b \in BatchIds : phase[b] \in {"Active", "Stored", "Accepted"}}
+
 Init ==
     /\ remote = {}
     /\ visible = {}
-    /\ visibleTxns = {}
-    /\ txnBatch = [t \in Txns |-> NoBatch]
-    /\ phase = [t \in Txns |-> "Idle"]
+    /\ phase = [b \in BatchIds |-> "Idle"]
     /\ acknowledged = {}
     /\ everUnknown = {}
     /\ epoch = 1
     /\ publicationEpoch = [b \in BatchIds |-> 0]
     /\ local = {}
 
-Prepare(t) ==
-    /\ t \in Txns
-    /\ phase[t] = "Idle"
-    /\ phase' = [phase EXCEPT ![t] = "Active"]
+Prepare(b) ==
+    /\ b \in BatchIds
+    /\ phase[b] = "Idle"
+    /\ phase' = [phase EXCEPT ![b] = "Active"]
     /\ UNCHANGED <<
-        remote, visible, visibleTxns, txnBatch, acknowledged, everUnknown,
-        epoch, publicationEpoch, local
+        remote, visible, acknowledged, everUnknown, epoch, publicationEpoch,
+        local
        >>
 
-Store(t, b) ==
-    /\ t \in Txns
+Store(b) ==
     /\ b \in BatchIds \ remote
-    /\ phase[t] = "Active"
+    /\ phase[b] = "Active"
     /\ remote' = remote \cup {b}
-    /\ txnBatch' = [txnBatch EXCEPT ![t] = b]
-    /\ phase' = [phase EXCEPT ![t] = "Stored"]
+    /\ phase' = [phase EXCEPT ![b] = "Stored"]
     /\ local' = local \cup {b}
     /\ UNCHANGED <<
-        visible, visibleTxns, acknowledged, everUnknown, epoch,
-        publicationEpoch
+        visible, acknowledged, everUnknown, epoch, publicationEpoch
        >>
 
-Publish(t) ==
-    LET b == txnBatch[t]
-    IN
-    /\ t \in Txns
-    /\ phase[t] = "Stored"
-    /\ b \in remote
+Publish(b) ==
+    /\ b \in remote \ visible
+    /\ phase[b] = "Stored"
     /\ visible' = visible \cup {b}
-    /\ visibleTxns' = visibleTxns \cup {t}
-    /\ phase' = [phase EXCEPT ![t] = "Accepted"]
+    /\ phase' = [phase EXCEPT ![b] = "Accepted"]
     /\ publicationEpoch' = [publicationEpoch EXCEPT ![b] = epoch]
+    /\ UNCHANGED <<remote, acknowledged, everUnknown, epoch, local>>
+
+ObserveSuccess(b) ==
+    /\ b \in visible
+    /\ phase[b] = "Accepted"
+    /\ phase' = [phase EXCEPT ![b] = "Committed"]
+    /\ acknowledged' = acknowledged \cup {b}
     /\ UNCHANGED <<
-        remote, txnBatch, acknowledged, everUnknown, epoch, local
+        remote, visible, everUnknown, epoch, publicationEpoch, local
        >>
 
-ObserveSuccess(t) ==
-    /\ t \in Txns
-    /\ phase[t] = "Accepted"
-    /\ t \in visibleTxns
-    /\ phase' = [phase EXCEPT ![t] = "Committed"]
-    /\ acknowledged' = acknowledged \cup {t}
+LoseResponse(b) ==
+    /\ b \in remote
+    /\ phase[b] \in {"Stored", "Accepted"}
+    /\ phase' = [phase EXCEPT ![b] = "Unknown"]
+    /\ everUnknown' = everUnknown \cup {b}
     /\ UNCHANGED <<
-        remote, visible, visibleTxns, txnBatch, everUnknown, epoch,
-        publicationEpoch, local
+        remote, visible, acknowledged, epoch, publicationEpoch, local
        >>
 
-LoseResponse(t) ==
-    /\ t \in Txns
-    /\ phase[t] \in {"Stored", "Accepted"}
-    /\ phase' = [phase EXCEPT ![t] = "Unknown"]
-    /\ everUnknown' = everUnknown \cup {t}
+ResolveCommitted(b) ==
+    /\ b \in visible
+    /\ phase[b] = "Unknown"
+    /\ phase' = [phase EXCEPT ![b] = "Committed"]
+    /\ acknowledged' = acknowledged \cup {b}
     /\ UNCHANGED <<
-        remote, visible, visibleTxns, txnBatch, acknowledged, epoch,
-        publicationEpoch, local
+        remote, visible, everUnknown, epoch, publicationEpoch, local
        >>
 
-ResolveCommitted(t) ==
-    /\ t \in Txns
-    /\ phase[t] = "Unknown"
-    /\ t \in visibleTxns
-    /\ phase' = [phase EXCEPT ![t] = "Committed"]
-    /\ acknowledged' = acknowledged \cup {t}
+ResolveFailed(b) ==
+    /\ b \in remote \ visible
+    /\ phase[b] = "Unknown"
+    /\ phase' = [phase EXCEPT ![b] = "Failed"]
     /\ UNCHANGED <<
-        remote, visible, visibleTxns, txnBatch, everUnknown, epoch,
-        publicationEpoch, local
-       >>
-
-ResolveFailed(t) ==
-    /\ t \in Txns
-    /\ phase[t] = "Unknown"
-    /\ t \notin visibleTxns
-    /\ phase' = [phase EXCEPT ![t] = "Failed"]
-    /\ UNCHANGED <<
-        remote, visible, visibleTxns, txnBatch, acknowledged, everUnknown,
-        epoch, publicationEpoch, local
+        remote, visible, acknowledged, everUnknown, epoch, publicationEpoch,
+        local
        >>
 
 AcquireWriter ==
     /\ epoch' = epoch + 1
     /\ UNCHANGED <<
-        remote, visible, visibleTxns, txnBatch, phase, acknowledged,
-        everUnknown, publicationEpoch, local
+        remote, visible, phase, acknowledged, everUnknown, publicationEpoch,
+        local
        >>
 
 Crash ==
     /\ local' = {}
     /\ UNCHANGED <<
-        remote, visible, visibleTxns, txnBatch, phase, acknowledged,
-        everUnknown, epoch, publicationEpoch
+        remote, visible, phase, acknowledged, everUnknown, epoch,
+        publicationEpoch
        >>
 
 Next ==
-    \/ \E t \in Txns : Prepare(t)
-    \/ \E t \in Txns, b \in BatchIds : Store(t, b)
-    \/ \E t \in Txns : Publish(t)
-    \/ \E t \in Txns : ObserveSuccess(t)
-    \/ \E t \in Txns : LoseResponse(t)
-    \/ \E t \in Txns : ResolveCommitted(t)
-    \/ \E t \in Txns : ResolveFailed(t)
+    \/ \E b \in BatchIds : Prepare(b)
+    \/ \E b \in BatchIds : Store(b)
+    \/ \E b \in BatchIds : Publish(b)
+    \/ \E b \in BatchIds : ObserveSuccess(b)
+    \/ \E b \in BatchIds : LoseResponse(b)
+    \/ \E b \in BatchIds : ResolveCommitted(b)
+    \/ \E b \in BatchIds : ResolveFailed(b)
     \/ AcquireWriter
     \/ Crash
 
@@ -155,23 +146,27 @@ Spec == Init /\ [][Next]_vars
 TypeOK ==
     /\ remote \subseteq BatchIds
     /\ visible \subseteq BatchIds
-    /\ visibleTxns \subseteq Txns
-    /\ txnBatch \in [Txns -> BatchIds \cup {NoBatch}]
-    /\ phase \in [Txns -> Phases]
-    /\ acknowledged \subseteq Txns
-    /\ everUnknown \subseteq Txns
+    /\ phase \in [BatchIds -> Phases]
+    /\ acknowledged \subseteq BatchIds
+    /\ everUnknown \subseteq BatchIds
     /\ epoch \in Nat \ {0}
     /\ publicationEpoch \in [BatchIds -> Nat]
     /\ local \subseteq BatchIds
 
 VisibilityIsRemote == visible \subseteq remote
 
-AcknowledgementIsVisible == acknowledged \subseteq visibleTxns
+AcknowledgementIsVisible == acknowledged \subseteq visible
+
+AcknowledgedTransactionsAreVisible == AcknowledgedTxns \subseteq VisibleTxns
 
 PublicationEpochIsMonotonic == \A b \in visible : publicationEpoch[b] <= epoch
 
 UnknownCannotReplay ==
-    \A t \in everUnknown : phase[t] \notin {"Idle", "Active", "Stored", "Accepted"}
+    \A b \in everUnknown : phase[b] \notin {"Idle", "Active", "Stored", "Accepted"}
+
+UnknownTransactionsCannotBeActive ==
+    \A unknownBatch \in everUnknown, activeBatch \in ActiveBatches :
+        BatchTransactions[unknownBatch] \intersect BatchTransactions[activeBatch] = {}
 
 LocalIsOnlyACache == local \subseteq remote
 
@@ -179,65 +174,98 @@ Safety ==
     TypeOK
         /\ VisibilityIsRemote
         /\ AcknowledgementIsVisible
+        /\ AcknowledgedTransactionsAreVisible
         /\ PublicationEpochIsMonotonic
         /\ UnknownCannotReplay
         /\ LocalIsOnlyACache
 
+THEOREM DisjointOwnershipImpliesNoActiveReplay ==
+    OwnershipAssumptions /\ TypeOK /\ UnknownCannotReplay =>
+        UnknownTransactionsCannotBeActive
+<1> QED BY DEF TypeOK, UnknownCannotReplay,
+    UnknownTransactionsCannotBeActive, ActiveBatches,
+    OwnershipAssumptions, BatchTransactionsAreDisjoint, Phases
+
+THEOREM TransactionLevelNoActiveReplay ==
+    OwnershipAssumptions /\ Safety => UnknownTransactionsCannotBeActive
+<1> QED BY DisjointOwnershipImpliesNoActiveReplay DEF Safety
+
 THEOREM InitialSafety == Init => Safety
 <1> QED BY DEF Init, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
 THEOREM PreparePreservesSafety ==
-    \A t \in Txns : Safety /\ Prepare(t) => Safety'
+    \A b \in BatchIds : Safety /\ Prepare(b) => Safety'
 <1> QED BY DEF Prepare, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
 THEOREM StorePreservesSafety ==
-    \A t \in Txns, b \in BatchIds : Safety /\ Store(t, b) => Safety'
+    \A b \in BatchIds : Safety /\ Store(b) => Safety'
 <1> QED BY DEF Store, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
 THEOREM PublishPreservesSafety ==
-    \A t \in Txns : Safety /\ Publish(t) => Safety'
+    \A b \in BatchIds : Safety /\ Publish(b) => Safety'
 <1> QED BY DEF Publish, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
 THEOREM SuccessPreservesSafety ==
-    \A t \in Txns : Safety /\ ObserveSuccess(t) => Safety'
+    \A b \in BatchIds : Safety /\ ObserveSuccess(b) => Safety'
 <1> QED BY DEF ObserveSuccess, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
 THEOREM LossPreservesSafety ==
-    \A t \in Txns : Safety /\ LoseResponse(t) => Safety'
+    \A b \in BatchIds : Safety /\ LoseResponse(b) => Safety'
 <1> QED BY DEF LoseResponse, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
 THEOREM ResolveCommitPreservesSafety ==
-    \A t \in Txns : Safety /\ ResolveCommitted(t) => Safety'
+    \A b \in BatchIds : Safety /\ ResolveCommitted(b) => Safety'
 <1> QED BY DEF ResolveCommitted, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
 THEOREM ResolveFailurePreservesSafety ==
-    \A t \in Txns : Safety /\ ResolveFailed(t) => Safety'
+    \A b \in BatchIds : Safety /\ ResolveFailed(b) => Safety'
 <1> QED BY DEF ResolveFailed, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
-THEOREM AcquisitionPreservesSafety == Safety /\ AcquireWriter => Safety'
+THEOREM AcquisitionPreservesSafety ==
+    Safety /\ AcquireWriter => Safety'
 <1> QED BY DEF AcquireWriter, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
 THEOREM CrashPreservesSafety == Safety /\ Crash => Safety'
 <1> QED BY DEF Crash, Safety, TypeOK, VisibilityIsRemote,
-    AcknowledgementIsVisible, PublicationEpochIsMonotonic, UnknownCannotReplay,
+    AcknowledgementIsVisible, AcknowledgedTransactionsAreVisible,
+    AcknowledgedTxns, VisibleTxns, PublicationEpochIsMonotonic,
+    UnknownCannotReplay,
     LocalIsOnlyACache, Phases
 
 THEOREM NextPreservesSafety == Safety /\ Next => Safety'

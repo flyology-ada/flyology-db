@@ -7,7 +7,7 @@ CONSTANTS
     B1, B2,
     F1, F2,
     Q0, Q1, Q2, Q3, Q4,
-    NoWriter, NoTxn, NoBatch, NoTransition
+    NoWriter, NoBatch, NoTransition
 
 Writers == {W1, W2}
 Txns == {T1, T2}
@@ -43,9 +43,10 @@ VARIABLES
     publicationOrdinal,
     publicationTransition,
     remoteBatches,
-    batchTxn,
+    batchTxns,
     batchPrevious,
-    batchSequence,
+    batchFirstSequence,
+    batchLastSequence,
     batchEpoch,
     batchExpectedOrdinal,
     batchExpectedTransition,
@@ -55,8 +56,10 @@ VARIABLES
     receipt,
     acknowledged,
     wasUnknown,
+    visibleTxns,
     localBatches,
     recoveredBatches,
+    recoveredTxns,
     recoveredSequence,
     crashObserved,
     stalePublicationObserved,
@@ -81,9 +84,10 @@ vars == <<
     publicationOrdinal,
     publicationTransition,
     remoteBatches,
-    batchTxn,
+    batchTxns,
     batchPrevious,
-    batchSequence,
+    batchFirstSequence,
+    batchLastSequence,
     batchEpoch,
     batchExpectedOrdinal,
     batchExpectedTransition,
@@ -93,8 +97,10 @@ vars == <<
     receipt,
     acknowledged,
     wasUnknown,
+    visibleTxns,
     localBatches,
     recoveredBatches,
+    recoveredTxns,
     recoveredSequence,
     crashObserved,
     stalePublicationObserved,
@@ -113,9 +119,10 @@ OtherTxnFields == <<
 >>
 
 OtherBatchFields == <<
-    batchTxn,
+    batchTxns,
     batchPrevious,
-    batchSequence,
+    batchFirstSequence,
+    batchLastSequence,
     batchEpoch,
     batchExpectedOrdinal,
     batchExpectedTransition,
@@ -138,10 +145,14 @@ ReachableBatches ==
     THEN {}
     ELSE ReachFrom({latestBatch}, Cardinality(BatchIds))
 
-VisibleFamilies(t) ==
-    IF \E b \in ReachableBatches : batchTxn[b] = t
-    THEN TxnFamilies(t)
-    ELSE {}
+ReachableTxns == UNION {batchTxns[b] : b \in ReachableBatches}
+
+VisibleFamilies(t) == IF t \in visibleTxns THEN TxnFamilies(t) ELSE {}
+
+PreparedGroup(b) ==
+    {t \in Txns : txnBatch[t] = b /\ txnState[t] = "Prepared"}
+
+BatchRepresentative(b) == CHOOSE t \in batchTxns[b] : TRUE
 
 Init ==
     /\ epoch = 1
@@ -162,9 +173,10 @@ Init ==
     /\ publicationOrdinal = [t \in Txns |-> 0]
     /\ publicationTransition = [t \in Txns |-> NoTransition]
     /\ remoteBatches = {}
-    /\ batchTxn = [b \in BatchIds |-> NoTxn]
+    /\ batchTxns = [b \in BatchIds |-> {}]
     /\ batchPrevious = [b \in BatchIds |-> NoBatch]
-    /\ batchSequence = [b \in BatchIds |-> 0]
+    /\ batchFirstSequence = [b \in BatchIds |-> 0]
+    /\ batchLastSequence = [b \in BatchIds |-> 0]
     /\ batchEpoch = [b \in BatchIds |-> 0]
     /\ batchExpectedOrdinal = [b \in BatchIds |-> 0]
     /\ batchExpectedTransition = [b \in BatchIds |-> NoTransition]
@@ -174,206 +186,267 @@ Init ==
     /\ receipt = [t \in Txns |-> "None"]
     /\ acknowledged = {}
     /\ wasUnknown = [t \in Txns |-> FALSE]
+    /\ visibleTxns = {}
     /\ localBatches = {}
     /\ recoveredBatches = {}
+    /\ recoveredTxns = {}
     /\ recoveredSequence = 0
     /\ crashObserved = FALSE
     /\ stalePublicationObserved = FALSE
     /\ lastAction = "Init"
 
-Prepare(t, w, b, q) ==
-    /\ txnState[t] = "Idle"
+PrepareGroup(group, w, b, q, action) ==
+    /\ group \subseteq Txns
+    /\ group # {}
+    /\ \A t \in group : txnState[t] = "Idle"
     /\ writerEpoch[w] = epoch
-    /\ b \notin remoteBatches
-    /\ \A other \in Txns : txnState[other] # "Prepared" \/ txnBatch[other] # b
+    /\ b \in BatchIds \ remoteBatches
+    /\ \A t \in Txns : txnBatch[t] # b
     /\ q \in TransitionIds
     /\ q # headTransition
     /\ TransitionIdentity(headOrdinal + 1, q) \notin usedTransitionIdentities
-    /\ txnState' = [txnState EXCEPT ![t] = "Prepared"]
-    /\ txnWriter' = [txnWriter EXCEPT ![t] = w]
-    /\ txnBatch' = [txnBatch EXCEPT ![t] = b]
-    /\ expectedGeneration' = [expectedGeneration EXCEPT ![t] = generation]
-    /\ expectedEpoch' = [expectedEpoch EXCEPT ![t] = epoch]
-    /\ expectedOrdinal' = [expectedOrdinal EXCEPT ![t] = headOrdinal]
-    /\ expectedTransition' = [expectedTransition EXCEPT ![t] = headTransition]
-    /\ publicationOrdinal' = [publicationOrdinal EXCEPT ![t] = headOrdinal + 1]
-    /\ publicationTransition' = [publicationTransition EXCEPT ![t] = q]
+    /\ txnState' =
+        [t \in Txns |-> IF t \in group THEN "Prepared" ELSE txnState[t]]
+    /\ txnWriter' =
+        [t \in Txns |-> IF t \in group THEN w ELSE txnWriter[t]]
+    /\ txnBatch' =
+        [t \in Txns |-> IF t \in group THEN b ELSE txnBatch[t]]
+    /\ expectedGeneration' =
+        [t \in Txns |-> IF t \in group THEN generation ELSE expectedGeneration[t]]
+    /\ expectedEpoch' =
+        [t \in Txns |-> IF t \in group THEN epoch ELSE expectedEpoch[t]]
+    /\ expectedOrdinal' =
+        [t \in Txns |-> IF t \in group THEN headOrdinal ELSE expectedOrdinal[t]]
+    /\ expectedTransition' =
+        [t \in Txns |-> IF t \in group THEN headTransition ELSE expectedTransition[t]]
+    /\ publicationOrdinal' =
+        [t \in Txns |-> IF t \in group THEN headOrdinal + 1 ELSE publicationOrdinal[t]]
+    /\ publicationTransition' =
+        [t \in Txns |-> IF t \in group THEN q ELSE publicationTransition[t]]
     /\ usedTransitionIdentities' =
         usedTransitionIdentities \cup {TransitionIdentity(headOrdinal + 1, q)}
-    /\ lastAction' = "Prepare"
+    /\ lastAction' = action
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, remoteBatches,
-        OtherBatchFields, receipt, acknowledged, wasUnknown, localBatches,
-        recoveredBatches, recoveredSequence, crashObserved,
+        OtherBatchFields, receipt, acknowledged, wasUnknown, visibleTxns, localBatches,
+        recoveredBatches, recoveredTxns, recoveredSequence, crashObserved,
         stalePublicationObserved
        >>
 
-StoreBatch(t) ==
-    LET b == txnBatch[t]
+PrepareSingle(t, w, b, q) ==
+    PrepareGroup({t}, w, b, q, "PrepareSingle")
+
+PreparePooled(w, b, q) ==
+    /\ Cardinality(Txns) > 1
+    /\ PrepareGroup(Txns, w, b, q, "PreparePooled")
+
+StoreBatch(b) ==
+    LET group == PreparedGroup(b)
+        representative == CHOOSE t \in group : TRUE
     IN
-    /\ txnState[t] = "Prepared"
+    /\ group # {}
     /\ b \in BatchIds \ remoteBatches
-    /\ txnState' = [txnState EXCEPT ![t] = "Stored"]
+    /\ txnState' =
+        [t \in Txns |-> IF t \in group THEN "Stored" ELSE txnState[t]]
     /\ remoteBatches' = remoteBatches \cup {b}
-    /\ batchTxn' = [batchTxn EXCEPT ![b] = t]
+    /\ batchTxns' = [batchTxns EXCEPT ![b] = group]
     /\ batchPrevious' = [batchPrevious EXCEPT ![b] = latestBatch]
-    /\ batchSequence' = [batchSequence EXCEPT ![b] = sequence + 1]
-    /\ batchEpoch' = [batchEpoch EXCEPT ![b] = expectedEpoch[t]]
+    /\ batchFirstSequence' = [batchFirstSequence EXCEPT ![b] = sequence + 1]
+    /\ batchLastSequence' =
+        [batchLastSequence EXCEPT ![b] = sequence + Cardinality(group)]
+    /\ batchEpoch' = [batchEpoch EXCEPT ![b] = expectedEpoch[representative]]
     /\ batchExpectedOrdinal' =
-        [batchExpectedOrdinal EXCEPT ![b] = expectedOrdinal[t]]
+        [batchExpectedOrdinal EXCEPT ![b] = expectedOrdinal[representative]]
     /\ batchExpectedTransition' =
-        [batchExpectedTransition EXCEPT ![b] = expectedTransition[t]]
+        [batchExpectedTransition EXCEPT ![b] = expectedTransition[representative]]
     /\ batchPublicationOrdinal' =
-        [batchPublicationOrdinal EXCEPT ![b] = publicationOrdinal[t]]
+        [batchPublicationOrdinal EXCEPT ![b] = publicationOrdinal[representative]]
     /\ batchPublicationTransition' =
-        [batchPublicationTransition EXCEPT ![b] = publicationTransition[t]]
+        [batchPublicationTransition EXCEPT ![b] = publicationTransition[representative]]
     /\ localBatches' = localBatches \cup {b}
     /\ lastAction' = "StoreBatch"
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, OtherTxnFields,
-        usedTransitionIdentities, receipt, acknowledged, wasUnknown,
-        recoveredBatches, recoveredSequence, crashObserved,
+        usedTransitionIdentities, receipt, acknowledged, wasUnknown, visibleTxns,
+        recoveredBatches, recoveredTxns, recoveredSequence, crashObserved,
         stalePublicationObserved
        >>
 
-CanPublish(t) ==
-    LET b == txnBatch[t]
+GroupAgrees(b) ==
+    LET representative == BatchRepresentative(b)
     IN
-    /\ txnState[t] = "Stored"
-    /\ expectedGeneration[t] = generation
-    /\ expectedEpoch[t] = epoch
-    /\ expectedOrdinal[t] = headOrdinal
-    /\ expectedTransition[t] = headTransition
-    /\ writerEpoch[txnWriter[t]] = epoch
+    /\ batchTxns[b] # {}
+    /\ \A t \in batchTxns[b] :
+        /\ txnBatch[t] = b
+        /\ txnWriter[t] = txnWriter[representative]
+        /\ expectedGeneration[t] = expectedGeneration[representative]
+        /\ expectedEpoch[t] = expectedEpoch[representative]
+        /\ expectedOrdinal[t] = expectedOrdinal[representative]
+        /\ expectedTransition[t] = expectedTransition[representative]
+        /\ publicationOrdinal[t] = publicationOrdinal[representative]
+        /\ publicationTransition[t] = publicationTransition[representative]
+
+CanPublish(b) ==
+    LET representative == BatchRepresentative(b)
+    IN
+    /\ GroupAgrees(b)
+    /\ \A t \in batchTxns[b] : txnState[t] = "Stored"
+    /\ expectedGeneration[representative] = generation
+    /\ expectedEpoch[representative] = epoch
+    /\ expectedOrdinal[representative] = headOrdinal
+    /\ expectedTransition[representative] = headTransition
+    /\ writerEpoch[txnWriter[representative]] = epoch
     /\ b \in remoteBatches
     /\ batchPrevious[b] = latestBatch
-    /\ batchSequence[b] = sequence + 1
+    /\ batchFirstSequence[b] = sequence + 1
+    /\ batchLastSequence[b] = sequence + Cardinality(batchTxns[b])
     /\ batchExpectedOrdinal[b] = headOrdinal
     /\ batchExpectedTransition[b] = headTransition
     /\ batchPublicationOrdinal[b] = headOrdinal + 1
-    /\ batchPublicationTransition[b] = publicationTransition[t]
+    /\ batchPublicationTransition[b] = publicationTransition[representative]
 
-PublicationWasStale(t) ==
-    expectedEpoch[t] # epoch \/ writerEpoch[txnWriter[t]] # epoch
-
-PublicationHistoryAfter(t) ==
-    stalePublicationObserved \/ PublicationWasStale(t)
-
-PublishHead(t) ==
-    LET b == txnBatch[t]
+PublicationWasStale(b) ==
+    LET representative == BatchRepresentative(b)
     IN
-    /\ CanPublish(t)
-    /\ sequence' = batchSequence[b]
+    expectedEpoch[representative] # epoch
+        \/ writerEpoch[txnWriter[representative]] # epoch
+
+PublicationHistoryAfter(b) ==
+    stalePublicationObserved \/ PublicationWasStale(b)
+
+PublishHead(b) ==
+    /\ CanPublish(b)
+    /\ sequence' = batchLastSequence[b]
     /\ latestBatch' = b
-    /\ headOrdinal' = publicationOrdinal[t]
-    /\ headTransition' = publicationTransition[t]
+    /\ headOrdinal' = batchPublicationOrdinal[b]
+    /\ headTransition' = batchPublicationTransition[b]
     /\ headPredecessor' = headTransition
     /\ generation' = generation + 1
-    /\ txnState' = [txnState EXCEPT ![t] = "Accepted"]
-    /\ stalePublicationObserved' = PublicationHistoryAfter(t)
+    /\ txnState' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Accepted" ELSE txnState[t]]
+    /\ visibleTxns' = visibleTxns \cup batchTxns[b]
+    /\ stalePublicationObserved' = PublicationHistoryAfter(b)
     /\ lastAction' = "PublishHead"
     /\ UNCHANGED <<
         epoch, writerEpoch, OtherTxnFields, remoteBatches, OtherBatchFields,
         usedTransitionIdentities, receipt, acknowledged, wasUnknown,
-        localBatches, recoveredBatches, recoveredSequence, crashObserved
+        localBatches, recoveredBatches, recoveredTxns, recoveredSequence,
+        crashObserved
        >>
 
-ObserveSuccess(t) ==
-    /\ txnState[t] = "Accepted"
-    /\ txnState' = [txnState EXCEPT ![t] = "Committed"]
-    /\ receipt' = [receipt EXCEPT ![t] = "Committed"]
-    /\ acknowledged' = acknowledged \cup {t}
+ObserveSuccess(b) ==
+    /\ batchTxns[b] # {}
+    /\ \A t \in batchTxns[b] : txnState[t] = "Accepted"
+    /\ txnState' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Committed" ELSE txnState[t]]
+    /\ receipt' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Committed" ELSE receipt[t]]
+    /\ acknowledged' = acknowledged \cup batchTxns[b]
     /\ lastAction' = "ObserveSuccess"
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, OtherTxnFields,
         remoteBatches, OtherBatchFields, usedTransitionIdentities,
-        wasUnknown, localBatches, recoveredBatches, recoveredSequence,
-        crashObserved, stalePublicationObserved
+        wasUnknown, visibleTxns, localBatches, recoveredBatches, recoveredTxns,
+        recoveredSequence, crashObserved, stalePublicationObserved
        >>
 
-LoseAcceptedResponse(t) ==
-    /\ txnState[t] = "Accepted"
-    /\ txnState' = [txnState EXCEPT ![t] = "Unknown"]
-    /\ receipt' = [receipt EXCEPT ![t] = "Unknown"]
-    /\ wasUnknown' = [wasUnknown EXCEPT ![t] = TRUE]
+LoseAcceptedResponse(b) ==
+    /\ batchTxns[b] # {}
+    /\ \A t \in batchTxns[b] : txnState[t] = "Accepted"
+    /\ txnState' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Unknown" ELSE txnState[t]]
+    /\ receipt' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Unknown" ELSE receipt[t]]
+    /\ wasUnknown' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN TRUE ELSE wasUnknown[t]]
     /\ lastAction' = "LoseAcceptedResponse"
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, OtherTxnFields,
         remoteBatches, OtherBatchFields, usedTransitionIdentities,
-        acknowledged, localBatches, recoveredBatches, recoveredSequence,
-        crashObserved, stalePublicationObserved
+        acknowledged, visibleTxns, localBatches, recoveredBatches, recoveredTxns,
+        recoveredSequence, crashObserved, stalePublicationObserved
        >>
 
-LoseUnacceptedResponse(t) ==
-    /\ txnState[t] = "Stored"
-    /\ txnState' = [txnState EXCEPT ![t] = "Unknown"]
-    /\ receipt' = [receipt EXCEPT ![t] = "Unknown"]
-    /\ wasUnknown' = [wasUnknown EXCEPT ![t] = TRUE]
+LoseUnacceptedResponse(b) ==
+    /\ batchTxns[b] # {}
+    /\ \A t \in batchTxns[b] : txnState[t] = "Stored"
+    /\ txnState' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Unknown" ELSE txnState[t]]
+    /\ receipt' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Unknown" ELSE receipt[t]]
+    /\ wasUnknown' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN TRUE ELSE wasUnknown[t]]
     /\ lastAction' = "LoseUnacceptedResponse"
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, OtherTxnFields,
         remoteBatches, OtherBatchFields, usedTransitionIdentities,
-        acknowledged, localBatches, recoveredBatches, recoveredSequence,
-        crashObserved, stalePublicationObserved
+        acknowledged, visibleTxns, localBatches, recoveredBatches, recoveredTxns,
+        recoveredSequence, crashObserved, stalePublicationObserved
        >>
 
-ObservePreconditionFailure(t) ==
-    /\ txnState[t] = "Stored"
-    /\ ~CanPublish(t)
-    /\ txnState' = [txnState EXCEPT ![t] = "Failed"]
-    /\ receipt' = [receipt EXCEPT ![t] = "PreconditionFailed"]
+ObservePreconditionFailure(b) ==
+    /\ batchTxns[b] # {}
+    /\ \A t \in batchTxns[b] : txnState[t] = "Stored"
+    /\ ~CanPublish(b)
+    /\ txnState' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Failed" ELSE txnState[t]]
+    /\ receipt' =
+        [t \in Txns |->
+            IF t \in batchTxns[b] THEN "PreconditionFailed" ELSE receipt[t]]
     /\ lastAction' = "ObservePreconditionFailure"
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, OtherTxnFields,
         remoteBatches, OtherBatchFields, usedTransitionIdentities, acknowledged,
-        wasUnknown, localBatches, recoveredBatches, recoveredSequence,
-        crashObserved, stalePublicationObserved
+        wasUnknown, visibleTxns, localBatches, recoveredBatches, recoveredTxns,
+        recoveredSequence, crashObserved, stalePublicationObserved
        >>
 
-ResolveCommitted(t) ==
-    /\ txnState[t] = "Unknown"
-    /\ \/ /\ headOrdinal = publicationOrdinal[t]
-           /\ headTransition = publicationTransition[t]
-           /\ latestBatch = txnBatch[t]
-       \/ /\ headOrdinal = publicationOrdinal[t] + 1
-           /\ headPredecessor = publicationTransition[t]
-           /\ txnBatch[t] \in ReachableBatches
-    /\ txnState' = [txnState EXCEPT ![t] = "Committed"]
-    /\ receipt' = [receipt EXCEPT ![t] = "Committed"]
-    /\ acknowledged' = acknowledged \cup {t}
+ResolveCommitted(b) ==
+    /\ batchTxns[b] # {}
+    /\ \A t \in batchTxns[b] : txnState[t] = "Unknown"
+    /\ b \in ReachableBatches
+    /\ txnState' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Committed" ELSE txnState[t]]
+    /\ receipt' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Committed" ELSE receipt[t]]
+    /\ acknowledged' = acknowledged \cup batchTxns[b]
     /\ lastAction' = "ResolveCommitted"
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, OtherTxnFields,
         remoteBatches, OtherBatchFields, usedTransitionIdentities,
-        wasUnknown, localBatches, recoveredBatches, recoveredSequence,
-        crashObserved, stalePublicationObserved
+        wasUnknown, visibleTxns, localBatches, recoveredBatches, recoveredTxns,
+        recoveredSequence, crashObserved, stalePublicationObserved
        >>
 
-ResolvePreconditionFailure(t) ==
-    /\ txnState[t] = "Unknown"
-    /\ headOrdinal = expectedOrdinal[t] + 1
-    /\ headPredecessor = expectedTransition[t]
-    /\ headTransition # publicationTransition[t]
-    /\ txnState' = [txnState EXCEPT ![t] = "Failed"]
-    /\ receipt' = [receipt EXCEPT ![t] = "PreconditionFailed"]
+ResolvePreconditionFailure(b) ==
+    LET representative == BatchRepresentative(b)
+    IN
+    /\ batchTxns[b] # {}
+    /\ \A t \in batchTxns[b] : txnState[t] = "Unknown"
+    /\ b \notin ReachableBatches
+    /\ headOrdinal >= publicationOrdinal[representative]
+    /\ txnState' =
+        [t \in Txns |-> IF t \in batchTxns[b] THEN "Failed" ELSE txnState[t]]
+    /\ receipt' =
+        [t \in Txns |->
+            IF t \in batchTxns[b] THEN "PreconditionFailed" ELSE receipt[t]]
     /\ lastAction' = "ResolvePreconditionFailure"
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, OtherTxnFields,
         remoteBatches, OtherBatchFields, usedTransitionIdentities, acknowledged,
-        wasUnknown, localBatches, recoveredBatches, recoveredSequence,
-        crashObserved, stalePublicationObserved
+        wasUnknown, visibleTxns, localBatches, recoveredBatches, recoveredTxns,
+        recoveredSequence, crashObserved, stalePublicationObserved
        >>
 
-AcquireWriter(w, q) ==
-    /\ epoch = 1
+AdvanceWriterEpoch(w, q) ==
     /\ q \in TransitionIds
     /\ q # headTransition
     /\ TransitionIdentity(headOrdinal + 1, q) \notin usedTransitionIdentities
@@ -388,15 +461,21 @@ AcquireWriter(w, q) ==
     /\ lastAction' = "AcquireWriter"
     /\ UNCHANGED <<
         sequence, latestBatch, txnState, OtherTxnFields, remoteBatches,
-        OtherBatchFields, receipt, acknowledged, wasUnknown, localBatches,
-        recoveredBatches, recoveredSequence, crashObserved,
+        OtherBatchFields, receipt, acknowledged, wasUnknown, visibleTxns, localBatches,
+        recoveredBatches, recoveredTxns, recoveredSequence, crashObserved,
         stalePublicationObserved
        >>
 
+AcquireWriter(w, q) ==
+    /\ epoch = 1
+    /\ AdvanceWriterEpoch(w, q)
+
 Crash ==
-    /\ localBatches # {} \/ recoveredBatches # {} \/ recoveredSequence # 0
+    /\ localBatches # {} \/ recoveredBatches # {} \/ recoveredTxns # {}
+        \/ recoveredSequence # 0
     /\ localBatches' = {}
     /\ recoveredBatches' = {}
+    /\ recoveredTxns' = {}
     /\ recoveredSequence' = 0
     /\ crashObserved' = TRUE
     /\ lastAction' = "Crash"
@@ -404,33 +483,37 @@ Crash ==
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, txnState, OtherTxnFields,
         remoteBatches, OtherBatchFields, usedTransitionIdentities, receipt,
-        acknowledged, wasUnknown, stalePublicationObserved
+        acknowledged, wasUnknown, visibleTxns, stalePublicationObserved
        >>
 
 Recover ==
-    /\ recoveredBatches # ReachableBatches \/ recoveredSequence # sequence
+    /\ recoveredBatches # ReachableBatches \/ recoveredTxns # ReachableTxns
+        \/ recoveredSequence # sequence
     /\ recoveredBatches' = ReachableBatches
+    /\ recoveredTxns' = ReachableTxns
     /\ recoveredSequence' = sequence
     /\ lastAction' = "Recover"
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, txnState, OtherTxnFields,
         remoteBatches, OtherBatchFields, usedTransitionIdentities, receipt,
-        acknowledged, wasUnknown, localBatches, crashObserved,
+        acknowledged, wasUnknown, visibleTxns, localBatches, crashObserved,
         stalePublicationObserved
        >>
 
 Next ==
     \/ \E t \in Txns, w \in Writers, b \in BatchIds,
-          q \in TransitionIds : Prepare(t, w, b, q)
-    \/ \E t \in Txns : StoreBatch(t)
-    \/ \E t \in Txns : PublishHead(t)
-    \/ \E t \in Txns : ObserveSuccess(t)
-    \/ \E t \in Txns : LoseAcceptedResponse(t)
-    \/ \E t \in Txns : LoseUnacceptedResponse(t)
-    \/ \E t \in Txns : ObservePreconditionFailure(t)
-    \/ \E t \in Txns : ResolveCommitted(t)
-    \/ \E t \in Txns : ResolvePreconditionFailure(t)
+          q \in TransitionIds : PrepareSingle(t, w, b, q)
+    \/ \E w \in Writers, b \in BatchIds,
+          q \in TransitionIds : PreparePooled(w, b, q)
+    \/ \E b \in BatchIds : StoreBatch(b)
+    \/ \E b \in BatchIds : PublishHead(b)
+    \/ \E b \in BatchIds : ObserveSuccess(b)
+    \/ \E b \in BatchIds : LoseAcceptedResponse(b)
+    \/ \E b \in BatchIds : LoseUnacceptedResponse(b)
+    \/ \E b \in BatchIds : ObservePreconditionFailure(b)
+    \/ \E b \in BatchIds : ResolveCommitted(b)
+    \/ \E b \in BatchIds : ResolvePreconditionFailure(b)
     \/ \E w \in Writers, q \in TransitionIds : AcquireWriter(w, q)
     \/ Crash
     \/ Recover
@@ -456,9 +539,10 @@ TypeOK ==
     /\ publicationOrdinal \in [Txns -> Nat]
     /\ publicationTransition \in [Txns -> TransitionIds \cup {NoTransition}]
     /\ remoteBatches \subseteq BatchIds
-    /\ batchTxn \in [BatchIds -> Txns \cup {NoTxn}]
+    /\ batchTxns \in [BatchIds -> SUBSET Txns]
     /\ batchPrevious \in [BatchIds -> BatchIds \cup {NoBatch}]
-    /\ batchSequence \in [BatchIds -> Nat]
+    /\ batchFirstSequence \in [BatchIds -> Nat]
+    /\ batchLastSequence \in [BatchIds -> Nat]
     /\ batchEpoch \in [BatchIds -> Nat]
     /\ batchExpectedOrdinal \in [BatchIds -> Nat]
     /\ batchExpectedTransition \in
@@ -471,14 +555,16 @@ TypeOK ==
     /\ receipt \in [Txns -> ReceiptStates]
     /\ acknowledged \subseteq Txns
     /\ wasUnknown \in [Txns -> BOOLEAN]
+    /\ visibleTxns \subseteq Txns
     /\ localBatches \subseteq remoteBatches
     /\ recoveredBatches \subseteq remoteBatches
+    /\ recoveredTxns \subseteq Txns
     /\ recoveredSequence \in Nat
     /\ crashObserved \in BOOLEAN
     /\ stalePublicationObserved \in BOOLEAN
     /\ lastAction \in {
-        "Init", "Prepare", "StoreBatch", "PublishHead", "ObserveSuccess",
-        "LoseAcceptedResponse", "LoseUnacceptedResponse",
+        "Init", "PrepareSingle", "PreparePooled", "StoreBatch", "PublishHead",
+        "ObserveSuccess", "LoseAcceptedResponse", "LoseUnacceptedResponse",
         "ObservePreconditionFailure", "ResolveCommitted",
         "ResolvePreconditionFailure", "AcquireWriter", "Crash", "Recover"
        }
@@ -491,28 +577,51 @@ HeadShape ==
        THEN latestBatch = NoBatch
        ELSE
           /\ latestBatch \in remoteBatches
-          /\ batchSequence[latestBatch] = sequence
+          /\ batchLastSequence[latestBatch] = sequence
           /\ batchPublicationOrdinal[latestBatch] <= headOrdinal
 
 ReachableChain ==
     /\ ReachableBatches \subseteq remoteBatches
-    /\ Cardinality(ReachableBatches) = sequence
+    /\ Cardinality(ReachableTxns) = sequence
     /\ \A b \in ReachableBatches :
-        /\ batchTxn[b] \in Txns
+        /\ batchTxns[b] # {}
+        /\ GroupAgrees(b)
+        /\ batchFirstSequence[b] > 0
+        /\ batchLastSequence[b] =
+            batchFirstSequence[b] + Cardinality(batchTxns[b]) - 1
         /\ batchEpoch[b] <= epoch
         /\ batchPublicationOrdinal[b] = batchExpectedOrdinal[b] + 1
         /\ IF batchPrevious[b] = NoBatch
-           THEN batchSequence[b] = 1
+           THEN batchFirstSequence[b] = 1
            ELSE
               /\ batchPrevious[b] \in ReachableBatches
-              /\ batchSequence[batchPrevious[b]] + 1 = batchSequence[b]
+              /\ batchLastSequence[batchPrevious[b]] + 1 =
+                  batchFirstSequence[b]
 
 DurableAcknowledgement ==
     \A t \in acknowledged :
         /\ receipt[t] = "Committed"
         /\ txnState[t] = "Committed"
         /\ txnBatch[t] \in ReachableBatches
+        /\ t \in batchTxns[txnBatch[t]]
         /\ VisibleFamilies(t) = TxnFamilies(t)
+
+PooledVisibilityIsAtomic ==
+    /\ visibleTxns = ReachableTxns
+    /\ \A b \in ReachableBatches : batchTxns[b] \subseteq visibleTxns
+
+BatchTransactionsAreDisjoint ==
+    \A left, right \in remoteBatches :
+        left # right => batchTxns[left] \intersect batchTxns[right] = {}
+
+BatchOutcomesAgree ==
+    \A b \in remoteBatches :
+        LET representative == BatchRepresentative(b)
+        IN \A t \in batchTxns[b] :
+            /\ txnState[t] = txnState[representative]
+            /\ receipt[t] = receipt[representative]
+            /\ (t \in acknowledged) = (representative \in acknowledged)
+            /\ wasUnknown[t] = wasUnknown[representative]
 
 UnknownIsTerminal ==
     \A t \in Txns :
@@ -520,21 +629,36 @@ UnknownIsTerminal ==
 
 RecoveryIsPrefix ==
     /\ recoveredBatches \subseteq ReachableBatches
+    /\ recoveredTxns = UNION {batchTxns[b] : b \in recoveredBatches}
+    /\ recoveredTxns \subseteq ReachableTxns
+    /\ recoveredSequence = Cardinality(recoveredTxns)
     /\ recoveredSequence <= sequence
     /\ recoveredSequence = 0 <=> recoveredBatches = {}
     /\ recoveredSequence = sequence => recoveredBatches = ReachableBatches
+
+RecoveredBatchesAreAtomic ==
+    \A b \in recoveredBatches : batchTxns[b] \subseteq recoveredTxns
 
 NoStaleWriterPublication == ~stalePublicationObserved
 
 Safety ==
     TypeOK /\ HeadShape /\ ReachableChain /\ DurableAcknowledgement
-        /\ UnknownIsTerminal /\ RecoveryIsPrefix /\ NoStaleWriterPublication
+        /\ PooledVisibilityIsAtomic /\ BatchTransactionsAreDisjoint
+        /\ BatchOutcomesAgree
+        /\ UnknownIsTerminal /\ RecoveryIsPrefix
+        /\ RecoveredBatchesAreAtomic /\ NoStaleWriterPublication
 
 WitnessComplete ==
+    /\ batchTxns[B1] = Txns
+    /\ txnBatch[T1] = B1
+    /\ txnBatch[T2] = B1
     /\ wasUnknown[T1]
+    /\ wasUnknown[T2]
     /\ receipt[T1] = "Committed"
+    /\ receipt[T2] = "Committed"
     /\ crashObserved
-    /\ recoveredSequence = 1
-    /\ recoveredBatches = ReachableBatches
+    /\ recoveredSequence = 2
+    /\ recoveredBatches = {B1}
+    /\ recoveredTxns = Txns
 
 =============================================================================

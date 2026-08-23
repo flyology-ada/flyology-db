@@ -80,7 +80,8 @@
               "snapshot",
               "serializable",
               "crash_recovery",
-              "outcome_resolution"
+              "outcome_resolution",
+              "group_commit"
             ]
           }
         }
@@ -285,6 +286,7 @@
         "operation": { "const": "commit" },
         "transaction": { "$ref": "#/$defs/id" },
         "receipt": { "$ref": "#/$defs/id" },
+        "commit_group": { "$ref": "#/$defs/id" },
         "durability": { "const": "remote" },
         "expected": { "$ref": "#/$defs/outcome" }
       },

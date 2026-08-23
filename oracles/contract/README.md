@@ -24,6 +24,14 @@ the workload header must therefore declare `remote_durable` in `required_capabil
 required capability before executing any operation; local-fsync recovery is comparative evidence and never satisfies
 this capability.
 
+Two or more contiguous commit records with the same `commit_group` identify transactions admitted to one immutable
+batch and one conditional HEAD publication. The records are a deterministic linear projection of that single grouped
+operation: every member must have the same immediate expected outcome, and conclusive resolutions of unknown member
+receipts must agree. A non-`Unsupported` grouped commit requires `group_commit`; a one-member, split, or mixed-outcome
+group is invalid. The group does not merge transaction identities, mutations, or receipts, and an unknown result still
+consumes every member transaction without permitting replay. `commit_group` is optional, so existing version-1
+single-transaction workload records remain valid; ungrouped commits retain their prior meaning.
+
 Normalized outcomes are `Success`, `Not_Found`, `Conflict`, `Serialization_Failure`, `Timed_Out`, `Cancelled`,
 `Outcome_Unknown`, `Corrupt`, and `Unsupported`. At a checkpoint, adapters emit a canonical digest and may emit sorted
 `(column_family_id, key_hex, value_hex)` live tuples for bounded small state.

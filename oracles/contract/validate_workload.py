@@ -30,6 +30,7 @@ CAPABILITIES = {
     "serializable",
     "crash_recovery",
     "outcome_resolution",
+    "group_commit",
 }
 BASE = {"record", "step", "client", "operation"}
 RULES = {
@@ -80,7 +81,8 @@ RULES = {
         BASE | {"transaction", "expected"},
     ),
     "commit": (
-        BASE | {"transaction", "receipt", "durability", "expected"},
+        BASE
+        | {"transaction", "receipt", "durability", "commit_group", "expected"},
         BASE | {"transaction", "durability", "expected"},
     ),
     "resolve": (
@@ -398,6 +400,8 @@ def validate_operation(
     active: dict[str, int],
     unknown_receipts: set[str],
     seen_receipts: set[str],
+    receipt_groups: dict[str, str],
+    group_resolutions: dict[str, set[str]],
 ) -> None:
     operation = record.get("operation")
     require(operation in RULES, f"unknown operation {operation!r}")
@@ -413,10 +417,17 @@ def validate_operation(
             "remote_durable" in capabilities,
             "remote commit requires the remote_durable capability",
         )
+        if "commit_group" in record:
+            require(
+                "group_commit" in capabilities,
+                "grouped commit requires the group_commit capability",
+            )
     if "transaction" in record:
         require_identifier(record["transaction"], "invalid transaction ID")
     if "receipt" in record:
         require_identifier(record["receipt"], "invalid receipt ID")
+    if "commit_group" in record:
+        require_identifier(record["commit_group"], "invalid commit-group ID")
     if "column_family_id" in record:
         require(record["column_family_id"] in families, "operation uses unknown family")
     if "key" in record:
@@ -477,6 +488,8 @@ def validate_operation(
             del active[record["transaction"]]
             if record["expected"] == "Outcome_Unknown":
                 unknown_receipts.add(receipt)
+                if "commit_group" in record:
+                    receipt_groups[receipt] = record["commit_group"]
         else:
             require("receipt" not in record, "definite failed commit has a receipt")
     elif operation == "resolve":
@@ -484,6 +497,10 @@ def validate_operation(
         require(receipt in unknown_receipts, "resolve uses no unknown receipt")
         if record["expected"] in {"Success", "Not_Found", "Conflict"}:
             unknown_receipts.remove(receipt)
+            if receipt in receipt_groups:
+                group_resolutions.setdefault(receipt_groups[receipt], set()).add(
+                    record["expected"]
+                )
     elif operation == "crash":
         active.clear()
 
@@ -501,8 +518,11 @@ def validate(path: Path, schema_path: Path) -> None:
     active: dict[str, int] = {}
     unknown_receipts: set[str] = set()
     seen_receipts: set[str] = set()
+    receipt_groups: dict[str, str] = {}
+    group_resolutions: dict[str, set[str]] = {}
+    commit_groups: dict[str, list[tuple[int, str]]] = {}
     last_step = -1
-    for record in records[1:]:
+    for record_index, record in enumerate(records[1:]):
         step = record.get("step")
         require(
             isinstance(step, int) and not isinstance(step, bool) and step > last_step,
@@ -518,7 +538,13 @@ def validate(path: Path, schema_path: Path) -> None:
                 active,
                 unknown_receipts,
                 seen_receipts,
+                receipt_groups,
+                group_resolutions,
             )
+            if record.get("operation") == "commit" and "commit_group" in record:
+                commit_groups.setdefault(record["commit_group"], []).append(
+                    (record_index, record["expected"])
+                )
         elif record.get("record") == "checkpoint":
             validate_checkpoint(
                 record,
@@ -529,6 +555,17 @@ def validate(path: Path, schema_path: Path) -> None:
         else:
             raise InvalidWorkload(f"unknown record discriminator {record.get('record')!r}")
     require(not active, "workload ends with active transactions")
+    for group, members in commit_groups.items():
+        require(len(members) >= 2, f"commit group {group} has fewer than two members")
+        positions = [position for position, _ in members]
+        require(
+            positions == list(range(positions[0], positions[0] + len(positions))),
+            f"commit group {group} is not contiguous",
+        )
+        outcomes = {outcome for _, outcome in members}
+        require(len(outcomes) == 1, f"commit group {group} has mixed outcomes")
+    for group, outcomes in group_resolutions.items():
+        require(len(outcomes) <= 1, f"commit group {group} has mixed resolutions")
 
 
 def main(arguments: list[str]) -> int:

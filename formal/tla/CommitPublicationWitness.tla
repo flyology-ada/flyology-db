@@ -14,13 +14,20 @@ Alias == [
         predecessor |-> headPredecessor,
         generation |-> generation
     ],
-    transaction |-> [
-        state |-> txnState[T1],
-        batch |-> txnBatch[T1],
-        receipt |-> receipt[T1],
-        was_unknown |-> wasUnknown[T1],
-        families |-> TxnFamilies(T1)
+    batch |-> [
+        id |-> B1,
+        transactions |-> batchTxns[B1],
+        first_sequence |-> batchFirstSequence[B1],
+        last_sequence |-> batchLastSequence[B1]
     ],
+    transactions |-> [t \in Txns |-> [
+        state |-> txnState[t],
+        batch |-> txnBatch[t],
+        receipt |-> receipt[t],
+        was_unknown |-> wasUnknown[t],
+        families |-> TxnFamilies(t)
+    ]],
+    recovered_transactions |-> recoveredTxns,
     remote_batches |-> remoteBatches,
     local_batches |-> localBatches,
     recovered_batches |-> recoveredBatches,

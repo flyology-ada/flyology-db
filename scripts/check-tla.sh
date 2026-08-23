@@ -40,10 +40,11 @@ cd "$model_root"
   >"$temporary_root/tlc-safety.log" 2>&1
 grep -q 'Model checking completed. No error has been found.' \
   "$temporary_root/tlc-safety.log"
-grep -q '105663 distinct states found' "$temporary_root/tlc-safety.log"
+! grep -q '^Warning:' "$temporary_root/tlc-safety.log"
+grep -q '112031 distinct states found' "$temporary_root/tlc-safety.log"
 grep -q 'The depth of the complete state graph search is 14.' \
   "$temporary_root/tlc-safety.log"
-for action in Prepare StoreBatch PublishHead ObserveSuccess \
+for action in PrepareGroup PreparePooled StoreBatch PublishHead ObserveSuccess \
   LoseAcceptedResponse LoseUnacceptedResponse ObservePreconditionFailure \
   ResolveCommitted ResolvePreconditionFailure AcquireWriter Crash Recover
 do
@@ -60,6 +61,48 @@ set -e
 test "$stale_probe_status" -eq 12
 grep -q 'Invariant NoStaleWriterPublication is violated.' \
   "$temporary_root/tlc-stale-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-stale-probe.log"
+
+for reconciliation in committed failed
+do
+  if test "$reconciliation" = committed
+  then
+    witness_module=CommitPublicationDescendantCommittedWitness
+    witness_invariant=DescendantCommittedPending
+  else
+    witness_module=CommitPublicationDescendantFailureWitness
+    witness_invariant=DescendantFailurePending
+  fi
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-descendant-$reconciliation-states" \
+    -config "$witness_module.cfg" \
+    -dumpTrace json "$temporary_root/descendant-$reconciliation.json" \
+    "$witness_module" \
+    >"$temporary_root/tlc-descendant-$reconciliation.log" 2>&1
+  witness_status=$?
+  set -e
+  test "$witness_status" -eq 12
+  grep -q "Invariant $witness_invariant is violated." \
+    "$temporary_root/tlc-descendant-$reconciliation.log"
+  ! grep -q '^Warning:' "$temporary_root/tlc-descendant-$reconciliation.log"
+  "$model_root/validate_reconciliation_witnesses.py" \
+    "$reconciliation" "$temporary_root/descendant-$reconciliation.json"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-overlap-probe-states" \
+  -config PublicationSafetyOverlapProbe.cfg PublicationSafetyOverlapProbe \
+  >"$temporary_root/tlc-overlap-probe.log" 2>&1
+overlap_probe_status=$?
+set -e
+test "$overlap_probe_status" -eq 12
+grep -q 'Invariant UnknownTransactionsCannotBeActive is violated.' \
+  "$temporary_root/tlc-overlap-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-overlap-probe.log"
 
 set +e
 "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
@@ -71,6 +114,7 @@ witness_status=$?
 set -e
 test "$witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' "$temporary_root/tlc-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-witness.log"
 
 "$model_root/witness_to_workload.py" "$temporary_root/witness.json" \
   >"$temporary_root/workload.ndjson"
@@ -82,10 +126,12 @@ cmp "$temporary_root/workload.ndjson" "$expected_workload"
 "$tlapm" --cache-dir "$temporary_root/tlapm-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/PublicationSafetyProof.tla" \
   >"$temporary_root/tlaps.log" 2>&1
-grep -q 'All 20 obligations proved.' "$temporary_root/tlaps.log"
+grep -q 'All 23 obligations proved.' "$temporary_root/tlaps.log"
 
 printf '%s\n' "Flyology.DB TLA+ checks passed"
-printf '%s\n' "  TLC   105663 distinct states, depth 14"
-printf '%s\n' "  TLAPS 20/20 obligations"
+printf '%s\n' "  TLC   112031 distinct states, depth 14"
+printf '%s\n' "  TLAPS 23/23 obligations"
 printf '%s\n' "  Negative stale-publication probe detected"
-printf '%s\n' "  Witness accepted-response loss, reconciliation, crash, recovery"
+printf '%s\n' "  Negative overlapping-transaction ownership probe detected"
+printf '%s\n' "  Deep committed/failed reconciliation witnesses validated"
+printf '%s\n' "  Witness pooled accepted-response loss, reconciliation, crash, recovery"

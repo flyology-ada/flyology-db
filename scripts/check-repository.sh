@@ -21,6 +21,7 @@ test -x oracles/adapters/slatedb/scripts/build.sh
 test -x oracles/adapters/slatedb/scripts/test.sh
 test -x oracles/adapters/slatedb/tests/test_adapter.py
 test -x formal/tla/witness_to_workload.py
+test -x formal/tla/validate_reconciliation_witnesses.py
 test -x scripts/check-tla.sh
 test -f formal/tla/CommitPublication.tla
 test -f formal/tla/PublicationSafetyProof.tla

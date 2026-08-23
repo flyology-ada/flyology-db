@@ -23,7 +23,8 @@ finding.
 
 ## Formal state-machine lane
 
-TLA+ models publication, ambiguous outcomes, fencing, cache loss, and recovery before the corresponding production
-unit freezes. TLC exhausts a bounded state space and emits selected execution witnesses. TLAPS proves an unbounded
-inductive safety kernel. A checked scenario converter projects selected witnesses into the normative NDJSON workload
-contract for replay against the Ada reference model, Flyology.DB, and supported comparative oracles.
+TLA+ models single- and bounded pooled-transaction publication, ambiguous outcomes, fencing, cache loss, and recovery
+before the corresponding production unit freezes. TLC exhausts a bounded state space and emits selected execution
+witnesses. TLAPS proves an unbounded batch-atomic safety kernel. A checked scenario converter projects selected
+witnesses into the normative NDJSON workload contract for replay against the Ada reference model, Flyology.DB, and
+supported comparative oracles.

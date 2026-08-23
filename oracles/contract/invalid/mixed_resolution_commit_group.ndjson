@@ -1,0 +1,7 @@
+{"record":"workload","schema":"flyology.db.workload.v1","seed":"1","database_id":"00000000000000000000000000000001","limits":{"transactions":2,"mutations_per_transaction":1,"key_bytes":1,"value_bytes":1},"column_families":[{"id":"1","name":"default"}],"required_capabilities":["remote_durable","outcome_resolution","group_commit"]}
+{"record":"operation","step":0,"client":"writer","transaction":"00000000000000000000000000000002","operation":"begin","isolation":"Snapshot","expected":"Success"}
+{"record":"operation","step":1,"client":"writer","transaction":"00000000000000000000000000000003","operation":"begin","isolation":"Snapshot","expected":"Success"}
+{"record":"operation","step":2,"client":"writer","transaction":"00000000000000000000000000000002","operation":"commit","receipt":"00000000000000000000000000000004","commit_group":"00000000000000000000000000000006","durability":"remote","expected":"Outcome_Unknown"}
+{"record":"operation","step":3,"client":"writer","transaction":"00000000000000000000000000000003","operation":"commit","receipt":"00000000000000000000000000000005","commit_group":"00000000000000000000000000000006","durability":"remote","expected":"Outcome_Unknown"}
+{"record":"operation","step":4,"client":"writer","operation":"resolve","receipt":"00000000000000000000000000000004","expected":"Success"}
+{"record":"operation","step":5,"client":"writer","operation":"resolve","receipt":"00000000000000000000000000000005","expected":"Conflict"}
