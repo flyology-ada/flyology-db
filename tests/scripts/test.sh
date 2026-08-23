@@ -21,4 +21,6 @@ test "$crash_status" -eq 137
 rm -rf "$crash_root"
 trap - EXIT HUP INT TERM
 printf '%s\n' "Flyology.DB files subprocess group crash/recovery passed"
+cd "$project_root"
+./oracles/adapters/tidesdb/scripts/test.sh
 printf '%s\n' "Flyology.DB deterministic test suite passed"

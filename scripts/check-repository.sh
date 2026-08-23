@@ -25,6 +25,12 @@ test -x formal/tla/validate_reconciliation_witnesses.py
 test -x scripts/check-tla.sh
 test -f formal/tla/CommitPublication.tla
 test -f formal/tla/PublicationSafetyProof.tla
+test -x oracles/adapters/tidesdb/adapter.py
+test -x oracles/adapters/tidesdb/run_workload.py
+test -x oracles/adapters/tidesdb/scripts/build.sh
+test -x oracles/adapters/tidesdb/scripts/run.sh
+test -x oracles/adapters/tidesdb/scripts/test.sh
+test -x oracles/adapters/tidesdb/scripts/test-upstream.sh
 grep -q '^name = "flyology_db"$' alire.toml
 grep -q '^gnat = ">=13 & <=16[.]1[.]0"$' alire.toml
 grep -q '^package Flyology.DB is$' src/flyology-db.ads
@@ -40,6 +46,8 @@ grep -q "$tidesdb_commit" docs/qualification/dependency-provenance.md
 test -z "$(git -C .deps/slatedb status --short)"
 test -z "$(git -C .deps/tidesdb status --short)"
 oracles/contract/canonical_state.py oracles/contract/canonical_state_vectors.json
+grep -q "$tidesdb_commit" oracles/adapters/tidesdb/adapter.py
+grep -q "$tidesdb_commit" oracles/adapters/tidesdb/oracle_shim.c
 oracles/contract/validate_workload.py \
   oracles/contract/workload.schema.json \
   oracles/workloads/*.ndjson

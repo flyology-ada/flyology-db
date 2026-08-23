@@ -1,0 +1,2 @@
+{"record":"workload","schema":"flyology.db.workload.v1","seed":"13","database_id":"000102030405060708090a0b0c0d0e0f","limits":{"transactions":1,"mutations_per_transaction":1,"key_bytes":8,"value_bytes":8},"column_families":[{"id":"1","name":".."}],"required_capabilities":[]}
+{"record":"operation","step":0,"client":"comparison","operation":"create","expected":"Success"}

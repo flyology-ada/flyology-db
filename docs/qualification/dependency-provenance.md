@@ -45,6 +45,10 @@ source SHA, SlateDB 0.15.0 with default features disabled, and the local-filesys
 ignored `build/oracles/slatedb-adapter/provenance.json` artifact. This artifact records effective toolchain and feature
 configuration for each local build; it is evidence for that build, not a portable or remote-durability claim.
 
+TidesDB is MPL-2.0 and its source tree bundles separately licensed xxHash and inih. The adapter build consumes the
+clean source pin in place and does not check in or redistribute the resulting library. Any later binary distribution
+must retain those notices.
+
 ## Formal-method tools
 
 - TLC: TLA+ Tools `v1.8.0`, release commit `9787e65`, official `tla2tools.jar` SHA-1

@@ -1,0 +1,5 @@
+{"record":"workload","schema":"flyology.db.workload.v1","seed":"9","database_id":"000102030405060708090a0b0c0d0e0f","limits":{"transactions":1,"mutations_per_transaction":1,"key_bytes":8,"value_bytes":8},"column_families":[{"id":"1","name":"default"}],"required_capabilities":[]}
+{"record":"operation","step":0,"client":"comparison","operation":"create","expected":"Success"}
+{"record":"operation","step":1,"client":"comparison","transaction":"101112131415161718191a1b1c1d1e1f","operation":"begin","isolation":"Snapshot","expected":"Success"}
+{"record":"operation","step":2,"client":"comparison","transaction":"101112131415161718191a1b1c1d1e1f","operation":"commit","durability":"remote","expected":"Unsupported"}
+{"record":"operation","step":3,"client":"comparison","transaction":"101112131415161718191a1b1c1d1e1f","operation":"rollback","expected":"Success"}
