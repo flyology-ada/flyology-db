@@ -1,8 +1,9 @@
 # First LSM checkpoint publication design
 
-This document freezes the semantic checkpoint-publication decision. The separate format unit now defines exact
-manifest-v2 and SST-v1 bytes plus a private SPARK reference decoder, but does not claim an operational Ada LSM.
-The current engine remains a log-only HEAD-v2 database whose live manifest objects use format version 1.
+This document freezes the semantic checkpoint-publication decision. The format layer defines exact manifest-v2 and
+SST-v1 bytes, a private SPARK reference decoder, and a byte-identical dynamically sized operational codec. The codec
+is the allocation and validation boundary only; it does not claim an operational Ada LSM. The current engine remains
+a log-only HEAD-v2 database whose live manifest objects use format version 1.
 
 ## Staged compatibility decision
 
@@ -10,8 +11,8 @@ A checkpoint uses column-family manifest object version 2 and immutable SST obje
 version 1 remains readable as the current log-only registry and limit authority, but it cannot name runs or a replay
 boundary. There is no in-place rewrite and no implicit migration. A later upgrade will write complete immutable SST
 runs, write a new immutable manifest-v2 object, and publish it through one exact conditional HEAD transition. The
-focused format unit freezes exact wire widths, offsets, checksums, golden bytes, corruption fixtures, and decoder
-proofs without making that operational publication path live.
+focused format layer freezes exact wire widths, offsets, checksums, golden bytes, corruption fixtures, decoder proofs,
+and checked dynamic admission without making that operational publication path live.
 
 Manifest v2 preserves the complete immutable family registry and every existing database and family limit. It adds,
 at minimum, for each family:

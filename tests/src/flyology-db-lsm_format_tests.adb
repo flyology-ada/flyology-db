@@ -1,6 +1,7 @@
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
 with Flyology.DB.LSM_Formats;
+with Flyology.DB.LSM_Runtime_Formats;
 with Flyology.DB.Manifest_Formats;
 with Interfaces;
 
@@ -9,6 +10,7 @@ package body Flyology.DB.LSM_Format_Tests is
    package Formats renames Flyology.DB.Formats;
    package Head renames Flyology.DB.Head_Policy;
    package Manifests renames Flyology.DB.Manifest_Formats;
+   package Runtime renames Flyology.DB.LSM_Runtime_Formats;
 
    --  These dimensions are fixture coverage choices: two run slots permit an
    --  ordering probe, four identities/entries permit exact and one-over caps,
@@ -30,6 +32,12 @@ package body Flyology.DB.LSM_Format_Tests is
    use type LSM.Decode_Status;
    use type LSM.Encode_Status;
    use type LSM.SST;
+   use type Runtime.Allocation_Status;
+   use type Runtime.Decode_Status;
+   use type Runtime.Encode_Status;
+   use type Runtime.Checkpoint_Manifest_Access;
+   use type Runtime.Image_Access;
+   use type Runtime.SST_Access;
 
    --  Exact extents derived independently by generate_lsm_goldens.py from the
    --  frozen field tables and fixture values; they are not product limits.
@@ -579,6 +587,372 @@ package body Flyology.DB.LSM_Format_Tests is
       end if;
    end Test_SST_Rejection;
 
+   procedure Test_Runtime_Golden_Parity is
+      Manifest_Value : Runtime.Checkpoint_Manifest_Access;
+      Manifest_Read  : Runtime.Checkpoint_Manifest_Access;
+      Manifest_Image : Runtime.Image_Access;
+      Manifest_Head  : Runtime.Checkpoint_Header_Admission;
+      Table_Value    : Runtime.SST_Access;
+      Table_Read     : Runtime.SST_Access;
+      Table_Image    : Runtime.Image_Access;
+      Table_Head     : Runtime.SST_Header_Admission;
+      Allocation     : Runtime.Allocation_Status;
+      Encode_Status  : Runtime.Encode_Status;
+      Decode_Status  : Runtime.Decode_Status;
+      Descriptor     : constant Runtime.Run_Descriptor :=
+        (Run_ID                => ID (9),
+         Lowest_Sequence       => 1,
+         Highest_Sequence      => 2,
+         Entry_Total           => 3,
+         Logical_Payload_Bytes => 4);
+   begin
+      Runtime.Create_Checkpoint_Manifest (1, 1, 2, Manifest_Value, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "runtime manifest fixture allocation failed";
+      end if;
+      Manifest_Value.Base := Base_Manifest;
+      Manifest_Value.Replay_Boundary := 2;
+      Manifest_Value.Maximum_Total_L0_Runs := 2;
+      Manifest_Value.Maximum_Checkpoint_Identities := 4;
+      Manifest_Value.Families (1) :=
+        (Memtable_Max_Bytes   => 4 * 1_024,
+         Memtable_Max_Entries => 16,
+         Maximum_L0_Runs      => 2,
+         First_Run            => 1,
+         Run_Total            => 1);
+      Manifest_Value.Runs (1) := Descriptor;
+      Manifest_Value.Identities := [ID (10), ID (11)];
+      Runtime.Encode_Checkpoint_Manifest (Manifest_Value.all, Manifest_Image, Encode_Status);
+      if Encode_Status /= Runtime.Encoded or else Manifest_Image.all /= Manifest_Golden then
+         raise Program_Error with "runtime manifest differs from proven golden";
+      end if;
+      Runtime.Inspect_Checkpoint_Manifest_Header
+        (Manifest_Golden (0 .. Runtime.LSM.Checkpoint_Manifest_Header_Length - 1),
+         ID (1),
+         Manifest_Golden'Length,
+         Manifest_Head,
+         Decode_Status);
+      --  Derived upper bound: envelope/trailer + one maximum-name family +
+      --  two admitted runs + two actual identities. It is not a product cap.
+      if Decode_Status /= Runtime.Decoded
+        or else Manifest_Head.Object_Length /= Manifest_Length
+        or else Manifest_Head.Maximum_Object_Length /= 224 + 307 + 96 + 32
+      then
+         raise Program_Error with "runtime manifest header admission mismatch";
+      end if;
+      Runtime.Decode_Checkpoint_Manifest (Manifest_Golden, ID (1), Manifest_Read, Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else not Runtime.Structurally_Valid (Manifest_Read.all)
+        or else Manifest_Read.Run_Total /= 1
+        or else Manifest_Read.Identity_Total /= 2
+      then
+         raise Program_Error with "runtime manifest golden did not round-trip";
+      end if;
+
+      Runtime.Create_SST (3, 4, Table_Value, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "runtime SST fixture allocation failed";
+      end if;
+      Table_Value.Database_ID := ID (1);
+      Table_Value.Run_ID := ID (9);
+      Table_Value.Family_ID := 1;
+      Table_Value.Lowest_Sequence := 1;
+      Table_Value.Highest_Sequence := 2;
+      Table_Value.Logical_Payload_Bytes := 4;
+      Table_Value.Payload :=
+        [Character'Pos ('a'), Character'Pos ('x'), Character'Pos ('a'), Character'Pos ('b')];
+      Table_Value.Entries (1) :=
+        (Sequence         => 2,
+         Operation        => Runtime.LSM.Put_Operation,
+         Key_Offset       => 1,
+         Key_Byte_Total   => 1,
+         Value_Offset     => 2,
+         Value_Byte_Total => 1);
+      Table_Value.Entries (2) :=
+        (Sequence         => 1,
+         Operation        => Runtime.LSM.Delete_Operation,
+         Key_Offset       => 3,
+         Key_Byte_Total   => 1,
+         Value_Offset     => 4,
+         Value_Byte_Total => 0);
+      Table_Value.Entries (3) :=
+        (Sequence         => 2,
+         Operation        => Runtime.LSM.Put_Operation,
+         Key_Offset       => 4,
+         Key_Byte_Total   => 1,
+         Value_Offset     => 5,
+         Value_Byte_Total => 0);
+      Runtime.Encode_SST (Table_Value.all, Table_Image, Encode_Status);
+      if Encode_Status /= Runtime.Encoded or else Table_Image.all /= SST_Golden then
+         if Encode_Status = Runtime.Encoded and then Table_Image.all'Length = SST_Golden'Length then
+            for Index in SST_Golden'Range loop
+               if Table_Image (Index) /= SST_Golden (Index) then
+                  raise Program_Error
+                    with
+                      "runtime SST differs at byte"
+                      & Natural'Image (Index)
+                      & " actual="
+                      & Formats.Byte'Image (Table_Image (Index))
+                      & " expected="
+                      & Formats.Byte'Image (SST_Golden (Index));
+               end if;
+            end loop;
+         end if;
+         raise Program_Error
+           with
+             "runtime SST differs from proven golden: status="
+             & Runtime.Encode_Status'Image (Encode_Status)
+             & " length="
+             & Natural'Image ((if Table_Image = null then 0 else Table_Image.all'Length));
+      end if;
+      Runtime.Inspect_SST_Header
+        (SST_Golden (0 .. Runtime.LSM.SST_Header_Length - 1),
+         ID (1),
+         1,
+         Descriptor,
+         SST_Golden'Length,
+         Table_Head,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Table_Head.Object_Length /= SST_Length
+        or else Table_Head.Entry_Total /= 3
+        or else Table_Head.Payload_Bytes /= 4
+      then
+         raise Program_Error with "runtime SST header admission mismatch";
+      end if;
+      Runtime.Decode_SST (SST_Golden, ID (1), 1, Descriptor, 8, 8, Table_Read, Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else not Runtime.Structurally_Valid (Table_Read.all)
+        or else not Runtime.Descriptor_Matches (Table_Read.all, ID (1), 1, Descriptor)
+      then
+         raise Program_Error with "runtime SST golden did not round-trip";
+      end if;
+
+      declare
+         --  Nonzero lower bounds verify that operational parsing is positional;
+         --  these test shifts are not persisted offsets or allocation policy.
+         Shifted_Manifest       : constant Formats.Byte_Array (7 .. 7 + Manifest_Length - 1) :=
+           Manifest_Golden;
+         Shifted_SST            : constant Formats.Byte_Array (11 .. 11 + SST_Length - 1) := SST_Golden;
+         Shifted_Manifest_Value : Runtime.Checkpoint_Manifest_Access;
+         Shifted_Table_Value    : Runtime.SST_Access;
+      begin
+         Runtime.Decode_Checkpoint_Manifest (Shifted_Manifest, ID (1), Shifted_Manifest_Value, Decode_Status);
+         if Decode_Status /= Runtime.Decoded then
+            raise Program_Error with "runtime manifest rejected shifted lower bound";
+         end if;
+         Runtime.Decode_SST (Shifted_SST, ID (1), 1, Descriptor, 8, 8, Shifted_Table_Value, Decode_Status);
+         if Decode_Status /= Runtime.Decoded then
+            Runtime.Release (Shifted_Manifest_Value);
+            raise Program_Error with "runtime SST rejected shifted lower bound";
+         end if;
+         Runtime.Release (Shifted_Manifest_Value);
+         Runtime.Release (Shifted_Table_Value);
+      end;
+
+      Runtime.Release (Manifest_Image);
+      Runtime.Release (Manifest_Read);
+      Runtime.Release (Manifest_Value);
+      Runtime.Release (Table_Image);
+      Runtime.Release (Table_Read);
+      Runtime.Release (Table_Value);
+   exception
+      when others =>
+         Runtime.Release (Manifest_Image);
+         Runtime.Release (Manifest_Read);
+         Runtime.Release (Manifest_Value);
+         Runtime.Release (Table_Image);
+         Runtime.Release (Table_Read);
+         Runtime.Release (Table_Value);
+         raise;
+   end Test_Runtime_Golden_Parity;
+
+   procedure Test_Runtime_Persisted_Limits is
+      --  One beyond the retired 64/256 toy bounds demonstrates that the
+      --  operational codec follows the explicit persisted family values below.
+      --  These are regression-fixture dimensions, not replacement defaults.
+      Key_Total      : constant := 65;
+      Value_Total    : constant := 257;
+      Payload_Total  : constant := Key_Total + Value_Total;
+      Table_Value    : Runtime.SST_Access;
+      Table_Read     : Runtime.SST_Access;
+      Image          : Runtime.Image_Access;
+      Manifest       : Runtime.Checkpoint_Manifest_Access;
+      Manifest_Read  : Runtime.Checkpoint_Manifest_Access;
+      Manifest_Image : Runtime.Image_Access;
+      Allocation     : Runtime.Allocation_Status;
+      Encode_Status  : Runtime.Encode_Status;
+      Decode_Status  : Runtime.Decode_Status;
+      Descriptor     : constant Runtime.Run_Descriptor :=
+        (Run_ID                => ID (20),
+         Lowest_Sequence       => 7,
+         Highest_Sequence      => 7,
+         Entry_Total           => 1,
+         Logical_Payload_Bytes => Payload_Total);
+   begin
+      Runtime.Create_SST (1, Payload_Total, Table_Value, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "persisted-limit SST allocation failed";
+      end if;
+      Table_Value.Database_ID := ID (1);
+      Table_Value.Run_ID := Descriptor.Run_ID;
+      Table_Value.Family_ID := 1;
+      Table_Value.Lowest_Sequence := 7;
+      Table_Value.Highest_Sequence := 7;
+      Table_Value.Logical_Payload_Bytes := Payload_Total;
+      Table_Value.Entries (1) :=
+        (Sequence         => 7,
+         Operation        => Runtime.LSM.Put_Operation,
+         Key_Offset       => 1,
+         Key_Byte_Total   => Key_Total,
+         Value_Offset     => Key_Total + 1,
+         Value_Byte_Total => Value_Total);
+      Table_Value.Payload (1 .. Key_Total) := [others => Character'Pos ('k')];
+      Table_Value.Payload (Key_Total + 1 .. Payload_Total) := [others => Character'Pos ('v')];
+      Runtime.Encode_SST (Table_Value.all, Image, Encode_Status);
+      if Encode_Status /= Runtime.Encoded then
+         raise Program_Error with "persisted-limit SST did not encode";
+      end if;
+      Runtime.Decode_SST
+        (Image.all, ID (1), 1, Descriptor, Key_Total, Value_Total, Table_Read, Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Table_Read.Entries (1).Key_Byte_Total /= Key_Total
+        or else Table_Read.Entries (1).Value_Byte_Total /= Value_Total
+        or else Table_Read.Payload /= Table_Value.Payload
+      then
+         raise Program_Error with "persisted family bounds did not size runtime SST";
+      end if;
+
+      --  Three runs and five identities exceed this test's bounded proof-oracle
+      --  instance (2/4). Persisted maxima authorize the exact runtime shape;
+      --  the values remain coverage choices, not production defaults.
+      Runtime.Create_Checkpoint_Manifest (1, 3, 5, Manifest, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "persisted-limit manifest allocation failed";
+      end if;
+      Manifest.Base := Base_Manifest;
+      Manifest.Replay_Boundary := 3;
+      Manifest.Maximum_Total_L0_Runs := 3;
+      Manifest.Maximum_Checkpoint_Identities := 5;
+      Manifest.Families (1) :=
+        (Memtable_Max_Bytes   => 4 * 1_024,
+         Memtable_Max_Entries => 16,
+         Maximum_L0_Runs      => 3,
+         First_Run            => 1,
+         Run_Total            => 3);
+      for Index in Manifest.Runs'Range loop
+         Manifest.Runs (Index) :=
+           (Run_ID                => ID (Interfaces.Unsigned_8 (20 + Index)),
+            Lowest_Sequence       => Interfaces.Unsigned_64 (Index),
+            Highest_Sequence      => Interfaces.Unsigned_64 (Index),
+            Entry_Total           => 1,
+            Logical_Payload_Bytes => 1);
+      end loop;
+      for Index in Manifest.Identities'Range loop
+         Manifest.Identities (Index) := ID (Interfaces.Unsigned_8 (30 + Index));
+      end loop;
+      Runtime.Encode_Checkpoint_Manifest (Manifest.all, Manifest_Image, Encode_Status);
+      if Encode_Status /= Runtime.Encoded then
+         raise Program_Error with "persisted-limit manifest did not encode";
+      end if;
+      Runtime.Decode_Checkpoint_Manifest (Manifest_Image.all, ID (1), Manifest_Read, Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Manifest_Read.Run_Total /= 3
+        or else Manifest_Read.Identity_Total /= 5
+      then
+         raise Program_Error with "persisted run/identity limits did not size runtime manifest";
+      end if;
+
+      Runtime.Release (Image);
+      Runtime.Release (Table_Read);
+      Runtime.Release (Table_Value);
+      Runtime.Release (Manifest_Image);
+      Runtime.Release (Manifest_Read);
+      Runtime.Release (Manifest);
+   exception
+      when others =>
+         Runtime.Release (Image);
+         Runtime.Release (Table_Read);
+         Runtime.Release (Table_Value);
+         Runtime.Release (Manifest_Image);
+         Runtime.Release (Manifest_Read);
+         Runtime.Release (Manifest);
+         raise;
+   end Test_Runtime_Persisted_Limits;
+
+   procedure Test_Runtime_Rejection is
+      --  Corruption positions reuse the frozen manifest-v2 table: identity
+      --  count 212, family run count 264, run high sequence 298, and ledger
+      --  identities 322/338. They are compatibility offsets, not test policy.
+      Corrupt_Manifest : Formats.Byte_Array (Manifest_Golden'Range) := Manifest_Golden;
+      Corrupt_SST      : Formats.Byte_Array (SST_Golden'Range) := SST_Golden;
+      Manifest_Value   : Runtime.Checkpoint_Manifest_Access;
+      Table_Value      : Runtime.SST_Access;
+      Allocation       : Runtime.Allocation_Status;
+      Decode_Status    : Runtime.Decode_Status;
+      Descriptor       : constant Runtime.Run_Descriptor :=
+        (Run_ID                => ID (9),
+         Lowest_Sequence       => 1,
+         Highest_Sequence      => 2,
+         Entry_Total           => 3,
+         Logical_Payload_Bytes => 4);
+   begin
+      --  Natural'Last is the qualified host representation boundary and must
+      --  be rejected before an unencodable SST allocation is attempted.
+      Runtime.Create_SST (1, Natural'Last, Table_Value, Allocation);
+      if Allocation /= Runtime.Invalid_Extent or else Table_Value /= null then
+         raise Program_Error with "runtime SST builder allocated an unencodable extent";
+      end if;
+
+      Corrupt_Manifest (300) := Corrupt_Manifest (300) xor 1;
+      Runtime.Decode_Checkpoint_Manifest (Corrupt_Manifest, ID (1), Manifest_Value, Decode_Status);
+      if Decode_Status /= Runtime.Object_Checksum_Failed or else Manifest_Value /= null then
+         raise Program_Error with "runtime manifest corruption published partial state";
+      end if;
+
+      Corrupt_Manifest := Manifest_Golden;
+      Put_U32 (Corrupt_Manifest, 212, 5);
+      Repair_Checksums (Corrupt_Manifest, Runtime.LSM.Checkpoint_Manifest_Header_Length);
+      Runtime.Decode_Checkpoint_Manifest (Corrupt_Manifest, ID (1), Manifest_Value, Decode_Status);
+      if Decode_Status /= Runtime.Invalid_Manifest_State or else Manifest_Value /= null then
+         raise Program_Error with "runtime manifest accepted identity count above persisted maximum";
+      end if;
+
+      Corrupt_Manifest := Manifest_Golden;
+      Put_U32 (Corrupt_Manifest, 264, 3);
+      Repair_Checksums (Corrupt_Manifest, Runtime.LSM.Checkpoint_Manifest_Header_Length);
+      Runtime.Decode_Checkpoint_Manifest (Corrupt_Manifest, ID (1), Manifest_Value, Decode_Status);
+      if Decode_Status /= Runtime.Invalid_Manifest_State or else Manifest_Value /= null then
+         raise Program_Error with "runtime manifest accepted run count above family maximum";
+      end if;
+
+      Corrupt_Manifest := Manifest_Golden;
+      Put_U64 (Corrupt_Manifest, 298, 3);
+      Repair_Checksums (Corrupt_Manifest, Runtime.LSM.Checkpoint_Manifest_Header_Length);
+      Runtime.Decode_Checkpoint_Manifest (Corrupt_Manifest, ID (1), Manifest_Value, Decode_Status);
+      if Decode_Status /= Runtime.Invalid_Manifest_State or else Manifest_Value /= null then
+         raise Program_Error with "runtime manifest allocated before replay validation";
+      end if;
+
+      Corrupt_Manifest := Manifest_Golden;
+      Corrupt_Manifest (338 .. 353) := Corrupt_Manifest (322 .. 337);
+      Repair_Checksums (Corrupt_Manifest, Runtime.LSM.Checkpoint_Manifest_Header_Length);
+      Runtime.Decode_Checkpoint_Manifest (Corrupt_Manifest, ID (1), Manifest_Value, Decode_Status);
+      if Decode_Status /= Runtime.Invalid_Identity or else Manifest_Value /= null then
+         raise Program_Error with "runtime manifest allocated before identity ordering validation";
+      end if;
+
+      Corrupt_SST (117) := Corrupt_SST (117) xor 1;
+      Runtime.Decode_SST (Corrupt_SST, ID (1), 1, Descriptor, 8, 8, Table_Value, Decode_Status);
+      if Decode_Status /= Runtime.Object_Checksum_Failed or else Table_Value /= null then
+         raise Program_Error with "runtime SST corruption published partial state";
+      end if;
+      Runtime.Decode_SST (SST_Golden, ID (1), 1, Descriptor, 0, 8, Table_Value, Decode_Status);
+      if Decode_Status /= Runtime.Limit_Exceeded or else Table_Value /= null then
+         raise Program_Error with "runtime SST family key limit was not enforced before allocation";
+      end if;
+   end Test_Runtime_Rejection;
+
    procedure Run is
    begin
       if not LSM.Structurally_Valid (Checkpoint) or else not LSM.Structurally_Valid (Table) then
@@ -587,6 +961,9 @@ package body Flyology.DB.LSM_Format_Tests is
       Test_Goldens_And_Extents;
       Test_Manifest_Rejection;
       Test_SST_Rejection;
+      Test_Runtime_Golden_Parity;
+      Test_Runtime_Persisted_Limits;
+      Test_Runtime_Rejection;
    end Run;
 
 end Flyology.DB.LSM_Format_Tests;

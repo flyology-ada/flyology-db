@@ -7,9 +7,10 @@ are unsigned big-endian.
 Byte strings are length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is
 persisted.
 
-The first-LSM format unit freezes manifest version 2 and SST version 1 below. Its private generic codec is a bounded
-reference/proof implementation; it does not make checkpoint publication or the operational dynamic decoder live.
-See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
+The first-LSM format unit freezes manifest version 2 and SST version 1 below. Its private generic codec remains the
+bounded reference/proof implementation. A byte-identical operational codec now admits headers before whole-object
+allocation and retains exact dynamically sized run, identity, entry, key, and value extents. This does not make
+checkpoint publication live. See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
 
 ## Common envelope
 
@@ -259,6 +260,14 @@ backpressure. An admitted image validates exact extent, envelope, database ident
 caps. A representation or declared reader-cap excess is `Limit_Exceeded`; malformed frames and noncanonical mapping
 fail closed and return an empty manifest value.
 
+The operational manifest decoder first validates exactly the 220-byte header against the transport-reported object
+length. Its allocation upper bound is derived with checked arithmetic from the authenticated family count, persisted
+database run ceiling, actual identity count, maximum family-name width, and frozen frame widths. A generation-bound
+whole read then validates the object CRC and every frame without allocation, allocates one exact flat family/run/
+identity object, populates it, and revalidates the complete structure before returning ownership. Storage exhaustion
+is `Allocation_Failed`; an address-space-incompatible persisted base is `Runtime_Incompatible`; every failure returns
+a null access value. The persisted theoretical maxima are not eagerly allocated and do not create replacement limits.
+
 ## Immutable SST run
 
 SST version 1 uses magic `FLYSST01` and the next unused stable object-kind code, `4`. Its header is 96 bytes:
@@ -289,6 +298,14 @@ count, and logical byte total exactly match the manifest mapping and descriptor.
 and both checksums precede reader caps. Any corruption or noncanonical ordering returns an empty SST value; exceeding
 the generic reference representation or explicit reader cap is `Limit_Exceeded` and does not authenticate skipped
 entries.
+
+The operational SST header admission requires the exact manifest descriptor. Entry count, logical payload bytes,
+and frozen widths therefore determine the one admissible whole-object length before allocation. After a
+generation-bound whole read, a first pass checks CRC, every U32-to-host conversion, per-family persisted key/value
+limits, frame extents, sequence interval, ordering, and exact logical payload. Only then does the decoder allocate one
+object containing the actual entry descriptors and compact key/value bytes. A second structural check precedes
+ownership return; all failures leave the result null. The operational and bounded encoders are gated against the same
+independently generated golden bytes.
 
 ## Evolution
 

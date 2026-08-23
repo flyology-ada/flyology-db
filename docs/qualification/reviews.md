@@ -1,5 +1,27 @@
 # Review record
 
+## Accepted operational first-LSM codec candidate
+
+- Parent: APM v0.3 agent-resource refresh `97061ea`.
+- Scope: a private byte-identical operational manifest-v2/SST-v1 codec with header-first admission, checked extent
+  arithmetic, exact dynamically sized family/run/identity/entry/payload objects, explicit ownership release, and
+  null-output failure. Persisted database and per-family limits remain the only allocation and backpressure policy;
+  this unit does not activate checkpoint publication, recovery, compaction, remote providers, or public API.
+- Constant authority: the audit funnel reviewed every changed declaration and literal. Frozen wire values cite the
+  persisted format, computed extents cite their field-width formulas, host representation checks identify their
+  compatibility effect, and regression dimensions are labeled fixtures. Neutral initialization and loop arithmetic
+  add no policy. No unresolved default, timeout, capacity, or key/value ceiling remains.
+- Verification: `./tests/scripts/test.sh` passes the exact root/test builds, repository/provenance gate, deterministic
+  Ada format/policy/model/local engine, files crash/recovery probes, 32 comparative cases, pinned TidesDB 4/4, and all
+  adapter fixtures against Object Storage `00ac6b925ea884fb94853a0e315556b9d94c1bd1`. The selected SPARK tree was
+  proved after sharing the run descriptor and wire constants: warning-strict FSF GNATprove 16.1.0 proves 1,078/1,078
+  checks (164 flow and 914 prover), with zero warnings, unproved or justified checks, or `pragma Assume`; later
+  amendments affect only the runtime codec, tests, comments, and documentation outside that proof boundary.
+- Findings cycle: review fixed a P1 compact-payload indexing defect and a P1 unencodable allocation extent. P2 fixes
+  make persisted self-contradictions malformed state rather than host-limit failures, validate replay/run and ledger
+  ordering before allocation, exercise shifted array bounds, pin the exact dependency provenance, and close adjacent
+  authority comments. Follow-up review finds no remaining P0, P1, P2, or P3 issue in this codec boundary.
+
 ## Accepted legacy constant-authority audit
 
 - Parent: accepted first-LSM exact-format commit `1ae755268f47822ce1ae1b9ed658c7d17ecf29ce`.

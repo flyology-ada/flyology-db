@@ -9,6 +9,50 @@ private package Flyology.DB.LSM_Formats
   with SPARK_Mode => On
 is
 
+   package Formats renames Flyology.DB.Formats;
+   package Head_Policy renames Flyology.DB.Head_Policy;
+   package Manifests renames Flyology.DB.Manifest_Formats;
+
+   --  Version 2 is the accepted first-LSM checkpoint-manifest protocol. It
+   --  leaves the version-1 log-only manifest encoding unchanged and readable.
+   Checkpoint_Manifest_Format_Version : constant Interfaces.Unsigned_16 := 2;
+
+   --  Persisted-format formulas: header 220 = v1 196 + 8 + 4 + 4 + 4 + 4;
+   --  family 52 = v1 28 + 8 + 4 + 4 + 4 + 4; run 48 = 16 + 8 + 8 + 4 +
+   --  4 + 8. Changing any term is manifest-v2 wire-incompatible.
+   Checkpoint_Manifest_Header_Length : constant := 220;
+   Checkpoint_Family_Header_Length   : constant := 52;
+   Run_Descriptor_Length             : constant := 48;
+
+   --  The accepted new SST kind begins at its own version 1. Kind 4 is the
+   --  next unused stable code after HEAD=1, batch=2, and manifest=3.
+   SST_Format_Version : constant Interfaces.Unsigned_16 := 1;
+   SST_Object_Kind    : constant Formats.Byte := 4;
+
+   --  Persisted-format formulas: SST header 96 = common 44 + 16 + 4 + 8 +
+   --  8 + 4 + 4 + 8; entry 20 = 8 + 1 + 1 + 2 + 4 + 4; trailer 4 is one
+   --  U32 CRC-32C. Changing any term is SST-v1 wire-incompatible.
+   SST_Header_Length       : constant := 96;
+   SST_Entry_Header_Length : constant := 20;
+   Object_Trailer_Length   : constant := 4;
+
+   --  Inherited from frozen batch-v1: Put=1 and Delete=2. SST deliberately
+   --  shares that operation namespace; retagging either value is persisted-
+   --  format incompatible rather than a local enumeration change.
+   Put_Operation    : constant Formats.Byte := 1;
+   Delete_Operation : constant Formats.Byte := 2;
+
+   --  A manifest run descriptor is shared by the bounded proof oracle and the
+   --  dynamically allocated operational codec. Its fields and zero defaults
+   --  are frozen wire state; a live descriptor must be explicitly validated.
+   type Run_Descriptor is record
+      Run_ID                : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Lowest_Sequence       : Interfaces.Unsigned_64 := 0;
+      Highest_Sequence      : Interfaces.Unsigned_64 := 0;
+      Entry_Total           : Interfaces.Unsigned_32 := 0;
+      Logical_Payload_Bytes : Interfaces.Unsigned_64 := 0;
+   end record;
+
    --  Generic bounds size only a reference/proof instance; persisted limits
    --  remain the authority for the later operational decoder.
    generic
@@ -29,34 +73,23 @@ is
       use type Interfaces.Unsigned_32;
       use type Interfaces.Unsigned_64;
 
-      --  Version 2 is the accepted first-LSM checkpoint-manifest protocol. It
-      --  leaves the version-1 log-only manifest encoding unchanged and readable.
-      Checkpoint_Manifest_Format_Version : constant Interfaces.Unsigned_16 := 2;
-
-      --  Persisted-format formulas: header 220 = v1 196 + 8 + 4 + 4 + 4 + 4;
-      --  family 52 = v1 28 + 8 + 4 + 4 + 4 + 4; run 48 = 16 + 8 + 8 + 4 +
-      --  4 + 8. Changing any term is manifest-v2 wire-incompatible.
-      Checkpoint_Manifest_Header_Length : constant := 220;
-      Checkpoint_Family_Header_Length   : constant := 52;
-      Run_Descriptor_Length             : constant := 48;
-
-      --  The accepted new SST kind begins at its own version 1. Kind 4 is the
-      --  next unused stable code after HEAD=1, batch=2, and manifest=3.
-      SST_Format_Version : constant Interfaces.Unsigned_16 := 1;
-      SST_Object_Kind    : constant Formats.Byte := 4;
-
-      --  Persisted-format formulas: SST header 96 = common 44 + 16 + 4 + 8 +
-      --  8 + 4 + 4 + 8; entry 20 = 8 + 1 + 1 + 2 + 4 + 4; trailer 4 is one
-      --  U32 CRC-32C. Changing any term is SST-v1 wire-incompatible.
-      SST_Header_Length       : constant := 96;
-      SST_Entry_Header_Length : constant := 20;
-      Object_Trailer_Length   : constant := 4;
-
-      --  Inherited from frozen batch-v1: Put=1 and Delete=2. SST deliberately
-      --  shares that operation namespace; retagging either value is persisted-
-      --  format incompatible rather than a local enumeration change.
-      Put_Operation    : constant Formats.Byte := 1;
-      Delete_Operation : constant Formats.Byte := 2;
+      --  Preserve the reference-instance API while sharing one authoritative
+      --  wire declaration with the operational codec.
+      Checkpoint_Manifest_Format_Version : constant Interfaces.Unsigned_16 :=
+        Flyology.DB.LSM_Formats.Checkpoint_Manifest_Format_Version;
+      Checkpoint_Manifest_Header_Length  : constant :=
+        Flyology.DB.LSM_Formats.Checkpoint_Manifest_Header_Length;
+      Checkpoint_Family_Header_Length    : constant :=
+        Flyology.DB.LSM_Formats.Checkpoint_Family_Header_Length;
+      Run_Descriptor_Length              : constant := Flyology.DB.LSM_Formats.Run_Descriptor_Length;
+      SST_Format_Version                 : constant Interfaces.Unsigned_16 :=
+        Flyology.DB.LSM_Formats.SST_Format_Version;
+      SST_Object_Kind                    : constant Formats.Byte := Flyology.DB.LSM_Formats.SST_Object_Kind;
+      SST_Header_Length                  : constant := Flyology.DB.LSM_Formats.SST_Header_Length;
+      SST_Entry_Header_Length            : constant := Flyology.DB.LSM_Formats.SST_Entry_Header_Length;
+      Object_Trailer_Length              : constant := Flyology.DB.LSM_Formats.Object_Trailer_Length;
+      Put_Operation                      : constant Formats.Byte := Flyology.DB.LSM_Formats.Put_Operation;
+      Delete_Operation                   : constant Formats.Byte := Flyology.DB.LSM_Formats.Delete_Operation;
 
       subtype Run_Slot is Positive range 1 .. Maximum_Runs_Per_Family;
       subtype Run_Count is Natural range 0 .. Maximum_Runs_Per_Family;
@@ -69,16 +102,9 @@ is
       subtype Key_Index is Positive range 1 .. Maximum_Key_Bytes;
       subtype Value_Index is Positive range 1 .. Maximum_Value_Bytes;
 
-      --  Zero defaults form the canonical unused run slot. A persisted run is
-      --  valid only with nonzero identity, sequence interval, and entry count;
-      --  changing this empty shape changes record-tail canonicalization.
-      type Run_Descriptor is record
-         Run_ID                : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
-         Lowest_Sequence       : Interfaces.Unsigned_64 := 0;
-         Highest_Sequence      : Interfaces.Unsigned_64 := 0;
-         Entry_Total           : Interfaces.Unsigned_32 := 0;
-         Logical_Payload_Bytes : Interfaces.Unsigned_64 := 0;
-      end record;
+      --  The proof instance uses the same descriptor type as production;
+      --  zero remains its canonical vacant slot and is never a valid run.
+      subtype Run_Descriptor is Flyology.DB.LSM_Formats.Run_Descriptor;
 
       type Run_Array is array (Run_Slot) of Run_Descriptor;
 
