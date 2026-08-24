@@ -1308,6 +1308,56 @@ package body Flyology.DB.LSM_Runtime_Formats is
        and then Interfaces.Unsigned_64 (Value.Entry_Total) = Interfaces.Unsigned_64 (Descriptor.Entry_Total)
        and then Value.Logical_Payload_Bytes = Descriptor.Logical_Payload_Bytes);
 
+   procedure Merge_Manifest_Adjacent_SSTs
+     (Current       : Checkpoint_Manifest;
+      Older         : SST;
+      Newer         : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status) is
+   begin
+      Value := null;
+      if not Structurally_Valid (Current) or else Older.Family_ID /= Newer.Family_ID then
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      for Descriptor of Current.Runs loop
+         if Descriptor.Run_ID = Output_Run_ID then
+            Status := Merge_Invalid_Input;
+            return;
+         end if;
+      end loop;
+      for Family_Index in Current.Families'Range loop
+         if Current.Base.Families (Family_Index).ID = Older.Family_ID then
+            declare
+               Family : Family_LSM_State renames Current.Families (Family_Index);
+            begin
+               if Family.Run_Total < 2 then
+                  Status := Merge_Invalid_Input;
+                  return;
+               end if;
+               for Run_Index in Positive range Family.First_Run .. Family.First_Run + Family.Run_Total - 2
+               loop
+                  if Descriptor_Matches
+                       (Older, Current.Base.Database_ID, Older.Family_ID, Current.Runs (Run_Index))
+                    and then Descriptor_Matches
+                               (Newer,
+                                Current.Base.Database_ID,
+                                Newer.Family_ID,
+                                Current.Runs (Run_Index + 1))
+                  then
+                     Merge_Consecutive_SSTs (Older, Newer, Output_Run_ID, Value, Status);
+                     return;
+                  end if;
+               end loop;
+               Status := Merge_Invalid_Input;
+               return;
+            end;
+         end if;
+      end loop;
+      Status := Merge_Invalid_Input;
+   end Merge_Manifest_Adjacent_SSTs;
+
    procedure Encode_SST (Value : SST; Image : out Image_Access; Status : out Encode_Status) is
       Entry_Bytes : Interfaces.Unsigned_64;
       Total       : Interfaces.Unsigned_64;

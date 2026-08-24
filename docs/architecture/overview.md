@@ -58,8 +58,10 @@ The private partial-run coalescing kernel separately accepts two caller-selected
 with strictly ordered nonoverlapping sequence ranges and a fresh output identity. It performs one lexicographic merge
 while retaining every version and tombstone, allocates only the exact summed entry/payload extents with checked
 arithmetic, and publishes no partial output on typed failure. Because no history is pruned, this kernel chooses no
-snapshot-retention horizon. Manifest adjacency selection, immutable publication, atomic descriptor replacement,
-trigger/fanout/level policy, and the public compaction surface remain later units.
+snapshot-retention horizon. Its manifest-aware entry point admits the pair only when both SSTs exactly match adjacent
+descriptors in one authenticated family, and it rejects an output identity already named by that manifest. Current
+HEAD-generation binding, immutable publication, atomic descriptor replacement, trigger/fanout/level policy, and the
+public compaction surface remain later units.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,

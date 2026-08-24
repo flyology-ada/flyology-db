@@ -1,5 +1,28 @@
 # Review record
 
+## Accepted manifest authority for partial SST merge
+
+- Parent: bounded composable ListParts dependency qualification commit `17e80c8`.
+- Scope and semantics: add one private runtime entry point that accepts the existing version-preserving merge only
+  when both structurally valid SSTs exactly match two adjacent descriptors in one structurally valid authenticated
+  manifest family. The output identity must be absent from every current descriptor. No run is selected
+  automatically, and the lower merge still retains every version and tombstone.
+- Authority boundary: adjacency and current run identities derive only from persisted manifest order. The caller still
+  must bind that captured manifest to current HEAD generation before any immutable publication or metadata effect.
+  This unit adds no trigger, threshold, fanout, level, retry, task, timeout, capacity, persisted byte, or public API.
+- Bounds and ownership: all rejection occurs before output allocation. A successful operation uses the merger's exact
+  checked entry/payload/logical-byte sums, borrows both inputs and manifest only for the call, and returns one privately
+  owned SST candidate or a vacant output.
+- Verification: the maintained deterministic suite rebuilds root/tests/server, passes local/client/files crash and
+  reopen paths, all 32 comparative cases, pinned TidesDB 4/4, and repository provenance against Object Storage
+  `fa418173c048ed9e59e67ac36afbd4973a37adac`. The focused corpus covers exact adjacency, reversed authority,
+  nonadjacent descriptors, selected-input identity reuse, retained-run identity collision, and exact output round trip.
+- Findings cycle: the first sweep found one P2: the lower kernel rejected input-ID reuse but the manifest-aware entry
+  could accept an output ID belonging to a different retained run. The entry now rejects collision with every current
+  descriptor and the corpus includes the retained-run witness. Rebuild, deterministic rerun, constants audit, and
+  re-review find no remaining P0, P1, P2, or P3 issue. The project-independent formatter changed unrelated existing
+  layout; that churn was removed and the changed-source 110-column audit is clean.
+
 ## Accepted bounded composable ListParts dependency qualification
 
 - Parent: private version-preserving SST merge kernel commit `55b2dfd`.

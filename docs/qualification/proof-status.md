@@ -216,6 +216,12 @@ SST encodes/decodes unchanged, and reversed ranges plus input-identity reuse pub
 checked sums of authenticated input shapes; run selection, publication, descriptor replacement, snapshot pruning,
 and refinement from either TLA+ lane remain outside this unit.
 
+The manifest-admission refinement reruns the same 1,088-check gate. The runtime merger remains outside the selected
+SPARK units; deterministic executable evidence now requires exact descriptor equality and adjacency in one
+structurally valid manifest family before allocation, rejects reversed and nonadjacent authority, and rejects output
+identity collision with either selected or retained runs. Current-HEAD generation binding and publication remain
+outside this refinement.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

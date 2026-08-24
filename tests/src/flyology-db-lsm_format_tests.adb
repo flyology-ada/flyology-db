@@ -971,6 +971,8 @@ package body Flyology.DB.LSM_Format_Tests is
       Decoded       : Runtime.SST_Access;
       Rejected      : Runtime.SST_Access;
       Image         : Runtime.Image_Access;
+      Manifest      : Runtime.Checkpoint_Manifest_Access;
+      Nonadjacent   : Runtime.Checkpoint_Manifest_Access;
       Allocation    : Runtime.Allocation_Status;
       Merge_Result  : Runtime.Merge_Status;
       Encode_Result : Runtime.Encode_Status;
@@ -1050,34 +1052,67 @@ package body Flyology.DB.LSM_Format_Tests is
       Newer.Database_ID := ID (1);
       Newer.Run_ID := ID (10);
       Newer.Family_ID := 1;
-      Newer.Lowest_Sequence := 3;
-      Newer.Highest_Sequence := 4;
+      Newer.Lowest_Sequence := 4;
+      Newer.Highest_Sequence := 5;
       Newer.Logical_Payload_Bytes := Interfaces.Unsigned_64 (Newer.Payload_Byte_Total);
-      Fill_Entry (Newer, 1, Newer_Cursor, 4, Runtime.LSM.Delete_Operation, 'a', False, ' ');
-      Fill_Entry (Newer, 2, Newer_Cursor, 3, Runtime.LSM.Put_Operation, 'b', True, 'z');
-      Fill_Entry (Newer, 3, Newer_Cursor, 4, Runtime.LSM.Put_Operation, 'c', True, 'q');
-      Fill_Entry (Newer, 4, Newer_Cursor, 3, Runtime.LSM.Delete_Operation, 'd', False, ' ');
+      Fill_Entry (Newer, 1, Newer_Cursor, 5, Runtime.LSM.Delete_Operation, 'a', False, ' ');
+      Fill_Entry (Newer, 2, Newer_Cursor, 4, Runtime.LSM.Put_Operation, 'b', True, 'z');
+      Fill_Entry (Newer, 3, Newer_Cursor, 5, Runtime.LSM.Put_Operation, 'c', True, 'q');
+      Fill_Entry (Newer, 4, Newer_Cursor, 4, Runtime.LSM.Delete_Operation, 'd', False, ' ');
 
-      Runtime.Merge_Consecutive_SSTs (Older.all, Newer.all, ID (11), Merged, Merge_Result);
+      --  Exact two-run fixture geometry establishes current manifest
+      --  adjacency; it is neither a compaction trigger nor a production run
+      --  limit. Descriptor fields derive from the two authenticated SSTs.
+      Runtime.Create_Checkpoint_Manifest (1, 2, 0, Manifest, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "partial-merge manifest allocation failed";
+      end if;
+      Manifest.Base := Base_Manifest;
+      Manifest.Replay_Boundary := Newer.Highest_Sequence;
+      Manifest.Maximum_Total_L0_Runs := 2;
+      Manifest.Maximum_Checkpoint_Identities := 1;
+      Manifest.Maximum_Point_Reads_Per_Transaction := 1;
+      Manifest.Maximum_Scan_Ranges_Per_Transaction := 1;
+      Manifest.Families (1) :=
+        (Memtable_Max_Bytes   => Interfaces.Unsigned_64 (Older.Payload_Byte_Total + Newer.Payload_Byte_Total),
+         Memtable_Max_Entries => Interfaces.Unsigned_32 (Older.Entry_Total + Newer.Entry_Total),
+         Maximum_L0_Runs      => 2,
+         First_Run            => 1,
+         Run_Total            => 2);
+      Manifest.Runs (1) :=
+        (Run_ID                => Older.Run_ID,
+         Lowest_Sequence       => Older.Lowest_Sequence,
+         Highest_Sequence      => Older.Highest_Sequence,
+         Entry_Total           => Interfaces.Unsigned_32 (Older.Entry_Total),
+         Logical_Payload_Bytes => Older.Logical_Payload_Bytes);
+      Manifest.Runs (2) :=
+        (Run_ID                => Newer.Run_ID,
+         Lowest_Sequence       => Newer.Lowest_Sequence,
+         Highest_Sequence      => Newer.Highest_Sequence,
+         Entry_Total           => Interfaces.Unsigned_32 (Newer.Entry_Total),
+         Logical_Payload_Bytes => Newer.Logical_Payload_Bytes);
+
+      Runtime.Merge_Manifest_Adjacent_SSTs
+        (Manifest.all, Older.all, Newer.all, ID (11), Merged, Merge_Result);
       if Merge_Result /= Runtime.Merge_Completed
         or else Merged = null
         or else not Runtime.Structurally_Valid (Merged.all)
         or else Merged.Entry_Total /= 8
         or else Merged.Payload_Byte_Total /= 13
         or else Merged.Lowest_Sequence /= 1
-        or else Merged.Highest_Sequence /= 4
+        or else Merged.Highest_Sequence /= 5
         or else Merged.Run_ID /= ID (11)
       then
          raise Program_Error with "partial SST merge did not produce the exact combined run";
       end if;
-      Expect_Entry (1, 4, Runtime.LSM.Delete_Operation, 'a', False, ' ');
+      Expect_Entry (1, 5, Runtime.LSM.Delete_Operation, 'a', False, ' ');
       Expect_Entry (2, 2, Runtime.LSM.Put_Operation, 'a', True, 'x');
       Expect_Entry (3, 1, Runtime.LSM.Put_Operation, 'a', True, 'w');
-      Expect_Entry (4, 3, Runtime.LSM.Put_Operation, 'b', True, 'z');
+      Expect_Entry (4, 4, Runtime.LSM.Put_Operation, 'b', True, 'z');
       Expect_Entry (5, 2, Runtime.LSM.Delete_Operation, 'b', False, ' ');
-      Expect_Entry (6, 4, Runtime.LSM.Put_Operation, 'c', True, 'q');
+      Expect_Entry (6, 5, Runtime.LSM.Put_Operation, 'c', True, 'q');
       Expect_Entry (7, 1, Runtime.LSM.Put_Operation, 'c', True, 'y');
-      Expect_Entry (8, 3, Runtime.LSM.Delete_Operation, 'd', False, ' ');
+      Expect_Entry (8, 4, Runtime.LSM.Delete_Operation, 'd', False, ' ');
 
       Runtime.Encode_SST (Merged.all, Image, Encode_Result);
       if Encode_Result /= Runtime.Encoded then
@@ -1097,18 +1132,71 @@ package body Flyology.DB.LSM_Format_Tests is
          raise Program_Error with "partial SST merge output did not round-trip";
       end if;
 
-      Runtime.Merge_Consecutive_SSTs (Newer.all, Older.all, ID (12), Rejected, Merge_Result);
+      Runtime.Merge_Manifest_Adjacent_SSTs
+        (Manifest.all, Newer.all, Older.all, ID (12), Rejected, Merge_Result);
       if Merge_Result /= Runtime.Merge_Invalid_Input or else Rejected /= null then
-         raise Program_Error with "partial SST merge accepted reversed sequence ranges";
+         raise Program_Error with "partial SST merge accepted reversed manifest authority";
       end if;
-      Runtime.Merge_Consecutive_SSTs (Older.all, Newer.all, Older.Run_ID, Rejected, Merge_Result);
+      Runtime.Merge_Manifest_Adjacent_SSTs
+        (Manifest.all, Older.all, Newer.all, Older.Run_ID, Rejected, Merge_Result);
       if Merge_Result /= Runtime.Merge_Invalid_Input or else Rejected /= null then
          raise Program_Error with "partial SST merge reused an input identity";
+      end if;
+
+      --  The three-run fixture inserts one exact persisted descriptor between
+      --  the same SST identities. Its size is adjacency-test geometry only.
+      Runtime.Create_Checkpoint_Manifest (1, 3, 0, Nonadjacent, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "nonadjacent partial-merge manifest allocation failed";
+      end if;
+      Nonadjacent.Base := Base_Manifest;
+      Nonadjacent.Replay_Boundary := Newer.Highest_Sequence;
+      Nonadjacent.Maximum_Total_L0_Runs := 3;
+      Nonadjacent.Maximum_Checkpoint_Identities := 1;
+      Nonadjacent.Maximum_Point_Reads_Per_Transaction := 1;
+      Nonadjacent.Maximum_Scan_Ranges_Per_Transaction := 1;
+      Nonadjacent.Families (1) :=
+        (Memtable_Max_Bytes   => Manifest.Families (1).Memtable_Max_Bytes,
+         Memtable_Max_Entries => Manifest.Families (1).Memtable_Max_Entries,
+         Maximum_L0_Runs      => 3,
+         First_Run            => 1,
+         Run_Total            => 3);
+      Nonadjacent.Runs (1) := Manifest.Runs (1);
+      Nonadjacent.Runs (2) :=
+        (Run_ID                => ID (12),
+         Lowest_Sequence       => 3,
+         Highest_Sequence      => 3,
+         Entry_Total           => 1,
+         Logical_Payload_Bytes => 1);
+      Nonadjacent.Runs (3) := Manifest.Runs (2);
+      Runtime.Merge_Manifest_Adjacent_SSTs
+        (Nonadjacent.all, Older.all, Newer.all, ID (13), Rejected, Merge_Result);
+      if Merge_Result /= Runtime.Merge_Invalid_Input or else Rejected /= null then
+         raise Program_Error with "partial SST merge accepted nonadjacent manifest descriptors";
+      end if;
+
+      --  Reuse the same three-run allocation with the selected pair adjacent
+      --  and one later retained descriptor. The new sequence and identity are
+      --  fixture geometry; they establish a collision outside the input pair.
+      Nonadjacent.Runs (2) := Manifest.Runs (2);
+      Nonadjacent.Runs (3) :=
+        (Run_ID                => ID (12),
+         Lowest_Sequence       => 6,
+         Highest_Sequence      => 6,
+         Entry_Total           => 1,
+         Logical_Payload_Bytes => 1);
+      Nonadjacent.Replay_Boundary := 6;
+      Runtime.Merge_Manifest_Adjacent_SSTs
+        (Nonadjacent.all, Older.all, Newer.all, ID (12), Rejected, Merge_Result);
+      if Merge_Result /= Runtime.Merge_Invalid_Input or else Rejected /= null then
+         raise Program_Error with "partial SST merge reused a retained run identity";
       end if;
 
       Runtime.Release (Image);
       Runtime.Release (Decoded);
       Runtime.Release (Merged);
+      Runtime.Release (Nonadjacent);
+      Runtime.Release (Manifest);
       Runtime.Release (Newer);
       Runtime.Release (Older);
    exception
@@ -1117,6 +1205,8 @@ package body Flyology.DB.LSM_Format_Tests is
          Runtime.Release (Decoded);
          Runtime.Release (Rejected);
          Runtime.Release (Merged);
+         Runtime.Release (Nonadjacent);
+         Runtime.Release (Manifest);
          Runtime.Release (Newer);
          Runtime.Release (Older);
          raise;

@@ -197,9 +197,23 @@ private package Flyology.DB.LSM_Runtime_Formats is
    --  Coalesce two validated consecutive sequence ranges without pruning any
    --  version or tombstone. Exact output extents derive from the two inputs;
    --  checked arithmetic and allocation failure publish no partial SST. The
-   --  fresh output identity is caller authority, not a generated default.
+   --  candidate output identity is caller authority, not a generated default;
+   --  this lower kernel rejects zero and input reuse, while the manifest-aware
+   --  entry point below also rejects collision with every retained run.
    procedure Merge_Consecutive_SSTs
      (Older         : SST;
+      Newer         : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status);
+
+   --  Admit a merge only when the two SSTs exactly match adjacent descriptors
+   --  in one structurally valid authenticated manifest family. Adjacency is
+   --  persisted manifest authority, not a trigger or size policy. A publisher
+   --  must still bind Current to the current HEAD generation before effects.
+   procedure Merge_Manifest_Adjacent_SSTs
+     (Current       : Checkpoint_Manifest;
+      Older         : SST;
       Newer         : SST;
       Output_Run_ID : Head_Policy.Identifier;
       Value         : out SST_Access;

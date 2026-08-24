@@ -34,7 +34,9 @@ that replacing the selected pair with its newest mutation per key preserves ever
 that a newest selected tombstone remains present to mask older retained values. It selects no compaction trigger,
 fanout, level sizing, schedule, capacity, or public API. The private operational coalescing kernel takes the more
 conservative snapshot-safe step: it merges two ordered nonoverlapping SSTs while retaining every version and
-tombstone. It derives exact output extents from the validated inputs and does not yet select or publish runs.
+tombstone. Its manifest-aware entry point admits only exact adjacent descriptors and rejects any output identity
+already named by that manifest. It derives exact output extents from the validated inputs, but does not bind the
+captured manifest to current HEAD authority, select a trigger, or publish runs.
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
 produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.
