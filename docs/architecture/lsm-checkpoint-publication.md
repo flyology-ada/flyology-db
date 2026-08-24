@@ -5,9 +5,9 @@ SST-v1 bytes, a private SPARK reference decoder, and a byte-identical dynamicall
 is the allocation and validation boundary. New Create operations publish an empty manifest-v2 root carrying the
 explicit LSM policy. Cacheless Open now admits a complete nonempty first checkpoint, reconstructs its exact state and
 identity partition, and replays only later batches. The internal checkpoint planner assembles an exact successor and
-its family SSTs. Public synchronous `Flush` and `Resolve_Flush` publish and reconcile that first checkpoint through a
-self-contained receipt, and the retained testing entry point is a literal wait on the same state machine. Existing
-manifest-v1 databases remain readable for log-only operation.
+its family SSTs. Public synchronous `Flush`, caller-composable `Flush_Operation`, and `Resolve_Flush` publish and
+reconcile that first checkpoint through the same self-contained receipt and certainty rules. Existing manifest-v1
+databases remain readable for log-only operation.
 
 ## Staged compatibility decision
 
@@ -64,10 +64,29 @@ keys. The manifest and runs are immutable; provider generations remain opaque va
 
 ## Publication state machine
 
-The synchronous first implementation serializes `Flush` against the existing bounded native Ada coordinator.
-There is no automatic flush task, task per run, detached helper, or compaction task in this stage. Once admitted, a
-flush follows one absolute deadline and retains a self-contained receipt with the stable run and manifest IDs, exact
-expected HEAD generation/transition, attempted transition identity, replay boundary, and phase.
+Both public forms serialize `Flush` against the existing bounded native Ada coordinator. The synchronous procedure
+waits directly; the additive `Flush_Operation` is an owner-stack state machine driven by the caller's completion set.
+There is no automatic flush task, task per run, detached helper, callback thread, or compaction task in this stage.
+Once admitted, either form follows one absolute deadline and retains a self-contained receipt with the stable run
+and manifest IDs, exact expected HEAD generation/transition, attempted transition identity, replay boundary, and
+phase.
+
+The composable established form retains borrows of its completion set, database, client-bound storage context, exact
+HTTP client, buffer pool, and optional cancellation token until typed `Finish` or finalization drain. `Start_Flush`
+validates those owners and copies the run map before reserving its visible slot. Only then does it move the exact
+caller `Unique_Buffer` token into operation ownership. Any initiating exception rolls back lifecycle and slot
+admission and leaves byte length, tag, metadata, and payload ownership unchanged. Terminal `Finish` is the sole
+normal restoration authority and accepts any vacant handle from the same pool; the operation retains no pointer to
+the initiating handle. Scope abandonment first cancels and drains nested Object Storage/HTTP work, then releases the
+token to its pool.
+
+The caller chooses the scratch pool block size from persisted database/family limits and the intended encoded object
+bound; the DB adds no public body-size default. Before the first conditional Put, the driver constructs and hashes the
+complete plan and verifies that every run, manifest, and HEAD image fits that block. A smaller block is a definite
+`Capacity_Exceeded` result with no publication. The current nested provider stack needs four reusable completion-set
+slots while one Flush mutation is active: the visible DB parent, Object Storage conditional Put, HTTP exchange, and
+one transport child. Slot exhaustion before a child request is typed capacity/backpressure, never publication
+uncertainty.
 
 Before storage admission, the lifecycle enters an exclusive checkpoint mode and waits for every already-admitted
 database call to finish. The builder reads actual per-family entry and payload totals, checks them against that
@@ -153,7 +172,7 @@ TLC or future gates.
 ## Non-goals
 
 This unit does not implement automatic flushing, multiple checkpoints, compaction, run pruning, garbage collection,
-scans, MVCC, snapshots, remote-provider matrix qualification, a public DB-level composable checkpoint operation, or
-an LSM performance claim. The operational scope is manifest-v2 root creation, exact whole-checkpoint planning,
-certainty-preserving synchronous first-checkpoint publication/reconciliation, and header-first cacheless recovery of
-one nonempty first checkpoint plus its later batch suffix.
+scans, MVCC, snapshots, remote-provider matrix qualification, or an LSM performance claim. The operational scope is
+manifest-v2 root creation, exact whole-checkpoint planning, certainty-preserving synchronous and composable
+first-checkpoint publication/reconciliation, and header-first cacheless recovery of one nonempty first checkpoint
+plus its later batch suffix.

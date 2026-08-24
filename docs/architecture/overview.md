@@ -35,9 +35,8 @@ silently upgrades an existing manifest-v1 database.
 
 The first-checkpoint protocol is specified separately in
 [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v2 root creation, public synchronous Flush
-with self-contained certainty receipts, exact same-identity reconciliation, live coordinator replacement, and
-cacheless nonempty checkpoint recovery are operational. The deterministic testing publisher is a literal unbounded
-wait on that public state machine.
+and caller-composable Flush with self-contained certainty receipts, exact same-identity reconciliation, live
+coordinator replacement, and cacheless nonempty checkpoint recovery are operational.
 
 ## Transaction semantics
 
@@ -65,10 +64,12 @@ admission. Once publication starts, every admitted caller waits for terminal cla
 storage deadline. The current authenticated client binding is the first composable-core step: its synchronous
 conditional Put and whole/range Get calls are literal waits over Object Storage scoped state machines, with one moved
 unique-buffer token per body operation, one absolute DB deadline, no helper task, and no automatic retry. A range
-whose generation is not yet known first performs HeadObject and then binds the range read to that exact ETag. Later
-DB-level composable operations will let callers drive bounded completion sets over this same semantic core. CPU-heavy
-sorting, compression, and merging will use bounded native Ada tasks or an explicitly isolated process with detached
-owned input. The engine will not create detached C threads.
+whose generation is not yet known first performs HeadObject and then binds the range read to that exact ETag. The
+DB-level `Flush_Operation` now composes conditional Put and whole-Get children directly in the caller's bounded
+completion set. Its typed `Finish` restores the exact moved token into any vacant same-pool handle; an abandoned
+operation drains nested transport work before releasing that token. CPU-heavy sorting, compression, and merging will
+use bounded native Ada tasks or an explicitly isolated process with detached owned input. The engine will not create
+detached C threads.
 
 The synchronous runtime does not inline configured maximum values or allocate a theoretical maximum-history image
 product. A caller's borrowed bytes are copied once into a transaction-owned arena, atomically moved into a coordinator
@@ -77,8 +78,9 @@ the backend-neutral synchronous call; it does not clone it. The authenticated cl
 exact request buffer from the encoded image length and an exact response buffer from the authenticated or persisted
 read bound. It copies into and out of those transient tokens while the engine keeps the same certainty and recovery
 semantics. Recovery sinks own exact response images, and live state stores image offsets/views. Outcome-unknown
-receipts retain a shared exact image until conclusive byte-for-byte reconciliation. Later DB-level composable
-overloads may move caller-owned `Unique_Buffer` tokens while reusing this semantic core.
+receipts retain a shared exact image until conclusive byte-for-byte reconciliation. Composable Flush moves the
+caller's `Unique_Buffer` token while reusing this semantic core and preflights every encoded object against its
+caller-selected block capacity before publication.
 
 Recovery admits manifest and SST headers before allocating their exact authenticated whole-object lengths, binds the
 second read to the first read's opaque generation, and allocates replay history only for batches after the checkpoint

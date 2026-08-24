@@ -14,9 +14,10 @@ The pending operational slice covers provider-neutral memory/files backends, HEA
 LSM limits, stable column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/
 database limits. Public synchronous `Flush` publishes and reconciles one complete first checkpoint, replaces the
 live coordinator without invalidating family handles or active transactions, and cacheless recovery replays only its
-later log suffix. An authenticated client binding routes synchronous conditional writes and bounded reads through
-the same Object Storage scoped state machines used by composable callers. Remote-provider qualification, multiple
-checkpoints/compaction, a DB-level composable API, and dynamic family changes remain separate review units.
+later log suffix. An additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a
+bounded completion set, moving one caller-sized unique-buffer token until typed `Finish`; it creates no helper task
+and preserves the synchronous receipt and certainty mapping. Remote-provider qualification, multiple checkpoints,
+compaction, and dynamic family changes remain separate review units.
 
 ## Durability rule
 

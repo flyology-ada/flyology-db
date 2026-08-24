@@ -2,6 +2,7 @@ with Ada.Directories;
 with Ada.Real_Time;
 with Ada.Unchecked_Deallocation;
 with Interfaces;
+with Interfaces.C;
 with Flyology.Cancellation;
 with Flyology.Bytes;
 with Flyology.DB.Batch_Format_Tests;
@@ -18,6 +19,8 @@ with Flyology.Object_Storage.Backends.Memory;
 with Flyology.Object_Storage.Client.Low_Level;
 
 package body Flyology.DB.Engine_Tests is
+
+   use type Interfaces.C.int;
 
    package Binding renames Flyology.DB.Object_Storage;
    package Batch_Tests renames Flyology.DB.Batch_Format_Tests;
@@ -3456,6 +3459,61 @@ package body Flyology.DB.Engine_Tests is
       Bind_Context (Context, Backend, "admission-group");
       Create_DB (Item, Context'Access, Database_ID, ID (81), Result);
       Expect (Result, Success, "admission database create failed");
+
+      --  The composable checkpoint admission must be cancellable while an
+      --  earlier lifecycle lease is still active, and its persistent wake must
+      --  close the release/subscription race when that lease instead drains.
+      declare
+         Lease_State      : Engine_State_Access;
+         Checkpoint_State : Engine_State_Access;
+         --  Negative one is Flyology.IO's invalid-descriptor sentinel. A live
+         --  lease must replace it with the persistent quiescence wake source.
+         Descriptor       : Interfaces.C.int := -1;
+         Ready_Now        : Boolean := False;
+         Visible_Before   : Sequence_Number;
+         Visible_After    : Sequence_Number;
+      begin
+         Visible_Before := Item.Life.Highest (Result);
+         Expect (Result, Success, "checkpoint visibility setup failed");
+         Item.Life.Acquire (Lease_State, Result);
+         Expect (Result, Success, "checkpoint-cancel lease setup failed");
+         Item.Life.Begin_Composable_Checkpoint (Checkpoint_State, Result);
+         Expect (Result, Success, "composable checkpoint admission failed");
+         Item.Life.Checkpoint_Wait_Source (Descriptor, Ready_Now);
+         if Ready_Now or else Descriptor < 0 or else Checkpoint_State /= Lease_State then
+            raise Program_Error with "composable checkpoint did not retain its quiescence wait";
+         end if;
+         --  The next sequence is derived from the persisted visible value and
+         --  represents a call admitted before checkpoint mode. Cancellation
+         --  must not roll its completed publication back in lifecycle state.
+         Item.Life.Set_Visible (Visible_Before + 1);
+         Item.Life.Cancel_Checkpoint;
+         Item.Life.Release;
+         Visible_After := Item.Life.Highest (Result);
+         Expect (Result, Success, "checkpoint cancellation visibility query failed");
+         if Visible_After /= Visible_Before + 1 then
+            raise Program_Error with "checkpoint cancellation lost an admitted visible sequence";
+         end if;
+
+         Item.Life.Acquire (Lease_State, Result);
+         Expect (Result, Success, "checkpoint cancellation did not reopen lifecycle admission");
+         Item.Life.Begin_Composable_Checkpoint (Checkpoint_State, Result);
+         Expect (Result, Success, "checkpoint wake admission failed");
+         Item.Life.Release;
+         Item.Life.Checkpoint_Wait_Source (Descriptor, Ready_Now);
+         if not Ready_Now or else Descriptor /= -1 then
+            raise Program_Error with "checkpoint quiescence wake lost the final lease transition";
+         end if;
+         Item.Life.Cancel_Checkpoint;
+      end;
+
+      --  The direct lifecycle probe above intentionally advanced only its
+      --  transient sequence. Reopen reloads the exact durable HEAD before the
+      --  remaining transaction-admission corpus uses this fixture.
+      Close (Item, Result);
+      Expect (Result, Success, "checkpoint lifecycle probe close failed");
+      Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "checkpoint lifecycle probe reopen failed");
 
       Begin_Transaction (Item, TX_ID (82), Txn, Result);
       Put (Item, Txn, 1, Item_Key, Item_Value, Result);

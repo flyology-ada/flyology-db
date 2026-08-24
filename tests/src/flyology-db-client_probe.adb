@@ -1,11 +1,16 @@
 with Ada.Command_Line;
+with Ada.Streams;
 with Ada.Text_IO;
+with Flyology.Buffers;
 with Flyology.Bytes;
 with Flyology.DB.Object_Storage;
 with Flyology.HTTP;
 with Flyology.HTTP.Client;
+with Flyology.IO.Timers;
 with Flyology.Object_Storage.Client.Buckets;
 with Flyology.Object_Storage.Client.Low_Level;
+with Flyology.Operations;
+with Interfaces;
 
 procedure Flyology.DB.Client_Probe is
    package Binding renames Flyology.DB.Object_Storage;
@@ -13,9 +18,12 @@ procedure Flyology.DB.Client_Probe is
    package HTTP renames Flyology.HTTP;
    package HTTP_Client renames Flyology.HTTP.Client;
    package Low_Level renames Flyology.Object_Storage.Client.Low_Level;
+   package Timers renames Flyology.IO.Timers;
 
    use type Buckets.Create_Outcome_Kind;
+   use type Ada.Streams.Stream_Element_Array;
    use type Byte;
+   use type Interfaces.Unsigned_64;
 
    procedure Expect (Actual, Expected : Outcome_Code; Context : String) is
    begin
@@ -53,6 +61,21 @@ procedure Flyology.DB.Client_Probe is
       return True;
    end Same;
 
+   function Same
+     (Left  : Flyology.Buffers.Unique_Buffer;
+      Right : Ada.Streams.Stream_Element_Array) return Boolean
+   is
+      Matches : Boolean := False;
+
+      procedure Compare (Data : Ada.Streams.Stream_Element_Array) is
+      begin
+         Matches := Data = Right;
+      end Compare;
+   begin
+      Flyology.Buffers.With_Readable_Data (Left, Compare'Access);
+      return Matches;
+   end Same;
+
    function Required_Argument (Index : Positive) return String is
    begin
       if Ada.Command_Line.Argument_Count /= 4 then
@@ -77,7 +100,7 @@ procedure Flyology.DB.Client_Probe is
    Identity               : aliased Low_Level.Credentials :=
      Low_Level.Make_Credentials (Access_Key, Secret_Key);
    Context                : aliased Storage_Context;
-   Created                : Database;
+   Created                : aliased Database;
    Reopened               : Database;
    Txn                    : Transaction;
    Reader                 : Transaction;
@@ -128,10 +151,31 @@ procedure Flyology.DB.Client_Probe is
    Checkpoint_Run_ID        : constant Identifier := Numbered_ID (6);
    Checkpoint_Manifest_ID   : constant Identifier := Numbered_ID (7);
    Checkpoint_Transition_ID : constant Identifier := Numbered_ID (8);
+   --  Arbitrary nonzero fixture metadata proves the moved token, rather than
+   --  only a same-pool replacement token, returns through typed Finish.
+   Flush_Token_Tag          : constant Interfaces.Unsigned_64 := 16#F105#;
    Checkpoint_Runs          : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Checkpoint_Run_ID)];
    Key_Data                 : constant Byte_Array := Bytes ("client-key");
    Value_Data               : constant Byte_Array := Bytes ("client-value");
+   --  One visible DB parent, one Object Storage child, its HTTP exchange, and
+   --  its single transport child are the exact owner-stack slot geometry of
+   --  this serial probe. It is test capacity, not a DB completion-set default.
+   Composable_Set            : aliased Flyology.Operations.Completion_Set (4);
+   --  The fixture selects its persisted live-state byte budget as the scratch
+   --  block capacity and one token as serial operation geometry. Production
+   --  callers select capacity from their own persisted family/database limits.
+   Flush_Pool                : aliased Flyology.Buffers.Pool
+     (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
+   Flush_Buffer              : Flyology.Buffers.Unique_Buffer (Flush_Pool'Access);
+   Restored_Buffer           : Flyology.Buffers.Unique_Buffer (Flush_Pool'Access);
+   Flush_Work                : Flush_Operation
+     (Composable_Set'Access,
+      Created'Access,
+      Context'Access,
+      Client'Access,
+      Flush_Pool'Access,
+      null);
 begin
    HTTP_Client.Configure (Client, Origin);
    Bucket_Result :=
@@ -185,21 +229,249 @@ begin
    Expect (Result, Success, "client-backed put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "client-backed commit failed");
-   Flush
-     (Created,
+
+   --  Completion-slot rejection is required to precede token movement. The
+   --  timer occupies the sole test slot; the three marker bytes and stable tag
+   --  make byte/tag/length rollback observable without provider entry.
+   declare
+      Rollback_Set    : aliased Flyology.Operations.Completion_Set (1);
+      Rollback_Pool   : aliased Flyology.Buffers.Pool (Block_Size => 3, Capacity => 1);
+      Rollback_Buffer : Flyology.Buffers.Unique_Buffer (Rollback_Pool'Access);
+      Rollback_Work   : Flush_Operation
+        (Rollback_Set'Access,
+         Created'Access,
+         Context'Access,
+         Client'Access,
+         Rollback_Pool'Access,
+         null);
+      Busy            : Timers.Timer_Operation :=
+        Timers.Sleep_For (Rollback_Set'Access, Test_Operation_Timeout);
+      Marker          : constant Ada.Streams.Stream_Element_Array := [16#A5#, 16#5A#, 16#C3#];
+      --  Arbitrary nonzero fixture tag used only to prove that Start rollback
+      --  preserves buffer metadata as well as payload bytes and length.
+      Marker_Tag      : constant Interfaces.Unsigned_64 := 16#C0DE#;
+      Rejected        : Boolean := False;
+   begin
+      Flyology.Buffers.Acquire (Rollback_Buffer);
+      Flyology.Buffers.Copy_From (Rollback_Buffer, Marker);
+      Flyology.Buffers.Set_Tag (Rollback_Buffer, Marker_Tag);
+      begin
+         Start_Flush
+           (Rollback_Work,
+            Checkpoint_Runs,
+            Checkpoint_Manifest_ID,
+            Checkpoint_Transition_ID,
+            Rollback_Buffer,
+            Test_Operation_Timeout);
+      exception
+         when Flyology.Operations.Capacity_Error =>
+            Rejected := True;
+      end;
+      if not Rejected
+        or else not Flyology.Buffers.Has_Buffer (Rollback_Buffer)
+        or else Flyology.Buffers.Length (Rollback_Buffer) /= Marker'Length
+        or else Flyology.Buffers.Tag (Rollback_Buffer) /= Marker_Tag
+        or else not Same (Rollback_Buffer, Marker)
+      then
+         raise Program_Error with "composable Flush Start did not roll back its exact token";
+      end if;
+      Flyology.Operations.Cancel (Busy);
+      Flyology.Operations.Wait_All (Rollback_Set);
+      begin
+         Timers.Finish (Busy);
+      exception
+         when Flyology.Operations.Operation_Cancelled =>
+            null;
+      end;
+      Flyology.Operations.Release (Busy);
+      Flyology.Buffers.Release (Rollback_Buffer);
+   end;
+
+   --  The caller deliberately supplies a one-byte block, smaller than every
+   --  valid encoded checkpoint object. Capacity rejection must be terminal,
+   --  definite, token-restoring, and publication-free so the same identities
+   --  remain safe for the following adequately sized attempt.
+   declare
+      Tiny_Pool     : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
+      Tiny_Buffer   : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
+      Tiny_Work     : Flush_Operation
+        (Composable_Set'Access,
+         Created'Access,
+         Context'Access,
+         Client'Access,
+         Tiny_Pool'Access,
+         null);
+      Tiny_Receipt  : Flush_Receipt;
+   begin
+      Flyology.Buffers.Acquire (Tiny_Buffer);
+      Start_Flush
+        (Tiny_Work,
+         Checkpoint_Runs,
+         Checkpoint_Manifest_ID,
+         Checkpoint_Transition_ID,
+         Tiny_Buffer,
+         Test_Operation_Timeout);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Tiny_Work, Tiny_Receipt, Result, Tiny_Buffer);
+      Expect (Result, Capacity_Exceeded, "undersized composable Flush scratch was not rejected");
+      if not Flyology.Buffers.Has_Buffer (Tiny_Buffer) then
+         raise Program_Error with "undersized composable Flush published or lost its token";
+      end if;
+      Flyology.Operations.Release (Tiny_Work);
+      Flyology.Buffers.Release (Tiny_Buffer);
+   end;
+
+   --  A valid plan driven through a one-slot set can reserve only the DB
+   --  parent, not its first Object Storage child. That provider Start is
+   --  definitely pre-admission and must surface as typed DB backpressure.
+   declare
+      Child_Set     : aliased Flyology.Operations.Completion_Set (1);
+      Child_Pool    : aliased Flyology.Buffers.Pool
+        (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
+      Child_Buffer  : Flyology.Buffers.Unique_Buffer (Child_Pool'Access);
+      Child_Work    : Flush_Operation
+        (Child_Set'Access,
+         Created'Access,
+         Context'Access,
+         Client'Access,
+         Child_Pool'Access,
+         null);
+      Child_Receipt : Flush_Receipt;
+   begin
+      Flyology.Buffers.Acquire (Child_Buffer);
+      Start_Flush
+        (Child_Work,
+         Checkpoint_Runs,
+         Checkpoint_Manifest_ID,
+         Checkpoint_Transition_ID,
+         Child_Buffer,
+         Test_Operation_Timeout);
+      Flyology.Operations.Wait_All (Child_Set);
+      Finish (Child_Work, Child_Receipt, Result, Child_Buffer);
+      Expect (Result, Capacity_Exceeded, "nested composable Flush slot exhaustion was ambiguous");
+      if not Flyology.Buffers.Has_Buffer (Child_Buffer) then
+         raise Program_Error with "nested composable Flush slot exhaustion lost its token";
+      end if;
+      Flyology.Operations.Release (Child_Work);
+      Flyology.Buffers.Release (Child_Buffer);
+   end;
+
+   --  Scope abandonment is the safety-net authority. An invalid run map
+   --  terminalizes without provider entry; abandoning it must discard the
+   --  result and return the operation-owned token before its pool finalizes.
+   declare
+      Abandon_Set  : aliased Flyology.Operations.Completion_Set (1);
+      Abandon_Pool : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
+   begin
+      declare
+         Abandon_Buffer : Flyology.Buffers.Unique_Buffer (Abandon_Pool'Access);
+         Abandon_Work   : Flush_Operation
+           (Abandon_Set'Access,
+            Created'Access,
+            Context'Access,
+            Client'Access,
+            Abandon_Pool'Access,
+            null);
+      begin
+         Flyology.Buffers.Acquire (Abandon_Buffer);
+         Start_Flush
+           (Abandon_Work,
+            Checkpoint_Runs,
+            Zero_Identifier,
+            Checkpoint_Transition_ID,
+            Abandon_Buffer,
+            Test_Operation_Timeout);
+         Flyology.Operations.Wait_All (Abandon_Set);
+         if Flyology.Buffers.Has_Buffer (Abandon_Buffer) then
+            raise Program_Error with "abandoned composable Flush never acquired token ownership";
+         end if;
+      end;
+      declare
+         Snapshot : constant Flyology.Buffers.Pool_Snapshot := Flyology.Buffers.Current (Abandon_Pool);
+      begin
+         if Snapshot.Available /= 1 or else Snapshot.Outstanding /= 0 then
+            raise Program_Error with "abandoned composable Flush did not release its token";
+         end if;
+      end;
+   end;
+
+   Flyology.Buffers.Acquire (Flush_Buffer);
+   --  The operation may overwrite payload bytes and length, but ownership
+   --  transfer must retain this exact caller metadata tag through Finish.
+   Flyology.Buffers.Set_Tag (Flush_Buffer, Flush_Token_Tag);
+
+   --  A provider rejection before the first run request is definitely outside
+   --  publication. Typed Finish restores the token and permits an explicit
+   --  caller retry with the same immutable identities.
+   Context.Test_Control.Arm (Before_Run_Put, Definite_Failure, 1);
+   Start_Flush
+     (Flush_Work,
       Checkpoint_Runs,
       Checkpoint_Manifest_ID,
       Checkpoint_Transition_ID,
-      Test_Operation_Timeout,
-      Receipt => Flush_Info,
-      Result  => Result);
-   Expect (Result, Success, "client-backed Flush failed");
+      Flush_Buffer,
+      Test_Operation_Timeout);
+   if Flyology.Buffers.Has_Buffer (Flush_Buffer) then
+      raise Program_Error with "composable Flush did not move its exact token";
+   end if;
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Flush_Info, Result, Restored_Buffer);
+   Expect (Result, Storage_Failure, "pre-run composable Flush failure was ambiguous");
+   if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "pre-run composable Flush did not restore its exact token";
+   end if;
+
+   --  The second attempt publishes/reconciles the immutable run and manifest,
+   --  then fails definitely before HEAD admission. Reusing the exact IDs is
+   --  safe because no visible transition was attempted.
+   Context.Test_Control.Arm (Before_Head_Put, Definite_Failure, 1);
+   Start_Flush
+     (Flush_Work,
+      Checkpoint_Runs,
+      Checkpoint_Manifest_ID,
+      Checkpoint_Transition_ID,
+      Restored_Buffer,
+      Test_Operation_Timeout);
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Flush_Info, Result, Flush_Buffer);
+   Expect (Result, Storage_Failure, "pre-HEAD composable Flush failure was ambiguous");
+   if Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "pre-HEAD composable Flush did not restore its exact token";
+   end if;
+
+   --  Lose the next run response after provider entry. The operation must not
+   --  replay under another identity: it performs one exact whole-Get, accepts
+   --  only identical bytes, and continues the original checkpoint attempt.
+   Context.Test_Control.Arm (After_Run_Put, Unknown_After_Entry, 1);
+   Start_Flush
+     (Flush_Work,
+      Checkpoint_Runs,
+      Checkpoint_Manifest_ID,
+      Checkpoint_Transition_ID,
+      Flush_Buffer,
+      Test_Operation_Timeout);
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Flush_Info, Result, Restored_Buffer);
+   Expect (Result, Success, "client-backed composable Flush failed");
+   if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "composable Flush Finish did not restore its exact token to a vacant handle";
+   end if;
    if Flush_Receipt_Manifest_ID (Flush_Info) /= Checkpoint_Manifest_ID
      or else Flush_Receipt_Transition_ID (Flush_Info) /= Checkpoint_Transition_ID
      or else Flush_Receipt_Replay_Boundary (Flush_Info) /= Receipt_Sequence (Commit_Info)
    then
       raise Program_Error with "client-backed Flush receipt lost exact authority";
    end if;
+   Flyology.Buffers.Release (Restored_Buffer);
    Close (Created, Close_Result);
    Expect (Close_Result, Success, "client-backed close failed");
 

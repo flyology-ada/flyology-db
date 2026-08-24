@@ -1,12 +1,19 @@
 with Interfaces;
+with Flyology.Buffers;
 with Flyology.Cancellation;
 with Flyology.Bytes;
+with Flyology.HTTP.Client;
+with Flyology.Operations;
+private with Ada.Exceptions;
 private with Ada.Finalization;
+private with Ada.Real_Time;
 private with Ada.Strings.Unbounded;
 private with Flyology.HTTP;
-private with Flyology.HTTP.Client;
 private with Flyology.Object_Storage.Backends;
 private with Flyology.Object_Storage.Client.Low_Level;
+private with Flyology.Object_Storage.Client.Scoped;
+private with Flyology.Wake_Sources;
+private with Interfaces.C;
 
 --  Experimental object-native transactional key-value database.
 
@@ -120,6 +127,22 @@ package Flyology.DB is
    type Commit_Receipt is private;
    --  Self-contained first-checkpoint publication and reconciliation state.
    type Flush_Receipt is private;
+   --  Caller-composable first-checkpoint publication. The discriminants are
+   --  retained borrows: Set, Item, Storage, HTTP, Payload_Pool, and
+   --  Cancellation must outlive terminal Finish or scope-abandonment drain.
+   --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
+   --  caller-selected scratch capacity; the DB introduces no body-size
+   --  default or ceiling. The current owner stack needs four reusable set
+   --  slots while a conditional Put or reconciliation Get is active: DB,
+   --  Object Storage, HTTP exchange, and transport.
+   type Flush_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation with private;
    --  Project admission policy documented by the synchronous topology: one
    --  public atomic group has at most eight members. This is a bounded API and
    --  coordinator-capacity choice, not a wire-count limit or database default.
@@ -276,6 +299,56 @@ package Flyology.DB is
 
    --  Immutable batch identity retained by the receipt.
    function Receipt_Batch_ID (Item : Commit_Receipt) return Identifier;
+
+   --  Start first-checkpoint publication in an established operation. All
+   --  initiating owner and request-shape validation, pool compatibility,
+   --  completion-slot reservation, and lifecycle admission precede ownership
+   --  transfer. Successful Start
+   --  moves Payload_Buffer's exact token into Operation and leaves the caller
+   --  handle vacant until typed Finish. Insufficient caller-selected block
+   --  capacity is a definite prepublication Capacity_Exceeded result. No
+   --  helper task, hidden retry, or second deadline is introduced.
+   --  @param Operation Fresh or consumed client-bound Flush operation
+   --  @param Runs Exact family/run identity map copied before return
+   --  @param Manifest_ID Stable immutable checkpoint manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Storage binding
+   procedure Start_Flush
+     (Operation      : in out Flush_Operation;
+      Runs           : Checkpoint_Run_Identity_Array;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Consume a terminal composable Flush and restore its exact input token.
+   --  Payload_Buffer may be any vacant handle from the original pool; no
+   --  pointer to the initiating handle is retained. The restored token keeps
+   --  its tag and metadata and contains operation scratch bytes. Result and
+   --  Receipt are the same certainty projection as synchronous Flush. An
+   --  unexpected retained provider exception is re-raised only after token
+   --  restoration and operation consumption.
+   --  @param Operation Terminal composable Flush operation
+   --  @param Receipt Self-contained operation identity and certainty record
+   --  @param Result Terminal or presently unknown operation outcome
+   --  @param Payload_Buffer Vacant same-pool destination for the exact token
+   procedure Finish
+     (Operation      : in out Flush_Operation;
+      Receipt        : out Flush_Receipt;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+     with Pre => Flyology.Operations.Is_Terminal (Operation)
+       and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool,
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Publish the first complete immutable checkpoint at the current committed
    --  boundary. Runs must map every persisted family to one caller-stable run
@@ -582,6 +655,44 @@ private
       Attempted_Head      : Head_Snapshot;
    end record;
 
+   type Flush_Driver_State;
+   type Flush_Driver_State_Access is access Flush_Driver_State;
+   type Whole_Get_Operation_Access is access Flyology.Object_Storage.Client.Scoped.Whole_Get_Operation;
+
+   --  @exclude
+   type Flush_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation (Set) with record
+      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Put_Child        : Flyology.Object_Storage.Client.Scoped.Conditional_Put_Operation
+        (Set, HTTP, Cancellation);
+      Read_Child       : Whole_Get_Operation_Access := null;
+      Driver_State     : Flush_Driver_State_Access := null;
+      --  Vacant-operation sentinel only. Start_Flush replaces it with the one
+      --  caller-derived monotonic deadline before the operation can be active.
+      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      HTTP_Deadline    : Flyology.HTTP.Client.Monotonic_Deadline;
+      Final_Receipt    : Flush_Receipt;
+      Final_Result     : Outcome_Code := Invalid_State;
+      Has_Final_Result : Boolean := False;
+      Has_Saved_Error  : Boolean := False;
+      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+   end record;
+
+   --  @exclude
+   overriding procedure Drive
+     (Item : in out Flush_Operation;
+      Event : Flyology.Operations.Driver_Event);
+   --  @exclude
+   overriding procedure Request_Cancellation (Item : in out Flush_Operation);
+   --  @exclude
+   overriding procedure Finalize (Item : in out Flush_Operation);
+
    type Storage_Fault_Point is
      (Before_Batch_Put,
       After_Batch_Put,
@@ -664,6 +775,12 @@ private
       procedure Begin_Close (State : out Engine_State_Access; Result : out Outcome_Code);
       procedure Begin_Resolve (State : out Engine_State_Access; Result : out Outcome_Code);
       procedure Begin_Checkpoint (State : out Engine_State_Access; Result : out Outcome_Code);
+      procedure Begin_Composable_Checkpoint
+        (State  : out Engine_State_Access;
+         Result : out Outcome_Code);
+      procedure Checkpoint_Wait_Source
+        (Descriptor : out Interfaces.C.int;
+         Ready_Now  : out Boolean);
       entry Await_Quiescent;
       procedure Finish_Close;
       procedure Finish_Resolve (State : not null Engine_State_Access; Visible : Sequence_Number);
@@ -678,6 +795,8 @@ private
       Current      : Engine_State_Access := null;
       Active_Calls : Natural := 0;
       Last_Visible : Sequence_Number := 0;
+      Quiescence_Wake      : Flyology.Wake_Sources.Source;
+      Quiescence_Signalled : Boolean := False;
    end Database_Lifecycle;
    type Database_Lifecycle_Access is access all Database_Lifecycle;
 

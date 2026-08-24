@@ -21,17 +21,17 @@ accepted manifest-v1 encoding through operational HEAD version 2 for provider-ne
 Create requires an explicit root manifest identity, transition identity, database limits, and initial family table;
 Open resolves handles by stable ID or exact name and validates manifest authority before replaying batches. HEAD-v1
 images remain inspection-only and return `Unsupported_Format` operationally. The authenticated client binding now
-exercises create, commit, and cacheless reopen through buffer-owned waits over Object Storage scoped operations.
-Remote-provider matrix qualification, a DB-level composable surface, and dynamic append-only family changes remain
-prerequisites for accepting Milestone 2. The accepted owned-runtime closure is `c909c572`; the pooled TLA+ and
-manifest-publication
+exercises create, commit, composable first-checkpoint Flush, and cacheless reopen through Object Storage scoped
+operations. Remote-provider matrix qualification and dynamic append-only family changes remain prerequisites for
+accepting Milestone 2. The accepted owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication
 models remain abstract assurance lanes rather than a claimed refinement proof.
 
 The first-LSM work now includes exact/proven manifest-v2 and SST-v1 formats, dynamic operational codecs, manifest-v2
 root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator replacement, and
 cacheless recovery of one complete nonempty checkpoint plus its strictly later batch suffix. Recovery restores live
 values, last-write sequences, and the exact never-reused checkpoint identity ledger from persisted authority.
-Multiple checkpoints, scans, compaction, DB-level composable Flush, and provider qualification remain later focused
+The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token through the same certainty contract
+without a helper task. Multiple checkpoints, scans, compaction, and provider qualification remain later focused
 units, so Milestone 4 remains Pending.
 
 ## Formal state-machine lane

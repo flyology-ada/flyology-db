@@ -25,10 +25,10 @@ deliberately after the Flyology runtime preparer and this repository's gates qua
 The dependency includes the reviewed backend-neutral conditional publication contract, synchronous conditional Put
 and whole Get operations, caller-owned `Client.Scoped` conditional Put plus generation-bound whole/range Get and Head
 operations, and retained SQLite generations across ordinary and multipart publication. The buffer-owned synchronous
-calls are waits over those same scoped state machines. This DB slice still binds only the backend-neutral synchronous
-interface; adopting the composable surface remains a later focused review unit over the same outcome and ownership
-core. The dependency currently pins the temporary HTTP PR #33 commit above and neither repository may be published
-from this campaign until Object Storage records the merged/dev-index no-pin handoff.
+calls are waits over those same scoped state machines. Flyology.DB now composes conditional Put and whole Get
+directly for its additive `Flush_Operation`, preserving the synchronous receipt and certainty mapping. The dependency
+still pins the temporary HTTP PR #33 commit above; Flyology.DB must not publish this campaign until Object Storage
+records and qualifies its merged/dev-index no-pin handoff.
 
 The dependency's retained proof report at its qualified final base proves 936/936 checks: 180 flow and 756 prover,
 with zero warnings, unproved or justified checks, or `Assume` statements. Flyology.DB reruns its own repository,
