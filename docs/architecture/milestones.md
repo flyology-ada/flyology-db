@@ -42,7 +42,11 @@ unbounded and ignores its byte argument; a present endpoint is bounded by its se
 retain exact distinct predicates lazily under the persisted range count, while Snapshot calls validate without
 retention. Allocation or count failure publishes no partial predicate. Admission and prepublication checks reject
 post-Begin writes in `[Lower, Upper)`, including open and whole-family forms, for singleton and grouped commits.
-The bounded row-returning scan surface remains Milestone 4 work rather than being implied by this observation API.
+Public `Scan` now materializes the complete selected half-open interval at the transaction's fixed snapshot, merges
+own Put/Delete mutations, and sorts by unsigned-byte lexicographic key. Its controlled result owns exact descriptors
+and combined key/value bytes bounded by persisted live-entry/live-state limits. Allocation, validation, or predicate
+retention failure leaves the caller's previous result unchanged; Serializable predicates become visible only after
+complete materialization. Pagination, streaming scans, and physical merge iteration remain later Milestone 4 work.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
@@ -68,8 +72,8 @@ codecs, manifest-v3 root creation, public synchronous first-checkpoint Flush/rec
 replacement, and cacheless recovery of one complete nonempty checkpoint plus its strictly later batch suffix. Recovery restores live
 values, last-write sequences, and the exact never-reused checkpoint identity ledger from persisted authority.
 The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token through the same certainty contract
-without a helper task. Multiple checkpoints, scans, compaction, and provider qualification remain later focused
-units, so Milestone 4 remains Pending.
+without a helper task. Multiple checkpoints, streaming/physical scans, compaction, and provider qualification remain
+later focused units, so Milestone 4 remains Pending.
 
 ## Formal state-machine lane
 

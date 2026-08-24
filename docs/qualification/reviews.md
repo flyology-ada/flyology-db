@@ -1,5 +1,56 @@
 # Review record
 
+## Accepted bounded fixed-snapshot scan candidate
+
+- Parent: operational serializable range-validation commit `2f64062`.
+- Scope and API: add limited controlled `Scan_Result`, synchronous `Scan`, exact row count, and one-based row-copy
+  access. `Scan` materializes the complete selected-family half-open interval at the transaction's fixed snapshot,
+  applies transaction-local Put/Delete precedence, and orders arbitrary-byte keys lexicographically as unsigned
+  bytes. Endpoint flags and validation are identical to `Observe_Range`; there is no page token, batch size, timeout,
+  storage request, helper task, or compatibility default. Exact result rows and combined key/value bytes use the
+  persisted database live-entry/live-state limits, while individual extents use the selected family's persisted
+  limits. Rows are replaced atomically only on Success. Serializable predicate retention follows complete
+  materialization, so failure changes neither the prior result nor the transaction observation set.
+- Allocation, ownership, and concurrency: a lifecycle lease prevents close or checkpoint replacement while transient
+  descriptors borrow immutable checkpoint and retained-batch images. Exact source requirements and copying are brief
+  protected operations; source-array allocation, fixed-snapshot lookups, byte copying, descriptor sorting, and result
+  construction occur outside the coordinator. Post-snapshot commits cannot enlarge the eligible source set because
+  only transaction sequences no later than Begin are copied. The result owns one exact descriptor array and combined
+  payload through a controlled state pointer; successful empty scans own no allocation. Four deterministic fault
+  points cover source, state, descriptor, and payload allocation. Every failure releases scratch, leaves the old
+  result byte-exact, and classifies allocation exhaustion as `Capacity_Exceeded` without partial publication.
+- Constants audit: 1,080 added nonblank Ada lines produced 320 broad inventory matches for numerals, defaults,
+  aggregates, ranges, and type-bound references, including 25 declared constants. Consequential findings reduce to
+  the isolated identity/key witness domain, four test-only allocation positions, the endpoint one-byte-over derivation,
+  the persisted eight-entry/2,560-byte checkpoint fixture, and the exact two-row/four-byte boundary fixture. Each has
+  adjacent purpose, authority, classification, and compatibility commentary. Derived lengths, offsets, one-based
+  loops, comparator arithmetic, neutral initialization, and scenario bytes introduce no independent choice. No
+  production bound, timeout, retry, format tag, capacity, or default is introduced, and no policy decision remains
+  unresolved.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository/provenance checks, deterministic
+  format/policy/model and memory/files engine tests, authenticated create/commit/Flush/reopen, filesystem subprocess
+  crash/recovery, 32 comparative cases, pinned TidesDB 4/4, and every adapter fixture against clean Object Storage
+  `e8362f72e5edf4cc8eb16e31d1fdbfba74db384b`. New memory/files witnesses cover arbitrary-byte ordering, fixed
+  snapshot after replace/delete/insert, local Put/Delete/insert precedence, half-open endpoints, invalid/bounded
+  endpoints, all allocation failures, invalid row access, Snapshot non-retention, Serializable retention/retry and
+  phantom conflict, checkpoint plus suffix after reopen, and exact/one-over persisted row and byte limits.
+  `./scripts/check-tla.sh` preserves every model lane, including the 112,031-state publication graph, and passes the
+  44,244-state/10-obligation serializable gate and every negative probe. Warning-strict FSF GNATprove 16.1.0 proves
+  1,084/1,084 selected-unit checks (164 flow, 920 prover; maximum 6,890 steps), with zero warnings,
+  unproved/justified checks, or `pragma Assume`. Public leading-style GNATdoc HTML renders `Scan_Result`, `Scan`, all
+  nine parameters, `Scan_Row_Count`, and `Read_Scan_Row`; the warning inventory remains confined to existing older
+  repository and dependency entities.
+- Findings cycle: the first compile/API sweep replaced a directly controlled visible result representation with one
+  private controlled owner, avoiding multiple controlling tagged operands without weakening automatic reclamation.
+  The concurrency sweep moved exact source allocation out of the protected coordinator and retained only immutable
+  borrows under the lifecycle lease. The executable sweep added checkpoint/suffix/reopen coverage, gave the scan
+  fixture enough explicitly documented persisted checkpoint authority rather than weakening Flush validation, and
+  tightened individual seed diagnostics and fixture identity documentation. A formatting sweep removed accidental
+  legacy-file churn after project-mode `gnatformat` rejected the repository's global preprocessor configuration; all
+  changed handwritten Ada is independently verified at no more than 110 columns. Repeated API, ownership,
+  concurrency, bounds, constants, format, certainty, test, documentation, and proof review finds no remaining P0,
+  P1, P2, or P3 issue.
+
 ## Accepted operational serializable range-validation candidate
 
 - Parent: operational serializable point-validation commit `ba12783`.

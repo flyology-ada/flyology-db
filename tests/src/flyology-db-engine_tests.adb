@@ -364,6 +364,52 @@ package body Flyology.DB.Engine_Tests is
       end if;
    end Observe_Range;
 
+   procedure Scan
+     (Item      : in out Database;
+      Txn       : in out Transaction;
+      Family    : Column_Family_ID;
+      Has_Lower : Boolean;
+      Lower     : Key;
+      Has_Upper : Boolean;
+      Upper     : Key;
+      Rows      : in out Scan_Result;
+      Result    : out Outcome_Code)
+   is
+      Handle : Column_Family;
+   begin
+      Open_Column_Family (Item, Family, Handle, Result);
+      if Result = Success then
+         Root_DB.Scan
+           (Item, Txn, Handle, Has_Lower, Key_Data (Lower), Has_Upper, Key_Data (Upper), Rows, Result);
+      end if;
+   end Scan;
+
+   procedure Expect_Scan_Row
+     (Rows : Scan_Result; Position : Positive; Expected_Key : Key; Expected : Value; Context : String)
+   is
+      Actual_Key   : Flyology.Bytes.Unbounded_Bytes;
+      Actual_Value : Flyology.Bytes.Unbounded_Bytes;
+      Result       : Outcome_Code;
+   begin
+      Read_Scan_Row (Rows, Position, Actual_Key, Actual_Value, Result);
+      Expect (Result, Success, Context & " row read failed");
+      if Flyology.Bytes.Length (Actual_Key) /= Expected_Key.Length
+        or else Flyology.Bytes.Length (Actual_Value) /= Expected.Length
+      then
+         raise Program_Error with Context & ": row extent changed";
+      end if;
+      for Offset in Positive range 1 .. Expected_Key.Length loop
+         if Byte (Flyology.Bytes.Element (Actual_Key, Offset)) /= Expected_Key.Bytes (Offset) then
+            raise Program_Error with Context & ": key bytes changed";
+         end if;
+      end loop;
+      for Offset in Positive range 1 .. Expected.Length loop
+         if Byte (Flyology.Bytes.Element (Actual_Value, Offset)) /= Expected.Bytes (Offset) then
+            raise Program_Error with Context & ": value bytes changed";
+         end if;
+      end loop;
+   end Expect_Scan_Row;
+
    procedure Get
      (Item     : in out Database;
       Txn      : in out Transaction;
@@ -5424,6 +5470,289 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "serializable-range database close failed");
    end Test_Serializable_Range_Validation;
 
+   procedure Test_Bounded_Scan (Backend : not null access Backends.Backend'Class; Prefix : String) is
+      Context        : aliased Storage_Context;
+      Item           : aliased Database;
+      Reader         : aliased Transaction;
+      Writer         : aliased Transaction;
+      Rows           : Scan_Result;
+      Receipt        : Commit_Receipt;
+      Create_Info    : Create_Receipt;
+      Result         : Outcome_Code;
+      Family         : Column_Family;
+      Actual_Key     : Flyology.Bytes.Unbounded_Bytes;
+      Actual_Data    : Flyology.Bytes.Unbounded_Bytes;
+      --  Identity namespace 62_000..62_033 and one-byte value tags isolate
+      --  this deterministic scan campaign. They are witnesses only, not
+      --  persisted format tags or application identity/value policy.
+      Database_ID    : constant Database_Identifier := Database_Identifier (Numbered_ID (62_000));
+      Transition_ID  : constant Identifier := Numbered_ID (62_001);
+      --  Empty, prefix-related, ordinary, and high-bit keys establish the
+      --  unsigned-byte canonical order and half-open interval geometry. Their
+      --  spellings establish no application key policy.
+      Empty_Key      : constant Key := To_Key ([]);
+      Key_A          : constant Key := To_Key ([16#10#]);
+      Key_B          : constant Key := To_Key ([16#20#]);
+      Key_B_Extended : constant Key := To_Key ([16#20#, 16#00#]);
+      Key_C          : constant Key := To_Key ([16#30#]);
+      Key_D          : constant Key := To_Key ([16#40#]);
+      Marker         : constant Key := To_Key ([16#E0#]);
+      High_Key       : constant Key := To_Key ([16#FF#]);
+      --  One byte beyond family one's persisted 64-byte key authority proves
+      --  present-endpoint rejection; this is derived from the reference corpus.
+      Oversized      : constant Byte_Array (1 .. Reference_Maximum_Key_Bytes + 1) := [others => 16#55#];
+      --  These four test-only failure positions cover every allocation owned
+      --  by Scan before atomic result replacement; they add no runtime policy.
+      Scan_Faults    : constant array (Positive range 1 .. 4) of Internal_Allocation_Fault_Point :=
+        [Scan_Source_Allocation,
+         Scan_Result_State_Allocation,
+         Scan_Result_Rows_Allocation,
+         Scan_Result_Payload_Allocation];
+      --  Eight entries cover the complete scan corpus through the later suffix;
+      --  2,560 bytes derives from 8 * family one's persisted (64 + 256) maximum
+      --  entry extent. These are checkpoint-fixture authorities, not defaults.
+      Scan_Families : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family (1, [16#61#], 64, 256, 2_560, 8, 1),
+         Default_Families (2),
+         Default_Families (3),
+         Default_Families (4),
+         Default_Families (5),
+         Default_Families (6),
+         Default_Families (7),
+         Default_Families (8)];
+
+      procedure Expect_Count (Expected : Natural; Context_Text : String) is
+      begin
+         if Scan_Row_Count (Rows) /= Expected then
+            raise Program_Error with Context_Text & ": row count changed";
+         end if;
+      end Expect_Count;
+
+      procedure Commit_Write
+        (Identity : Natural; Item_Key : Key; Data : Value; Delete_Item : Boolean := False) is
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (Identity), Writer, Result);
+         Expect (Result, Success, "scan writer begin failed");
+         if Delete_Item then
+            Delete (Item, Writer, 1, Item_Key, Result);
+         else
+            Put (Item, Writer, 1, Item_Key, Data, Result);
+         end if;
+         Expect (Result, Success, "scan writer mutation failed");
+         Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "scan writer commit failed");
+      end Commit_Write;
+   begin
+      Bind_Context (Context, Backend, Prefix);
+      Create
+        (Item,
+         Context'Access,
+         Database_ID,
+         Manifest_ID_For (Transition_ID),
+         Transition_ID,
+         Default_Limits,
+         Scan_Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "scan database create failed");
+      Open_Column_Family (Item, 1, Family, Result);
+      Expect (Result, Success, "scan family open failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (62_002), Writer, Result);
+      Expect (Result, Success, "scan seed begin failed");
+      Put (Item, Writer, 1, High_Key, To_Value ([6]), Result);
+      Expect (Result, Success, "scan high-key seed failed");
+      Put (Item, Writer, 1, Key_C, To_Value ([5]), Result);
+      Expect (Result, Success, "scan C seed failed");
+      Put (Item, Writer, 1, Key_B_Extended, To_Value ([4]), Result);
+      Expect (Result, Success, "scan prefix seed failed");
+      Put (Item, Writer, 1, Key_A, To_Value ([2]), Result);
+      Expect (Result, Success, "scan A seed failed");
+      Put (Item, Writer, 1, Key_B, To_Value ([3]), Result);
+      Expect (Result, Success, "scan B seed failed");
+      Put (Item, Writer, 1, Empty_Key, To_Value ([1]), Result);
+      Expect (Result, Success, "scan empty-key seed failed");
+      Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "scan seed commit failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (62_003), Reader, Result);
+      Expect (Result, Success, "fixed scan reader begin failed");
+      Commit_Write (62_004, Key_B, To_Value ([13]));
+      Commit_Write (62_005, Key_C, To_Value ([]), Delete_Item => True);
+      Commit_Write (62_006, Key_D, To_Value ([14]));
+      Scan (Item, Reader, 1, False, Key_A, False, Key_D, Rows, Result);
+      Expect (Result, Success, "fixed-snapshot whole scan failed");
+      Expect_Count (6, "fixed-snapshot whole scan");
+      Expect_Scan_Row (Rows, 1, Empty_Key, To_Value ([1]), "empty key order");
+      Expect_Scan_Row (Rows, 2, Key_A, To_Value ([2]), "ordinary key order");
+      Expect_Scan_Row (Rows, 3, Key_B, To_Value ([3]), "fixed replacement visibility");
+      Expect_Scan_Row (Rows, 4, Key_B_Extended, To_Value ([4]), "prefix key order");
+      Expect_Scan_Row (Rows, 5, Key_C, To_Value ([5]), "fixed deletion visibility");
+      Expect_Scan_Row (Rows, 6, High_Key, To_Value ([6]), "unsigned high-bit order");
+
+      Scan (Item, Reader, 1, True, Key_B, True, Key_C, Rows, Result);
+      Expect (Result, Success, "half-open prefix scan failed");
+      Expect_Count (2, "half-open prefix scan");
+      Expect_Scan_Row (Rows, 1, Key_B, To_Value ([3]), "inclusive lower endpoint");
+      Expect_Scan_Row (Rows, 2, Key_B_Extended, To_Value ([4]), "exclusive upper endpoint");
+
+      Put (Item, Reader, 1, Key_B, To_Value ([23]), Result);
+      Expect (Result, Success, "scan local replacement failed");
+      Delete (Item, Reader, 1, Key_B_Extended, Result);
+      Expect (Result, Success, "scan local delete failed");
+      Put (Item, Reader, 1, Key_D, To_Value ([24]), Result);
+      Expect (Result, Success, "scan local insertion failed");
+      Scan (Item, Reader, 1, False, Key_A, False, Key_D, Rows, Result);
+      Expect (Result, Success, "scan with local mutations failed");
+      Expect_Count (6, "scan with local mutations");
+      Expect_Scan_Row (Rows, 3, Key_B, To_Value ([23]), "local put precedence");
+      Expect_Scan_Row (Rows, 4, Key_C, To_Value ([5]), "local delete removal");
+      Expect_Scan_Row (Rows, 5, Key_D, To_Value ([24]), "local insert visibility");
+
+      Scan (Item, Reader, 1, True, Key_D, True, Key_B, Rows, Result);
+      Expect (Result, Invalid_State, "reversed scan interval was admitted");
+      Expect_Count (6, "reversed scan atomicity");
+      Root_DB.Scan (Item, Reader, Family, True, Oversized, False, Oversized, Rows, Result);
+      Expect (Result, Capacity_Exceeded, "oversized scan endpoint was admitted");
+      Expect_Count (6, "endpoint failure atomicity");
+      for Point of Scan_Faults loop
+         Set_Test_Allocation_Fault (Point);
+         Scan (Item, Reader, 1, False, Key_A, False, Key_D, Rows, Result);
+         Expect (Result, Capacity_Exceeded, "scan allocation failure was misclassified");
+         Expect_Count (6, "scan allocation failure atomicity");
+         Expect_Scan_Row (Rows, 3, Key_B, To_Value ([23]), "scan allocation failure bytes");
+      end loop;
+      Read_Scan_Row (Rows, 7, Actual_Key, Actual_Data, Result);
+      Expect (Result, Invalid_State, "out-of-range scan row was readable");
+      if Flyology.Bytes.Length (Actual_Key) /= 0 or else Flyology.Bytes.Length (Actual_Data) /= 0 then
+         raise Program_Error with "failed row read published partial bytes";
+      end if;
+
+      --  Snapshot Scan must not consume the range-node fault; the following
+      --  Serializable materialization reaches predicate retention and does.
+      Set_Test_Allocation_Fault (Scan_Range_Node_Allocation);
+      Scan (Item, Reader, 1, True, Key_B, True, Key_D, Rows, Result);
+      Expect (Result, Success, "snapshot scan attempted predicate retention");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "fixed scan reader rollback failed");
+      Begin_Transaction (Item, Numbered_TX_ID (62_007), Serializable, Reader, Result);
+      Expect (Result, Success, "serializable scan reader begin failed");
+      Scan (Item, Reader, 1, True, Key_B, True, Key_D, Rows, Result);
+      Expect (Result, Capacity_Exceeded, "snapshot scan consumed predicate allocation fault");
+      Scan (Item, Reader, 1, True, Key_B, True, Key_D, Rows, Result);
+      Expect (Result, Success, "serializable scan retry failed");
+      Put (Item, Reader, 1, Marker, To_Value ([25]), Result);
+      Expect (Result, Success, "serializable scan marker failed");
+      Commit_Write (62_008, Key_C, To_Value ([26]));
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "materialized scan omitted phantom validation");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "scan conflict consumed reader");
+
+      declare
+         Flush_Info : Flush_Receipt;
+         --  One stable run identity per persisted fixture family is required
+         --  by Flush. IDs 62_020..62_027 and manifest/transition 62_030/31
+         --  extend this scan campaign's witness namespace only.
+         Runs : constant Checkpoint_Run_Identity_Array :=
+           [Configure_Checkpoint_Run (1, Numbered_ID (62_020)),
+            Configure_Checkpoint_Run (2, Numbered_ID (62_021)),
+            Configure_Checkpoint_Run (3, Numbered_ID (62_022)),
+            Configure_Checkpoint_Run (4, Numbered_ID (62_023)),
+            Configure_Checkpoint_Run (5, Numbered_ID (62_024)),
+            Configure_Checkpoint_Run (6, Numbered_ID (62_025)),
+            Configure_Checkpoint_Run (7, Numbered_ID (62_026)),
+            Configure_Checkpoint_Run (8, Numbered_ID (62_027))];
+      begin
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (62_030),
+            Numbered_ID (62_031),
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
+         Expect (Result, Success, "scan checkpoint publication failed");
+      end;
+      Commit_Write (62_032, Marker, To_Value ([27]));
+      Close (Item, Result);
+      Expect (Result, Success, "scan checkpoint database close failed");
+      Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "scan checkpoint database reopen failed");
+      Begin_Transaction (Item, Numbered_TX_ID (62_033), Reader, Result);
+      Expect (Result, Success, "reopened scan reader begin failed");
+      Scan (Item, Reader, 1, False, Key_A, False, Key_D, Rows, Result);
+      Expect (Result, Success, "checkpoint-plus-suffix scan failed");
+      Expect_Count (8, "checkpoint-plus-suffix scan");
+      Expect_Scan_Row (Rows, 1, Empty_Key, To_Value ([1]), "checkpoint empty key");
+      Expect_Scan_Row (Rows, 3, Key_B, To_Value ([13]), "checkpoint replacement");
+      Expect_Scan_Row (Rows, 4, Key_B_Extended, To_Value ([4]), "checkpoint prefix key");
+      Expect_Scan_Row (Rows, 5, Key_C, To_Value ([26]), "checkpoint restored key");
+      Expect_Scan_Row (Rows, 6, Key_D, To_Value ([14]), "checkpoint inserted key");
+      Expect_Scan_Row (Rows, 7, Marker, To_Value ([27]), "post-checkpoint suffix key");
+      Expect_Scan_Row (Rows, 8, High_Key, To_Value ([6]), "checkpoint high-bit key");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "reopened scan reader rollback failed");
+
+      Close (Item, Result);
+      Expect (Result, Success, "scan database close failed");
+
+      declare
+         Bounded_Context : aliased Storage_Context;
+         Bounded_Item    : Database;
+         Bounded_Txn     : Transaction;
+         Create_Info     : Create_Receipt;
+         --  Two live rows and four combined bytes are the exact persisted
+         --  fixture authorities: two one-byte keys with one-byte values. They
+         --  separately expose one-over row and byte materialization failures.
+         Limits          : constant Database_Limits :=
+           (Default_Limits with delta Maximum_Live_Entries => 2, Maximum_Live_State_Bytes => 4);
+         Families        : constant Column_Family_Configuration_Array :=
+           [Configure_Column_Family (1, [16#73#], 1, 3, 4, 1, 1)];
+      begin
+         Bind_Context (Bounded_Context, Backend, Prefix & "-persisted-bounds");
+         Create
+           (Bounded_Item,
+            Bounded_Context'Access,
+            Database_Identifier (Numbered_ID (62_010)),
+            Manifest_ID_For (Numbered_ID (62_011)),
+            Numbered_ID (62_011),
+            Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "bounded scan database create failed");
+         Begin_Transaction (Bounded_Item, Numbered_TX_ID (62_012), Bounded_Txn, Result);
+         Put (Bounded_Item, Bounded_Txn, 1, Key_A, To_Value ([1]), Result);
+         Expect (Result, Success, "bounded scan A seed failed");
+         Put (Bounded_Item, Bounded_Txn, 1, Key_B, To_Value ([2]), Result);
+         Expect (Result, Success, "bounded scan B seed failed");
+         Commit (Bounded_Item, Bounded_Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "bounded scan seed commit failed");
+         Begin_Transaction (Bounded_Item, Numbered_TX_ID (62_013), Bounded_Txn, Result);
+         Scan (Bounded_Item, Bounded_Txn, 1, False, Key_A, False, Key_D, Rows, Result);
+         Expect (Result, Success, "exact persisted scan bounds failed");
+         Expect_Count (2, "exact persisted scan bounds");
+         Put (Bounded_Item, Bounded_Txn, 1, Key_C, To_Value ([3]), Result);
+         Expect (Result, Success, "one-over scan row buffered mutation failed");
+         Scan (Bounded_Item, Bounded_Txn, 1, False, Key_A, False, Key_D, Rows, Result);
+         Expect (Result, Capacity_Exceeded, "one-over persisted scan row was materialized");
+         Expect_Count (2, "one-over row scan atomicity");
+         Rollback (Bounded_Txn, Result);
+         Begin_Transaction (Bounded_Item, Numbered_TX_ID (62_014), Bounded_Txn, Result);
+         Put (Bounded_Item, Bounded_Txn, 1, Key_A, To_Value ([1, 2, 3]), Result);
+         Expect (Result, Success, "one-over scan bytes buffered mutation failed");
+         Scan (Bounded_Item, Bounded_Txn, 1, False, Key_A, False, Key_D, Rows, Result);
+         Expect (Result, Capacity_Exceeded, "one-over persisted scan bytes were materialized");
+         Expect_Count (2, "one-over byte scan atomicity");
+         Rollback (Bounded_Txn, Result);
+         Close (Bounded_Item, Result);
+         Expect (Result, Success, "bounded scan database close failed");
+      end;
+   end Test_Bounded_Scan;
+
    procedure Test_Cap_Boundaries (Backend : not null access Backends.Backend'Class) is
       Context     : aliased Storage_Context;
       Item        : Database;
@@ -5795,6 +6124,7 @@ package body Flyology.DB.Engine_Tests is
          Test_Snapshot_Write_Validation (Store'Access);
          Test_Serializable_Point_Validation (Store'Access, "memory-serializable-points");
          Test_Serializable_Range_Validation (Store'Access, "memory-serializable-ranges");
+         Test_Bounded_Scan (Store'Access, "memory-bounded-scan");
          Test_Cap_Boundaries (Store'Access);
       end;
 
@@ -5828,6 +6158,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Snapshot_Write_Validation (Store'Access);
             Test_Serializable_Point_Validation (Store'Access, "files-serializable-points");
             Test_Serializable_Range_Validation (Store'Access, "files-serializable-ranges");
+            Test_Bounded_Scan (Store'Access, "files-bounded-scan");
             Test_Faults (Store'Access, "files-faults", 140);
          end;
          Ada.Directories.Delete_Tree (Root);

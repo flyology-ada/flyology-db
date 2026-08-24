@@ -136,6 +136,10 @@ package Flyology.DB is
    type Storage_Context is limited private;
    type Database is limited private;
    type Transaction is limited private;
+   --  Limited owned materialization replaced atomically by Scan. Its dynamic
+   --  storage is bounded only by persisted database/family authorities and is
+   --  reclaimed automatically; the type introduces no copy or default limit.
+   type Scan_Result is limited private;
    type Create_Receipt is private;
    type Commit_Receipt is private;
    --  Self-contained first-checkpoint publication and reconciliation state.
@@ -273,7 +277,7 @@ package Flyology.DB is
    --  bounded by the database's persisted range-count authority and the
    --  selected family's key limit. Capacity_Exceeded means no predicate was
    --  retained. Present endpoint bytes are borrowed only for this call and
-   --  copied before Success. A future bounded scan API uses this same rule.
+   --  copied before Success. Scan uses this same endpoint rule.
    --  @param Item Open database that owns committed conflict history
    --  @param Txn Active transaction whose isolation and observations are used
    --  @param Family Valid handle selecting persisted family limits and identity
@@ -291,6 +295,58 @@ package Flyology.DB is
       Has_Upper : Boolean;
       Upper     : Byte_Array;
       Result    : out Outcome_Code);
+
+   --  Materialize every live row in one canonical half-open family interval
+   --  at Txn's fixed snapshot, ordered by unsigned-byte lexicographic key.
+   --  Endpoint flags and validation match Observe_Range. Exact row count and
+   --  key-plus-value bytes are bounded by the database's persisted live-state
+   --  limits; individual extents remain bounded by the selected family. There
+   --  is no page size, byte default, timeout, storage I/O, or helper task.
+   --  Rows is replaced atomically only on Success and remains unchanged on
+   --  every failure. A Serializable success retains the exact predicate only
+   --  after complete materialization; failure publishes neither rows nor a
+   --  predicate. Endpoint bytes are borrowed only for this call.
+   --  @param Item Open database that owns fixed-snapshot state
+   --  @param Txn Active transaction whose snapshot and own mutations are read
+   --  @param Family Valid handle selecting persisted family limits and identity
+   --  @param Has_Lower True when Lower is the inclusive endpoint
+   --  @param Lower Inclusive endpoint bytes, ignored when Has_Lower is false
+   --  @param Has_Upper True when Upper is the exclusive endpoint
+   --  @param Upper Exclusive endpoint bytes, ignored when Has_Upper is false
+   --  @param Rows Controlled owned result replaced only on Success
+   --  @param Result Success or the exact validation, capacity, conflict, or lifecycle outcome
+   procedure Scan
+     (Item      : in out Database;
+      Txn       : in out Transaction;
+      Family    : Column_Family;
+      Has_Lower : Boolean;
+      Lower     : Byte_Array;
+      Has_Upper : Boolean;
+      Upper     : Byte_Array;
+      Rows      : in out Scan_Result;
+      Result    : out Outcome_Code);
+
+   --  Number of live rows retained by Item, including zero for a fresh or
+   --  successfully empty result.
+   --  @param Item Controlled scan result
+   --  @return Exact retained row count
+   function Scan_Row_Count (Item : Scan_Result) return Natural;
+
+   --  Copy one retained row into caller-owned bytes. Position is one-based in
+   --  canonical key order. Invalid_State leaves both outputs empty when the
+   --  position is outside the current result; allocation failure reports
+   --  Capacity_Exceeded and likewise publishes no partial row.
+   --  @param Item Controlled scan result whose bytes remain owned by Item
+   --  @param Position One-based row position
+   --  @param Item_Key Owned exact key bytes, empty on failure
+   --  @param Data Owned exact value bytes, empty on failure
+   --  @param Result Success, Invalid_State, or Capacity_Exceeded
+   procedure Read_Scan_Row
+     (Item     : Scan_Result;
+      Position : Positive;
+      Item_Key : out Flyology.Bytes.Unbounded_Bytes;
+      Data     : out Flyology.Bytes.Unbounded_Bytes;
+      Result   : out Outcome_Code);
 
    --  Borrow Item_Key/Data for this call and copy them once into the
    --  transaction-owned arena; no caller bytes are retained after return.
@@ -579,6 +635,13 @@ private
       Scan_Range_Node_Allocation,
       Scan_Range_Lower_Allocation,
       Scan_Range_Upper_Allocation,
+      --  Scan materialization faults distinguish immutable-source capture,
+      --  result-state/descriptor ownership, and exact payload reservation.
+      --  They are test-only runtime states and never persisted or exposed.
+      Scan_Source_Allocation,
+      Scan_Result_State_Allocation,
+      Scan_Result_Rows_Allocation,
+      Scan_Result_Payload_Allocation,
       Batch_Descriptor_Allocation,
       Storage_Sink_Allocation,
       Recovery_History_Allocation,
@@ -697,6 +760,34 @@ private
 
    overriding
    procedure Finalize (Item : in out Transaction_Arena_Owner);
+
+   type Scan_Row_Descriptor is record
+      Key_Offset   : Natural := 0;
+      Key_Length   : Natural := 0;
+      Value_Offset : Natural := 0;
+      Value_Length : Natural := 0;
+   end record;
+   type Scan_Row_Descriptor_Array is array (Positive range <>) of Scan_Row_Descriptor;
+   type Scan_Row_Descriptor_Array_Access is access Scan_Row_Descriptor_Array;
+   type Scan_Result_State is record
+      Rows    : Scan_Row_Descriptor_Array_Access := null;
+      Count   : Natural := 0;
+      Payload : Flyology.Bytes.Unbounded_Bytes;
+   end record;
+   type Scan_Result_State_Access is access Scan_Result_State;
+   --  Scan results own one exact descriptor array and combined key/value byte
+   --  image through a single swappable state pointer. Null is the canonical
+   --  fresh or successfully empty result; it is not a result-size policy.
+   type Scan_Result_Owner is new Ada.Finalization.Limited_Controlled with record
+      State : Scan_Result_State_Access := null;
+   end record;
+
+   overriding
+   procedure Finalize (Item : in out Scan_Result_Owner);
+
+   type Scan_Result is limited record
+      Owner : Scan_Result_Owner;
+   end record;
 
    type Transaction is limited record
       Active         : Boolean := False;

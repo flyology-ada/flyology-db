@@ -71,8 +71,11 @@ each distinct exact family/present-endpoint tuple under the persisted range coun
 Node or endpoint allocation failure and one-over capacity return `Capacity_Exceeded` without partial linkage.
 Commit admission and its prepublication recheck reject any post-Begin same-family write with
 `Lower <= Key < Upper`; open and whole-family forms follow from the same comparison. Atomic groups validate each
-member against external history. A later bounded row-returning scan must call this primitive for its predicate; it is
-not silently supplied by `Observe_Range`.
+member against external history. `Scan` uses the identical predicate and materializes every live row at the fixed
+snapshot, including transaction-local Put/Delete precedence, before retaining that predicate in Serializable mode.
+Rows are returned in unsigned-byte lexicographic key order through a limited controlled result. Exact row count and
+combined key/value bytes are bounded by persisted database live-state limits; individual keys and values remain
+bounded by the selected family. A failed call neither replaces an earlier result nor retains a partial predicate.
 
 Transactions carry caller-visible idempotency identities. A singleton transaction uses that exact identity as its
 immutable batch ID. An explicit group carries a separate caller-stable group ID; group and transaction IDs share one

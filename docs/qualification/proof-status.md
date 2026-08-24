@@ -152,6 +152,14 @@ scans remain outside the selected SPARK units. Deterministic memory/files bounda
 queued-race tests plus the 44,244-state TLC and 10/10 TLAPS campaign qualify those executable boundaries. This is not
 a refinement proof between the reference model and production implementation.
 
+The bounded fixed-snapshot scan candidate preserves that same 1,084/1,084 warning-strict result and does not widen
+the selected SPARK units. The proved reference model and serializable TLA+/TLAPS lane continue to establish the
+fixed-snapshot lookup and half-open predicate rules. Production source discovery, immutable-image borrowing, owned
+result construction, sorting, allocation rollback, and checkpoint/suffix merge remain executable-test boundaries.
+Deterministic memory/files tests cover ordering, snapshot and own-write visibility, persisted row/byte limits, every
+scan allocation position, predicate-retention atomicity, and checkpoint-plus-suffix recovery. No refinement proof is
+claimed between the formal algorithm and production `Scan`.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

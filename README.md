@@ -20,8 +20,10 @@ and preserves the synchronous receipt and certainty mapping. Remote-provider qua
 compaction, and dynamic family changes remain separate review units. Transactions now capture a Begin-time sequence
 and reject exact written keys changed by later committed history. Fixed-snapshot point reads are operational;
 explicit serializable transactions retain and validate exact successful and absent point reads plus caller-observed
-half-open scan predicates. `Observe_Range` records conflict authority without pretending to return rows; a bounded
-row-returning scan remains later LSM work.
+half-open scan predicates. `Observe_Range` records conflict authority without reading rows. The bounded synchronous
+`Scan` materializes a complete selected-family interval at the transaction's fixed snapshot in unsigned-byte key
+order; persisted live-entry/live-byte limits bound its owned result, and Serializable success retains the same
+predicate only after complete materialization.
 
 ## Durability rule
 
