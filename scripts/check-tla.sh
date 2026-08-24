@@ -420,6 +420,78 @@ done
   >"$temporary_root/tlaps-snapshot-reads.log" 2>&1
 grep -q 'All 7 obligations proved.' "$temporary_root/tlaps-snapshot-reads.log"
 
+#  This reviewed finite-geometry fingerprint is qualification evidence, not a
+#  product capacity. A changed count/depth requires inspection of the model graph.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-serializable-states" \
+  -config SerializableValidation.cfg SerializableValidation \
+  >"$temporary_root/tlc-serializable.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-serializable.log"
+! grep -q '^Warning:' "$temporary_root/tlc-serializable.log"
+grep -q '44244 distinct states found' "$temporary_root/tlc-serializable.log"
+grep -q 'The depth of the complete state graph search is 13.' \
+  "$temporary_root/tlc-serializable.log"
+for action in Begin BufferWrite RecordPoint RejectPointCapacity RecordRange \
+  RejectRangeCapacity Commit RejectConflict
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-serializable.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-serializable-probe-states" \
+  -config SerializableUnsafeCommitProbe.cfg SerializableUnsafeCommitProbe \
+  >"$temporary_root/tlc-serializable-probe.log" 2>&1
+serializable_probe_status=$?
+set -e
+test "$serializable_probe_status" -eq 12
+grep -q 'Invariant NoInvalidCommit is violated.' \
+  "$temporary_root/tlc-serializable-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-serializable-probe.log"
+
+for serializable_witness in point range snapshot own
+do
+  case "$serializable_witness" in
+    point)
+      serializable_module=SerializablePointWitness
+      ;;
+    range)
+      serializable_module=SerializableRangeWitness
+      ;;
+    snapshot)
+      serializable_module=SerializableSnapshotWitness
+      ;;
+    own)
+      serializable_module=SerializableOwnWriteWitness
+      ;;
+  esac
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-serializable-$serializable_witness-states" \
+    -config "$serializable_module.cfg" \
+    -dumpTrace json "$temporary_root/serializable-$serializable_witness.json" \
+    "$serializable_module" \
+    >"$temporary_root/tlc-serializable-$serializable_witness.log" 2>&1
+  serializable_witness_status=$?
+  set -e
+  test "$serializable_witness_status" -eq 12
+  grep -q 'Invariant WitnessPending is violated.' \
+    "$temporary_root/tlc-serializable-$serializable_witness.log"
+  ! grep -q '^Warning:' "$temporary_root/tlc-serializable-$serializable_witness.log"
+  "$model_root/validate_serializable_witnesses.py" \
+    "$serializable_witness" "$temporary_root/serializable-$serializable_witness.json"
+done
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-serializable-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/SerializableValidationSafetyProof.tla" \
+  >"$temporary_root/tlaps-serializable.log" 2>&1
+#  One initialization, eight action, and one quiescence theorem establish the
+#  reviewed 10-obligation total; this count changes only with the proof kernel.
+grep -q 'All 10 obligations proved.' "$temporary_root/tlaps-serializable.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -443,3 +515,7 @@ printf '%s\n' "  Snapshot reads TLC 7530 distinct states, depth 14"
 printf '%s\n' "  Snapshot reads TLAPS 7/7 obligations"
 printf '%s\n' "  Snapshot old/own/too-old witnesses validated"
 printf '%s\n' "  Negative latest-value snapshot read probe detected"
+printf '%s\n' "  Serializable validation TLC 44244 distinct states, depth 13"
+printf '%s\n' "  Serializable validation TLAPS 10/10 obligations"
+printf '%s\n' "  Serializable point/range/snapshot/own witnesses validated"
+printf '%s\n' "  Negative unsafe serializable commit probe detected"

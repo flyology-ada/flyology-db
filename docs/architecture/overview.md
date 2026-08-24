@@ -50,11 +50,13 @@ history, while existing deterministic member order resolves overlapping member w
 newest buffered mutation first. Otherwise it searches retained exact committed history for the newest value no later
 than the Begin sequence, then falls back to exact checkpoint-base descriptors allocated lazily from authenticated SST
 entry counts. A snapshot older than the retained checkpoint boundary returns `Conflict`; it never substitutes latest
-state or incomplete negative evidence. Milestone 3 remains pending on serializable read/range tracking.
+state or incomplete negative evidence. Milestone 3 remains pending on operational serializable read/range tracking.
 
-Serializable mode will additionally record point reads and normalized scan ranges and reject a post-snapshot write
-that intersects either. The initial serializable validator may conservatively reject additional transactions but may
-not admit write skew or phantoms forbidden by this rule.
+The formal serializable rule additionally records successful and absent point reads plus normalized scan ranges and
+rejects a post-snapshot write that intersects either. Point and range tracking have independent explicit capacity
+rejection; an observation is never silently omitted. The initial production validator may conservatively reject
+additional transactions but may not admit write skew or phantoms forbidden by this rule. The Ada isolation/range API,
+normalization representation, and caller- or persisted-authority capacities remain intentionally unfrozen.
 
 Transactions carry caller-visible idempotency identities. A singleton transaction uses that exact identity as its
 immutable batch ID. An explicit group carries a separate caller-stable group ID; group and transaction IDs share one

@@ -175,6 +175,15 @@ refinement proof is claimed.
   for type/sequence preservation and exact modeled selection. The two-version finite representation is qualification
   geometry, not product retention; byte lookup, allocation, retained-history sufficiency, progress, serializable
   predicates, and refinement to Ada remain outside this proof.
+- The serializable-validation model exhausts 44,244 states at depth 13. It checks snapshot write conflicts,
+  serializable point and normalized-range conflicts, and independent point/range capacity rejection with nonzero
+  coverage for every semantic action. Independent validators require exact point-conflict, range-conflict,
+  snapshot-non-retention, and full-point-set own-write traces; a negative unsafe action must violate the
+  no-invalid-commit monitor. Its unbounded
+  action-preservation kernel proves 10/10 strict TLAPS obligations for state/sequence soundness and guarded commit
+  safety over arbitrary nonempty transaction/key/range sets. Finite cardinality/backpressure remains in the exhaustive
+  TLC lane; retained-history sufficiency remains in the separate snapshot model. Range normalization, persisted
+  sizing, allocation, public API shape, progress, and refinement to Ada are not proved.
 
 The TLAPS kernel is a batch-atomic abstraction assigning every batch an arbitrary nonempty transaction set, with
 pairwise-disjoint ownership between batches. It proves publication-epoch monotonicity, acknowledged whole-batch

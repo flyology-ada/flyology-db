@@ -1,5 +1,34 @@
 # Review record
 
+## Accepted formal serializable-validation candidate
+
+- Parent: operational fixed-snapshot point-read commit `7460bdb`.
+- Scope: freeze serializable point/range conflict and capacity semantics before selecting a public Ada isolation or
+  scan contract. Snapshot mode retains no observations and continues to reject only post-Begin writes to its write
+  set. Serializable mode retains successful/absent point reads and normalized range predicates, rejecting a commit
+  when a later committed write intersects the write set, a retained point, or a retained range. Independent capacity
+  rejection prevents silently omitted observations. This unit adds no Ada runtime behavior, public outcome, persisted
+  field, range encoding, allocation policy, or refinement claim. Conservative rejection below the checkpoint-history
+  boundary remains owned by the separate snapshot-isolation lane.
+- Constant authority: two transactions, two keys, two modeled ranges, and one point/range slot are finite
+  qualification geometry. One slot both admits one observation and forces a second distinct observation through the
+  capacity branch. `R1` contains one key and `R2` both keys only to witness point versus phantom conflict. These values
+  do not authorize product defaults or persisted ceilings; eventual capacities remain caller- or persisted-limit
+  decisions.
+- Verification: the authoritative combined `./scripts/check-tla.sh` gate preserves every earlier lane and exhausts
+  44,244 new states at depth 13 with nonzero coverage for every serializable semantic action. Four independent trace
+  checks validate point conflict, range conflict, snapshot non-retention, and read-your-writes at full point capacity;
+  the unsafe-commit probe is rejected.
+  Strict TLAPS proves 10/10 action-preservation obligations. Shell syntax, Python bytecode compilation,
+  `./scripts/check-repository.sh`, and `git diff --check` pass.
+- Findings cycle: the model sweep separated snapshot from serializable observation retention, added explicit
+  point/range capacity outcomes, constrained the snapshot witness to a read-only transaction before a distinct
+  writer, and added the deliberately unsafe commit probe. Follow-up review corrected own-write reads to bypass point
+  retention and capacity, matching the existing reference algorithm, and added an exact regression witness. The proof
+  sweep narrowed the TLAPS claim after recursive
+  finite-set cardinality resisted the focused SMT proof: capacity invariants remain exhaustively checked by TLC and
+  are not reported as unbounded proof. The final sweep finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted operational fixed-snapshot point-read candidate
 
 - Parent: accepted formal fixed-snapshot point-read commit `cff2048`.

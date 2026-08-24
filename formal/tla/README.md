@@ -151,6 +151,38 @@ kernel proves seven inductive obligations over arbitrary nonempty transaction an
 soundness and exact selection by the modeled read action; it does not prove byte lookup, retained-history sufficiency,
 allocation/ownership, serializable predicates, progress, or refinement to Ada.
 
+## Serializable-validation lane
+
+`SerializableValidation.tla` freezes the conflict rule before any public Ada isolation or range API is selected.
+Snapshot transactions retain neither point nor range observations and reject only writes changed after Begin.
+Serializable transactions retain successful and absent point observations plus normalized range predicates, then
+reject if a later committed write intersects their write set, a retained point, or any member of a retained range.
+Point and range retention have independent capacity rejection paths; no observation is silently dropped at capacity.
+This focused model assumes exact post-snapshot write authority; the separate snapshot-isolation model owns
+conservative rejection below the retained checkpoint-history boundary.
+
+The finite model uses two transactions, two keys, two ranges, and one retained point/range slot. Those values are
+qualification geometry: one slot admits an observation and the second distinct observation reaches backpressure.
+They are not public defaults, persisted bounds, byte-order policy, or proposed product capacities. A modeled key is
+an exact (column family, byte key) identity; `R1` contains one identity and `R2` both identities solely to exercise
+same-family point and phantom conflicts. The eventual Ada capacities remain subject to an explicit API and
+persisted-authority decision.
+
+TLC exhausts 44,244 states at depth 13 and requires nonzero coverage for Begin, write buffering, point/range
+retention, both capacity rejections, valid commit, and conflict rejection. Four validators pin a serializable point
+conflict, a serializable range conflict, a snapshot transaction that observes the same point without retaining it,
+and a serializable read of its own write after the point set is full. Own writes bypass point retention and capacity,
+matching read-your-writes precedence. The negative model commits through an existing serializable point conflict and
+must trip the invalid-commit monitor.
+
+`SerializableValidationSafetyProof.tla` is an unbounded action-preservation kernel over arbitrary nonempty
+transaction, key, and range sets and arbitrary positive capacities. TLAPS proves ten obligations covering
+initialization and every modeled action. It proves type/sequence soundness and that the guarded commit action cannot
+record an invalid commit. The kernel deliberately excludes finite-cardinality inequalities because TLAPS's recursive
+`FiniteSets.Cardinality` definition is outside this focused SMT proof. TLC checks those capacity invariants and both
+backpressure actions exhaustively. Neither lane proves retained-history sufficiency, range normalization, byte-key
+ordering, persisted sizing, allocation, the public Ada contract, progress, or refinement to production code.
+
 ## Witness projection
 
 `CommitPublicationWitness.tla` adds a deliberate invariant violation that asks TLC for one useful path. The
@@ -185,5 +217,8 @@ strict TLAPS must prove 23 of 23 obligations. The manifest lane adds 286 distinc
 strict TLAPS obligations. The first-checkpoint lane adds 819 distinct states at depth 19, three independently
 validated witnesses, four required integrated negative probes, full normal-action coverage, and 43 of 43 strict
 TLAPS obligations. The snapshot-isolation lane adds 336 distinct states at depth 10, three independently validated
-witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. Larger
-state spaces belong to qualification campaigns and must not replace this fast per-change gate.
+witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. The
+fixed-snapshot read lane adds 7,530 states at depth 14, three validated witnesses, one negative probe, and 7 of 7
+strict TLAPS obligations. The serializable lane adds 44,244 states at depth 13, four validated witnesses, one
+negative probe, full semantic-action coverage, and 10 of 10 strict TLAPS obligations. Larger state spaces belong to
+qualification campaigns and must not replace this fast per-change gate.

@@ -32,13 +32,20 @@ Transactions older than the checkpoint history boundary reject conservatively be
 negative evidence. Atomic groups validate each member against external committed history and retain their existing
 deterministic intra-group ordering. Fixed-snapshot point reads are operational: own Put/Delete wins, retained exact
 history selects the newest committed version no later than Begin, and an exact lazily allocated checkpoint base
-preserves compacted values after suffix replacement. Serializable read/range tracking and its persisted bounds are
-not yet implemented, so Milestone 3 remains Pending.
+preserves compacted values after suffix replacement. The serializable point/range conflict and independent
+backpressure rules are now frozen in a separate TLC/TLAPS lane, but their Ada API, persisted bounds, scan
+normalization, and runtime tracking are not yet implemented, so Milestone 3 remains Pending.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
 conservative too-old outcome. Production `Get` now implements that selection rule, mapping formal `TooOld` to the
 existing public `Conflict` outcome without adding a new public enumeration or persisted field.
+
+The formal serializable rule retains successful and absent point reads plus normalized range predicates only in
+serializable mode. A commit rejects when a post-Begin committed write intersects its writes, retained points, or
+retained ranges. Independent point/range capacity rejection is safety backpressure: reaching a bound never drops an
+observation. The finite one-slot model values are qualification geometry rather than product defaults; production
+capacities remain caller- or persisted-authority decisions.
 
 The first-LSM work now includes exact/proven manifest-v2 and SST-v1 formats, dynamic operational codecs, manifest-v2
 root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator replacement, and
