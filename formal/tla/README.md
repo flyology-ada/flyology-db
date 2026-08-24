@@ -244,8 +244,20 @@ read-only resolution, crash, and compacted-run-only recovery path.
 `L0CompactionSafetyProof.tla` generalizes complete replacement to arbitrary nonempty fresh output sets and any number
 of cycles. It proves stored-before-confirmed ordering, confirmed current authority, separation of fresh/current/
 retired run sets, exact checkpoint/suffix authority, exact recovery, and disposable local state. It intentionally
-retains retired objects and proves no physical garbage collection, concrete merge, snapshot-retention horizon,
-format, capacity arithmetic, provider behavior, liveness, or refinement to Ada.
+retains retired objects and proves no physical garbage collection, snapshot-retention horizon, format, capacity
+arithmetic, provider behavior, liveness, or refinement to Ada.
+
+`LSMCompactionEquivalence.tla` isolates concrete point-read semantics from publication. TLC explores all 576 states
+formed by every two-key/two-value captured view and every later Put/Delete/no-mutation map. A complete replacement
+emits a Put for a live key and no mutation for an absent key, cacheless recovery must equal the capture, and applying
+the later delta must be observationally identical on every key. `LSMCompactionEquivalenceProbe.tla` omits one live
+key and must violate safety. `LSMCompactionEquivalenceWitness.tla` plus its validator fixes the captured-live/absent,
+replacement, recovery, later-Delete/later-Put path as executable evidence.
+
+`LSMCompactionEquivalenceSafetyProof.tla` proves six strict obligations over arbitrary nonempty key and value sets:
+replacement contains no tombstone, absence emits no entry, live values emit exact Puts, recovery reconstructs the
+view, and any later delta remains equivalent. Sequence selection, operational Ada refinement, formats, allocation,
+publication, retention, and progress remain in their separate lanes.
 
 ## Immutable cache lane
 

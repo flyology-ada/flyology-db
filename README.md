@@ -24,6 +24,10 @@ the same owner stack, receipt, and certainty machinery. It builds complete live-
 manifest naming only those fresh outputs. It retains superseded immutable objects and adds no public trigger,
 automatic scheduling, or physical-GC policy. Remote-provider qualification, the public compaction surface, run
 pruning, and dynamic family changes remain separate review units.
+The LSM read-equivalence lane independently checks that a complete live-state replacement emits one Put for each
+live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
+later delta containing Puts, Deletes, or untouched keys. This closes concrete replacement-read semantics without
+claiming an Ada refinement theorem or selecting compaction policy.
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
 produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.

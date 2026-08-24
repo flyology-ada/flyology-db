@@ -273,6 +273,15 @@ output-capacity rejection, accepted-lost publication, depublication with retaine
 crash, and exact recovery. The unbounded TLAPS kernel proves the corresponding abstract replacement invariants. No
 TLA+-to-Ada refinement is claimed. Naming and exposing a public compaction trigger remains a separate API unit.
 
+`LSMCompactionEquivalence.tla` separately closes the concrete point-read equation that the publication model leaves
+abstract. For every finite captured view in its qualification geometry, the replacement run contains the exact live
+value or no mutation for absence, never a tombstone. Cacheless application to an empty view reproduces every key,
+and any later Put/Delete/no-mutation delta produces the same result whether applied before or after replacement. A
+machine-validated trace exercises a live key, an absent key, a later Delete, and a later Put; a negative probe omits
+one live key and must violate safety. `LSMCompactionEquivalenceSafetyProof.tla` proves the same reconstruction and
+later-delta equations for arbitrary nonempty key and value sets. This is not a refinement proof for the Ada merge
+loop, sequence selection, codecs, publication, or retention.
+
 ## Frozen immutable-object retention boundary
 
 Physical deletion requires two independent authorities: explicit age eligibility and absence from the live protected

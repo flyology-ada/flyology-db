@@ -249,8 +249,13 @@ operational Ada implementation is claimed.
   witness fixes the accepted-lost recovery path, and a deliberately early HEAD action must violate safety. The
   arbitrary-set, unbounded-cycle kernel proves 26/26 strict TLAPS obligations for stored/confirmed ordering,
   confirmed current authority, fresh/current/retired separation, exact checkpoint/suffix authority, recovery, and
-  disposable local state. It does not prove concrete merge, snapshot retention sufficiency, physical reclamation,
-  codecs, capacity arithmetic, provider behavior, progress, a public trigger, or refinement. The private operational
+  disposable local state. A separate read-equivalence model exhausts 576 states at depth 4 across all two-key,
+  two-value captured views and later Put/Delete/no-mutation maps. Its validated four-action witness deletes one
+  recovered live key and puts one formerly absent key; omitting a live replacement entry must violate safety. The
+  arbitrary-key/value kernel proves 6/6 strict TLAPS obligations for canonical Put-only replacement, exact recovery,
+  and equivalence under any later delta. Neither lane proves operational merge refinement, snapshot retention
+  sufficiency, physical reclamation, codecs, capacity arithmetic, provider behavior, progress, or a public trigger.
+  The private operational
   Ada planner/publisher is qualified separately by deterministic replacement, allocation, certainty, depublication,
   and cacheless-recovery tests.
 - The immutable-cache model exhausts 623 distinct states at depth 12 with nonzero coverage for read capture, exact

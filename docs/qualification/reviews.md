@@ -1,5 +1,24 @@
 # Review record
 
+## Accepted LSM compaction read-equivalence boundary
+
+- Parent: private monotonic replica-refresh commit `84b04f7`.
+- Scope and compatibility: add one independent TLA+/TLAPS lane for the concrete point-read equation of complete
+  live-state replacement. It changes no Ada declaration, persisted byte, dependency, public compaction trigger,
+  schedule, run-level policy, retention rule, or capacity.
+- Authority and semantics: a replacement emits the captured live value for each key and no mutation for captured
+  absence; it never persists a tombstone in the complete live-state output. Applying that run to an empty view must
+  reconstruct every captured read, and applying any later Put/Delete/no-mutation delta must equal applying the same
+  delta directly to the capture. Two keys and two values are finite qualification geometry only; the TLAPS kernel is
+  quantified over arbitrary nonempty key/value sets.
+- Verification: focused TLC exhausts 576/576 states at depth 4 with nonzero coverage for build, recovery, and later
+  replay. The negative probe omits one captured live key and violates `Safety`. The independently parsed four-state
+  trace captures one live and one absent key, recovers them exactly, then deletes the former and puts the latter.
+  TLAPS proves 6/6 strict obligations for canonical replacement and read equivalence.
+- Findings cycle: the repeated sentinel-separation, total-function-domain, absence-versus-tombstone, witness,
+  negative-probe, script-pinning, documentation, compatibility, and unnecessary-surface sweep finds no P0, P1, P2,
+  or P3 issue. The authoritative combined gate passes with the new lane enabled.
+
 ## Accepted private monotonic replica-refresh candidate
 
 - Parent: private composable L0-replacement commit `68f89d8`.

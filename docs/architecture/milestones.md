@@ -9,7 +9,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
-| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and private sync/composable replacement operational; public compaction pending |
+| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and private sync/composable replacement operational; replacement reads proved; public compaction pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Private sync/composable replacement operational and deletion safety proved; public API/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
@@ -91,6 +91,11 @@ lifecycle, validates a complete cacheless recovery graph, and installs only a st
 writer-epoch pair. Same/older observations and safe allocation failure retain the prior engine; a fenced writer is
 not implicitly promoted. Public and composable refresh declarations, polling, leases, replica registration and
 retention pins, and explicit promotion remain pending Milestone 8 decisions.
+
+The LSM read-equivalence lane now exhausts all two-key/two-value captured views and later mutation maps, validates a
+concrete delete/put execution witness, rejects a replacement that omits one live key, and proves the arbitrary-key/
+value reconstruction and later-delta equations with TLAPS. This strengthens the private replacement spine without
+choosing a public trigger, automatic schedule, run-level policy, or storage budget.
 
 ## Formal state-machine lane
 

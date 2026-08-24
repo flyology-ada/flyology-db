@@ -51,6 +51,9 @@ coordinator replacement, additive multi-run L0 publication, and cacheless all-ru
 The private complete-replacement compaction planner/publisher is operational through both synchronous and
 test-qualified caller-composable drivers; its public trigger, automatic policy, snapshot/replica retention horizon,
 run pruning, and physical garbage collection are not.
+The separate LSM read-equivalence proof establishes that replacing a captured complete live view with one canonical
+Put-only run preserves every point read and that replaying any later Put/Delete delta remains equivalent. It does not
+claim a refinement from the operational merge loop to TLA+.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,
