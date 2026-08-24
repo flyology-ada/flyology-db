@@ -162,7 +162,8 @@ Recovery validates every descriptor and object, then applies family runs oldest 
 older value; a newer tombstone removes it and continues to mask all older runs. Sequence ranges must remain strictly
 non-overlapping and increasing, so reconstruction never depends on provider listing or incidental object order.
 Missing, malformed, misbound, overlapping, or reordered runs fail closed. Later batches are replayed only after the
-manifest boundary. Compaction may eventually replace this current run set but is not part of additive L0 publication.
+manifest boundary. The separate replacement planner may compact this current run set; additive Flush never selects
+that mode implicitly.
 
 The public Flush signatures, caller-supplied one-ID-per-family map, receipt ownership, absolute deadline, and
 publication certainty do not change. A family uses its mapped ID only when it has a suffix delta, matching the
@@ -255,17 +256,24 @@ decision. A lost accepted HEAD response remains `Outcome_Unknown` until read-onl
 attempted transition or a conclusive successor. No retry, replacement identity, automatic trigger, helper task, or
 new public capacity/default follows from the compaction algorithm.
 
+The operational replacement planner runs under the existing exclusive checkpoint gate. It snapshots the complete
+live state rather than the post-boundary delta, allocates exact run and manifest extents from persisted database and
+per-family limits, rejects any current immutable run identity, and prepares the complete activation base before the
+first provider call. The shared checkpoint publisher then stores and confirms each output and the successor manifest
+before the conditional HEAD transition. Its private receipt mode is retained solely so `Objects_Unknown`
+reconciliation rebuilds the identical replacement bytes and identities; it is not persisted policy.
+
 Cacheless recovery from the compacted successor validates only its named outputs and exact manifest authority; it
 does not reread depublicized predecessors to reconstruct current state. A missing, malformed, corrupt, misbound, or
 unconfirmed compacted output fails closed and installs no local state. The formal finite model exercises definite
 output-capacity rejection, accepted-lost publication, depublication with retained old bytes, missing-output rejection,
 crash, and exact recovery. The unbounded TLAPS kernel proves the corresponding abstract replacement invariants. No
-TLA+-to-Ada refinement is claimed, and the public trigger/API plus operational implementation remain separate units.
+TLA+-to-Ada refinement is claimed. The public synchronous/composable trigger remains a separate API unit.
 
 ## Non-goals
 
-This design does not implement automatic flushing, operational compaction, run pruning, garbage collection,
-remote-provider
-matrix qualification, or an LSM performance claim. Its operational scope is manifest-v3 root creation, initial
-whole-state runs, additive suffix-delta runs, certainty-preserving synchronous and composable checkpoint
-publication/reconciliation, and header-first cacheless recovery of every current run plus the later batch suffix.
+This design does not implement automatic flushing or compaction, a public compaction trigger, run pruning, garbage
+collection, remote-provider matrix qualification, or an LSM performance claim. Its operational scope is manifest-v3
+root creation, initial whole-state runs, additive suffix-delta runs, private complete-run replacement,
+certainty-preserving checkpoint publication/reconciliation, and header-first cacheless recovery of every current run
+plus the later batch suffix.

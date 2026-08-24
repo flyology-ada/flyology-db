@@ -866,6 +866,11 @@ private
    type Flush_Receipt is record
       Current_Outcome     : Outcome_Code := Invalid_State;
       Phase               : Flush_Receipt_Phase := No_Flush_Publication;
+      --  Private operation-shape authority used only to rebuild the exact
+      --  same plan during Objects_Unknown reconciliation. False is additive
+      --  Flush; True is complete current-run replacement. It is runtime state,
+      --  not a persisted flag, public default, or automatic compaction policy.
+      Replaces_Current_Runs : Boolean := False;
       Run_Total           : Natural range 0 .. Maximum_Initial_Column_Families := 0;
       Runs                : Flush_Run_Receipt_Array := [others => (others => <>)];
       Database_ID         : Database_Identifier := Zero_Database_ID;
@@ -1142,6 +1147,26 @@ private
       Runs          : Checkpoint_Run_Identity_Array;
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
+      Result        : out Outcome_Code);
+   procedure Build_Test_Compaction_Checkpoint
+     (Item             : in out Database;
+      Runs             : Checkpoint_Run_Identity_Array;
+      Manifest_ID      : Identifier;
+      Transition_ID    : Identifier;
+      Family_ID        : Column_Family_ID;
+      Run_Total        : out Natural;
+      Identity_Total   : out Natural;
+      Replay_Boundary  : out Sequence_Number;
+      Family_Run_Total : out Natural;
+      Family_Run_ID    : out Identifier;
+      Family_Entries   : out Natural;
+      Result           : out Outcome_Code);
+   procedure Publish_Test_Compaction
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 

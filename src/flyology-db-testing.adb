@@ -353,6 +353,49 @@ package body Flyology.DB.Testing is
       Publish_Test_First_Checkpoint (Item, Runs, Manifest_ID, Transition_ID, Result);
    end Publish_First_Checkpoint;
 
+   procedure Build_Compaction_Checkpoint
+     (Item             : in out Database;
+      Runs             : Checkpoint_Run_Identity_Array;
+      Manifest_ID      : Identifier;
+      Transition_ID    : Identifier;
+      Family_ID        : Column_Family_ID;
+      Run_Total        : out Natural;
+      Identity_Total   : out Natural;
+      Replay_Boundary  : out Sequence_Number;
+      Family_Run_Total : out Natural;
+      Family_Run_ID    : out Identifier;
+      Family_Entries   : out Natural;
+      Result           : out Outcome_Code) is
+   begin
+      Build_Test_Compaction_Checkpoint
+        (Item,
+         Runs,
+         Manifest_ID,
+         Transition_ID,
+         Family_ID,
+         Run_Total,
+         Identity_Total,
+         Replay_Boundary,
+         Family_Run_Total,
+         Family_Run_ID,
+         Family_Entries,
+         Result);
+   end Build_Compaction_Checkpoint;
+
+   procedure Publish_Compaction
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      Publish_Test_Compaction (Item, Runs, Manifest_ID, Transition_ID, Receipt, Result);
+   end Publish_Compaction;
+
+   function Receipt_Replaces_Current_Runs (Item : Flush_Receipt) return Boolean
+   is (Item.Replaces_Current_Runs);
+
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier
    is (Structural_ID (Tag, Number));
 

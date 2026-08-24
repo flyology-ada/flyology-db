@@ -185,6 +185,27 @@ private package Flyology.DB.Testing is
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
       Result        : out Outcome_Code);
+   procedure Build_Compaction_Checkpoint
+     (Item             : in out Database;
+      Runs             : Checkpoint_Run_Identity_Array;
+      Manifest_ID      : Identifier;
+      Transition_ID    : Identifier;
+      Family_ID        : Column_Family_ID;
+      Run_Total        : out Natural;
+      Identity_Total   : out Natural;
+      Replay_Boundary  : out Sequence_Number;
+      Family_Run_Total : out Natural;
+      Family_Run_ID    : out Identifier;
+      Family_Entries   : out Natural;
+      Result           : out Outcome_Code);
+   procedure Publish_Compaction
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code);
+   function Receipt_Replaces_Current_Runs (Item : Flush_Receipt) return Boolean;
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB.Testing;

@@ -4640,6 +4640,7 @@ package body Flyology.DB is
       Run_ID       : Identifier;
       Value        : out LSM_Runtime.SST_Access;
       Result       : out Outcome_Code;
+      Complete_View : Boolean := False;
       Allow_Fenced : Boolean := False)
    is
       References      : Snapshot_Entry_Reference_Array_Access := null;
@@ -4655,7 +4656,11 @@ package body Flyology.DB is
       Payload_Cursor  : Positive := 1;
       Lowest          : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
       Highest         : Interfaces.Unsigned_64 := 0;
-      Delta_Mode      : constant Boolean := State.LSM_Authority.Replay_Boundary /= 0;
+      --  The current replay boundary selects suffix-delta Flush only when the
+      --  caller has not explicitly requested a complete replacement view.
+      --  This is algorithm mode, not a size threshold or automatic policy.
+      Delta_Mode      : constant Boolean :=
+        State.LSM_Authority.Replay_Boundary /= 0 and then not Complete_View;
    begin
       Value := null;
       if Is_Zero (Run_ID) or else not State.LSM_Authority.Enabled then
@@ -4949,6 +4954,7 @@ package body Flyology.DB is
       Transition_ID : Identifier;
       Plan          : out Checkpoint_Plan;
       Result        : out Outcome_Code;
+      Replace_Current_Runs : Boolean := False;
       Allow_Fenced  : Boolean := False)
    is
       Base           : Manifests.Manifest;
@@ -5042,7 +5048,7 @@ package body Flyology.DB is
          Result := Corrupt;
          return;
       else
-         Existing_Run_Total := Prior.Run_Total;
+         Existing_Run_Total := (if Replace_Current_Runs then 0 else Prior.Run_Total);
       end if;
 
       if Runs'Length /= Natural (Base.Family_Total) then
@@ -5084,7 +5090,14 @@ package body Flyology.DB is
             Family_ID : constant Column_Family_ID := Column_Family_ID (Base.Families (Family_Index).ID);
             Run_ID    : constant Identifier := Run_For (Family_ID);
          begin
-            Build_Family_SST (State, Family_ID, Run_ID, Plan.SSTs (Family_Index), Result, Allow_Fenced);
+            Build_Family_SST
+              (State,
+               Family_ID,
+               Run_ID,
+               Plan.SSTs (Family_Index),
+               Result,
+               Complete_View => Replace_Current_Runs,
+               Allow_Fenced  => Allow_Fenced);
             if Result = Success then
                New_Run_Total := New_Run_Total + 1;
             elsif Result = Not_Found then
@@ -5144,6 +5157,7 @@ package body Flyology.DB is
             Authority_Found : Boolean := False;
             Old_First       : Natural := 0;
             Old_Total       : Natural := 0;
+            Retained_Total  : Natural := 0;
             Family_Total    : Natural;
          begin
             for Family of State.LSM_Authority.Families loop
@@ -5164,14 +5178,15 @@ package body Flyology.DB is
                   exit;
                end if;
             end loop;
+            Retained_Total := (if Replace_Current_Runs then 0 else Old_Total);
             if not Authority_Found then
                Release_Checkpoint_Plan (Plan);
                Result := Corrupt;
                return;
             elsif Plan.SSTs (Family_Index) /= null
               and then
-                (Old_Total = Natural'Last
-                 or else Interfaces.Unsigned_64 (Old_Total) + 1
+                (Retained_Total = Natural'Last
+                 or else Interfaces.Unsigned_64 (Retained_Total) + 1
                            > Interfaces.Unsigned_64
                                (Plan.Manifest.Families (Family_Index).Maximum_L0_Runs))
             then
@@ -5179,17 +5194,26 @@ package body Flyology.DB is
                Result := Capacity_Exceeded;
                return;
             end if;
-            Family_Total := Old_Total + (if Plan.SSTs (Family_Index) = null then 0 else 1);
+            Family_Total := Retained_Total + (if Plan.SSTs (Family_Index) = null then 0 else 1);
             Plan.Manifest.Families (Family_Index).First_Run :=
               (if Family_Total = 0 then 0 else Run_Index + 1);
             Plan.Manifest.Families (Family_Index).Run_Total := Family_Total;
-            if Old_Total > 0 then
-               for Offset in Natural range 0 .. Old_Total - 1 loop
+            if Retained_Total > 0 then
+               for Offset in Natural range 0 .. Retained_Total - 1 loop
                   Run_Index := Run_Index + 1;
                   Plan.Manifest.Runs (Run_Index) := Prior.Runs (Old_First + Offset);
                end loop;
             end if;
             if Plan.SSTs (Family_Index) /= null then
+               if Replace_Current_Runs and then Prior /= null then
+                  for Existing in Prior.Runs'Range loop
+                     if Prior.Runs (Existing).Run_ID = Plan.SSTs (Family_Index).Run_ID then
+                        Release_Checkpoint_Plan (Plan);
+                        Result := Invalid_State;
+                        return;
+                     end if;
+                  end loop;
+               end if;
                for Existing in Positive range 1 .. Run_Index loop
                   if Plan.Manifest.Runs (Existing).Run_ID = Plan.SSTs (Family_Index).Run_ID then
                      Release_Checkpoint_Plan (Plan);
@@ -5197,7 +5221,8 @@ package body Flyology.DB is
                      return;
                   end if;
                end loop;
-               if Old_Total > 0
+               if not Replace_Current_Runs
+                 and then Old_Total > 0
                  and then Plan.Manifest.Runs (Run_Index).Highest_Sequence
                            >= Plan.SSTs (Family_Index).Lowest_Sequence
                then
@@ -10224,7 +10249,8 @@ package body Flyology.DB is
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
       Receipt       : out Flush_Receipt;
-      Result        : out Outcome_Code)
+      Result        : out Outcome_Code;
+      Replace_Current_Runs : Boolean := False)
    is
       Head       : Head_Snapshot;
       Generation : Generation_Value;
@@ -10241,6 +10267,7 @@ package body Flyology.DB is
          Result := (if Uncertain then Outcome_Unknown elsif Fenced then Stale_Writer else Invalid_State);
          return;
       end if;
+      Receipt.Replaces_Current_Runs := Replace_Current_Runs;
       Receipt.Run_Total := Runs'Length;
       for Offset in Natural range 0 .. Runs'Length - 1 loop
          Receipt.Runs (Offset + 1) := Runs (Runs'First + Offset);
@@ -11461,18 +11488,20 @@ package body Flyology.DB is
         and then Attempted = Receipt.Attempted_Head;
    end Plan_Matches_Receipt;
 
-   procedure Flush
+   procedure Publish_Checkpoint
      (Item          : in out Database;
       Runs          : Checkpoint_Run_Identity_Array;
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
+      Replace_Current_Runs : Boolean;
       Timeout       : Duration;
       Token         : access Flyology.Cancellation.Token := null;
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code)
    is
-      --  The sole deadline is derived from caller policy; Flush introduces no
-      --  retry, per-object, or local-activation timeout.
+      --  The sole deadline is derived from caller policy; the shared
+      --  checkpoint publisher introduces no retry, per-object, or
+      --  local-activation timeout for either additive or replacement plans.
       Deadline   : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       State      : Engine_State_Access;
       Plan       : Checkpoint_Plan;
@@ -11487,10 +11516,24 @@ package body Flyology.DB is
       Guard.Life := Item.Life'Unchecked_Access;
       Guard.Active := True;
       Item.Life.Await_Quiescent;
-      Build_Checkpoint_Plan (State, Runs, Manifest_ID, Transition_ID, Plan, Result);
+      Build_Checkpoint_Plan
+        (State,
+         Runs,
+         Manifest_ID,
+         Transition_ID,
+         Plan,
+         Result,
+         Replace_Current_Runs => Replace_Current_Runs);
       if Result = Success then
          Initialize_Flush_Receipt
-           (State, Plan, Runs, Manifest_ID, Transition_ID, Receipt, Result);
+           (State,
+            Plan,
+            Runs,
+            Manifest_ID,
+            Transition_ID,
+            Receipt,
+            Result,
+            Replace_Current_Runs => Replace_Current_Runs);
          if Result = Success then
             Publish_Flush_Plan (Item, State, Plan, Deadline, Token, Receipt, Guard, Result);
          end if;
@@ -11520,6 +11563,28 @@ package body Flyology.DB is
             Result := Local_Activation_Failed;
          end if;
          Receipt.Current_Outcome := Result;
+   end Publish_Checkpoint;
+
+   procedure Flush
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      Publish_Checkpoint
+        (Item,
+         Runs,
+         Manifest_ID,
+         Transition_ID,
+         Replace_Current_Runs => False,
+         Timeout              => Timeout,
+         Token                => Token,
+         Receipt              => Receipt,
+         Result               => Result);
    end Flush;
 
    procedure Activate_Recovered_Flush
@@ -11644,6 +11709,7 @@ package body Flyology.DB is
             Receipt.Attempted_Head.Transition_ID,
             Plan,
             Result,
+            Replace_Current_Runs => Receipt.Replaces_Current_Runs,
             Allow_Fenced => True);
          if Result = Success and then not Plan_Matches_Receipt (Plan, Current_Head, Receipt) then
             Result := Invalid_State;
@@ -12619,6 +12685,110 @@ package body Flyology.DB is
       --  publication semantics or timing policy.
       Flush (Item, Runs, Manifest_ID, Transition_ID, Duration'Last, Receipt => Receipt, Result => Result);
    end Publish_Test_First_Checkpoint;
+
+   procedure Build_Test_Compaction_Checkpoint
+     (Item             : in out Database;
+      Runs             : Checkpoint_Run_Identity_Array;
+      Manifest_ID      : Identifier;
+      Transition_ID    : Identifier;
+      Family_ID        : Column_Family_ID;
+      Run_Total        : out Natural;
+      Identity_Total   : out Natural;
+      Replay_Boundary  : out Sequence_Number;
+      Family_Run_Total : out Natural;
+      Family_Run_ID    : out Identifier;
+      Family_Entries   : out Natural;
+      Result           : out Outcome_Code)
+   is
+      State         : Engine_State_Access;
+      Plan          : Checkpoint_Plan;
+      Image         : LSM_Runtime.Image_Access := null;
+      Encode_Result : LSM_Runtime.Encode_Status;
+      Guard         : Checkpoint_Guard;
+      pragma Unreferenced (Guard);
+   begin
+      Run_Total := 0;
+      Identity_Total := 0;
+      Replay_Boundary := 0;
+      Family_Run_Total := 0;
+      Family_Run_ID := Zero_Identifier;
+      Family_Entries := 0;
+      Item.Life.Begin_Checkpoint (State, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Item.Life.Await_Quiescent;
+      Build_Checkpoint_Plan
+        (State,
+         Runs,
+         Manifest_ID,
+         Transition_ID,
+         Plan,
+         Result,
+         Replace_Current_Runs => True);
+      if Result = Success then
+         LSM_Runtime.Encode_Checkpoint_Manifest (Plan.Manifest.all, Image, Encode_Result);
+         if Encode_Result /= LSM_Runtime.Encoded then
+            Result := Corrupt;
+         else
+            Run_Total := Plan.Manifest.Run_Total;
+            Identity_Total := Plan.Manifest.Identity_Total;
+            Replay_Boundary := Sequence_Number (Plan.Manifest.Replay_Boundary);
+            for Index in Plan.Manifest.Families'Range loop
+               if Plan.Manifest.Base.Families (Index).ID = Interfaces.Unsigned_32 (Family_ID) then
+                  Family_Run_Total := Plan.Manifest.Families (Index).Run_Total;
+                  if Family_Run_Total > 0 then
+                     declare
+                        Descriptor : LSM_Runtime.Run_Descriptor renames
+                          Plan.Manifest.Runs (Plan.Manifest.Families (Index).First_Run);
+                     begin
+                        Family_Run_ID := To_Identifier (Descriptor.Run_ID);
+                        Family_Entries := Natural (Descriptor.Entry_Total);
+                     end;
+                  end if;
+                  exit;
+               end if;
+            end loop;
+         end if;
+      end if;
+      LSM_Runtime.Release (Image);
+      Release_Checkpoint_Plan (Plan);
+      Item.Life.Finish_Checkpoint;
+      Guard.Active := False;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Image);
+         Release_Checkpoint_Plan (Plan);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Image);
+         Release_Checkpoint_Plan (Plan);
+         raise;
+   end Build_Test_Compaction_Checkpoint;
+
+   procedure Publish_Test_Compaction
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      --  This private test entry drives the production synchronous publisher
+      --  with explicit replacement mode. Duration'Last only removes harness
+      --  timing from the witness; it is not a production timeout default.
+      Publish_Checkpoint
+        (Item,
+         Runs,
+         Manifest_ID,
+         Transition_ID,
+         Replace_Current_Runs => True,
+         Timeout              => Duration'Last,
+         Receipt              => Receipt,
+         Result               => Result);
+   end Publish_Test_Compaction;
 
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code)

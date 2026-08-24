@@ -1441,8 +1441,9 @@ package body Flyology.DB.Engine_Tests is
       --  IDs 227..229 belong to the pre-Flush survival/history-boundary and
       --  post-reopen fixed-snapshot witnesses. IDs 230..233 identify the
       --  second suffix-delta runs, manifest, and HEAD transition;
-      --  ID 234 is its fixed-snapshot reader. They are operation fixtures,
-      --  not defaults or format policy.
+      --  ID 234 is its fixed-snapshot reader. IDs 235/236 are complete
+      --  compaction outputs and 237/238 its manifest/HEAD transition. They are
+      --  operation fixtures, not defaults, triggers, or format policy.
       Checkpoint_Manifest_ID                     : constant Identifier := ID (225);
       Checkpoint_Transition_ID                   : constant Identifier := ID (226);
       Survivor_Transaction_ID                    : constant Transaction_Identifier := TX_ID (227);
@@ -1453,6 +1454,10 @@ package body Flyology.DB.Engine_Tests is
       Second_Checkpoint_Manifest_ID              : constant Identifier := ID (232);
       Second_Checkpoint_Transition_ID            : constant Identifier := ID (233);
       Second_Snapshot_Reader_ID                  : constant Transaction_Identifier := TX_ID (234);
+      Compaction_Run_Map                         : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (7, ID (235)), Configure_Checkpoint_Run (2, ID (236))];
+      Compaction_Manifest_ID                     : constant Identifier := ID (237);
+      Compaction_Transition_ID                   : constant Identifier := ID (238);
 
       procedure Expect_Live_LSM_Authority
         (Target : in out Database; Expected_Replay : Sequence_Number; Context_Text : String)
@@ -1926,10 +1931,140 @@ package body Flyology.DB.Engine_Tests is
       Rollback (Snapshot_Reader, Result);
       Expect (Result, Success, "replacement-checkpoint snapshot reader rollback failed");
 
+      declare
+         Compaction_Info                                               : Flush_Receipt;
+         Planned_Runs, Planned_Identities, Family_Runs, Family_Entries : Natural;
+         Planned_Replay                                                : Sequence_Number;
+         Planned_Run_ID                                                : Identifier;
+         Before_Batches, Before_Runs, Before_Manifests, Before_Heads   : Natural;
+         After_Batches, After_Runs, After_Manifests, After_Heads       : Natural;
+         --  These are every allocation class used specifically while a
+         --  replacement plan builds exact references, SSTs, and its manifest.
+         --  The set is test coverage geometry, not a resource ceiling.
+         Compaction_Allocation_Points :
+           constant array (Positive range 1 .. 3) of Testing.Allocation_Fault_Point :=
+             [Testing.Checkpoint_References, Testing.Checkpoint_SST, Testing.Checkpoint_Manifest];
+
+         procedure Inspect_Family
+           (Family_ID        : Column_Family_ID;
+            Expected_Run_ID  : Identifier;
+            Expected_Entries : Natural;
+            Context_Text     : String) is
+         begin
+            Testing.Build_Compaction_Checkpoint
+              (Item,
+               Compaction_Run_Map,
+               Compaction_Manifest_ID,
+               Compaction_Transition_ID,
+               Family_ID,
+               Planned_Runs,
+               Planned_Identities,
+               Planned_Replay,
+               Family_Runs,
+               Planned_Run_ID,
+               Family_Entries,
+               Result);
+            if Result /= Success
+              or else Planned_Runs /= 2
+              or else Planned_Identities /= 2
+              or else Planned_Replay /= Expected_Live_Sequence
+              or else Family_Runs /= 1
+              or else Planned_Run_ID /= Expected_Run_ID
+              or else Family_Entries /= Expected_Entries
+            then
+               raise Program_Error with Context_Text & " compaction plan was not exact";
+            end if;
+         end Inspect_Family;
+      begin
+         Testing.Publication_Counts
+           (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+         for Point of Compaction_Allocation_Points loop
+            Testing.Fail_Next_Allocation (Point);
+            Testing.Build_Compaction_Checkpoint
+              (Item,
+               Compaction_Run_Map,
+               Compaction_Manifest_ID,
+               Compaction_Transition_ID,
+               2,
+               Planned_Runs,
+               Planned_Identities,
+               Planned_Replay,
+               Family_Runs,
+               Planned_Run_ID,
+               Family_Entries,
+               Result);
+            Expect (Result, Capacity_Exceeded, "compaction allocation failure was not typed capacity");
+         end loop;
+         Testing.Build_Compaction_Checkpoint
+           (Item,
+            Second_Checkpoint_Run_Map,
+            Compaction_Manifest_ID,
+            Compaction_Transition_ID,
+            2,
+            Planned_Runs,
+            Planned_Identities,
+            Planned_Replay,
+            Family_Runs,
+            Planned_Run_ID,
+            Family_Entries,
+            Result);
+         Expect (Result, Invalid_State, "compaction reused a current immutable run identity");
+         Testing.Publication_Counts
+           (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Runs /= Before_Runs
+           or else After_Manifests /= Before_Manifests
+           or else After_Heads /= Before_Heads
+         then
+            raise Program_Error with "compaction planning failure published an object";
+         end if;
+
+         Inspect_Family (2, ID (236), 1, "family 2");
+         Inspect_Family (7, ID (235), 2, "family 7");
+         Testing.Publish_Compaction
+           (Item,
+            Compaction_Run_Map,
+            Compaction_Manifest_ID,
+            Compaction_Transition_ID,
+            Compaction_Info,
+            Result);
+         Expect (Result, Success, "complete L0 compaction publication failed");
+         if not Testing.Receipt_Replaces_Current_Runs (Compaction_Info)
+           or else Flush_Receipt_Manifest_ID (Compaction_Info) /= Compaction_Manifest_ID
+           or else Flush_Receipt_Transition_ID (Compaction_Info) /= Compaction_Transition_ID
+           or else Flush_Receipt_Replay_Boundary (Compaction_Info) /= Expected_Live_Sequence
+           or else Flush_Receipt_Run_Total (Compaction_Info) /= Compaction_Run_Map'Length
+         then
+            raise Program_Error with "compaction receipt lost exact replacement authority";
+         end if;
+         Testing.Publication_Counts
+           (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Runs /= Before_Runs + 2
+           or else After_Manifests /= Before_Manifests + 1
+           or else After_Heads /= Before_Heads + 1
+         then
+            raise Program_Error with "compaction publication order/count changed";
+         end if;
+      end;
+      Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "compaction activation");
+      Expect_Live_Entry_Sequence (Item, "compaction activation");
+
       Close (Item, Result);
+      --  Test-only removal of depublicized runs proves they are not current
+      --  recovery authority. Production compaction does not delete them and
+      --  this witness establishes no reachability or retention policy.
+      for Run of Checkpoint_Run_Map loop
+         Testing.Remove_Run (Context, Run.Run_ID, Result);
+         Expect (Result, Success, "first-generation retired run removal failed");
+      end loop;
+      for Run of Second_Checkpoint_Run_Map loop
+         Testing.Remove_Run (Context, Run.Run_ID, Result);
+         Expect (Result, Success, "second-generation retired run removal failed");
+      end loop;
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
-      Expect (Result, Success, "family-handle database reopen failed");
-      Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "second checkpoint reopen");
+      Expect (Result, Success, "compacted database reopen without retired runs failed");
+      Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "compaction reopen");
       Expect_Live_Entry_Sequence (Item, "cacheless reopen");
       Begin_Transaction (Item, TX_ID (205), Txn, Result);
       Get (Item, Txn, Stale_Family, To_Key ([16#00#, 16#FF#]), Data, Result);
@@ -2514,9 +2649,10 @@ package body Flyology.DB.Engine_Tests is
    end Test_L0_Accumulation_Capacity;
 
    procedure Test_Flush_Certainty (Backend : not null access Backends.Backend'Class; Prefix : String) is
-      --  Six disjoint 100-ID fixture domains cover immutable-object
+      --  Seven disjoint 100-ID fixture domains cover immutable-object
       --  uncertainty, HEAD uncertainty, activation failure, activation
-      --  allocation failure, cancellation, and rival publication. Within each domain, +1 is the
+      --  allocation failure, cancellation, rival publication, and compaction
+      --  object reconciliation. Within each domain, +1 is the
       --  root transition, +2 the committed transaction, +10 .. +17 the exact
       --  family run map, +20/+21 the Flush manifest/transition, and +30 the
       --  post-result usability probe; the HEAD-unknown domain also uses +31
@@ -2532,6 +2668,7 @@ package body Flyology.DB.Engine_Tests is
       Activation_Alloc_Base : constant Natural := 24_800;
       Cancellation_Base     : constant Natural := 24_900;
       Rival_Base            : constant Natural := 25_000;
+      Compaction_Base       : constant Natural := 25_100;
       --  Only the HEAD-unknown branch publishes two generations for family 1.
       --  Its persisted two-run authority admits that exact certainty witness;
       --  the remaining family policies and database-wide ceiling stay equal
@@ -2628,6 +2765,74 @@ package body Flyology.DB.Engine_Tests is
          Expect_Usable (Item, Run_Unknown_Base, "resolved immutable-object uncertainty");
          Close (Item, Result);
          Expect (Result, Success, "resolved immutable-unknown database did not close");
+      end;
+
+      declare
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Probe       : Database;
+         Txn         : Transaction;
+         Family      : Column_Family;
+         Data        : Value;
+         Runs        : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Replacement : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Receipt     : Flush_Receipt;
+         Result      : Outcome_Code;
+      begin
+         Prepare (Context, Item, "compaction-unknown", Compaction_Base, Runs, Result);
+         Expect (Result, Success, "compaction-unknown setup failed");
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Compaction_Base + 20),
+            Numbered_ID (Compaction_Base + 21),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Success, "compaction-unknown first checkpoint failed");
+         for Offset in Replacement'Range loop
+            Replacement (Offset) :=
+              Configure_Checkpoint_Run
+                (Column_Family_ID (Offset - Replacement'First + 1),
+                 Numbered_ID (Compaction_Base + 40 + Offset - Replacement'First));
+         end loop;
+         Testing.Arm (Context, After_Run_Put, Unknown_After_Entry);
+         Testing.Arm (Context, Before_Get, Definite_Failure);
+         Testing.Publish_Compaction
+           (Item,
+            Replacement,
+            Numbered_ID (Compaction_Base + 50),
+            Numbered_ID (Compaction_Base + 51),
+            Receipt,
+            Result);
+         Expect (Result, Outcome_Unknown, "lost compaction-output response was falsely classified");
+         if not Testing.Receipt_Replaces_Current_Runs (Receipt) then
+            raise Program_Error with "unknown compaction receipt lost replacement mode";
+         end if;
+         Resolve_Flush (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "same-identity compaction output reconciliation failed");
+         Close (Item, Result);
+         Expect (Result, Success, "resolved compaction database did not close");
+         Testing.Remove_Run (Context, Runs (Runs'First).Run_ID, Result);
+         Expect (Result, Success, "retired pre-compaction run removal failed");
+         Open
+           (Probe,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Compaction_Base)),
+            Test_Operation_Timeout,
+            Result => Result);
+         Expect (Result, Success, "resolved compaction depended on its retired run");
+         Open_Column_Family (Probe, 1, Family, Result);
+         Expect (Result, Success, "resolved compaction family open failed");
+         Begin_Transaction (Probe, Numbered_TX_ID (Compaction_Base + 60), Txn, Result);
+         Expect (Result, Success, "resolved compaction read transaction failed");
+         Get (Probe, Txn, Family, To_Key ([1]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([2]) then
+            raise Program_Error with "resolved compaction changed its complete live value";
+         end if;
+         Rollback (Txn, Result);
+         Close (Probe, Result);
+         Expect (Result, Success, "resolved compaction probe did not close");
       end;
 
       declare

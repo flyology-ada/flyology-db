@@ -1,5 +1,41 @@
 # Review record
 
+## Accepted private operational L0-compaction spine
+
+- Parent: formal L0-compaction freeze commit `2b47dcc`.
+- Scope and compatibility: implement complete current-run replacement behind the private testing surface without a
+  new public declaration, persisted field, default, trigger, scheduling rule, or physical reclamation. Additive
+  `Flush` remains unchanged. Replacement emits one complete live-state run per nonempty family and a successor
+  checkpoint manifest naming only those fresh runs at the captured replay boundary.
+- Authority, bounds, and effects: database and family run admission derives from authenticated persisted limits;
+  exact snapshot, SST, manifest, and activation-base allocations are lazy and checked before provider entry. A
+  current immutable run identity is rejected. Allocation or identity failure publishes no run, manifest, or HEAD.
+  Superseded objects remain stored; test-only removal proves depublication and grants no deletion authority.
+- Certainty and ownership: the shared synchronous checkpoint publisher preserves immutable-object confirmation before
+  conditional HEAD admission and retains the existing receipt/result mapping. A private receipt bit records only
+  whether exact `Objects_Unknown` reconstruction is additive or replacement, preventing reconciliation from changing
+  bytes or authority. Accepted response loss remains `Outcome_Unknown`; resolution uses the same identities and
+  performs no retry. The exclusive checkpoint gate drains active work, and activation transfers the prepared graph
+  before the replaced engine is joined and released.
+- Verification: `./tests/scripts/test.sh` passes all maintained builds, repository checks, memory/files engine cases,
+  authenticated client, filesystem crash/recovery, 32-case pinned adapter suite, and TidesDB 4/4 corpus. New cases
+  cover all replacement allocation classes, current-ID rejection, exact full-view entry counts, tombstone removal,
+  publication order, live activation, retired-run removal, cacheless reopen, and lost immutable-output response
+  reconciliation. GNATprove proves 1,084/1,084 checks. The combined TLA gate preserves every prior lane and reports
+  L0 compaction at 15 states/depth 10 and 26/26 TLAPS obligations with its witness and negative probe. Repository and
+  110-column checks pass; `gnatformat` is unavailable in the installed Alire environment.
+- Constants audit: the broad added-value inventory reduces to a private Boolean algorithm mode and isolated test
+  identities/allocation-site geometry. Adjacent comments record their runtime/test classification and compatibility
+  impact. All capacities and extents remain derived from persisted database/per-family authority; no new timeout,
+  retry count, byte ceiling, format tag, public constant, or default is introduced.
+- Findings cycle: the first independent sweep found a P1 documentation mismatch that still described every
+  operational compaction component as pending. README, milestone, architecture, proof-status, and review claims now
+  distinguish the private planner/publisher from the still-pending public synchronous/composable surface, automatic
+  policy, retention, and GC. The unnecessary-surface pass also removed a speculative replacement-mode field from the
+  composable driver because no authorized constructor can select it yet. The repeated API, certainty, crash safety,
+  concurrency, ownership, bounds, formats, constants, tests, proof, documentation, and unnecessary-surface sweep
+  finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted formal L0-compaction candidate
 
 - Parent: operational additive-L0 commit `236fd1c`.

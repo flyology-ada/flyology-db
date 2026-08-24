@@ -242,7 +242,9 @@ refinement theorem to the operational Ada implementation is claimed.
   arbitrary-set, unbounded-cycle kernel proves 26/26 strict TLAPS obligations for stored/confirmed ordering,
   confirmed current authority, fresh/current/retired separation, exact checkpoint/suffix authority, recovery, and
   disposable local state. It does not prove concrete merge, snapshot retention sufficiency, physical reclamation,
-  codecs, capacity arithmetic, provider behavior, progress, a public trigger, operational Ada, or refinement.
+  codecs, capacity arithmetic, provider behavior, progress, a public trigger, or refinement. The private operational
+  Ada planner/publisher is qualified separately by deterministic replacement, allocation, certainty, depublication,
+  and cacheless-recovery tests.
 - The snapshot-isolation write/write model exhausts 336 states at depth 10. It checks fixed Begin sequences,
   per-written-key post-snapshot rejection, disjoint concurrent commits, checkpoint advancement of the retained exact
   history boundary, and conservative rejection below that boundary. Three independently validated witnesses cover

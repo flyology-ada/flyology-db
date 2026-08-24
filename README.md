@@ -18,10 +18,11 @@ remain explicit, and cacheless recovery merges all named runs before replaying o
 suffix. Live activation replaces the coordinator without invalidating family handles or active transactions. An
 additive caller-owned `Flush_Operation` drives that same checkpoint
 protocol directly through a bounded completion set, moving one caller-sized unique-buffer token until typed `Finish`;
-it creates no helper task and preserves the synchronous receipt and certainty mapping. Remote-provider qualification,
-operational compaction, run pruning, and dynamic family changes remain separate review units. A formal compaction
-boundary now freezes complete confirmed-output replacement while retaining superseded immutable objects; it adds no
-automatic trigger or physical-GC policy. Transactions now
+it creates no helper task and preserves the synchronous receipt and certainty mapping. The private operational
+compaction spine now builds complete live-state runs and publishes a successor manifest that names only those fresh
+outputs through the same receipt and certainty machinery. It retains superseded immutable objects and adds no public
+trigger, composable overload, automatic scheduling, or physical-GC policy. Remote-provider qualification, the public
+compaction surface, run pruning, and dynamic family changes remain separate review units. Transactions now
 capture a Begin-time sequence
 and reject exact written keys changed by later committed history. Fixed-snapshot point reads are operational;
 explicit serializable transactions retain and validate exact successful and absent point reads plus caller-observed
