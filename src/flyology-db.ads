@@ -483,12 +483,11 @@ package Flyology.DB is
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
        Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
-   --  Publish a complete immutable checkpoint at the current committed
-   --  boundary. A later call replaces current checkpoint authority with a new
-   --  whole-state snapshot; prior immutable objects remain stored but are not
-   --  current visibility. Runs must map every persisted family to one
-   --  caller-stable run identity; empty families consume no run object or run
-   --  identity. Every
+   --  Publish an immutable checkpoint at the current committed boundary. The
+   --  first call writes complete nonempty-family runs; each later call appends
+   --  one suffix-delta run for every affected family and retains prior current
+   --  runs. Runs must map every persisted family to one caller-stable identity;
+   --  empty or unchanged families consume no new run object or identity. Every
    --  identity that names an attempted object or HEAD becomes unavailable for
    --  reuse once its publication begins. One absolute monotonic deadline
    --  covers planning, publication, reconciliation, and local activation.

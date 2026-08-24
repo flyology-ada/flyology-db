@@ -7,10 +7,9 @@ publish an empty manifest-v3 root carrying the explicit LSM policy. Cacheless Op
 first checkpoint, reconstructs its exact state and
 identity partition, and replays only later batches. The internal checkpoint planner assembles an exact successor and
 its family SSTs. Public synchronous `Flush`, caller-composable `Flush_Operation`, and `Resolve_Flush` publish and
-reconcile checkpoints through the same self-contained receipt and certainty rules. The first operational unit
-publishes one checkpoint. The successive-replacement unit reuses that API to publish later complete snapshots before
-multi-run L0 accumulation and compaction are introduced. Existing manifest-v1 databases remain readable for log-only
-operation.
+reconcile checkpoints through the same self-contained receipt and certainty rules. The first call publishes complete
+family snapshots; later calls append suffix-delta runs and retain the current descriptor set. Existing manifest-v1
+databases remain readable for log-only operation. Compaction and run pruning remain separate units.
 
 ## Staged compatibility decision
 
@@ -145,24 +144,10 @@ Later transaction commits preserve the published manifest ID. The checkpoint doe
 only replaces the authoritative representation of the committed prefix. No run or manifest is visible before the
 successful HEAD transition, and unreachable complete objects remain orphans.
 
-## Successive whole-state replacement
+## Additive L0 accumulation
 
-A later `Flush` may replace an existing checkpoint with a new complete whole-state checkpoint. It does not append a
-second current L0 run. For each nonempty family, the planner writes one newly identified immutable run containing the
-complete live family state at the new replay boundary; empty families again name no run. The successor manifest names
-only those new runs and links immutably to the prior manifest. Prior manifests and runs remain immutable and stored,
-but are not current read authority after the HEAD transition. Reclamation remains a later garbage-collection unit.
-
-This stage is intentionally a checkpoint replacement, not compaction: it neither merges a current multi-run set nor
-claims level policy. It removes the one-checkpoint operational restriction and exercises repeated publication,
-activation, cacheless recovery, and history backpressure using the existing format. True incremental L0 accumulation
-will later preserve multiple current run descriptors and tombstones and will use the already persisted per-family and
-database run limits.
-
-## Frozen additive L0 algorithm
-
-The next operational unit is now frozen before implementation. A Flush snapshots only the committed batch suffix
-strictly after the current replay boundary. For each family with suffix mutations it emits one canonical immutable
+The operational algorithm follows the previously frozen model. A later Flush snapshots only the committed batch
+suffix strictly after the current replay boundary. For each family with suffix mutations it emits one canonical immutable
 run whose sequence range is strictly newer than that family's last current run. Within the suffix, only the newest
 mutation for an exact key is required after the replay boundary advances; a Delete remains an explicit tombstone and
 is never converted to absence in the run. A family without suffix mutations consumes no run object or mapped run ID.
@@ -184,10 +169,14 @@ publication certainty do not change. A family uses its mapped ID only when it ha
 existing empty-family convention. An empty suffix may publish a successor manifest with the same run set and no run
 objects; this preserves established Flush completion semantics without inventing an automatic-flush threshold.
 
+The Ada planner, synchronous wait, and composable state machine all use this algorithm. Local activation retains an
+exact full live base without rereading storage. Cacheless activation allocates from authenticated run extents, merges
+every run oldest-to-newest, trims scratch to the exact live base, and installs it under the existing lifecycle gate.
+
 `L0Accumulation.tla` checks the concrete two-run tombstone merge, independent persisted capacity rejection, lost
 accepted HEAD response, and exact recovery. `L0AccumulationSafetyProof.tla` proves the arbitrary-set, unbounded-cycle
-publication kernel. These models freeze the algorithm; operational Ada support remains a separate implementation and
-qualification unit, and no refinement theorem is claimed.
+publication kernel. The models freeze the algorithm and qualify its abstract publication invariants; no refinement
+theorem from TLA+ to the Ada implementation is claimed.
 
 The current manifest's `Registry_Revision` is also its exact one-based immutable predecessor-chain depth: roots are
 revision one and every successor increments once under predecessor validation. A new checkpoint requires
@@ -195,8 +184,8 @@ revision one and every successor increments once under predecessor validation. A
 publication. This derives the next available history slot from persisted authority and introduces no flush-count
 default. Integer exhaustion likewise rejects before effects.
 
-Checkpoint replacement retains the complete admitted identity ledger through the new boundary. The newly activated
-engine reconstructs the exact live state and identity authority from the replacement runs, discards the old local
+Checkpoint publication retains the complete admitted identity ledger through the new boundary. The newly activated
+engine reconstructs the exact live state and identity authority from all named runs, discards the old local
 checkpoint images only after the lifecycle has installed and exposed the successor, and starts with an empty replay
 suffix. Existing family handles retain the engine incarnation. Active calls drain before planning, and no pointer or
 borrow into the replaced engine survives its joined finalization.
@@ -253,8 +242,7 @@ capacity arithmetic, and a refinement relation to Ada remain outside this kernel
 
 ## Non-goals
 
-This design does not implement automatic flushing, multi-run L0 accumulation, compaction, run pruning, garbage
-collection, remote-provider matrix qualification, or an LSM performance claim. Its operational scope is manifest-v3
-root creation, exact whole-checkpoint planning, certainty-preserving synchronous and composable checkpoint
-publication/reconciliation, successive complete replacement, and header-first cacheless recovery of the latest
-checkpoint plus its later batch suffix.
+This design does not implement automatic flushing, compaction, run pruning, garbage collection, remote-provider
+matrix qualification, or an LSM performance claim. Its operational scope is manifest-v3 root creation, initial
+whole-state runs, additive suffix-delta runs, certainty-preserving synchronous and composable checkpoint
+publication/reconciliation, and header-first cacheless recovery of every current run plus the later batch suffix.

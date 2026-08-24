@@ -2022,6 +2022,9 @@ package body Flyology.DB is
       Value_Offset : Natural := 0;
       Value_Length : Natural := 0;
       Sequence     : Sequence_Number := 0;
+      --  Runtime SST-v1 operation tag. Full snapshots use Put; suffix-delta
+      --  snapshots retain Delete so newer runs can mask older values.
+      Operation    : Byte := Put_Operation_Code;
    end record;
    type Snapshot_Entry_Reference_Array is array (Positive range <>) of Snapshot_Entry_Reference;
    type Snapshot_Entry_Reference_Array_Access is access Snapshot_Entry_Reference_Array;
@@ -2029,14 +2032,25 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation
        (Object => Snapshot_Entry_Reference_Array,
         Name   => Snapshot_Entry_Reference_Array_Access);
-   --  The fixed slot map mirrors the frozen 64-family registry only. Each
-   --  populated slot owns one exact dynamically allocated SST; vacant slots
-   --  carry null and introduce no run or payload allocation policy.
+   --  The fixed publication slot map mirrors the frozen 64-family registry.
+   --  Each populated slot owns only the newly produced run for that family;
+   --  prior immutable descriptors remain in the successor manifest.
    type Checkpoint_SST_Array is array (Manifests.Family_Slot) of LSM_Runtime.SST_Access;
-   type Checkpoint_Image_Array is array (Manifests.Family_Slot) of Shared_Image_Access;
+   type Recovered_SST_Array is array (Positive range <>) of LSM_Runtime.SST_Access;
+   type Recovered_SST_Array_Access is access Recovered_SST_Array;
+   procedure Free_Recovered_SSTs is new
+     Ada.Unchecked_Deallocation (Recovered_SST_Array, Recovered_SST_Array_Access);
+   type Checkpoint_Image_Array is array (Positive range <>) of Shared_Image_Access;
+   type Checkpoint_Image_Array_Access is access Checkpoint_Image_Array;
+   procedure Free_Checkpoint_Images is new
+     Ada.Unchecked_Deallocation (Checkpoint_Image_Array, Checkpoint_Image_Array_Access);
    type Checkpoint_Plan is record
       Manifest            : LSM_Runtime.Checkpoint_Manifest_Access := null;
       SSTs                : Checkpoint_SST_Array := [others => null];
+      Recovered_SSTs      : Recovered_SST_Array_Access := null;
+      Images              : Checkpoint_Image_Array_Access := null;
+      Base                : State_Entry_Array_Access := null;
+      Activation_Ready    : Boolean := False;
       Expected_Generation : Generation_Value;
    end record;
 
@@ -2157,6 +2171,41 @@ package body Flyology.DB is
       return True;
    end Same_LSM_Policy;
 
+   function Same_Runtime_Key
+     (Left_Image  : not null Shared_Image_Access;
+      Left        : Runtime_Mutation;
+      Right_Image : not null Shared_Image_Access;
+      Right       : Runtime_Mutation) return Boolean is
+   begin
+      if Left.Family /= Right.Family or else Left.Key_Length /= Right.Key_Length then
+         return False;
+      end if;
+      for Offset in Natural range 0 .. Left.Key_Length - 1 loop
+         if Flyology.Bytes.Element (Left_Image.Data, Left.Key_Offset + Offset + 1)
+           /= Flyology.Bytes.Element (Right_Image.Data, Right.Key_Offset + Offset + 1)
+         then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end Same_Runtime_Key;
+
+   function Runtime_Mutation_Sequence
+     (Batch : Runtime_Batch; Mutation_Index : Positive) return Sequence_Number is
+   begin
+      if Batch.Transactions = null then
+         return 0;
+      end if;
+      for Transaction of Batch.Transactions (1 .. Batch.Transaction_Total) loop
+         if Mutation_Index >= Transaction.First_Mutation
+           and then Mutation_Index - Transaction.First_Mutation < Transaction.Mutation_Count
+         then
+            return Transaction.Sequence;
+         end if;
+      end loop;
+      return 0;
+   end Runtime_Mutation_Sequence;
+
    protected type Coordinator
      (Entry_Capacity    : Positive;
       Seen_Capacity     : Positive;
@@ -2176,8 +2225,9 @@ package body Flyology.DB is
 
       procedure Recover_Checkpoint
         (Plan   : Checkpoint_Plan;
-         Images : Checkpoint_Image_Array;
+         Images : Checkpoint_Image_Array_Access;
          Base   : State_Entry_Array_Access;
+         Live_Count : out Natural;
          Result : out Outcome_Code);
 
       procedure Transaction_Available (Transaction_ID : Transaction_Identifier; Result : out Outcome_Code);
@@ -2280,6 +2330,13 @@ package body Flyology.DB is
         (Family     : Column_Family_ID;
          References : not null Snapshot_Entry_Reference_Array_Access;
          Result     : out Outcome_Code);
+
+      procedure Family_Delta_Snapshot
+        (Family        : Column_Family_ID;
+         References    : Snapshot_Entry_Reference_Array_Access;
+         Entry_Total   : out Natural;
+         Payload_Bytes : out Natural;
+         Result        : out Outcome_Code);
 
       procedure Checkpoint_Metadata
         (Base : out Manifests.Manifest; Identity_Total : out Natural; Result : out Outcome_Code);
@@ -3018,14 +3075,101 @@ package body Flyology.DB is
       end Recover_Batch;
 
       procedure Recover_Checkpoint
-        (Plan   : Checkpoint_Plan;
-         Images : Checkpoint_Image_Array;
-         Base   : State_Entry_Array_Access;
-         Result : out Outcome_Code)
+        (Plan       : Checkpoint_Plan;
+         Images     : Checkpoint_Image_Array_Access;
+         Base       : State_Entry_Array_Access;
+         Live_Count : out Natural;
+         Result     : out Outcome_Code)
       is
          Candidate_Count : Natural range 0 .. Entry_Capacity := 0;
          Candidate_Bytes : Interfaces.Unsigned_64 := 0;
+
+         function Valid_Slice
+           (Image : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
+         is
+            Image_Length : constant Natural := Flyology.Bytes.Length (Image.Data);
+         begin
+            return Offset <= Image_Length and then Length <= Image_Length - Offset;
+         end Valid_Slice;
+
+         function Same_Key
+           (Left : State_Entry; Right_Image : not null Shared_Image_Access;
+            Right : LSM_Runtime.SST_Entry) return Boolean
+         is
+         begin
+            if Left.Key_Length /= Right.Key_Byte_Total then
+               return False;
+            end if;
+            for Offset in Natural range 0 .. Left.Key_Length - 1 loop
+               if Flyology.Bytes.Element (Left.Image.Data, Left.Key_Offset + Offset + 1)
+                 /= Flyology.Bytes.Element (Right_Image.Data, Right.Key_Offset + Offset)
+               then
+                  return False;
+               end if;
+            end loop;
+            return True;
+         end Same_Key;
+
+         function Find_Key
+           (Family : Column_Family_ID; Image : not null Shared_Image_Access;
+            Item : LSM_Runtime.SST_Entry) return Natural
+         is
+         begin
+            for Index in Positive range 1 .. Candidate_Count loop
+               if Projected_Entries (Index).Family = Family
+                 and then Same_Key (Projected_Entries (Index), Image, Item)
+               then
+                  return Index;
+               end if;
+            end loop;
+            return 0;
+         end Find_Key;
+
+         procedure Remove_At (Index : Positive; Valid : out Boolean) is
+            Amount : constant Interfaces.Unsigned_64 :=
+              Interfaces.Unsigned_64 (Projected_Entries (Index).Key_Length)
+              + Interfaces.Unsigned_64 (Projected_Entries (Index).Value_Length);
+         begin
+            if Candidate_Bytes < Amount then
+               Valid := False;
+               return;
+            end if;
+            Candidate_Bytes := Candidate_Bytes - Amount;
+            for Position in Index .. Candidate_Count - 1 loop
+               Projected_Entries (Position) := Projected_Entries (Position + 1);
+            end loop;
+            Candidate_Count := Candidate_Count - 1;
+            Valid := True;
+         end Remove_At;
+
+         procedure Add_Put
+           (Family : Column_Family_ID; Image : not null Shared_Image_Access;
+            Item : LSM_Runtime.SST_Entry; Valid : out Boolean)
+         is
+            Amount : constant Interfaces.Unsigned_64 :=
+              Interfaces.Unsigned_64 (Item.Key_Byte_Total)
+              + Interfaces.Unsigned_64 (Item.Value_Byte_Total);
+         begin
+            if Candidate_Count = Entry_Capacity
+              or else Candidate_Bytes > Interfaces.Unsigned_64'Last - Amount
+            then
+               Valid := False;
+               return;
+            end if;
+            Candidate_Count := Candidate_Count + 1;
+            Candidate_Bytes := Candidate_Bytes + Amount;
+            Projected_Entries (Candidate_Count) :=
+              (Family       => Family,
+               Image        => Image,
+               Key_Offset   => Item.Key_Offset - 1,
+               Key_Length   => Item.Key_Byte_Total,
+               Value_Offset => Item.Value_Offset - 1,
+               Value_Length => Item.Value_Byte_Total,
+               Sequence     => Sequence_Number (Item.Sequence));
+            Valid := True;
+         end Add_Put;
       begin
+         Live_Count := 0;
          if Plan.Manifest = null
            or else Plan.Manifest.Replay_Boundary = 0
            or else Entry_Count /= 0
@@ -3037,64 +3181,164 @@ package body Flyology.DB is
             Result := Corrupt;
             return;
          end if;
-         for Family_Index in Plan.Manifest.Families'Range loop
-            declare
-               SST : LSM_Runtime.SST_Access renames Plan.SSTs (Family_Index);
-            begin
-               if (SST = null) /= (Images (Family_Index) = null) then
+         if Plan.Activation_Ready then
+            if (Base = null) /= (Images = null)
+              or else (Base /= null and then Base'Length /= Images'Length)
+              or else (Base /= null and then Base'Length > Entry_Capacity)
+            then
+               Result := Corrupt;
+               return;
+            end if;
+            if Base /= null then
+               for Index in Base'Range loop
+                  declare
+                     Item   : State_Entry renames Base (Index);
+                     Amount : constant Interfaces.Unsigned_64 :=
+                       Interfaces.Unsigned_64 (Item.Key_Length)
+                       + Interfaces.Unsigned_64 (Item.Value_Length);
+                  begin
+                     if Item.Image = null
+                       or else Images (Index) /= Item.Image
+                       or else Item.Sequence = 0
+                       or else Interfaces.Unsigned_64 (Item.Sequence) > Plan.Manifest.Replay_Boundary
+                       or else not Valid_Slice (Item.Image, Item.Key_Offset, Item.Key_Length)
+                       or else not Valid_Slice (Item.Image, Item.Value_Offset, Item.Value_Length)
+                       or else Candidate_Bytes > Interfaces.Unsigned_64'Last - Amount
+                     then
+                        Result := Corrupt;
+                        return;
+                     end if;
+                     Candidate_Count := Candidate_Count + 1;
+                     Candidate_Bytes := Candidate_Bytes + Amount;
+                     Projected_Entries (Candidate_Count) := Item;
+                  end;
+               end loop;
+            end if;
+         else
+            if (Plan.Manifest.Run_Total = 0
+                and then (Plan.Recovered_SSTs /= null or else Images /= null or else Base /= null))
+              or else
+                (Plan.Manifest.Run_Total > 0
+                 and then
+                   (Plan.Recovered_SSTs = null
+                    or else Images = null
+                    or else Base = null
+                    or else Plan.Recovered_SSTs'Length /= Plan.Manifest.Run_Total
+                    or else Images'Length /= Plan.Manifest.Run_Total))
+            then
+               Result := Corrupt;
+               return;
+            end if;
+            for Family_Index in Plan.Manifest.Families'Range loop
+               declare
+                  Family : LSM_Runtime.Family_LSM_State renames Plan.Manifest.Families (Family_Index);
+                  Family_ID : constant Column_Family_ID :=
+                    Column_Family_ID (Plan.Manifest.Base.Families (Family_Index).ID);
+               begin
+                  if Family.Run_Total > 0 then
+                     for Run_Index in
+                       Positive range Family.First_Run .. Family.First_Run + Family.Run_Total - 1
+                     loop
+                        declare
+                           SST   : LSM_Runtime.SST_Access renames Plan.Recovered_SSTs (Run_Index);
+                           Image : Shared_Image_Access renames Images (Run_Index);
+                           Valid : Boolean;
+                        begin
+                           if SST = null
+                             or else Image = null
+                             or else not LSM_Runtime.Descriptor_Matches
+                                          (SST.all,
+                                           Plan.Manifest.Base.Database_ID,
+                                           Plan.Manifest.Base.Families (Family_Index).ID,
+                                           Plan.Manifest.Runs (Run_Index))
+                             or else Flyology.Bytes.Length (Image.Data) /= SST.Payload_Byte_Total
+                           then
+                              Result := Corrupt;
+                              return;
+                           end if;
+                           for Item of SST.Entries loop
+                              if Item.Sequence = 0
+                                or else Item.Sequence > Plan.Manifest.Replay_Boundary
+                                or else Item.Operation not in
+                                  LSM_Runtime.LSM.Put_Operation | LSM_Runtime.LSM.Delete_Operation
+                                or else not Valid_Slice (Image, Item.Key_Offset - 1, Item.Key_Byte_Total)
+                                or else
+                                  (Item.Operation = LSM_Runtime.LSM.Put_Operation
+                                   and then
+                                     not Valid_Slice
+                                           (Image, Item.Value_Offset - 1, Item.Value_Byte_Total))
+                              then
+                                 Result := Corrupt;
+                                 return;
+                              end if;
+                           end loop;
+
+                           --  Delete existing keys first, then replace existing
+                           --  puts, then add absent puts. The three passes avoid
+                           --  a transient capacity failure when one full run
+                           --  removes a key before introducing another.
+                           for Item of SST.Entries loop
+                              if Item.Operation = LSM_Runtime.LSM.Delete_Operation then
+                                 declare
+                                    Existing : constant Natural := Find_Key (Family_ID, Image, Item);
+                                 begin
+                                    if Existing > 0 then
+                                       Remove_At (Existing, Valid);
+                                       if not Valid then
+                                          Result := Corrupt;
+                                          return;
+                                       end if;
+                                    end if;
+                                 end;
+                              end if;
+                           end loop;
+                           for Item of SST.Entries loop
+                              if Item.Operation = LSM_Runtime.LSM.Put_Operation then
+                                 declare
+                                    Existing : constant Natural := Find_Key (Family_ID, Image, Item);
+                                 begin
+                                    if Existing > 0 then
+                                       Remove_At (Existing, Valid);
+                                       if not Valid then
+                                          Result := Corrupt;
+                                          return;
+                                       end if;
+                                       Add_Put (Family_ID, Image, Item, Valid);
+                                       if not Valid then
+                                          Result := Corrupt;
+                                          return;
+                                       end if;
+                                    end if;
+                                 end;
+                              end if;
+                           end loop;
+                           for Item of SST.Entries loop
+                              if Item.Operation = LSM_Runtime.LSM.Put_Operation
+                                and then Find_Key (Family_ID, Image, Item) = 0
+                              then
+                                 Add_Put (Family_ID, Image, Item, Valid);
+                                 if not Valid then
+                                    Result := Corrupt;
+                                    return;
+                                 end if;
+                              end if;
+                           end loop;
+                        end;
+                     end loop;
+                  end if;
+               end;
+            end loop;
+            if Candidate_Count > 0 then
+               if Base = null or else Candidate_Count > Base'Length then
                   Result := Corrupt;
                   return;
-               elsif SST /= null then
-                  if not LSM_Runtime.Descriptor_Matches
-                           (SST.all,
-                            Plan.Manifest.Base.Database_ID,
-                            Plan.Manifest.Base.Families (Family_Index).ID,
-                            Plan.Manifest.Runs (Plan.Manifest.Families (Family_Index).First_Run))
-                    or else Flyology.Bytes.Length (Images (Family_Index).Data) /= SST.Payload_Byte_Total
-                  then
-                     Result := Corrupt;
-                     return;
-                  end if;
-                  for Index in SST.Entries'Range loop
-                     declare
-                        Item_Entry : LSM_Runtime.SST_Entry renames SST.Entries (Index);
-                        Amount     : constant Interfaces.Unsigned_64 :=
-                          Interfaces.Unsigned_64 (Item_Entry.Key_Byte_Total)
-                          + Interfaces.Unsigned_64 (Item_Entry.Value_Byte_Total);
-                     begin
-                        if Item_Entry.Operation /= LSM_Runtime.LSM.Put_Operation
-                          or else Item_Entry.Sequence > Plan.Manifest.Replay_Boundary
-                          or else Candidate_Count = Entry_Capacity
-                          or else Candidate_Bytes > Interfaces.Unsigned_64'Last - Amount
-                        then
-                           Result := Corrupt;
-                           return;
-                        end if;
-                        Candidate_Count := Candidate_Count + 1;
-                        Candidate_Bytes := Candidate_Bytes + Amount;
-                        Projected_Entries (Candidate_Count) :=
-                          (Family       => Column_Family_ID (SST.Family_ID),
-                           Image        => Images (Family_Index),
-                           Key_Offset   => Item_Entry.Key_Offset - 1,
-                           Key_Length   => Item_Entry.Key_Byte_Total,
-                           Value_Offset => Item_Entry.Value_Offset - 1,
-                           Value_Length => Item_Entry.Value_Byte_Total,
-                           Sequence     => Sequence_Number (Item_Entry.Sequence));
-                        if Base = null or else Candidate_Count > Base'Length then
-                           Result := Corrupt;
-                           return;
-                        end if;
-                        Base (Candidate_Count) := Projected_Entries (Candidate_Count);
-                     end;
-                  end loop;
                end if;
-            end;
-         end loop;
+               Base (1 .. Candidate_Count) := Projected_Entries (1 .. Candidate_Count);
+            end if;
+         end if;
          if Interfaces.Unsigned_64 (Candidate_Count)
            > Interfaces.Unsigned_64 (Current_Manifest.Limits.Maximum_Live_Entries)
            or else Candidate_Bytes > Current_Manifest.Limits.Maximum_Live_State_Bytes
-           or else (Candidate_Count = 0 and then Base /= null)
-           or else (Candidate_Count > 0 and then (Base = null or else Base'Length /= Candidate_Count))
          then
             Result := Corrupt;
             return;
@@ -3106,6 +3350,7 @@ package body Flyology.DB is
          for Index in Positive range 1 .. Reserved_Count loop
             Reserved (Index) := To_Identifier (Plan.Manifest.Identities (Index));
          end loop;
+         Live_Count := Candidate_Count;
          Result := Success;
       end Recover_Checkpoint;
 
@@ -3970,11 +4215,166 @@ package body Flyology.DB is
                   Key_Length   => Entries (Index).Key_Length,
                   Value_Offset => Entries (Index).Value_Offset,
                   Value_Length => Entries (Index).Value_Length,
-                  Sequence     => Entries (Index).Sequence);
+                  Sequence     => Entries (Index).Sequence,
+                  Operation    => Put_Operation_Code);
             end if;
          end loop;
          Result := (if Next = References'Length then Success else Invalid_State);
       end Copy_Family_Snapshot;
+
+      procedure Family_Delta_Snapshot
+        (Family        : Column_Family_ID;
+         References    : Snapshot_Entry_Reference_Array_Access;
+         Entry_Total   : out Natural;
+         Payload_Bytes : out Natural;
+         Result        : out Outcome_Code)
+      is
+         Total : Interfaces.Unsigned_64 := 0;
+         Next  : Natural := 0;
+
+         function Valid_Slice
+           (Image : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
+         is
+            Image_Length : constant Natural := Flyology.Bytes.Length (Image.Data);
+         begin
+            return Offset <= Image_Length and then Length <= Image_Length - Offset;
+         end Valid_Slice;
+
+         function Valid_Batch (Batch : Runtime_Batch) return Boolean is
+         begin
+            if Batch.Image = null
+              or else Batch.Transactions = null
+              or else Batch.Mutations = null
+              or else Batch.Transaction_Total = 0
+              or else Batch.Mutation_Total = 0
+              or else Batch.Transaction_Total > Batch.Transactions'Length
+              or else Batch.Mutation_Total > Batch.Mutations'Length
+            then
+               return False;
+            end if;
+            for Index in Positive range 1 .. Batch.Mutation_Total loop
+               declare
+                  Mutation : Runtime_Mutation renames Batch.Mutations (Index);
+               begin
+                  if Runtime_Mutation_Sequence (Batch, Index) = 0
+                    or else not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
+                    or else Mutation.Operation not in Put_Mutation | Delete_Mutation
+                    or else
+                      (Mutation.Operation = Put_Mutation
+                       and then not Valid_Slice
+                                      (Batch.Image, Mutation.Value_Offset, Mutation.Value_Length))
+                    or else (Mutation.Operation = Delete_Mutation and then Mutation.Value_Length /= 0)
+                  then
+                     return False;
+                  end if;
+               end;
+            end loop;
+            return True;
+         end Valid_Batch;
+
+         function Last_In_Suffix (Batch_Index, Mutation_Index : Positive) return Boolean is
+            Source_Batch    : Runtime_Batch renames History_Batches (Batch_Index);
+            Source_Mutation : Runtime_Mutation renames Source_Batch.Mutations (Mutation_Index);
+         begin
+            for Later_Mutation in Positive range Mutation_Index + 1 .. Source_Batch.Mutation_Total loop
+               if Same_Runtime_Key
+                    (Source_Batch.Image,
+                     Source_Mutation,
+                     Source_Batch.Image,
+                     Source_Batch.Mutations (Later_Mutation))
+               then
+                  return False;
+               end if;
+            end loop;
+            for Later_Batch_Index in Positive range Batch_Index + 1 .. History_Count loop
+               declare
+                  Later_Batch : Runtime_Batch renames History_Batches (Later_Batch_Index);
+               begin
+                  for Later_Mutation in Positive range 1 .. Later_Batch.Mutation_Total loop
+                     if Same_Runtime_Key
+                          (Source_Batch.Image,
+                           Source_Mutation,
+                           Later_Batch.Image,
+                           Later_Batch.Mutations (Later_Mutation))
+                     then
+                        return False;
+                     end if;
+                  end loop;
+               end;
+            end loop;
+            return True;
+         end Last_In_Suffix;
+      begin
+         Entry_Total := 0;
+         Payload_Bytes := 0;
+         for Batch_Index in Positive range 1 .. History_Count loop
+            if not Valid_Batch (History_Batches (Batch_Index)) then
+               Result := Corrupt;
+               return;
+            end if;
+         end loop;
+         for Batch_Index in Positive range 1 .. History_Count loop
+            declare
+               Batch : Runtime_Batch renames History_Batches (Batch_Index);
+            begin
+               for Mutation_Index in Positive range 1 .. Batch.Mutation_Total loop
+                  declare
+                     Mutation : Runtime_Mutation renames Batch.Mutations (Mutation_Index);
+                  begin
+                     if Mutation.Family = Family and then Last_In_Suffix (Batch_Index, Mutation_Index) then
+                        declare
+                           Amount : Interfaces.Unsigned_64 := Interfaces.Unsigned_64 (Mutation.Key_Length);
+                        begin
+                           if Mutation.Operation = Put_Mutation then
+                              if Amount
+                                > Interfaces.Unsigned_64'Last
+                                  - Interfaces.Unsigned_64 (Mutation.Value_Length)
+                              then
+                                 Result := Capacity_Exceeded;
+                                 return;
+                              end if;
+                              Amount := Amount + Interfaces.Unsigned_64 (Mutation.Value_Length);
+                           end if;
+                           if Total > Interfaces.Unsigned_64'Last - Amount or else Next = Natural'Last then
+                              Result := Capacity_Exceeded;
+                              return;
+                           end if;
+                           Total := Total + Amount;
+                           Next := Next + 1;
+                           if References /= null then
+                              if Next > References'Length then
+                                 Result := Invalid_State;
+                                 return;
+                              end if;
+                              References (References'First + Next - 1) :=
+                                (Image        => Batch.Image,
+                                 Key_Offset   => Mutation.Key_Offset,
+                                 Key_Length   => Mutation.Key_Length,
+                                 Value_Offset => Mutation.Value_Offset,
+                                 Value_Length => Mutation.Value_Length,
+                                 Sequence     => Runtime_Mutation_Sequence (Batch, Mutation_Index),
+                                 Operation    =>
+                                   (if Mutation.Operation = Put_Mutation
+                                    then Put_Operation_Code
+                                    else Delete_Operation_Code));
+                           end if;
+                        end;
+                     end if;
+                  end;
+               end loop;
+            end;
+         end loop;
+         if Total > Interfaces.Unsigned_64 (Natural'Last) then
+            Result := Capacity_Exceeded;
+            return;
+         elsif References /= null and then Next /= References'Length then
+            Result := Invalid_State;
+            return;
+         end if;
+         Entry_Total := Next;
+         Payload_Bytes := Natural (Total);
+         Result := (if Next = 0 then Not_Found else Success);
+      end Family_Delta_Snapshot;
 
       procedure Checkpoint_Metadata
         (Base : out Manifests.Manifest; Identity_Total : out Natural; Result : out Outcome_Code) is
@@ -4186,10 +4586,14 @@ package body Flyology.DB is
       Life              : Database_Lifecycle_Access := null;
       LSM_Authority     : Engine_LSM_Authority := No_LSM_Authority;
       Gate              : Coordinator (Entry_Capacity, Seen_Capacity, History_Capacity, Reserved_Capacity);
-      Checkpoint_Images : Checkpoint_Image_Array := [others => null];
-      --  Exact checkpoint live-entry descriptors are allocated lazily from
-      --  authenticated SST counts. They borrow Checkpoint_Images and preserve
-      --  the compacted snapshot base after newer suffix writes replace Entries.
+      Checkpoint_Images : Checkpoint_Image_Array_Access := null;
+      --  Exact current manifest owns the oldest-to-newest run descriptors used
+      --  to derive the next successor. It is released only with this engine.
+      Checkpoint_Manifest : LSM_Runtime.Checkpoint_Manifest_Access := null;
+      --  Exact checkpoint live-entry descriptors derive either from the
+      --  quiescent coordinator during local activation or authenticated SST
+      --  counts during cacheless recovery. They borrow Checkpoint_Images and
+      --  preserve the base after newer suffix writes replace Entries.
       Checkpoint_Base   : State_Entry_Array_Access := null;
       Worker            : Commit_Worker_Access := null;
    end record;
@@ -4251,6 +4655,7 @@ package body Flyology.DB is
       Payload_Cursor  : Positive := 1;
       Lowest          : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
       Highest         : Interfaces.Unsigned_64 := 0;
+      Delta_Mode      : constant Boolean := State.LSM_Authority.Replay_Boundary /= 0;
    begin
       Value := null;
       if Is_Zero (Run_ID) or else not State.LSM_Authority.Enabled then
@@ -4277,7 +4682,11 @@ package body Flyology.DB is
          Result := Stale_Writer;
          return;
       end if;
-      State.Gate.Family_Snapshot_Requirements (Family_ID, Entry_Total, Payload_Bytes, Result);
+      if Delta_Mode then
+         State.Gate.Family_Delta_Snapshot (Family_ID, null, Entry_Total, Payload_Bytes, Result);
+      else
+         State.Gate.Family_Snapshot_Requirements (Family_ID, Entry_Total, Payload_Bytes, Result);
+      end if;
       if Result /= Success then
          return;
       elsif Interfaces.Unsigned_64 (Entry_Total) > Interfaces.Unsigned_64 (Authority.Memtable_Max_Entries)
@@ -4291,7 +4700,22 @@ package body Flyology.DB is
 
       Allocation_Faults.Check (Checkpoint_Reference_Allocation);
       References := new Snapshot_Entry_Reference_Array (1 .. Entry_Total);
-      State.Gate.Copy_Family_Snapshot (Family_ID, References, Result);
+      if Delta_Mode then
+         declare
+            Copied_Entries : Natural;
+            Copied_Bytes   : Natural;
+         begin
+            State.Gate.Family_Delta_Snapshot
+              (Family_ID, References, Copied_Entries, Copied_Bytes, Result);
+            if Result = Success
+              and then (Copied_Entries /= Entry_Total or else Copied_Bytes /= Payload_Bytes)
+            then
+               Result := Invalid_State;
+            end if;
+         end;
+      else
+         State.Gate.Copy_Family_Snapshot (Family_ID, References, Result);
+      end if;
       if Result /= Success then
          Free_Snapshot_References (References);
          return;
@@ -4322,7 +4746,7 @@ package body Flyology.DB is
             Target    : LSM_Runtime.SST_Entry renames Value.Entries (Index);
          begin
             Target.Sequence := Interfaces.Unsigned_64 (Reference.Sequence);
-            Target.Operation := LSM_Runtime.LSM.Put_Operation;
+            Target.Operation := Reference.Operation;
             Target.Key_Offset := Payload_Cursor;
             Target.Key_Byte_Total := Reference.Key_Length;
             for Offset in Natural range 0 .. Reference.Key_Length - 1 loop
@@ -4332,13 +4756,16 @@ package body Flyology.DB is
             end loop;
             Payload_Cursor := Payload_Cursor + Reference.Key_Length;
             Target.Value_Offset := Payload_Cursor;
-            Target.Value_Byte_Total := Reference.Value_Length;
-            for Offset in Natural range 0 .. Reference.Value_Length - 1 loop
-               Value.Payload (Payload_Cursor + Offset) :=
-                 Formats.Byte
-                   (Flyology.Bytes.Element (Reference.Image.Data, Reference.Value_Offset + Offset + 1));
-            end loop;
-            Payload_Cursor := Payload_Cursor + Reference.Value_Length;
+            Target.Value_Byte_Total :=
+              (if Reference.Operation = Delete_Operation_Code then 0 else Reference.Value_Length);
+            if Target.Value_Byte_Total > 0 then
+               for Offset in Natural range 0 .. Target.Value_Byte_Total - 1 loop
+                  Value.Payload (Payload_Cursor + Offset) :=
+                    Formats.Byte
+                      (Flyology.Bytes.Element (Reference.Image.Data, Reference.Value_Offset + Offset + 1));
+               end loop;
+               Payload_Cursor := Payload_Cursor + Target.Value_Byte_Total;
+            end if;
             Lowest := Interfaces.Unsigned_64'Min (Lowest, Target.Sequence);
             Highest := Interfaces.Unsigned_64'Max (Highest, Target.Sequence);
          end;
@@ -4363,12 +4790,127 @@ package body Flyology.DB is
          raise;
    end Build_Family_SST;
 
+   procedure Prepare_Live_Checkpoint_Base
+     (State  : not null Engine_State_Access;
+      Plan   : in out Checkpoint_Plan;
+      Result : out Outcome_Code)
+   is
+      Entry_Total   : Natural := 0;
+      Payload_Bytes : Natural;
+      Family_Total  : Natural;
+      References    : Snapshot_Entry_Reference_Array_Access := null;
+      Next          : Natural := 0;
+   begin
+      if Plan.Manifest = null then
+         Result := Invalid_State;
+         return;
+      end if;
+      for Family_Index in Plan.Manifest.Families'Range loop
+         State.Gate.Family_Snapshot_Requirements
+           (Column_Family_ID (Plan.Manifest.Base.Families (Family_Index).ID),
+            Family_Total,
+            Payload_Bytes,
+            Result);
+         if Result = Success then
+            if Family_Total > Natural'Last - Entry_Total then
+               Result := Capacity_Exceeded;
+               return;
+            end if;
+            Entry_Total := Entry_Total + Family_Total;
+         elsif Result /= Not_Found then
+            return;
+         end if;
+      end loop;
+      if Interfaces.Unsigned_64 (Entry_Total)
+        > Interfaces.Unsigned_64 (Plan.Manifest.Base.Limits.Maximum_Live_Entries)
+      then
+         Result := Corrupt;
+         return;
+      elsif Entry_Total = 0 then
+         Plan.Activation_Ready := True;
+         Result := Success;
+         return;
+      end if;
+      Allocation_Faults.Check (Checkpoint_Reference_Allocation);
+      Plan.Base := new State_Entry_Array (1 .. Entry_Total);
+      Allocation_Faults.Check (Recovery_Checkpoint_Image_Allocation);
+      Plan.Images := new Checkpoint_Image_Array'(1 .. Entry_Total => null);
+      for Family_Index in Plan.Manifest.Families'Range loop
+         State.Gate.Family_Snapshot_Requirements
+           (Column_Family_ID (Plan.Manifest.Base.Families (Family_Index).ID),
+            Family_Total,
+            Payload_Bytes,
+            Result);
+         if Result = Success then
+            Allocation_Faults.Check (Checkpoint_Reference_Allocation);
+            References := new Snapshot_Entry_Reference_Array (1 .. Family_Total);
+            State.Gate.Copy_Family_Snapshot
+              (Column_Family_ID (Plan.Manifest.Base.Families (Family_Index).ID), References, Result);
+            if Result /= Success then
+               Free_Snapshot_References (References);
+               return;
+            end if;
+            for Reference of References.all loop
+               if Reference.Image = null
+                 or else Reference.Sequence = 0
+                 or else Interfaces.Unsigned_64 (Reference.Sequence) > Plan.Manifest.Replay_Boundary
+               then
+                  Free_Snapshot_References (References);
+                  Result := Corrupt;
+                  return;
+               end if;
+               Next := Next + 1;
+               Reference.Image.References.Retain;
+               Plan.Images (Next) := Reference.Image;
+               Plan.Base (Next) :=
+                 (Family       => Column_Family_ID (Plan.Manifest.Base.Families (Family_Index).ID),
+                  Image        => Reference.Image,
+                  Key_Offset   => Reference.Key_Offset,
+                  Key_Length   => Reference.Key_Length,
+                  Value_Offset => Reference.Value_Offset,
+                  Value_Length => Reference.Value_Length,
+                  Sequence     => Reference.Sequence);
+            end loop;
+            Free_Snapshot_References (References);
+         elsif Result /= Not_Found then
+            return;
+         end if;
+      end loop;
+      if Next /= Entry_Total then
+         Result := Invalid_State;
+         return;
+      end if;
+      Plan.Activation_Ready := True;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Free_Snapshot_References (References);
+         Result := Capacity_Exceeded;
+      when others =>
+         Free_Snapshot_References (References);
+         raise;
+   end Prepare_Live_Checkpoint_Base;
+
    procedure Release_Checkpoint_Plan (Plan : in out Checkpoint_Plan) is
    begin
       LSM_Runtime.Release (Plan.Manifest);
       for Value of Plan.SSTs loop
          LSM_Runtime.Release (Value);
       end loop;
+      if Plan.Recovered_SSTs /= null then
+         for Value of Plan.Recovered_SSTs.all loop
+            LSM_Runtime.Release (Value);
+         end loop;
+         Free_Recovered_SSTs (Plan.Recovered_SSTs);
+      end if;
+      if Plan.Images /= null then
+         for Image of Plan.Images.all loop
+            Release_Image (Image);
+         end loop;
+         Free_Checkpoint_Images (Plan.Images);
+      end if;
+      Free_State_Entries (Plan.Base);
+      Plan.Activation_Ready := False;
    end Release_Checkpoint_Plan;
 
    function Identity_Less (Left, Right : Heads.Identifier) return Boolean is
@@ -4415,6 +4957,9 @@ package body Flyology.DB is
       Uncertain      : Boolean;
       Fenced         : Boolean;
       Identity_Total : Natural;
+      Prior          : constant LSM_Runtime.Checkpoint_Manifest_Access := State.Checkpoint_Manifest;
+      Existing_Run_Total : Natural := 0;
+      New_Run_Total  : Natural := 0;
       Run_Total      : Natural := 0;
       Run_Index      : Natural := 0;
       Allocation     : LSM_Runtime.Allocation_Status;
@@ -4483,6 +5028,22 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
          return;
       end if;
+      if State.LSM_Authority.Replay_Boundary = 0 then
+         if Prior /= null then
+            Result := Corrupt;
+            return;
+         end if;
+      elsif Prior = null
+        or else not LSM_Runtime.Structurally_Valid (Prior.all)
+        or else Prior.Replay_Boundary /= State.LSM_Authority.Replay_Boundary
+        or else Prior.Base.Manifest_ID /= To_Head_ID (Head.Latest_Manifest)
+        or else Prior.Family_Total /= Natural (Base.Family_Total)
+      then
+         Result := Corrupt;
+         return;
+      else
+         Existing_Run_Total := Prior.Run_Total;
+      end if;
 
       if Runs'Length /= Natural (Base.Family_Total) then
          Result := Invalid_State;
@@ -4525,7 +5086,7 @@ package body Flyology.DB is
          begin
             Build_Family_SST (State, Family_ID, Run_ID, Plan.SSTs (Family_Index), Result, Allow_Fenced);
             if Result = Success then
-               Run_Total := Run_Total + 1;
+               New_Run_Total := New_Run_Total + 1;
             elsif Result = Not_Found then
                Result := Success;
             else
@@ -4534,6 +5095,12 @@ package body Flyology.DB is
             end if;
          end;
       end loop;
+      if New_Run_Total > Natural'Last - Existing_Run_Total then
+         Release_Checkpoint_Plan (Plan);
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+      Run_Total := Existing_Run_Total + New_Run_Total;
       if Interfaces.Unsigned_64 (Run_Total)
         > Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Total_L0_Runs)
       then
@@ -4575,12 +5142,24 @@ package body Flyology.DB is
          declare
             Family_ID       : constant Interfaces.Unsigned_32 := Base.Families (Family_Index).ID;
             Authority_Found : Boolean := False;
+            Old_First       : Natural := 0;
+            Old_Total       : Natural := 0;
+            Family_Total    : Natural;
          begin
             for Family of State.LSM_Authority.Families loop
                if Family.ID = Family_ID then
                   Plan.Manifest.Families (Family_Index) := Family.State;
-                  Plan.Manifest.Families (Family_Index).First_Run := 0;
-                  Plan.Manifest.Families (Family_Index).Run_Total := 0;
+                  if Prior /= null then
+                     Old_First := Prior.Families (Family_Index).First_Run;
+                     Old_Total := Prior.Families (Family_Index).Run_Total;
+                     if Family.State.First_Run /= Old_First
+                       or else Family.State.Run_Total /= Old_Total
+                     then
+                        Release_Checkpoint_Plan (Plan);
+                        Result := Corrupt;
+                        return;
+                     end if;
+                  end if;
                   Authority_Found := True;
                   exit;
                end if;
@@ -4589,10 +5168,44 @@ package body Flyology.DB is
                Release_Checkpoint_Plan (Plan);
                Result := Corrupt;
                return;
-            elsif Plan.SSTs (Family_Index) /= null then
+            elsif Plan.SSTs (Family_Index) /= null
+              and then
+                (Old_Total = Natural'Last
+                 or else Interfaces.Unsigned_64 (Old_Total) + 1
+                           > Interfaces.Unsigned_64
+                               (Plan.Manifest.Families (Family_Index).Maximum_L0_Runs))
+            then
+               Release_Checkpoint_Plan (Plan);
+               Result := Capacity_Exceeded;
+               return;
+            end if;
+            Family_Total := Old_Total + (if Plan.SSTs (Family_Index) = null then 0 else 1);
+            Plan.Manifest.Families (Family_Index).First_Run :=
+              (if Family_Total = 0 then 0 else Run_Index + 1);
+            Plan.Manifest.Families (Family_Index).Run_Total := Family_Total;
+            if Old_Total > 0 then
+               for Offset in Natural range 0 .. Old_Total - 1 loop
+                  Run_Index := Run_Index + 1;
+                  Plan.Manifest.Runs (Run_Index) := Prior.Runs (Old_First + Offset);
+               end loop;
+            end if;
+            if Plan.SSTs (Family_Index) /= null then
+               for Existing in Positive range 1 .. Run_Index loop
+                  if Plan.Manifest.Runs (Existing).Run_ID = Plan.SSTs (Family_Index).Run_ID then
+                     Release_Checkpoint_Plan (Plan);
+                     Result := Invalid_State;
+                     return;
+                  end if;
+               end loop;
+               if Old_Total > 0
+                 and then Plan.Manifest.Runs (Run_Index).Highest_Sequence
+                           >= Plan.SSTs (Family_Index).Lowest_Sequence
+               then
+                  Release_Checkpoint_Plan (Plan);
+                  Result := Corrupt;
+                  return;
+               end if;
                Run_Index := Run_Index + 1;
-               Plan.Manifest.Families (Family_Index).First_Run := Run_Index;
-               Plan.Manifest.Families (Family_Index).Run_Total := 1;
                Plan.Manifest.Runs (Run_Index) :=
                  (Run_ID                => Plan.SSTs (Family_Index).Run_ID,
                   Lowest_Sequence       => Plan.SSTs (Family_Index).Lowest_Sequence,
@@ -4611,6 +5224,11 @@ package body Flyology.DB is
       if Run_Index /= Run_Total or else not LSM_Runtime.Structurally_Valid (Plan.Manifest.all) then
          Release_Checkpoint_Plan (Plan);
          Result := Corrupt;
+         return;
+      end if;
+      Prepare_Live_Checkpoint_Base (State, Plan, Result);
+      if Result /= Success then
+         Release_Checkpoint_Plan (Plan);
          return;
       end if;
       Result := Success;
@@ -4965,9 +5583,13 @@ package body Flyology.DB is
          Release_Runtime_Batch (Batch);
       end loop;
       Free_State_Entries (State.Checkpoint_Base);
-      for Index in State.Checkpoint_Images'Range loop
-         Release_Image (State.Checkpoint_Images (Index));
-      end loop;
+      if State.Checkpoint_Images /= null then
+         for Image of State.Checkpoint_Images.all loop
+            Release_Image (Image);
+         end loop;
+         Free_Checkpoint_Images (State.Checkpoint_Images);
+      end if;
+      LSM_Runtime.Release (State.Checkpoint_Manifest);
    end Release_State_Images;
 
    procedure Put_U16 (Image : in out Formats.Byte_Array; Position : Natural; Value : Interfaces.Unsigned_16)
@@ -5047,72 +5669,97 @@ package body Flyology.DB is
          raise;
    end New_Image;
 
-   procedure Release_Checkpoint_Images (Images : in out Checkpoint_Image_Array) is
+   procedure Release_Checkpoint_Images (Images : in out Checkpoint_Image_Array_Access) is
    begin
-      for Image of Images loop
-         Release_Image (Image);
-      end loop;
+      if Images /= null then
+         for Image of Images.all loop
+            Release_Image (Image);
+         end loop;
+         Free_Checkpoint_Images (Images);
+      end if;
    end Release_Checkpoint_Images;
 
    procedure Prepare_Checkpoint_Images
-     (Plan : Checkpoint_Plan; Images : out Checkpoint_Image_Array; Result : out Outcome_Code) is
+     (Plan : in out Checkpoint_Plan; Result : out Outcome_Code) is
    begin
-      Images := [others => null];
+      Release_Checkpoint_Images (Plan.Images);
       if Plan.Manifest = null then
          Result := Success;
          return;
+      elsif Plan.Manifest.Run_Total = 0 then
+         Result := Success;
+         return;
+      elsif Plan.Recovered_SSTs = null
+        or else Plan.Recovered_SSTs'Length /= Plan.Manifest.Run_Total
+      then
+         Result := Corrupt;
+         return;
       end if;
-      for Index in Plan.SSTs'Range loop
-         if Plan.SSTs (Index) /= null then
+      Allocation_Faults.Check (Recovery_Checkpoint_Image_Allocation);
+      Plan.Images := new Checkpoint_Image_Array'(1 .. Plan.Manifest.Run_Total => null);
+      for Index in Plan.Recovered_SSTs'Range loop
+         if Plan.Recovered_SSTs (Index) = null then
+            Result := Corrupt;
+            Release_Checkpoint_Images (Plan.Images);
+            return;
+         else
             Allocation_Faults.Check (Recovery_Checkpoint_Image_Allocation);
-            Images (Index) := New_Image (Plan.SSTs (Index).Payload);
+            Plan.Images (Index) := New_Image (Plan.Recovered_SSTs (Index).Payload);
          end if;
       end loop;
       Result := Success;
    exception
       when Storage_Error =>
-         Release_Checkpoint_Images (Images);
+         Release_Checkpoint_Images (Plan.Images);
          Result := Capacity_Exceeded;
       when others =>
-         Release_Checkpoint_Images (Images);
+         Release_Checkpoint_Images (Plan.Images);
          raise;
    end Prepare_Checkpoint_Images;
 
    procedure Prepare_Checkpoint_Base
-     (Plan : Checkpoint_Plan; Base : out State_Entry_Array_Access; Result : out Outcome_Code)
+     (Plan : in out Checkpoint_Plan; Result : out Outcome_Code)
    is
       Entry_Total : Natural := 0;
    begin
-      Base := null;
+      Free_State_Entries (Plan.Base);
       if Plan.Manifest = null then
          Result := Success;
          return;
-      end if;
-      for SST of Plan.SSTs loop
-         if SST /= null then
-            if SST.Entry_Total > Natural'Last - Entry_Total then
-               Result := Capacity_Exceeded;
-               return;
-            end if;
-            Entry_Total := Entry_Total + SST.Entry_Total;
-         end if;
-      end loop;
-      if Interfaces.Unsigned_64 (Entry_Total)
-        > Interfaces.Unsigned_64 (Plan.Manifest.Base.Limits.Maximum_Live_Entries)
+      elsif Plan.Manifest.Run_Total = 0 then
+         Result := Success;
+         return;
+      elsif Plan.Recovered_SSTs = null
+        or else Plan.Recovered_SSTs'Length /= Plan.Manifest.Run_Total
       then
          Result := Corrupt;
          return;
-      elsif Entry_Total > 0 then
+      end if;
+      for SST of Plan.Recovered_SSTs.all loop
+         if SST = null then
+            Result := Corrupt;
+            return;
+         elsif SST.Entry_Total > Natural'Last - Entry_Total then
+            Result := Capacity_Exceeded;
+            return;
+         end if;
+         Entry_Total := Entry_Total + SST.Entry_Total;
+      end loop;
+      --  This is merge scratch, not live-state capacity: immutable deltas may
+      --  contain overwritten values and tombstones. Its exact upper extent is
+      --  derived from authenticated SST entry counts; the merged result is
+      --  checked separately against persisted live-entry/live-byte limits.
+      if Entry_Total > 0 then
          Allocation_Faults.Check (Recovery_Snapshot_Base_Allocation);
-         Base := new State_Entry_Array (1 .. Entry_Total);
+         Plan.Base := new State_Entry_Array (1 .. Entry_Total);
       end if;
       Result := Success;
    exception
       when Storage_Error =>
-         Free_State_Entries (Base);
+         Free_State_Entries (Plan.Base);
          Result := Capacity_Exceeded;
       when others =>
-         Free_State_Entries (Base);
+         Free_State_Entries (Plan.Base);
          raise;
    end Prepare_Checkpoint_Base;
 
@@ -6402,143 +7049,145 @@ package body Flyology.DB is
       if Plan.Manifest = null then
          Result := Invalid_State;
          return;
+      elsif Plan.Manifest.Run_Total > 0 then
+         Allocation_Faults.Check (Recovery_SST_Image_Allocation);
+         Plan.Recovered_SSTs := new Recovered_SST_Array'(1 .. Plan.Manifest.Run_Total => null);
       end if;
       for Family_Index in Plan.Manifest.Families'Range loop
          declare
             Family : LSM_Runtime.Family_LSM_State renames Plan.Manifest.Families (Family_Index);
          begin
-            if Family.Run_Total > 1 then
-               Result := Unsupported_Format;
-               return;
-            elsif Family.Run_Total = 1 then
-               declare
-                  Descriptor        : LSM_Runtime.Run_Descriptor renames
-                    Plan.Manifest.Runs (Family.First_Run);
-                  Header_Data       : Flyology.Bytes.Unbounded_Bytes;
-                  Whole_Data        : Flyology.Bytes.Unbounded_Bytes;
-                  Object_Length     : Natural;
-                  Whole_Length      : Natural;
-                  Header_Generation : Generation_Value;
-                  Whole_Generation  : Generation_Value;
-                  Read_Result       : Read_Outcome;
-                  Admission         : LSM_Runtime.SST_Header_Admission;
-                  Decode_Status     : LSM_Runtime.Decode_Status;
-                  Image             : LSM_Runtime.Image_Access := null;
-               begin
-                  Storage_Port.Get_Selected
-                    (Storage,
-                     Run_Key (Storage, To_Identifier (Descriptor.Run_ID)),
-                     Run_Object,
-                     (Kind  => OS.Bounded_Range,
-                      First => 0,
-                      Last  => OS.Byte_Count (Header_Length - 1),
-                      Count => 0),
-                     (others => <>),
-                     Deadline,
-                     Token,
-                     Header_Data,
-                     Object_Length,
-                     Header_Generation,
-                     Read_Result,
-                     Header_Length);
-                  if Read_Result /= Object_Read then
-                     Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
-                     return;
-                  elsif Flyology.Bytes.Length (Header_Data) /= Header_Length
-                    or else Object_Length < Header_Length + LSM_Runtime.LSM.Object_Trailer_Length
-                  then
-                     Result := Corrupt;
-                     return;
-                  end if;
-                  Allocation_Faults.Check (Recovery_SST_Header_Allocation);
-                  Image := new Formats.Byte_Array'(0 .. Header_Length - 1 => 0);
-                  for Index in Natural range 0 .. Header_Length - 1 loop
-                     Image (Index) := Byte (Flyology.Bytes.Element (Header_Data, Index + 1));
-                  end loop;
-                  LSM_Runtime.Inspect_SST_Header
-                    (Image.all,
-                     Plan.Manifest.Base.Database_ID,
-                     Plan.Manifest.Base.Families (Family_Index).ID,
-                     Descriptor,
-                     Interfaces.Unsigned_64 (Object_Length),
-                     Admission,
-                     Decode_Status);
-                  LSM_Runtime.Release (Image);
-                  if Decode_Status /= LSM_Runtime.Decoded then
-                     Result :=
-                       (if Decode_Status
+            if Family.Run_Total > 0 then
+               for Run_Index in Family.First_Run .. Family.First_Run + Family.Run_Total - 1 loop
+                  declare
+                     Descriptor        : LSM_Runtime.Run_Descriptor renames
+                       Plan.Manifest.Runs (Run_Index);
+                     Header_Data       : Flyology.Bytes.Unbounded_Bytes;
+                     Whole_Data        : Flyology.Bytes.Unbounded_Bytes;
+                     Object_Length     : Natural;
+                     Whole_Length      : Natural;
+                     Header_Generation : Generation_Value;
+                     Whole_Generation  : Generation_Value;
+                     Read_Result       : Read_Outcome;
+                     Admission         : LSM_Runtime.SST_Header_Admission;
+                     Decode_Status     : LSM_Runtime.Decode_Status;
+                     Image             : LSM_Runtime.Image_Access := null;
+                  begin
+                     Storage_Port.Get_Selected
+                       (Storage,
+                        Run_Key (Storage, To_Identifier (Descriptor.Run_ID)),
+                        Run_Object,
+                        (Kind  => OS.Bounded_Range,
+                         First => 0,
+                         Last  => OS.Byte_Count (Header_Length - 1),
+                         Count => 0),
+                        (others => <>),
+                        Deadline,
+                        Token,
+                        Header_Data,
+                        Object_Length,
+                        Header_Generation,
+                        Read_Result,
+                        Header_Length);
+                     if Read_Result /= Object_Read then
+                        Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
+                        return;
+                     elsif Flyology.Bytes.Length (Header_Data) /= Header_Length
+                       or else Object_Length < Header_Length + LSM_Runtime.LSM.Object_Trailer_Length
+                     then
+                        Result := Corrupt;
+                        return;
+                     end if;
+                     Allocation_Faults.Check (Recovery_SST_Header_Allocation);
+                     Image := new Formats.Byte_Array'(0 .. Header_Length - 1 => 0);
+                     for Index in Natural range 0 .. Header_Length - 1 loop
+                        Image (Index) := Byte (Flyology.Bytes.Element (Header_Data, Index + 1));
+                     end loop;
+                     LSM_Runtime.Inspect_SST_Header
+                       (Image.all,
+                        Plan.Manifest.Base.Database_ID,
+                        Plan.Manifest.Base.Families (Family_Index).ID,
+                        Descriptor,
+                        Interfaces.Unsigned_64 (Object_Length),
+                        Admission,
+                        Decode_Status);
+                     LSM_Runtime.Release (Image);
+                     if Decode_Status /= LSM_Runtime.Decoded then
+                        Result :=
+                          (if Decode_Status
+                              in LSM_Runtime.Limit_Exceeded
+                               | LSM_Runtime.Allocation_Failed
+                               | LSM_Runtime.Runtime_Incompatible
+                           then Capacity_Exceeded
+                           elsif Decode_Status = LSM_Runtime.Unsupported_Version
+                           then Unsupported_Format
+                           else Corrupt);
+                        return;
+                     end if;
+                     Storage_Port.Get_Selected
+                       (Storage,
+                        Run_Key (Storage, To_Identifier (Descriptor.Run_ID)),
+                        Run_Object,
+                        OS.Whole_Object,
+                        Header_Generation,
+                        Deadline,
+                        Token,
+                        Whole_Data,
+                        Whole_Length,
+                        Whole_Generation,
+                        Read_Result,
+                        Admission.Object_Length);
+                     if Read_Result /= Object_Read then
+                        Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
+                        return;
+                     elsif Whole_Length /= Admission.Object_Length
+                       or else Flyology.Bytes.Length (Whole_Data) /= Admission.Object_Length
+                       or else Whole_Generation /= Header_Generation
+                     then
+                        Result := Corrupt;
+                        return;
+                     end if;
+                     Allocation_Faults.Check (Recovery_SST_Image_Allocation);
+                     Image := new Formats.Byte_Array'(0 .. Admission.Object_Length - 1 => 0);
+                     for Index in Natural range 0 .. Admission.Object_Length - 1 loop
+                        Image (Index) := Byte (Flyology.Bytes.Element (Whole_Data, Index + 1));
+                     end loop;
+                     LSM_Runtime.Decode_SST
+                       (Image.all,
+                        Plan.Manifest.Base.Database_ID,
+                        Plan.Manifest.Base.Families (Family_Index).ID,
+                        Descriptor,
+                        Plan.Manifest.Base.Families (Family_Index).Max_Key_Bytes,
+                        Plan.Manifest.Base.Families (Family_Index).Max_Value_Bytes,
+                        Plan.Recovered_SSTs (Run_Index),
+                        Decode_Status);
+                     LSM_Runtime.Release (Image);
+                     if Decode_Status = LSM_Runtime.Decoded then
+                        null;
+                     elsif Decode_Status
                            in LSM_Runtime.Limit_Exceeded
                             | LSM_Runtime.Allocation_Failed
                             | LSM_Runtime.Runtime_Incompatible
-                        then Capacity_Exceeded
-                        elsif Decode_Status = LSM_Runtime.Unsupported_Version
-                        then Unsupported_Format
-                        else Corrupt);
-                     return;
-                  end if;
-                  Storage_Port.Get_Selected
-                    (Storage,
-                     Run_Key (Storage, To_Identifier (Descriptor.Run_ID)),
-                     Run_Object,
-                     OS.Whole_Object,
-                     Header_Generation,
-                     Deadline,
-                     Token,
-                     Whole_Data,
-                     Whole_Length,
-                     Whole_Generation,
-                     Read_Result,
-                     Admission.Object_Length);
-                  if Read_Result /= Object_Read then
-                     Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
-                     return;
-                  elsif Whole_Length /= Admission.Object_Length
-                    or else Flyology.Bytes.Length (Whole_Data) /= Admission.Object_Length
-                    or else Whole_Generation /= Header_Generation
-                  then
-                     Result := Corrupt;
-                     return;
-                  end if;
-                  Allocation_Faults.Check (Recovery_SST_Image_Allocation);
-                  Image := new Formats.Byte_Array'(0 .. Admission.Object_Length - 1 => 0);
-                  for Index in Natural range 0 .. Admission.Object_Length - 1 loop
-                     Image (Index) := Byte (Flyology.Bytes.Element (Whole_Data, Index + 1));
-                  end loop;
-                  LSM_Runtime.Decode_SST
-                    (Image.all,
-                     Plan.Manifest.Base.Database_ID,
-                     Plan.Manifest.Base.Families (Family_Index).ID,
-                     Descriptor,
-                     Plan.Manifest.Base.Families (Family_Index).Max_Key_Bytes,
-                     Plan.Manifest.Base.Families (Family_Index).Max_Value_Bytes,
-                     Plan.SSTs (Family_Index),
-                     Decode_Status);
-                  LSM_Runtime.Release (Image);
-                  if Decode_Status = LSM_Runtime.Decoded then
-                     null;
-                  elsif Decode_Status
-                        in LSM_Runtime.Limit_Exceeded
-                         | LSM_Runtime.Allocation_Failed
-                         | LSM_Runtime.Runtime_Incompatible
-                  then
-                     Result := Capacity_Exceeded;
-                     return;
-                  elsif Decode_Status = LSM_Runtime.Unsupported_Version then
-                     Result := Unsupported_Format;
-                     return;
-                  else
-                     Result := Corrupt;
-                     return;
-                  end if;
-               exception
-                  when Storage_Error =>
-                     LSM_Runtime.Release (Image);
-                     Result := Capacity_Exceeded;
-                     return;
-                  when others =>
-                     LSM_Runtime.Release (Image);
-                     raise;
-               end;
+                     then
+                        Result := Capacity_Exceeded;
+                        return;
+                     elsif Decode_Status = LSM_Runtime.Unsupported_Version then
+                        Result := Unsupported_Format;
+                        return;
+                     else
+                        Result := Corrupt;
+                        return;
+                     end if;
+                  exception
+                     when Storage_Error =>
+                        LSM_Runtime.Release (Image);
+                        Result := Capacity_Exceeded;
+                        return;
+                     when others =>
+                        LSM_Runtime.Release (Image);
+                        raise;
+                  end;
+               end loop;
             end if;
          end;
       end loop;
@@ -6972,8 +7621,8 @@ package body Flyology.DB is
       History_Capacity      : Positive;
       Seen_Capacity         : Positive;
       Reserved_Capacity     : Positive;
-      Checkpoint_Images     : Checkpoint_Image_Array := [others => null];
-      Checkpoint_Base       : State_Entry_Array_Access := null;
+      Checkpoint_Live_Count : Natural := 0;
+      Trimmed_Base          : State_Entry_Array_Access := null;
    begin
       State := null;
       if Entry_Capacity_U64 = 0
@@ -7016,18 +7665,19 @@ package body Flyology.DB is
       History_Capacity := Positive (History_Capacity_U64);
       Seen_Capacity := Positive (Seen_Capacity_U64);
       Reserved_Capacity := Positive (Reserved_Capacity_U64);
-      Prepare_Checkpoint_Images (Checkpoint, Checkpoint_Images, Result);
-      if Result /= Success then
-         Release_History (History, Count);
-         Release_Checkpoint_Plan (Checkpoint);
-         return;
-      end if;
-      Prepare_Checkpoint_Base (Checkpoint, Checkpoint_Base, Result);
-      if Result /= Success then
-         Release_History (History, Count);
-         Release_Checkpoint_Images (Checkpoint_Images);
-         Release_Checkpoint_Plan (Checkpoint);
-         return;
+      if Checkpoint.Manifest /= null and then not Checkpoint.Activation_Ready then
+         Prepare_Checkpoint_Images (Checkpoint, Result);
+         if Result /= Success then
+            Release_History (History, Count);
+            Release_Checkpoint_Plan (Checkpoint);
+            return;
+         end if;
+         Prepare_Checkpoint_Base (Checkpoint, Result);
+         if Result /= Success then
+            Release_History (History, Count);
+            Release_Checkpoint_Plan (Checkpoint);
+            return;
+         end if;
       end if;
       Allocation_Faults.Check (Engine_State_Allocation);
       Allocation_Faults.Check (Identity_Table_Allocation);
@@ -7042,10 +7692,6 @@ package body Flyology.DB is
       State.Storage := Storage.all'Unchecked_Access;
       State.Life := Life;
       State.LSM_Authority := LSM_Authority;
-      State.Checkpoint_Images := Checkpoint_Images;
-      Checkpoint_Images := [others => null];
-      State.Checkpoint_Base := Checkpoint_Base;
-      Checkpoint_Base := null;
       --  A manifest-v2/v3 checkpoint supplies its authenticated replay boundary;
       --  root and legacy manifests have no compacted-history boundary, so zero
       --  preserves their full retained suffix authority.
@@ -7057,7 +7703,11 @@ package body Flyology.DB is
          Incarnation);
       if Checkpoint.Manifest /= null then
          State.Gate.Recover_Checkpoint
-           (Checkpoint, State.Checkpoint_Images, State.Checkpoint_Base, Result);
+           (Checkpoint,
+            Checkpoint.Images,
+            Checkpoint.Base,
+            Checkpoint_Live_Count,
+            Result);
          if Result /= Success then
             Release_History (History, Count);
             Release_Checkpoint_Plan (Checkpoint);
@@ -7066,6 +7716,34 @@ package body Flyology.DB is
             State := null;
             return;
          end if;
+         --  Cacheless recovery allocates merge scratch from the authenticated
+         --  sum of all run entries, including overwritten values and
+         --  tombstones. Retain only the exact merged live base after the
+         --  protected merge has established its final extent.
+         if Checkpoint_Live_Count = 0 then
+            Free_State_Entries (Checkpoint.Base);
+         elsif Checkpoint.Base = null then
+            Release_History (History, Count);
+            Release_Checkpoint_Plan (Checkpoint);
+            Release_State_Images (State);
+            Free_State (State);
+            State := null;
+            Result := Corrupt;
+            return;
+         elsif Checkpoint.Base'Length /= Checkpoint_Live_Count then
+            Allocation_Faults.Check (Recovery_Snapshot_Base_Allocation);
+            Trimmed_Base := new State_Entry_Array (1 .. Checkpoint_Live_Count);
+            Trimmed_Base.all := Checkpoint.Base (1 .. Checkpoint_Live_Count);
+            Free_State_Entries (Checkpoint.Base);
+            Checkpoint.Base := Trimmed_Base;
+            Trimmed_Base := null;
+         end if;
+         State.Checkpoint_Images := Checkpoint.Images;
+         Checkpoint.Images := null;
+         State.Checkpoint_Base := Checkpoint.Base;
+         Checkpoint.Base := null;
+         State.Checkpoint_Manifest := Checkpoint.Manifest;
+         Checkpoint.Manifest := null;
       end if;
       Release_Checkpoint_Plan (Checkpoint);
       for Index in reverse Positive range 1 .. Count loop
@@ -7095,8 +7773,7 @@ package body Flyology.DB is
             Free_State (State);
          end if;
          Release_History (History, Count);
-         Release_Checkpoint_Images (Checkpoint_Images);
-         Free_State_Entries (Checkpoint_Base);
+         Free_State_Entries (Trimmed_Base);
          Release_Checkpoint_Plan (Checkpoint);
          State := null;
          Result := Capacity_Exceeded;
@@ -7111,8 +7788,7 @@ package body Flyology.DB is
             Free_State (State);
          end if;
          Release_History (History, Count);
-         Release_Checkpoint_Images (Checkpoint_Images);
-         Free_State_Entries (Checkpoint_Base);
+         Free_State_Entries (Trimmed_Base);
          Release_Checkpoint_Plan (Checkpoint);
          State := null;
          Result := Storage_Failure;

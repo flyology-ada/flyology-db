@@ -22,7 +22,7 @@ transition identity; continuing unavailability remains unknown.
 - Read-only replicas advance monotonically by observing valid head transitions.
 
 The executable mutation surface remains log-only between explicit flushes, while recovery accepts either that form
-or the latest complete nonempty whole-state checkpoint. Log-only recovery follows `HEAD.Latest_Batch` and the
+or the latest additive L0 checkpoint. Log-only recovery follows `HEAD.Latest_Batch` and the
 predecessor-batch ID in each
 immutable commit object, then rebuilds logical state in sequence order without local state or listing. HEAD version 2
 names an immutable root column-family manifest before any batch is decoded. New Create operations encode that root as
@@ -39,8 +39,8 @@ silently upgrades an existing manifest-v1 database.
 The checkpoint protocol is specified separately in
 [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v3 root creation, public synchronous Flush
 and caller-composable Flush with self-contained certainty receipts, exact same-identity reconciliation, live
-coordinator replacement, successive whole-state checkpoint replacement, and cacheless latest-checkpoint recovery are
-operational. Multi-run L0 accumulation and compaction are not.
+coordinator replacement, additive multi-run L0 publication, and cacheless all-run recovery are operational.
+Compaction and run pruning are not.
 
 ## Transaction semantics
 

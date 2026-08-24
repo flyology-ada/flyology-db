@@ -9,7 +9,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
-| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Whole-state replacement operational; multi-run L0 pending |
+| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive multi-run L0 operational; compaction pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
@@ -69,12 +69,12 @@ all reclamation. Bytewise comparison makes the lower endpoint inclusive and uppe
 
 The first-LSM work now includes current manifest-v3, readable manifest-v2, and SST-v1 formats, dynamic operational
 codecs, manifest-v3 root creation, public synchronous and composable Flush/receipt reconciliation, live coordinator
-replacement, successive whole-state checkpoint replacement, and cacheless recovery of the latest complete nonempty
-checkpoint plus its strictly later batch suffix. Recovery restores live
+replacement, additive per-family suffix runs, and cacheless oldest-to-newest recovery of every current run plus the
+strictly later batch suffix. Recovery restores live
 values, last-write sequences, and the exact never-reused checkpoint identity ledger from persisted authority.
 The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token through the same certainty contract
-without a helper task. Multi-run L0 accumulation, streaming/physical scans, compaction, and provider qualification
-remain later focused units, so Milestone 4 remains incomplete.
+without a helper task. Streaming/physical scans, compaction, run pruning, and provider qualification remain later
+focused units, so Milestone 4 remains incomplete.
 
 ## Formal state-machine lane
 

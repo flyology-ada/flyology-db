@@ -169,6 +169,13 @@ installation, and task activation remain outside the selected SPARK units. Deter
 backpressure, lost-response reconciliation, cacheless reopen, and missing-predecessor tests plus the separate
 successive-checkpoint TLC/TLAPS lane qualify those executable boundaries. No refinement proof is claimed.
 
+The operational additive-L0 candidate preserves the same warning-strict 1,084/1,084 result, with zero warnings,
+unproved or justified checks, and zero `pragma Assume`. The production suffix planner, dynamic image ownership,
+oldest-to-newest merge, and protected installation remain outside the selected SPARK units; deterministic memory/
+files, capacity, certainty, tombstone, unchanged-old-run, cacheless-reopen, crash, and allocation-failure tests qualify
+those boundaries. The additive 49-state TLC and 24/24 TLAPS campaign remains the abstract publication proof; no
+refinement theorem to the operational Ada implementation is claimed.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:
@@ -223,7 +230,9 @@ successive-checkpoint TLC/TLAPS lane qualify those executable boundaries. No ref
   violate safety. Its arbitrary-set, unbounded-cycle kernel proves 24/24 strict TLAPS obligations for
   stored/confirmed ordering, current confirmed-run authority, append-only publication, exact checkpoint/suffix
   partitioning, recovery, and disposable local state. Concrete sequence ordering, key/value merge, codecs,
-  capacities, provider behavior, progress, compaction, operational Ada, and refinement remain outside this proof.
+  capacities, provider behavior, progress, compaction, and refinement remain outside this proof. The operational Ada
+  planner/recovery path is qualified separately by deterministic multi-run, tombstone, old-run, independent-capacity,
+  certainty, cacheless-reopen, allocation-failure, and backend tests.
 - The snapshot-isolation write/write model exhausts 336 states at depth 10. It checks fixed Begin sequences,
   per-written-key post-snapshot rejection, disjoint concurrent commits, checkpoint advancement of the retained exact
   history boundary, and conservative rejection below that boundary. Three independently validated witnesses cover

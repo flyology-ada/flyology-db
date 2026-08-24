@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted operational additive-L0 accumulation candidate
+
+- Parent: formal additive-L0 freeze commit `06d47e4`.
+- Scope and compatibility: implement the frozen suffix-delta algorithm without a new public declaration or persisted
+  format. First Flush still emits complete family runs. Each later Flush emits at most one canonical newest-mutation
+  run per affected family, preserves tombstones, retains prior descriptors oldest-to-newest, and permits a
+  manifest-only empty suffix under the existing receipt contract.
+- Capacity and effects: exact dynamic run/image/base extents derive from authenticated manifests, SSTs, persisted
+  database limits, and per-family limits. Checked arithmetic, allocation rollback, per-family run admission, and the
+  independent database-wide run admission all complete before storage publication. Deterministic tests confirm both
+  capacity failures publish no run, manifest, or HEAD object.
+- Recovery and ownership: cacheless Open reads and authenticates every named run, applies deletes before replacements
+  and absent inserts within each run, merges runs oldest-to-newest, and trims merge scratch to the exact live base.
+  Local activation retains the quiescent coordinator's exact live images instead of rereading storage. The new engine
+  alone owns the transferred image/base/manifest graph; replacement joins the old worker before releasing its graph.
+  No helper task, retry, provider listing, retained borrowed caller input, or second certainty authority was added.
+- Verification: `./tests/scripts/test.sh` passes the full memory/files, authenticated-client, files crash/recovery,
+  32-case pinned adapter, and 4/4 TidesDB upstream corpus. The two-generation witness proves newer Put replacement,
+  tombstone masking, unchanged-key recovery from the older run, exact sequence authority, and cacheless reopen.
+  `./scripts/prove.sh` proves 1,084/1,084 checks. `./scripts/check-tla.sh` preserves every prior graph and proves the
+  additive-L0 49-state/24-obligation campaign with its negative probe and exact lost-response recovery witness.
+  Repository checks and `git diff --check` pass. Project-mode `gnatformat` remains blocked by the repository's global
+  preprocessor symbols; warning-strict compilation and a 110-column source audit are clean.
+- Findings cycle: the separate compatibility, capacity, certainty, crash safety, concurrency, ownership, allocation,
+  constants, documentation, and unnecessary-surface sweep found no remaining P0, P1, P2, or P3 issue. Compaction,
+  run pruning, automatic flush policy, physical merge iteration, and remote-provider qualification remain explicit
+  later units rather than implied claims.
+
 ## Accepted formal additive-L0 accumulation candidate
 
 - Parent: successive whole-state checkpoint commit `3f19103`.
