@@ -5,8 +5,8 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `425acbaa41833ed0613e277f50f68576b54f81f3`
-- Commit subject: `Problem: multipart abort cannot compose without replay ambiguity`
+- Commit: `fa418173c048ed9e59e67ac36afbd4973a37adac`
+- Commit subject: `Problem: ListParts cannot compose as a bounded recovery read`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
@@ -26,8 +26,11 @@ deliberately after the Flyology runtime preparer and this repository's gates qua
 The dependency includes the reviewed backend-neutral conditional publication contract, synchronous conditional Put
 and whole Get operations, caller-owned `Client.Scoped` conditional Put plus generation-bound whole/range Get, Head,
 Delete, CreateMultipartUpload, UploadPart preparation, CompleteMultipartUpload, and AbortMultipartUpload operations,
-retained SQLite generations across ordinary and multipart publication, and generation-aware object mutation/read
-coverage. The buffer-owned synchronous calls are waits over those same scoped state machines. Multipart completion
+bounded ListParts recovery reads, retained SQLite generations across ordinary and multipart publication, and
+generation-aware object mutation/read coverage. The buffer-owned synchronous calls are waits over those same scoped
+state machines. ListParts owns its prepared request, retains response bytes only to the XML decoder's maintained
+document bound, validates the successful response's exact request echoes, and preserves typed HTTP terminal failure
+and admission certainty. Multipart completion
 owns its exact serialized XML and classifies every complete rejection or post-admission failure as unknown until
 destination and exact-upload read-only reconciliation. Multipart abort likewise treats only validated HTTP 204 as
 definite success and requires exact-upload read-only reconciliation for every complete rejection or post-admission

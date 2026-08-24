@@ -1,5 +1,31 @@
 # Review record
 
+## Accepted bounded composable ListParts dependency qualification
+
+- Parent: private version-preserving SST merge kernel commit `55b2dfd`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage clone from
+  `425acbaa41833ed0613e277f50f68576b54f81f3` to the explicitly qualified local-only boundary
+  `fa418173c048ed9e59e67ac36afbd4973a37adac`. The dirty author checkout remains read-only coordination state, the
+  root filesystem path pin remains unchanged, and no DB declaration, format, allocation limit, task, retry,
+  compaction policy, or publication protocol changes in this unit.
+- Surface and ownership: the dependency adds caller-owned `List_Parts_Operation`, constructor and reusable `Start`
+  forms, typed `Finish`, and a synchronous result overload that literally waits on the same owner-driven state
+  machine. It owns the prepared request, retains no credential borrow after signing, has one HTTP child and no helper
+  task or replay, bounds retained response bytes by the existing S3 XML decoder limit, and drains the child before
+  releasing request/response storage during terminal consumption or finalization.
+- Result boundary: the read-only result preserves complete modeled response or typed HTTP terminal failure plus
+  admission certainty. Successful decoding validates bucket, key, exact upload ID, part marker, and requested page
+  maximum echoes. Separate pages have no shared service snapshot. Flyology.DB has no multipart operation yet, so this
+  qualification deliberately introduces no DB reconciliation API or pagination policy.
+- Verification: the maintained deterministic suite rebuilds the complete DB/Object Storage/XML/HTTP/QUIC closure and
+  exercises local engine, authenticated client, filesystem crash/recovery, comparative adapters, and repository
+  provenance against the exact clean clone above. The warning-strict DB proof gate recompiles the dependency closure
+  and proves all 1,088 selected DB checks; this unit does not substitute or claim upstream proof as DB evidence.
+- Findings cycle: API modes/default compatibility, limited-operation ownership, request/credential lifetimes,
+  cancellation/finalization drain, response bounds, echo validation, read-only certainty, author-checkout isolation,
+  constants, documentation, and unnecessary-surface review finds no remaining P0, P1, P2, or P3 issue. Historical
+  review entries retain the exact dependency used by their campaigns.
+
 ## Accepted private version-preserving SST merge kernel
 
 - Parent: policy-neutral partial-LSM formal boundary commit `1eca15b`.
