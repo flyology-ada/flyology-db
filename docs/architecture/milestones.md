@@ -9,7 +9,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
-| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and private sync/composable replacement operational; replacement reads proved; public compaction pending |
+| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, private sync/composable replacement, and version-preserving two-run merge kernel operational; public compaction pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Private sync/composable replacement operational and deletion safety proved; public API/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
@@ -104,8 +104,11 @@ The policy-neutral partial-compaction lane now places two selected consecutive r
 runs. Its finite model exhausts every two-key/two-value mutation map, validates an older/selected/newer execution
 witness, and rejects a merger that drops a selected tombstone. Its arbitrary-key/value TLAPS kernel proves that the
 newest selected mutation per key exactly replaces the pair while retained surrounding order remains unchanged.
-Operational run selection and merge iteration, trigger/fanout/level policy, capacity arithmetic, publication, and a
-public compaction surface remain separate Milestone 4 and 6 work.
+Operational run selection, trigger/fanout/level policy, publication integration, and a public compaction surface
+remain separate Milestone 4 and 6 work. The private runtime now supplies the narrower
+snapshot-safe merge iteration kernel: two validated ordered nonoverlapping SSTs become one fresh-identity SST while
+every version and tombstone remains. Exact output extents are checked sums of the inputs. This does not yet select
+manifest-adjacent descriptors or publish their replacement.
 
 The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
 separation, and atomic capacity/allocation rollback. Its finite model exhausts 3,419 states and the arbitrary-universe

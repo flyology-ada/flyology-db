@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted private version-preserving SST merge kernel
+
+- Parent: policy-neutral partial-LSM formal boundary commit `1eca15b`.
+- Scope and semantics: add one private runtime operation that coalesces two structurally valid SSTs from the same
+  database/family when the older sequence range ends strictly before the newer begins. The caller supplies a fresh
+  output identity. The merge retains every version and tombstone in canonical key/descending-sequence order, so it
+  reduces a future descriptor count without selecting a snapshot-retention horizon or pruning policy.
+- Bounds and ownership: entry, payload, and logical-byte extents are exact checked sums of the authenticated inputs;
+  there is no key/value, output, run, or memory default. Allocation is lazy, typed failure leaves the output vacant,
+  and an unexpected exception releases the candidate before propagation. Inputs are borrowed only for the call.
+- Compatibility boundary: no public declaration, persisted byte, descriptor layout, dependency, trigger, fanout,
+  level, schedule, publication protocol, manifest selector, or garbage-collection policy changes. A later publisher
+  must establish that the two descriptors are adjacent in current manifest authority before using this kernel.
+- Verification: the maintained deterministic suite rebuilds root/tests/server, passes local/client/files crash and
+  reopen paths, 32 comparative cases, and pinned TidesDB 4/4. The focused SST test merges same-key histories plus
+  side-specific keys, verifies every Put/Delete version and tombstone, round-trips the exact output, and rejects
+  reversed ranges and input-identity reuse. The warning-strict SPARK gate remains 1,088/1,088 (165 flow, 923 prover,
+  maximum 6,890), with zero warnings/unproved/justified/Assume; the runtime merger itself is an executable boundary.
+- Findings cycle: the first sweep found two P2 issues: cursor progression used one-past indices, and unexpected
+  post-allocation exceptions lacked a cleanup boundary. Explicit remaining counts now avoid one-past arithmetic and
+  the exception path releases the candidate. Re-review found a third P2: the cross-SST comparator duplicated the
+  existing single-array lexicographic loop while its focused fixture used equal-length keys. The established
+  comparator is now a wrapper over the cross-array implementation, so the existing ordering/corruption corpus
+  exercises the merger's exact comparison logic. Rebuild, full deterministic rerun, proof, and re-review find no
+  remaining P0, P1, P2, or P3 finding. The project-mode formatter remained blocked by the repository's global
+  preprocessor symbols; the three changed files were formatted in no-project mode, unrelated formatter churn was
+  removed, and the 110-column audit is clean.
+
 ## Accepted policy-neutral partial-LSM merge boundary
 
 - Parent: multipart-abort dependency qualification commit `478cca7`.

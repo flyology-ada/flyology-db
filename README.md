@@ -32,7 +32,9 @@ claiming an Ada refinement theorem or selecting compaction policy.
 A separate partial-merge lane places two selected consecutive runs between retained older and newer runs. It proves
 that replacing the selected pair with its newest mutation per key preserves every read, including the essential rule
 that a newest selected tombstone remains present to mask older retained values. It selects no compaction trigger,
-fanout, level sizing, schedule, capacity, or public API, and it does not claim an operational Ada partial merger.
+fanout, level sizing, schedule, capacity, or public API. The private operational coalescing kernel takes the more
+conservative snapshot-safe step: it merges two ordered nonoverlapping SSTs while retaining every version and
+tombstone. It derives exact output extents from the validated inputs and does not yet select or publish runs.
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
 produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.

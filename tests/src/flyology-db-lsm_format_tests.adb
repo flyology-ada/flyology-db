@@ -38,6 +38,8 @@ package body Flyology.DB.LSM_Format_Tests is
    use type Runtime.Encode_Status;
    use type Runtime.Checkpoint_Manifest_Access;
    use type Runtime.Image_Access;
+   use type Runtime.Merge_Status;
+   use type Runtime.SST;
    use type Runtime.SST_Access;
 
    --  Exact extents derived independently by generate_lsm_goldens.py from the
@@ -962,6 +964,164 @@ package body Flyology.DB.LSM_Format_Tests is
          raise;
    end Test_Runtime_Persisted_Limits;
 
+   procedure Test_Runtime_Partial_Merge is
+      Older         : Runtime.SST_Access;
+      Newer         : Runtime.SST_Access;
+      Merged        : Runtime.SST_Access;
+      Decoded       : Runtime.SST_Access;
+      Rejected      : Runtime.SST_Access;
+      Image         : Runtime.Image_Access;
+      Allocation    : Runtime.Allocation_Status;
+      Merge_Result  : Runtime.Merge_Status;
+      Encode_Result : Runtime.Encode_Status;
+      Decode_Result : Runtime.Decode_Status;
+      Older_Cursor  : Positive := 1;
+      Newer_Cursor  : Positive := 1;
+
+      procedure Fill_Entry
+        (Table     : not null Runtime.SST_Access;
+         Position  : Positive;
+         Cursor    : in out Positive;
+         Sequence  : Interfaces.Unsigned_64;
+         Operation : Formats.Byte;
+         Key       : Character;
+         Has_Value : Boolean;
+         Value     : Character)
+      is
+         Item : Runtime.SST_Entry renames Table.Entries (Position);
+      begin
+         Item.Sequence := Sequence;
+         Item.Operation := Operation;
+         Item.Key_Offset := Cursor;
+         Item.Key_Byte_Total := 1;
+         Table.Payload (Cursor) := Character'Pos (Key);
+         Cursor := Cursor + 1;
+         Item.Value_Offset := Cursor;
+         Item.Value_Byte_Total := (if Has_Value then 1 else 0);
+         if Has_Value then
+            Table.Payload (Cursor) := Character'Pos (Value);
+            Cursor := Cursor + 1;
+         end if;
+      end Fill_Entry;
+
+      procedure Expect_Entry
+        (Position  : Positive;
+         Sequence  : Interfaces.Unsigned_64;
+         Operation : Formats.Byte;
+         Key       : Character;
+         Has_Value : Boolean;
+         Value     : Character)
+      is
+         Item : Runtime.SST_Entry renames Merged.Entries (Position);
+      begin
+         if Item.Sequence /= Sequence
+           or else Item.Operation /= Operation
+           or else Item.Key_Byte_Total /= 1
+           or else Merged.Payload (Item.Key_Offset) /= Character'Pos (Key)
+           or else Item.Value_Byte_Total /= (if Has_Value then 1 else 0)
+           or else (Has_Value and then Merged.Payload (Item.Value_Offset) /= Character'Pos (Value))
+         then
+            raise Program_Error with "partial SST merge changed entry" & Positive'Image (Position);
+         end if;
+      end Expect_Entry;
+   begin
+      --  Four entries in each adjacent run exercise same-key version order,
+      --  puts, retained tombstones, and keys unique to either side. The byte
+      --  extents are exact fixture sums, not production capacities.
+      Runtime.Create_SST (4, 7, Older, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "older partial-merge fixture allocation failed";
+      end if;
+      Runtime.Create_SST (4, 6, Newer, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "newer partial-merge fixture allocation failed";
+      end if;
+      Older.Database_ID := ID (1);
+      Older.Run_ID := ID (9);
+      Older.Family_ID := 1;
+      Older.Lowest_Sequence := 1;
+      Older.Highest_Sequence := 2;
+      Older.Logical_Payload_Bytes := Interfaces.Unsigned_64 (Older.Payload_Byte_Total);
+      Fill_Entry (Older, 1, Older_Cursor, 2, Runtime.LSM.Put_Operation, 'a', True, 'x');
+      Fill_Entry (Older, 2, Older_Cursor, 1, Runtime.LSM.Put_Operation, 'a', True, 'w');
+      Fill_Entry (Older, 3, Older_Cursor, 2, Runtime.LSM.Delete_Operation, 'b', False, ' ');
+      Fill_Entry (Older, 4, Older_Cursor, 1, Runtime.LSM.Put_Operation, 'c', True, 'y');
+
+      Newer.Database_ID := ID (1);
+      Newer.Run_ID := ID (10);
+      Newer.Family_ID := 1;
+      Newer.Lowest_Sequence := 3;
+      Newer.Highest_Sequence := 4;
+      Newer.Logical_Payload_Bytes := Interfaces.Unsigned_64 (Newer.Payload_Byte_Total);
+      Fill_Entry (Newer, 1, Newer_Cursor, 4, Runtime.LSM.Delete_Operation, 'a', False, ' ');
+      Fill_Entry (Newer, 2, Newer_Cursor, 3, Runtime.LSM.Put_Operation, 'b', True, 'z');
+      Fill_Entry (Newer, 3, Newer_Cursor, 4, Runtime.LSM.Put_Operation, 'c', True, 'q');
+      Fill_Entry (Newer, 4, Newer_Cursor, 3, Runtime.LSM.Delete_Operation, 'd', False, ' ');
+
+      Runtime.Merge_Consecutive_SSTs (Older.all, Newer.all, ID (11), Merged, Merge_Result);
+      if Merge_Result /= Runtime.Merge_Completed
+        or else Merged = null
+        or else not Runtime.Structurally_Valid (Merged.all)
+        or else Merged.Entry_Total /= 8
+        or else Merged.Payload_Byte_Total /= 13
+        or else Merged.Lowest_Sequence /= 1
+        or else Merged.Highest_Sequence /= 4
+        or else Merged.Run_ID /= ID (11)
+      then
+         raise Program_Error with "partial SST merge did not produce the exact combined run";
+      end if;
+      Expect_Entry (1, 4, Runtime.LSM.Delete_Operation, 'a', False, ' ');
+      Expect_Entry (2, 2, Runtime.LSM.Put_Operation, 'a', True, 'x');
+      Expect_Entry (3, 1, Runtime.LSM.Put_Operation, 'a', True, 'w');
+      Expect_Entry (4, 3, Runtime.LSM.Put_Operation, 'b', True, 'z');
+      Expect_Entry (5, 2, Runtime.LSM.Delete_Operation, 'b', False, ' ');
+      Expect_Entry (6, 4, Runtime.LSM.Put_Operation, 'c', True, 'q');
+      Expect_Entry (7, 1, Runtime.LSM.Put_Operation, 'c', True, 'y');
+      Expect_Entry (8, 3, Runtime.LSM.Delete_Operation, 'd', False, ' ');
+
+      Runtime.Encode_SST (Merged.all, Image, Encode_Result);
+      if Encode_Result /= Runtime.Encoded then
+         raise Program_Error with "partial SST merge output did not encode";
+      end if;
+      declare
+         Descriptor : constant Runtime.Run_Descriptor :=
+           (Run_ID                => Merged.Run_ID,
+            Lowest_Sequence       => Merged.Lowest_Sequence,
+            Highest_Sequence      => Merged.Highest_Sequence,
+            Entry_Total           => Interfaces.Unsigned_32 (Merged.Entry_Total),
+            Logical_Payload_Bytes => Merged.Logical_Payload_Bytes);
+      begin
+         Runtime.Decode_SST (Image.all, ID (1), 1, Descriptor, 1, 1, Decoded, Decode_Result);
+      end;
+      if Decode_Result /= Runtime.Decoded or else Decoded.all /= Merged.all then
+         raise Program_Error with "partial SST merge output did not round-trip";
+      end if;
+
+      Runtime.Merge_Consecutive_SSTs (Newer.all, Older.all, ID (12), Rejected, Merge_Result);
+      if Merge_Result /= Runtime.Merge_Invalid_Input or else Rejected /= null then
+         raise Program_Error with "partial SST merge accepted reversed sequence ranges";
+      end if;
+      Runtime.Merge_Consecutive_SSTs (Older.all, Newer.all, Older.Run_ID, Rejected, Merge_Result);
+      if Merge_Result /= Runtime.Merge_Invalid_Input or else Rejected /= null then
+         raise Program_Error with "partial SST merge reused an input identity";
+      end if;
+
+      Runtime.Release (Image);
+      Runtime.Release (Decoded);
+      Runtime.Release (Merged);
+      Runtime.Release (Newer);
+      Runtime.Release (Older);
+   exception
+      when others =>
+         Runtime.Release (Image);
+         Runtime.Release (Decoded);
+         Runtime.Release (Rejected);
+         Runtime.Release (Merged);
+         Runtime.Release (Newer);
+         Runtime.Release (Older);
+         raise;
+   end Test_Runtime_Partial_Merge;
+
    procedure Test_Runtime_Rejection is
       --  Corruption positions use the frozen manifest-v3 table: identity count
       --  212, family run count 272, run high sequence 306, and ledger
@@ -1045,6 +1205,7 @@ package body Flyology.DB.LSM_Format_Tests is
       Test_SST_Rejection;
       Test_Runtime_Golden_Parity;
       Test_Runtime_Persisted_Limits;
+      Test_Runtime_Partial_Merge;
       Test_Runtime_Rejection;
    end Run;
 

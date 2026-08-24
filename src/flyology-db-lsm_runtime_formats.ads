@@ -42,6 +42,11 @@ private package Flyology.DB.LSM_Runtime_Formats is
 
    type Encode_Status is (Encoded, Invalid_Value, Length_Overflow, Allocation_Failed);
 
+   --  Runtime-only merge classification; enumeration positions are neither
+   --  persisted nor exposed. Failure always leaves the output vacant.
+   type Merge_Status is
+     (Merge_Completed, Merge_Invalid_Input, Merge_Length_Overflow, Merge_Allocation_Failed);
+
    type Image_Access is access all Formats.Byte_Array;
 
    --  Header-only admission result. Object_Length is the exact retained extent;
@@ -188,6 +193,17 @@ private package Flyology.DB.LSM_Runtime_Formats is
    procedure Release (Value : in out SST_Access);
 
    function Structurally_Valid (Value : SST) return Boolean;
+
+   --  Coalesce two validated consecutive sequence ranges without pruning any
+   --  version or tombstone. Exact output extents derive from the two inputs;
+   --  checked arithmetic and allocation failure publish no partial SST. The
+   --  fresh output identity is caller authority, not a generated default.
+   procedure Merge_Consecutive_SSTs
+     (Older         : SST;
+      Newer         : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status);
 
    function Descriptor_Matches
      (Value             : SST;

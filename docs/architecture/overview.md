@@ -54,6 +54,12 @@ run pruning, and physical garbage collection are not.
 The separate LSM read-equivalence proof establishes that replacing a captured complete live view with one canonical
 Put-only run preserves every point read and that replaying any later Put/Delete delta remains equivalent. It does not
 claim a refinement from the operational merge loop to TLA+.
+The private partial-run coalescing kernel separately accepts two caller-selected SSTs from the same database/family
+with strictly ordered nonoverlapping sequence ranges and a fresh output identity. It performs one lexicographic merge
+while retaining every version and tombstone, allocates only the exact summed entry/payload extents with checked
+arithmetic, and publishes no partial output on typed failure. Because no history is pruned, this kernel chooses no
+snapshot-retention horizon. Manifest adjacency selection, immutable publication, atomic descriptor replacement,
+trigger/fanout/level policy, and the public compaction surface remain later units.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,

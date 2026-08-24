@@ -1045,22 +1045,38 @@ package body Flyology.DB.LSM_Runtime_Formats is
    end Same_Key;
 
    function Key_Less
-     (Data         : Formats.Byte_Array;
+     (Left_Data    : Formats.Byte_Array;
       Left_Offset  : Natural;
       Left_Length  : Natural;
+      Right_Data   : Formats.Byte_Array;
       Right_Offset : Natural;
       Right_Length : Natural) return Boolean
    is
       Common : constant Natural := Natural'Min (Left_Length, Right_Length);
    begin
       for Offset in Natural range 1 .. Common loop
-         if Byte_At (Data, Left_Offset + Offset - 1) < Byte_At (Data, Right_Offset + Offset - 1) then
+         if Byte_At (Left_Data, Left_Offset + Offset - 1)
+           < Byte_At (Right_Data, Right_Offset + Offset - 1)
+         then
             return True;
-         elsif Byte_At (Data, Left_Offset + Offset - 1) > Byte_At (Data, Right_Offset + Offset - 1) then
+         elsif Byte_At (Left_Data, Left_Offset + Offset - 1)
+           > Byte_At (Right_Data, Right_Offset + Offset - 1)
+         then
             return False;
          end if;
       end loop;
       return Left_Length < Right_Length;
+   end Key_Less;
+
+   function Key_Less
+     (Data         : Formats.Byte_Array;
+      Left_Offset  : Natural;
+      Left_Length  : Natural;
+      Right_Offset : Natural;
+      Right_Length : Natural) return Boolean
+   is
+   begin
+      return Key_Less (Data, Left_Offset, Left_Length, Data, Right_Offset, Right_Length);
    end Key_Less;
 
    function Structurally_Valid (Value : SST) return Boolean is
@@ -1134,6 +1150,148 @@ package body Flyology.DB.LSM_Runtime_Formats is
         and then Lowest = Value.Lowest_Sequence
         and then Highest = Value.Highest_Sequence;
    end Structurally_Valid;
+
+   procedure Merge_Consecutive_SSTs
+     (Older         : SST;
+      Newer         : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status)
+   is
+      Candidate       : SST_Access := null;
+      Allocation      : Allocation_Status;
+      Entry_Total     : Natural;
+      Payload_Total   : Natural;
+      Logical_Total   : Interfaces.Unsigned_64;
+      Older_Index     : Positive := Older.Entries'First;
+      Newer_Index     : Positive := Newer.Entries'First;
+      Older_Remaining : Natural := Older.Entry_Total;
+      Newer_Remaining : Natural := Newer.Entry_Total;
+      Output_Index    : Natural := 1;
+      Payload_Cursor  : Natural := 1;
+
+      procedure Append_Entry (Source : SST; Source_Index : Positive) is
+         Source_Entry : SST_Entry renames Source.Entries (Source_Index);
+         Target_Entry : SST_Entry renames Candidate.Entries (Output_Index);
+      begin
+         Target_Entry.Sequence := Source_Entry.Sequence;
+         Target_Entry.Operation := Source_Entry.Operation;
+         Target_Entry.Key_Offset := Payload_Cursor;
+         Target_Entry.Key_Byte_Total := Source_Entry.Key_Byte_Total;
+         Target_Entry.Value_Offset := Payload_Cursor + Source_Entry.Key_Byte_Total;
+         Target_Entry.Value_Byte_Total := Source_Entry.Value_Byte_Total;
+         for Offset in Natural range 1 .. Source_Entry.Key_Byte_Total loop
+            Candidate.Payload (Payload_Cursor + Offset - 1) :=
+              Source.Payload (Source_Entry.Key_Offset + Offset - 1);
+         end loop;
+         Payload_Cursor := Payload_Cursor + Source_Entry.Key_Byte_Total;
+         for Offset in Natural range 1 .. Source_Entry.Value_Byte_Total loop
+            Candidate.Payload (Payload_Cursor + Offset - 1) :=
+              Source.Payload (Source_Entry.Value_Offset + Offset - 1);
+         end loop;
+         Payload_Cursor := Payload_Cursor + Source_Entry.Value_Byte_Total;
+         Output_Index := Output_Index + 1;
+      end Append_Entry;
+   begin
+      Value := null;
+      if not Structurally_Valid (Older)
+        or else not Structurally_Valid (Newer)
+        or else Older.Database_ID /= Newer.Database_ID
+        or else Older.Family_ID /= Newer.Family_ID
+        or else Older.Highest_Sequence >= Newer.Lowest_Sequence
+        or else Head_Policy.Is_Zero (Output_Run_ID)
+        or else Output_Run_ID = Older.Run_ID
+        or else Output_Run_ID = Newer.Run_ID
+      then
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      if Newer.Entry_Total > Natural'Last - Older.Entry_Total
+        or else Newer.Payload_Byte_Total > Natural'Last - Older.Payload_Byte_Total
+      then
+         Status := Merge_Length_Overflow;
+         return;
+      end if;
+      Entry_Total := Older.Entry_Total + Newer.Entry_Total;
+      Payload_Total := Older.Payload_Byte_Total + Newer.Payload_Byte_Total;
+      if not Add_U64 (Older.Logical_Payload_Bytes, Newer.Logical_Payload_Bytes, Logical_Total) then
+         Status := Merge_Length_Overflow;
+         return;
+      end if;
+      Create_SST (Entry_Total, Payload_Total, Candidate, Allocation);
+      if Allocation = Allocation_Failed then
+         Status := Merge_Allocation_Failed;
+         return;
+      elsif Allocation /= Allocated then
+         Status := Merge_Length_Overflow;
+         return;
+      end if;
+      Candidate.Database_ID := Older.Database_ID;
+      Candidate.Run_ID := Output_Run_ID;
+      Candidate.Family_ID := Older.Family_ID;
+      Candidate.Lowest_Sequence := Older.Lowest_Sequence;
+      Candidate.Highest_Sequence := Newer.Highest_Sequence;
+      Candidate.Logical_Payload_Bytes := Logical_Total;
+
+      while Older_Remaining > 0 or else Newer_Remaining > 0 loop
+         if Older_Remaining = 0 then
+            Append_Entry (Newer, Newer_Index);
+            Newer_Remaining := Newer_Remaining - 1;
+            if Newer_Remaining > 0 then
+               Newer_Index := Newer_Index + 1;
+            end if;
+         elsif Newer_Remaining = 0 then
+            Append_Entry (Older, Older_Index);
+            Older_Remaining := Older_Remaining - 1;
+            if Older_Remaining > 0 then
+               Older_Index := Older_Index + 1;
+            end if;
+         else
+            declare
+               Older_Entry : SST_Entry renames Older.Entries (Older_Index);
+               Newer_Entry : SST_Entry renames Newer.Entries (Newer_Index);
+            begin
+               if Key_Less
+                    (Older.Payload,
+                     Older_Entry.Key_Offset - 1,
+                     Older_Entry.Key_Byte_Total,
+                     Newer.Payload,
+                     Newer_Entry.Key_Offset - 1,
+                     Newer_Entry.Key_Byte_Total)
+               then
+                  Append_Entry (Older, Older_Index);
+                  Older_Remaining := Older_Remaining - 1;
+                  if Older_Remaining > 0 then
+                     Older_Index := Older_Index + 1;
+                  end if;
+               else
+                  --  A newer equal-key entry precedes every older version;
+                  --  distinct sequence ranges make this order unambiguous.
+                  Append_Entry (Newer, Newer_Index);
+                  Newer_Remaining := Newer_Remaining - 1;
+                  if Newer_Remaining > 0 then
+                     Newer_Index := Newer_Index + 1;
+                  end if;
+               end if;
+            end;
+         end if;
+      end loop;
+      if Output_Index /= Entry_Total + 1
+        or else Payload_Cursor /= Payload_Total + 1
+        or else not Structurally_Valid (Candidate.all)
+      then
+         Release (Candidate);
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      Value := Candidate;
+      Status := Merge_Completed;
+   exception
+      when others =>
+         Release (Candidate);
+         Value := null;
+         raise;
+   end Merge_Consecutive_SSTs;
 
    function Descriptor_Matches
      (Value             : SST;

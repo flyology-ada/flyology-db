@@ -207,6 +207,15 @@ and moved-token restoration, and reopens from only the replacement manifest's cu
 lost-response/crash/recovery witnesses for both branches; the unbounded kernel proves 26/26 TLAPS obligations while
 permitting an empty fresh-output set. No refinement theorem to the operational Ada implementation is claimed.
 
+The private version-preserving two-run merge candidate reruns the current warning-strict selected-unit gate and
+proves all 1,088 checks: 165 by flow analysis and 923 by provers, with maximum successful effort 6,890 steps and zero
+warnings, unproved or justified checks, or `pragma Assume`. The operational runtime merger remains outside those six
+selected SPARK units. Its executable boundary is the deterministic exact-entry test: same-key histories from two
+ordered nonoverlapping runs are merged newest-run-first while retaining every Put/Delete version, the exact combined
+SST encodes/decodes unchanged, and reversed ranges plus input-identity reuse publish no output. Allocation extents are
+checked sums of authenticated input shapes; run selection, publication, descriptor replacement, snapshot pruning,
+and refinement from either TLA+ lane remain outside this unit.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:
