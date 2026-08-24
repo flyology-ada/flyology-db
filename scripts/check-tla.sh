@@ -410,12 +410,12 @@ grep -q 'All 24 obligations proved.' "$temporary_root/tlaps-l0-accumulation.log"
 grep -q 'Model checking completed. No error has been found.' \
   "$temporary_root/tlc-l0-compaction.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-l0-compaction.log"
-grep -q '15 distinct states found' "$temporary_root/tlc-l0-compaction.log"
+grep -q '35 distinct states found' "$temporary_root/tlc-l0-compaction.log"
 grep -q 'The depth of the complete state graph search is 10.' \
   "$temporary_root/tlc-l0-compaction.log"
-for action in RejectOutputCapacity BeginCompaction StoreOutput ConfirmOutput \
-  StoreManifest ConfirmManifest PublishAs ResolvePublication Crash HideOutput \
-  RejectRecovery Recover
+for action in RejectOutputCapacity BeginCompaction StoreOutput ConfirmNoOutput \
+  ConfirmOutput StoreManifest ConfirmManifest PublishAs ResolvePublication \
+  Crash HideOutput RejectRecovery Recover
 do
   grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-l0-compaction.log"
 done
@@ -449,6 +449,23 @@ grep -q 'Invariant WitnessPending is violated.' \
 ! grep -q '^Warning:' "$temporary_root/tlc-l0-compaction-witness.log"
 "$model_root/validate_l0_compaction_witness.py" \
   "$temporary_root/l0-compaction-recovery.json"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-l0-compaction-empty-witness-states" \
+  -config L0CompactionEmptyRecoveryWitness.cfg \
+  -dumpTrace json "$temporary_root/l0-compaction-empty-recovery.json" \
+  L0CompactionEmptyRecoveryWitness \
+  >"$temporary_root/tlc-l0-compaction-empty-witness.log" 2>&1
+l0_compaction_empty_witness_status=$?
+set -e
+test "$l0_compaction_empty_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-l0-compaction-empty-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-l0-compaction-empty-witness.log"
+"$model_root/validate_l0_compaction_empty_witness.py" \
+  "$temporary_root/l0-compaction-empty-recovery.json"
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-l0-compaction-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/L0CompactionSafetyProof.tla" \
@@ -899,9 +916,10 @@ printf '%s\n' "  Additive L0 TLC 49 distinct states, depth 17"
 printf '%s\n' "  Additive L0 TLAPS 24/24 obligations"
 printf '%s\n' "  Additive L0 tombstone/lost-response recovery witness validated"
 printf '%s\n' "  Negative additive-L0 early-HEAD probe detected"
-printf '%s\n' "  L0 compaction TLC 15 distinct states, depth 10"
+printf '%s\n' "  L0 compaction TLC 35 distinct states, depth 10"
 printf '%s\n' "  L0 compaction TLAPS 26/26 obligations"
 printf '%s\n' "  L0 compaction lost-response recovery witness validated"
+printf '%s\n' "  L0 empty-output lost-response recovery witness validated"
 printf '%s\n' "  Negative L0-compaction early-HEAD probe detected"
 printf '%s\n' "  LSM read equivalence TLC 576 distinct states, depth 4"
 printf '%s\n' "  LSM read equivalence TLAPS 6/6 obligations"

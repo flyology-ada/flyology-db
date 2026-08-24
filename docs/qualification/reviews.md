@@ -187,8 +187,11 @@
   cover all replacement allocation classes, current-ID rejection, exact full-view entry counts, tombstone removal,
   publication order, live activation, retired-run removal, cacheless reopen, and lost immutable-output response
   reconciliation. GNATprove proves 1,084/1,084 checks. The combined TLA gate preserves every prior lane and reports
-  L0 compaction at 15 states/depth 10 and 26/26 TLAPS obligations with its witness and negative probe. Repository and
-  110-column checks pass; `gnatformat` is unavailable in the installed Alire environment.
+  L0 compaction at 35 states/depth 10 and 26/26 TLAPS obligations with ordinary and canonical-empty witnesses plus
+  the negative probe. The memory/files corpus now creates Put and tombstone L0 runs, publishes a zero-run successor,
+  removes both retired SSTs, reopens the absent value, and then publishes/reopens an exact later delta. Repository
+  and 110-column checks pass. Project-aware `gnatformat` cannot load the global preprocessing symbols, so the new
+  procedure was range-formatted at 110 columns in project-free mode without reformatting unrelated code.
 - Constants audit: the broad added-value inventory reduces to a private Boolean algorithm mode and isolated test
   identities/allocation-site geometry. Adjacent comments record their runtime/test classification and compatibility
   impact. All capacities and extents remain derived from persisted database/per-family authority; no new timeout,

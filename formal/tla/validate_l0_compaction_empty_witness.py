@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the L0 compaction recovery trace emitted by TLC."""
+"""Validate the canonical empty-output L0 compaction trace emitted by TLC."""
 
 from __future__ import annotations
 
@@ -11,8 +11,7 @@ from pathlib import Path
 EXPECTED_ACTIONS = [
     "Init",
     "BeginCompaction",
-    "StoreOutput",
-    "ConfirmOutput",
+    "ConfirmNoOutput",
     "StoreManifest",
     "ConfirmManifest",
     "LoseAcceptedResponse",
@@ -23,7 +22,7 @@ EXPECTED_ACTIONS = [
 
 
 def fail(message: str) -> None:
-    raise SystemExit(f"invalid L0-compaction witness: {message}")
+    raise SystemExit(f"invalid empty-output L0-compaction witness: {message}")
 
 
 def exact_list(value: object, expected: list[str], label: str) -> None:
@@ -63,22 +62,20 @@ def validate(states: list[dict[str, object]]) -> None:
         fail(f"unexpected action path: {actions!r}")
 
     final = states[-1]
-    if final.get("phase") != "Recovered":
-        fail("witness did not reach recovered state")
-    if final.get("empty_output") is not False:
-        fail("ordinary compaction witness selected the empty-output branch")
-    if final.get("output_capacity") != 1:
-        fail("witness did not use admitted output capacity")
+    if final.get("phase") != "Recovered" or final.get("empty_output") is not True:
+        fail("witness did not recover through the empty-output branch")
+    if final.get("output_capacity") != 0:
+        fail("empty-output compaction consumed output capacity")
 
     head = record(final.get("head"), "HEAD")
     if head.get("manifest") != "M3" or head.get("boundary") != 2:
-        fail(f"final HEAD is not the compacted authority: {head!r}")
+        fail(f"final HEAD is not the replacement authority: {head!r}")
     if head.get("generation") != 3:
         fail(f"final HEAD has the wrong generation: {head!r}")
-    exact_list(head.get("runs"), ["C1"], "HEAD runs")
+    exact_list(head.get("runs"), [], "HEAD runs")
 
     store = record(final.get("store"), "store")
-    expected_runs = ["R1", "R2", "C1"]
+    expected_runs = ["R1", "R2"]
     exact_list(store.get("runs"), expected_runs, "stored runs")
     exact_list(store.get("confirmed_runs"), expected_runs, "confirmed runs")
     exact_list(store.get("available_runs"), expected_runs, "available runs")
@@ -90,15 +87,15 @@ def validate(states: list[dict[str, object]]) -> None:
     )
 
     manifest = record(final.get("manifest"), "manifest")
-    exact_list(manifest.get("runs"), ["C1"], "M3 runs")
+    exact_list(manifest.get("runs"), [], "M3 runs")
     if manifest.get("previous") != "M2":
         fail("M3 does not retain M2 as its immutable predecessor")
 
-    expected_view = {"K1": "NoValue", "K2": "V2"}
+    expected_view = {"K1": "NoValue", "K2": "NoValue"}
     views = record(final.get("views"), "views")
     for name in ("checkpoint", "recovered", "local"):
         if views.get(name) != expected_view:
-            fail(f"{name} view is not the exact compacted view: {views.get(name)!r}")
+            fail(f"{name} view is not exactly empty: {views.get(name)!r}")
 
     identities = record(final.get("identities"), "identities")
     for name in ("checkpoint", "recovered", "local"):

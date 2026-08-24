@@ -8,7 +8,7 @@ Next relation excludes this action; TLC must reject it through Safety.
 ***************************************************************************)
 
 UnsafePublish ==
-    /\ phase = "Prepared"
+    /\ phase = "Prepared" /\ ~emptyReplacement
     /\ headManifest' = M3 /\ currentRuns' = {C1}
     /\ headGeneration' = headGeneration + 1 /\ headBoundary' = 2
     /\ checkpointView' = preparedView /\ checkpointIds' = preparedIds
@@ -18,7 +18,7 @@ UnsafePublish ==
         storedManifests, confirmedManifests, manifestPrevious, manifestRuns,
         manifestBoundary, manifestLedger, visibleView, visibleIds,
         preparedView, preparedIds, expectedGeneration, outputCapacity,
-        localView, localIds, recoveredView, recoveredIds>>
+        emptyReplacement, localView, localIds, recoveredView, recoveredIds>>
 
 NextWithProbe == Next \/ UnsafePublish
 SpecWithProbe == Init /\ [][NextWithProbe]_vars

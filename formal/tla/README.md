@@ -232,20 +232,23 @@ Milestone 2 adds the actual replay runner; until then the witness is executable 
 evidence.
 
 `L0Compaction.tla` starts from that exact two-run accumulated authority and freezes a complete replacement algorithm.
-An admitted operation captures the complete live view and identity authority, stores and confirms one compacted run
-and a successor manifest, and only then conditionally changes HEAD from the captured generation. The successor names
-only the compacted run; the two superseded runs remain confirmed immutable stored history rather than current
-authority. Zero-versus-one output capacity covers definite pre-effect rejection but is finite qualification geometry,
-not a product default. Missing compacted output after a crash fails recovery closed.
+An admitted operation captures the complete live view and identity authority. A live view stores and confirms one
+compacted run; an all-absent view confirms the canonical empty output set without consuming output capacity or
+creating a synthetic SST. Both branches store and confirm a successor manifest before conditionally changing HEAD
+from the captured generation. The successor names only the new output set; the two superseded runs remain confirmed
+immutable stored history rather than current authority. Zero-versus-one output capacity is finite qualification
+geometry, not a product default. Missing present compacted output after a crash fails recovery closed.
 `L0CompactionPartialProbe.tla` publishes HEAD immediately after planning and must violate safety.
 `L0CompactionRecoveryWitness.tla` plus `validate_l0_compaction_witness.py` checks the exact admitted, accepted-lost,
 read-only resolution, crash, and compacted-run-only recovery path.
+`L0CompactionEmptyRecoveryWitness.tla` plus its validator checks the corresponding zero-capacity, no-SST, empty-run
+manifest path while preserving exact admitted identities across accepted-lost resolution and recovery.
 
-`L0CompactionSafetyProof.tla` generalizes complete replacement to arbitrary nonempty fresh output sets and any number
-of cycles. It proves stored-before-confirmed ordering, confirmed current authority, separation of fresh/current/
-retired run sets, exact checkpoint/suffix authority, exact recovery, and disposable local state. It intentionally
-retains retired objects and proves no physical garbage collection, snapshot-retention horizon, format, capacity
-arithmetic, provider behavior, liveness, or refinement to Ada.
+`L0CompactionSafetyProof.tla` generalizes complete replacement to arbitrary fresh output sets, including empty, and
+any number of cycles. It proves stored-before-confirmed ordering, confirmed current authority, separation of
+fresh/current/retired run sets, exact checkpoint/suffix authority, exact recovery, and disposable local state. It
+intentionally retains retired objects and proves no physical garbage collection, snapshot-retention horizon, format,
+capacity arithmetic, provider behavior, liveness, or refinement to Ada.
 
 `LSMCompactionEquivalence.tla` isolates concrete point-read semantics from publication. TLC explores all 576 states
 formed by every two-key/two-value captured view and every later Put/Delete/no-mutation map. A complete replacement
@@ -323,8 +326,9 @@ TLAPS obligations. The successive-checkpoint lane adds 37 distinct states at dep
 recovery witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS
 obligations. The additive-L0 lane adds 49 distinct states at depth 17, one validated tombstone/lost-response recovery
 witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS obligations.
-The L0-compaction lane adds 15 distinct states at depth 10, one validated lost-response recovery witness, one required
-early-HEAD negative probe, full semantic-action coverage, and 26 of 26 strict TLAPS obligations.
+The L0-compaction lane adds 35 distinct states at depth 10, validated ordinary and canonical-empty lost-response
+recovery witnesses, one required early-HEAD negative probe, full semantic-action coverage, and 26 of 26 strict TLAPS
+obligations.
 The immutable-cache lane adds 623 distinct states at depth 12, one validated coalescing/loss/corruption witness, one
 required stale-generation negative probe, full semantic-action coverage, and 13 of 13 strict TLAPS obligations.
 The immutable-object retention lane adds 75,337 distinct states at depth 16, one validated protection/reclamation

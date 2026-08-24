@@ -181,8 +181,9 @@ The production mode selection, owner-stack driver, dynamic planning, provider ca
 remain executable integration boundaries rather than SPARK-proved code. The authenticated client probe drives a
 lost accepted run response through read-only same-identity reconciliation, verifies the exact replacement receipt
 and moved-token restoration, and reopens from only the replacement manifest's current runs. The L0 compaction
-15-state TLC and 26/26 TLAPS campaign remains the abstract complete-replacement proof; no refinement theorem to the
-operational Ada implementation is claimed.
+35-state TLC campaign covers both one-output and canonical-empty replacement, with independently validated
+lost-response/crash/recovery witnesses for both branches; the unbounded kernel proves 26/26 TLAPS obligations while
+permitting an empty fresh-output set. No refinement theorem to the operational Ada implementation is claimed.
 
 ## TLA+ state-machine assurance
 
@@ -241,15 +242,16 @@ operational Ada implementation is claimed.
   capacities, provider behavior, progress, compaction, and refinement remain outside this proof. The operational Ada
   planner/recovery path is qualified separately by deterministic multi-run, tombstone, old-run, independent-capacity,
   certainty, cacheless-reopen, allocation-failure, and backend tests.
-- The L0-compaction model exhausts 15 distinct states at depth 10 with nonzero semantic-action coverage. Starting
-  from the qualified two-run authority, it checks definite output-capacity rejection before effects, complete
-  compacted-run and successor-manifest confirmation, exact-generation publication, accepted-but-lost response and
+- The L0-compaction model exhausts 35 distinct states at depth 10 with nonzero semantic-action coverage. Starting
+  from the qualified two-run authority, it checks definite output-capacity rejection before effects, one-output and
+  canonical-empty successor-manifest confirmation, exact-generation publication, accepted-but-lost response and
   read-only resolution, removal of predecessor runs from current authority while retaining their immutable bytes,
-  missing-output fail-closed recovery, crash, and exact recovery from only the compacted run. Its validated ten-action
-  witness fixes the accepted-lost recovery path, and a deliberately early HEAD action must violate safety. The
-  arbitrary-set, unbounded-cycle kernel proves 26/26 strict TLAPS obligations for stored/confirmed ordering,
-  confirmed current authority, fresh/current/retired separation, exact checkpoint/suffix authority, recovery, and
-  disposable local state. A separate read-equivalence model exhausts 576 states at depth 4 across all two-key,
+  missing-present-output fail-closed recovery, crash, and exact recovery from either the compacted run or no current
+  runs. Validated ten-action ordinary and nine-action empty-output witnesses fix both accepted-lost recovery paths,
+  and a deliberately early HEAD action must violate safety. The arbitrary-set, unbounded-cycle kernel admits an empty
+  fresh-output set and proves 26/26 strict TLAPS obligations for stored/confirmed ordering, confirmed current
+  authority, fresh/current/retired separation, exact checkpoint/suffix authority, recovery, and disposable local
+  state. A separate read-equivalence model exhausts 576 states at depth 4 across all two-key,
   two-value captured views and later Put/Delete/no-mutation maps. Its validated four-action witness deletes one
   recovered live key and puts one formerly absent key; omitting a live replacement entry must violate safety. The
   arbitrary-key/value kernel proves 6/6 strict TLAPS obligations for canonical Put-only replacement, exact recovery,

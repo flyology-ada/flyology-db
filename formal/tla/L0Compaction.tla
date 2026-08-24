@@ -2,12 +2,13 @@
 EXTENDS FiniteSets, Naturals, TLC
 
 (***************************************************************************
-This finite model starts from the qualified two-run L0 authority and replaces
-it with one complete compacted run. The output and successor manifest must be
-confirmed before HEAD changes. Superseded runs remain immutable stored
-history; physical garbage collection is deliberately outside this slice.
-The zero-versus-one output capacity is finite qualification geometry, not a
-product default. No refinement to Ada is claimed.
+This finite model starts from a qualified two-run L0 authority and replaces
+it with either one complete compacted run or the canonical empty run set when
+the captured live view is wholly absent. Every present output and the
+successor manifest must be confirmed before HEAD changes. Superseded runs
+remain immutable stored history; physical garbage collection is deliberately
+outside this slice. Zero-versus-one output capacity is finite qualification
+geometry, not a product default. No refinement to Ada is claimed.
 ***************************************************************************)
 
 CONSTANTS M2, M3, R1, R2, C1, K1, K2, V2, I1, I2,
@@ -29,7 +30,7 @@ Phases == {
 }
 ActionNames == {
     "Init", "RejectOutputCapacity", "BeginCompaction", "StoreOutput",
-    "ConfirmOutput", "StoreManifest", "ConfirmManifest", "Publish",
+    "ConfirmNoOutput", "ConfirmOutput", "StoreManifest", "ConfirmManifest", "Publish",
     "LoseAcceptedResponse", "ResolvePublication", "Crash", "HideOutput",
     "RejectRecovery", "Recover"
 }
@@ -41,8 +42,11 @@ VARIABLES
     headManifest, currentRuns, headGeneration, headBoundary,
     visibleView, visibleIds, checkpointView, checkpointIds,
     laterView, laterIds, preparedView, preparedIds,
-    expectedGeneration, outputCapacity, phase,
+    expectedGeneration, outputCapacity, emptyReplacement, phase,
     localView, localIds, recoveredView, recoveredIds, lastAction
+
+TargetView == IF emptyReplacement THEN EmptyView ELSE CompactedView
+TargetRuns == IF emptyReplacement THEN {} ELSE {C1}
 
 vars == <<
     storedRuns, confirmedRuns, availableRuns,
@@ -51,12 +55,13 @@ vars == <<
     headManifest, currentRuns, headGeneration, headBoundary,
     visibleView, visibleIds, checkpointView, checkpointIds,
     laterView, laterIds, preparedView, preparedIds,
-    expectedGeneration, outputCapacity, phase,
+    expectedGeneration, outputCapacity, emptyReplacement, phase,
     localView, localIds, recoveredView, recoveredIds, lastAction
 >>
 
 Init ==
     /\ outputCapacity \in 0 .. 1
+    /\ emptyReplacement \in BOOLEAN
     /\ storedRuns = {R1, R2} /\ confirmedRuns = {R1, R2}
     /\ availableRuns = {R1, R2}
     /\ storedManifests = {M2} /\ confirmedManifests = {M2}
@@ -66,18 +71,18 @@ Init ==
     /\ manifestLedger = [m \in Manifests |-> IF m = M2 THEN {I1, I2} ELSE {}]
     /\ headManifest = M2 /\ currentRuns = {R1, R2}
     /\ headGeneration = 2 /\ headBoundary = 2
-    /\ visibleView = CompactedView /\ visibleIds = {I1, I2}
-    /\ checkpointView = CompactedView /\ checkpointIds = {I1, I2}
+    /\ visibleView = TargetView /\ visibleIds = {I1, I2}
+    /\ checkpointView = TargetView /\ checkpointIds = {I1, I2}
     /\ laterView = EmptyView /\ laterIds = {}
     /\ preparedView = EmptyView /\ preparedIds = {}
     /\ expectedGeneration = 0
     /\ phase = "Accumulated"
-    /\ localView = CompactedView /\ localIds = {I1, I2}
+    /\ localView = TargetView /\ localIds = {I1, I2}
     /\ recoveredView = EmptyView /\ recoveredIds = {}
     /\ lastAction = "Init"
 
 RejectOutputCapacity ==
-    /\ phase = "Accumulated" /\ outputCapacity = 0
+    /\ phase = "Accumulated" /\ outputCapacity = 0 /\ ~emptyReplacement
     /\ phase' = "OutputBackpressured"
     /\ lastAction' = "RejectOutputCapacity"
     /\ UNCHANGED <<storedRuns, confirmedRuns, availableRuns,
@@ -86,10 +91,12 @@ RejectOutputCapacity ==
         headGeneration, headBoundary, visibleView, visibleIds,
         checkpointView, checkpointIds, laterView, laterIds,
         preparedView, preparedIds, expectedGeneration, outputCapacity,
+        emptyReplacement,
         localView, localIds, recoveredView, recoveredIds>>
 
 BeginCompaction ==
-    /\ phase = "Accumulated" /\ outputCapacity = 1
+    /\ phase = "Accumulated"
+    /\ (emptyReplacement \/ outputCapacity = 1)
     /\ preparedView' = visibleView /\ preparedIds' = visibleIds
     /\ expectedGeneration' = headGeneration
     /\ phase' = "Prepared" /\ lastAction' = "BeginCompaction"
@@ -98,10 +105,11 @@ BeginCompaction ==
         manifestBoundary, manifestLedger, headManifest, currentRuns,
         headGeneration, headBoundary, visibleView, visibleIds,
         checkpointView, checkpointIds, laterView, laterIds, outputCapacity,
+        emptyReplacement,
         localView, localIds, recoveredView, recoveredIds>>
 
 StoreOutput ==
-    /\ phase = "Prepared"
+    /\ phase = "Prepared" /\ ~emptyReplacement
     /\ storedRuns' = storedRuns \cup {C1}
     /\ availableRuns' = availableRuns \cup {C1}
     /\ phase' = "OutputStored" /\ lastAction' = "StoreOutput"
@@ -110,10 +118,22 @@ StoreOutput ==
         headManifest, currentRuns, headGeneration, headBoundary,
         visibleView, visibleIds, checkpointView, checkpointIds,
         laterView, laterIds, preparedView, preparedIds, expectedGeneration,
-        outputCapacity, localView, localIds, recoveredView, recoveredIds>>
+        outputCapacity, emptyReplacement, localView, localIds,
+        recoveredView, recoveredIds>>
+
+ConfirmNoOutput ==
+    /\ phase = "Prepared" /\ emptyReplacement
+    /\ phase' = "OutputConfirmed" /\ lastAction' = "ConfirmNoOutput"
+    /\ UNCHANGED <<storedRuns, confirmedRuns, availableRuns,
+        storedManifests, confirmedManifests, manifestPrevious, manifestRuns,
+        manifestBoundary, manifestLedger, headManifest, currentRuns,
+        headGeneration, headBoundary, visibleView, visibleIds,
+        checkpointView, checkpointIds, laterView, laterIds,
+        preparedView, preparedIds, expectedGeneration, outputCapacity,
+        emptyReplacement, localView, localIds, recoveredView, recoveredIds>>
 
 ConfirmOutput ==
-    /\ phase = "OutputStored"
+    /\ phase = "OutputStored" /\ ~emptyReplacement
     /\ confirmedRuns' = confirmedRuns \cup {C1}
     /\ phase' = "OutputConfirmed" /\ lastAction' = "ConfirmOutput"
     /\ UNCHANGED <<storedRuns, availableRuns, storedManifests,
@@ -122,13 +142,13 @@ ConfirmOutput ==
         headGeneration, headBoundary, visibleView, visibleIds,
         checkpointView, checkpointIds, laterView, laterIds,
         preparedView, preparedIds, expectedGeneration, outputCapacity,
-        localView, localIds, recoveredView, recoveredIds>>
+        emptyReplacement, localView, localIds, recoveredView, recoveredIds>>
 
 StoreManifest ==
     /\ phase = "OutputConfirmed"
     /\ storedManifests' = storedManifests \cup {M3}
     /\ manifestPrevious' = [manifestPrevious EXCEPT ![M3] = M2]
-    /\ manifestRuns' = [manifestRuns EXCEPT ![M3] = {C1}]
+    /\ manifestRuns' = [manifestRuns EXCEPT ![M3] = TargetRuns]
     /\ manifestBoundary' = [manifestBoundary EXCEPT ![M3] = 2]
     /\ manifestLedger' = [manifestLedger EXCEPT ![M3] = {I1, I2}]
     /\ phase' = "ManifestStored" /\ lastAction' = "StoreManifest"
@@ -136,7 +156,8 @@ StoreManifest ==
         confirmedManifests, headManifest, currentRuns, headGeneration,
         headBoundary, visibleView, visibleIds, checkpointView, checkpointIds,
         laterView, laterIds, preparedView, preparedIds, expectedGeneration,
-        outputCapacity, localView, localIds, recoveredView, recoveredIds>>
+        outputCapacity, emptyReplacement, localView, localIds,
+        recoveredView, recoveredIds>>
 
 ConfirmManifest ==
     /\ phase = "ManifestStored"
@@ -147,11 +168,12 @@ ConfirmManifest ==
         manifestLedger, headManifest, currentRuns, headGeneration,
         headBoundary, visibleView, visibleIds, checkpointView, checkpointIds,
         laterView, laterIds, preparedView, preparedIds, expectedGeneration,
-        outputCapacity, localView, localIds, recoveredView, recoveredIds>>
+        outputCapacity, emptyReplacement, localView, localIds,
+        recoveredView, recoveredIds>>
 
 PublishAs(NewPhase, Action) ==
     /\ phase = "Ready" /\ headGeneration = expectedGeneration
-    /\ headManifest' = M3 /\ currentRuns' = {C1}
+    /\ headManifest' = M3 /\ currentRuns' = TargetRuns
     /\ headGeneration' = headGeneration + 1 /\ headBoundary' = 2
     /\ checkpointView' = preparedView /\ checkpointIds' = preparedIds
     /\ laterView' = EmptyView /\ laterIds' = {}
@@ -160,7 +182,7 @@ PublishAs(NewPhase, Action) ==
         storedManifests, confirmedManifests, manifestPrevious, manifestRuns,
         manifestBoundary, manifestLedger, visibleView, visibleIds,
         preparedView, preparedIds, expectedGeneration, outputCapacity,
-        localView, localIds, recoveredView, recoveredIds>>
+        emptyReplacement, localView, localIds, recoveredView, recoveredIds>>
 
 Publish == PublishAs("Published", "Publish")
 LoseAcceptedResponse == PublishAs("Unknown", "LoseAcceptedResponse")
@@ -174,7 +196,7 @@ ResolvePublication ==
         headGeneration, headBoundary, visibleView, visibleIds,
         checkpointView, checkpointIds, laterView, laterIds,
         preparedView, preparedIds, expectedGeneration, outputCapacity,
-        localView, localIds, recoveredView, recoveredIds>>
+        emptyReplacement, localView, localIds, recoveredView, recoveredIds>>
 
 Crash ==
     /\ phase = "Published"
@@ -186,10 +208,10 @@ Crash ==
         headGeneration, headBoundary, visibleView, visibleIds,
         checkpointView, checkpointIds, laterView, laterIds,
         preparedView, preparedIds, expectedGeneration, outputCapacity,
-        recoveredView, recoveredIds>>
+        emptyReplacement, recoveredView, recoveredIds>>
 
 HideOutput ==
-    /\ phase = "Crashed"
+    /\ phase = "Crashed" /\ ~emptyReplacement
     /\ availableRuns' = availableRuns \ {C1}
     /\ phase' = "OutputMissing" /\ lastAction' = "HideOutput"
     /\ UNCHANGED <<storedRuns, confirmedRuns, storedManifests,
@@ -198,7 +220,7 @@ HideOutput ==
         headGeneration, headBoundary, visibleView, visibleIds,
         checkpointView, checkpointIds, laterView, laterIds,
         preparedView, preparedIds, expectedGeneration, outputCapacity,
-        localView, localIds, recoveredView, recoveredIds>>
+        emptyReplacement, localView, localIds, recoveredView, recoveredIds>>
 
 RejectRecovery ==
     /\ phase = "OutputMissing" /\ C1 \notin availableRuns
@@ -209,10 +231,10 @@ RejectRecovery ==
         headGeneration, headBoundary, visibleView, visibleIds,
         checkpointView, checkpointIds, laterView, laterIds,
         preparedView, preparedIds, expectedGeneration, outputCapacity,
-        localView, localIds, recoveredView, recoveredIds>>
+        emptyReplacement, localView, localIds, recoveredView, recoveredIds>>
 
 Recover ==
-    /\ phase = "Crashed" /\ C1 \in availableRuns
+    /\ phase = "Crashed" /\ TargetRuns \subseteq availableRuns
     /\ recoveredView' = checkpointView /\ recoveredIds' = checkpointIds
     /\ localView' = checkpointView /\ localIds' = checkpointIds
     /\ phase' = "Recovered" /\ lastAction' = "Recover"
@@ -221,11 +243,13 @@ Recover ==
         manifestBoundary, manifestLedger, headManifest, currentRuns,
         headGeneration, headBoundary, visibleView, visibleIds,
         checkpointView, checkpointIds, laterView, laterIds,
-        preparedView, preparedIds, expectedGeneration, outputCapacity>>
+        preparedView, preparedIds, expectedGeneration, outputCapacity,
+        emptyReplacement>>
 
 Next ==
     \/ RejectOutputCapacity \/ BeginCompaction \/ StoreOutput
-    \/ ConfirmOutput \/ StoreManifest \/ ConfirmManifest \/ Publish
+    \/ ConfirmNoOutput \/ ConfirmOutput \/ StoreManifest \/ ConfirmManifest
+    \/ Publish
     \/ LoseAcceptedResponse \/ ResolvePublication \/ Crash \/ HideOutput
     \/ RejectRecovery \/ Recover
 
@@ -250,6 +274,7 @@ TypeOK ==
     /\ laterIds \subseteq Identities /\ preparedIds \subseteq Identities
     /\ localIds \subseteq Identities /\ recoveredIds \subseteq Identities
     /\ expectedGeneration \in 0 .. 2 /\ outputCapacity \in 0 .. 1
+    /\ emptyReplacement \in BOOLEAN
     /\ phase \in Phases /\ lastAction \in ActionNames
 
 ConfirmedStored ==
@@ -262,7 +287,7 @@ ExactManifests ==
     /\ manifestLedger[M2] = {I1, I2}
     /\ (M3 \in storedManifests =>
           /\ manifestPrevious[M3] = M2
-          /\ manifestRuns[M3] = {C1}
+          /\ manifestRuns[M3] = TargetRuns
           /\ manifestBoundary[M3] = 2
           /\ manifestLedger[M3] = {I1, I2})
 
@@ -273,18 +298,19 @@ HeadExact ==
     /\ headBoundary = manifestBoundary[headManifest]
     /\ IF headManifest = M2
           THEN currentRuns = {R1, R2}
-          ELSE /\ headManifest = M3 /\ currentRuns = {C1}
+          ELSE /\ headManifest = M3 /\ currentRuns = TargetRuns
 
 AuthorityExact ==
-    /\ visibleView = CompactedView /\ visibleIds = {I1, I2}
-    /\ checkpointView = CompactedView /\ checkpointIds = {I1, I2}
+    /\ visibleView = TargetView /\ visibleIds = {I1, I2}
+    /\ checkpointView = TargetView /\ checkpointIds = {I1, I2}
     /\ laterView = EmptyView /\ laterIds = {}
     /\ (phase \in {"Prepared", "OutputStored", "OutputConfirmed",
                     "ManifestStored", "Ready"} =>
-          preparedView = CompactedView /\ preparedIds = {I1, I2})
+          preparedView = TargetView /\ preparedIds = {I1, I2})
 
 BackpressureNoEffects ==
     phase = "OutputBackpressured" =>
+      /\ ~emptyReplacement
       /\ storedRuns = {R1, R2} /\ confirmedRuns = {R1, R2}
       /\ storedManifests = {M2} /\ confirmedManifests = {M2}
       /\ headManifest = M2 /\ currentRuns = {R1, R2}
@@ -296,9 +322,9 @@ RetiredRunsAreHistory ==
 
 RecoveryExact ==
     phase = "Recovered" =>
-      /\ recoveredView = CompactedView /\ recoveredIds = {I1, I2}
-      /\ localView = CompactedView /\ localIds = {I1, I2}
-      /\ currentRuns = {C1} /\ C1 \in availableRuns
+      /\ recoveredView = TargetView /\ recoveredIds = {I1, I2}
+      /\ localView = TargetView /\ localIds = {I1, I2}
+      /\ currentRuns = TargetRuns /\ TargetRuns \subseteq availableRuns
 
 MissingOutputFailsClosed ==
     phase = "RecoveryRejected" =>

@@ -1,17 +1,19 @@
--------------------- MODULE L0CompactionRecoveryWitness --------------------
+----------------- MODULE L0CompactionEmptyRecoveryWitness -----------------
 EXTENDS L0Compaction
 
 (***************************************************************************
-This witness selects admitted compaction, an accepted-lost HEAD response,
-read-only resolution, crash, and exact recovery from only C1. Excluding the
-direct publish makes that execution path part of the checked evidence.
+This witness selects an all-tombstoned captured view, consumes no output
+capacity and creates no SST, publishes the canonical empty run set through an
+accepted-lost HEAD response, resolves read-only, crashes, and recovers the
+exact empty view. Excluding direct publication makes the path checked
+evidence rather than an unconstrained reachability claim.
 ***************************************************************************)
 
-InitWitness == Init /\ outputCapacity = 1 /\ ~emptyReplacement
+InitWitness == Init /\ outputCapacity = 0 /\ emptyReplacement
 ResolvedCrash == lastAction = "ResolvePublication" /\ Crash
 
 NextWitness ==
-    \/ BeginCompaction \/ StoreOutput \/ ConfirmOutput \/ StoreManifest
+    \/ BeginCompaction \/ ConfirmNoOutput \/ StoreManifest
     \/ ConfirmManifest \/ LoseAcceptedResponse \/ ResolvePublication
     \/ ResolvedCrash \/ Recover
 
@@ -19,17 +21,17 @@ SpecWitness == InitWitness /\ [][NextWitness]_vars
 
 WitnessComplete ==
     /\ lastAction = "Recover" /\ phase = "Recovered"
-    /\ outputCapacity = 1 /\ ~emptyReplacement
-    /\ headManifest = M3 /\ currentRuns = {C1}
+    /\ outputCapacity = 0 /\ emptyReplacement
+    /\ headManifest = M3 /\ currentRuns = {}
     /\ headBoundary = 2 /\ headGeneration = 3
-    /\ storedRuns = {R1, R2, C1} /\ confirmedRuns = {R1, R2, C1}
-    /\ availableRuns = {R1, R2, C1}
+    /\ storedRuns = {R1, R2} /\ confirmedRuns = {R1, R2}
+    /\ availableRuns = {R1, R2}
     /\ storedManifests = {M2, M3}
     /\ confirmedManifests = {M2, M3}
-    /\ manifestPrevious[M3] = M2 /\ manifestRuns[M3] = {C1}
-    /\ checkpointView = CompactedView /\ checkpointIds = {I1, I2}
-    /\ recoveredView = CompactedView /\ recoveredIds = {I1, I2}
-    /\ localView = CompactedView /\ localIds = {I1, I2}
+    /\ manifestPrevious[M3] = M2 /\ manifestRuns[M3] = {}
+    /\ checkpointView = EmptyView /\ checkpointIds = {I1, I2}
+    /\ recoveredView = EmptyView /\ recoveredIds = {I1, I2}
+    /\ localView = EmptyView /\ localIds = {I1, I2}
 
 WitnessPending == ~WitnessComplete
 

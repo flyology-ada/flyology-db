@@ -244,10 +244,12 @@ capacity arithmetic, and a refinement relation to Ada remain outside this kernel
 ## Frozen L0 compaction boundary
 
 Compaction is a complete-authority replacement, not an in-place rewrite and not physical garbage collection. It
-captures one quiescent committed checkpoint view and its exact admitted-identity authority, emits a fresh nonempty
-set of complete immutable outputs, and builds a successor manifest that names only those outputs at the unchanged
-replay boundary. Every output and the immutable manifest must be stored and confirmed before the exact-generation
-conditional HEAD transition. A definite capacity or allocation failure before provider admission publishes nothing.
+captures one quiescent committed checkpoint view and its exact admitted-identity authority, emits a fresh set of
+complete immutable outputs when the captured view contains live keys, and builds a successor manifest that names only
+those outputs at the unchanged replay boundary. When every captured key is absent after tombstone application, the
+canonical replacement is an empty run set: it creates no synthetic SST but still publishes and confirms the immutable
+successor manifest before the exact-generation conditional HEAD transition. Every present output must likewise be
+stored and confirmed first. A definite capacity or allocation failure before provider admission publishes nothing.
 
 Once HEAD conclusively names the successor, prior current runs are no longer recovery or visibility authority. They
 remain immutable stored history; this decision does not authorize their deletion, set an age threshold, or claim that
@@ -269,9 +271,11 @@ reconciliation rebuilds the identical replacement bytes and identities; it is no
 Cacheless recovery from the compacted successor validates only its named outputs and exact manifest authority; it
 does not reread depublicized predecessors to reconstruct current state. A missing, malformed, corrupt, misbound, or
 unconfirmed compacted output fails closed and installs no local state. The formal finite model exercises definite
-output-capacity rejection, accepted-lost publication, depublication with retained old bytes, missing-output rejection,
-crash, and exact recovery. The unbounded TLAPS kernel proves the corresponding abstract replacement invariants. No
-TLA+-to-Ada refinement is claimed. Naming and exposing a public compaction trigger remains a separate API unit.
+output-capacity rejection, ordinary and canonical-empty replacement, accepted-lost publication, depublication with
+retained old bytes, missing-output rejection for a present output, crash, and exact recovery. Separate
+machine-validated traces cover ordinary and zero-output recovery. The unbounded TLAPS kernel permits arbitrary fresh
+output sets including empty and proves the corresponding abstract replacement invariants. No TLA+-to-Ada refinement
+is claimed. Naming and exposing a public compaction trigger remains a separate API unit.
 
 `LSMCompactionEquivalence.tla` separately closes the concrete point-read equation that the publication model leaves
 abstract. For every finite captured view in its qualification geometry, the replacement run contains the exact live

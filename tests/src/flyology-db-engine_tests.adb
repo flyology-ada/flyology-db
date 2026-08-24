@@ -2648,6 +2648,205 @@ package body Flyology.DB.Engine_Tests is
          "database-wide L0 capacity");
    end Test_L0_Accumulation_Capacity;
 
+   procedure Test_Empty_L0_Compaction
+     (Backend : not null access Backends.Backend'Class; Prefix : String; Identity_Base : Natural)
+   is
+      Context     : aliased Storage_Context;
+      Item        : Database;
+      Txn         : Transaction;
+      Commit_Info : Commit_Receipt;
+      Create_Info : Create_Receipt;
+      Flush_Info  : Flush_Receipt;
+      Data        : Value;
+      Result      : Outcome_Code;
+      Planned_Runs, Planned_Identities, Family_Runs, Family_Entries : Natural;
+      Planned_Replay                                                : Sequence_Number;
+      Planned_Run_ID                                                : Identifier;
+      Before_Batches, Before_Runs, Before_Manifests, Before_Heads   : Natural;
+      After_Batches, After_Runs, After_Manifests, After_Heads       : Natural;
+      --  The caller supplies a disjoint 100-ID namespace. +1 is Create,
+      --  +2/+3 are Put/Delete, +10/+20 are their L0 runs, +11/+21 are
+      --  manifests, +12/+22 are HEAD transitions, +30 is the intentionally
+      --  unused replacement-run identity, +31/+32 are its manifest/transition,
+      --  and +40..+43 establish the later delta. This is deterministic corpus
+      --  identity geometry, not database identity policy.
+      Database_ID : constant Database_Identifier :=
+        Database_Identifier (Numbered_ID (Identity_Base));
+      First_Run   : constant Identifier := Numbered_ID (Identity_Base + 10);
+      Second_Run  : constant Identifier := Numbered_ID (Identity_Base + 20);
+      --  One family, two current L0 slots, and one maximum-sized entry are the
+      --  minimum persisted geometry for the Put-then-tombstone replacement
+      --  witness. The database-wide run ceiling matches that family authority;
+      --  all other limits retain the shared engine corpus policy.
+      Limits : constant Database_Limits :=
+        (Default_Limits with delta
+           Maximum_Column_Families => 1,
+           Maximum_Total_L0_Runs => 2);
+      Families : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family (1, [Byte (Character'Pos ('e'))], 8, 8, 16, 1, 2)];
+      First_Runs : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, First_Run)];
+      Second_Runs : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, Second_Run)];
+      Empty_Replacement : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 30))];
+      Later_Runs : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 40))];
+      --  Two successful commits establish both the replay boundary and exact
+      --  identity ledger represented by the empty successor manifest.
+      Expected_Replay_Boundary : constant Sequence_Number := 2;
+      Expected_Identity_Total  : constant Natural := 2;
+      --  These one-byte payloads distinguish the retired live value from the
+      --  post-empty-compaction delta; they are read witnesses, not DB policy.
+      Item_Key    : constant Key := To_Key ([1]);
+      First_Value : constant Value := To_Value ([2]);
+      Later_Value : constant Value := To_Value ([3]);
+   begin
+      Bind_Context (Context, Backend, Prefix);
+      Create
+        (Item,
+         Context'Access,
+         Database_ID,
+         Manifest_ID_For (Numbered_ID (Identity_Base + 1)),
+         Numbered_ID (Identity_Base + 1),
+         Limits,
+         Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "empty-compaction database create failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 2), Txn, Result);
+      Expect (Result, Success, "empty-compaction Put transaction begin failed");
+      Put (Item, Txn, 1, Item_Key, First_Value, Result);
+      Expect (Result, Success, "empty-compaction Put buffer failed");
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, Success, "empty-compaction Put commit failed");
+      Flush
+        (Item,
+         First_Runs,
+         Numbered_ID (Identity_Base + 11),
+         Numbered_ID (Identity_Base + 12),
+         Test_Operation_Timeout,
+         Receipt => Flush_Info,
+         Result  => Result);
+      Expect (Result, Success, "empty-compaction first Flush failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 3), Txn, Result);
+      Expect (Result, Success, "empty-compaction Delete transaction begin failed");
+      Delete (Item, Txn, 1, Item_Key, Result);
+      Expect (Result, Success, "empty-compaction Delete buffer failed");
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, Success, "empty-compaction Delete commit failed");
+      Flush
+        (Item,
+         Second_Runs,
+         Numbered_ID (Identity_Base + 21),
+         Numbered_ID (Identity_Base + 22),
+         Test_Operation_Timeout,
+         Receipt => Flush_Info,
+         Result  => Result);
+      Expect (Result, Success, "empty-compaction tombstone Flush failed");
+
+      Testing.Build_Compaction_Checkpoint
+        (Item,
+         Empty_Replacement,
+         Numbered_ID (Identity_Base + 31),
+         Numbered_ID (Identity_Base + 32),
+         1,
+         Planned_Runs,
+         Planned_Identities,
+         Planned_Replay,
+         Family_Runs,
+         Planned_Run_ID,
+         Family_Entries,
+         Result);
+      if Result /= Success
+        or else Planned_Runs /= 0
+        or else Planned_Identities /= Expected_Identity_Total
+        or else Planned_Replay /= Expected_Replay_Boundary
+        or else Family_Runs /= 0
+        or else Planned_Run_ID /= Zero_Identifier
+        or else Family_Entries /= 0
+      then
+         raise Program_Error with "all-tombstoned compaction plan was not the canonical empty replacement";
+      end if;
+
+      Testing.Publication_Counts
+        (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+      Testing.Publish_Compaction
+        (Item,
+         Empty_Replacement,
+         Numbered_ID (Identity_Base + 31),
+         Numbered_ID (Identity_Base + 32),
+         Flush_Info,
+         Result);
+      Expect (Result, Success, "empty L0 replacement publication failed");
+      if not Testing.Receipt_Replaces_Current_Runs (Flush_Info)
+        or else Flush_Receipt_Run_Total (Flush_Info) /= Empty_Replacement'Length
+        or else Flush_Receipt_Run (Flush_Info, 1) /= Empty_Replacement (1)
+        or else Flush_Receipt_Replay_Boundary (Flush_Info) /= Expected_Replay_Boundary
+      then
+         raise Program_Error with "empty replacement receipt lost its reconciliation input";
+      end if;
+      Testing.Publication_Counts
+        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      if After_Batches /= Before_Batches
+        or else After_Runs /= Before_Runs
+        or else After_Manifests /= Before_Manifests + 1
+        or else After_Heads /= Before_Heads + 1
+      then
+         raise Program_Error with "empty replacement published an SST or skipped its authority objects";
+      end if;
+
+      Close (Item, Result);
+      Expect (Result, Success, "empty-compaction database close failed");
+      Testing.Remove_Run (Context, First_Run, Result);
+      Expect (Result, Success, "first retired run removal failed");
+      Testing.Remove_Run (Context, Second_Run, Result);
+      Expect (Result, Success, "second retired run removal failed");
+      Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "zero-run manifest did not reopen without retired SSTs");
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 40), Txn, Result);
+      Expect (Result, Success, "zero-run recovery read begin failed");
+      Get (Item, Txn, 1, Item_Key, Data, Result);
+      if Result /= Not_Found or else Data.Length /= 0 then
+         raise Program_Error with "zero-run recovery resurrected a compacted tombstone";
+      end if;
+      Rollback (Txn, Result);
+      Expect (Result, Success, "zero-run recovery read rollback failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 41), Txn, Result);
+      Expect (Result, Success, "post-empty delta transaction begin failed");
+      Put (Item, Txn, 1, Item_Key, Later_Value, Result);
+      Expect (Result, Success, "post-empty delta Put failed");
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, Success, "post-empty delta commit failed");
+      Flush
+        (Item,
+         Later_Runs,
+         Numbered_ID (Identity_Base + 42),
+         Numbered_ID (Identity_Base + 43),
+         Test_Operation_Timeout,
+         Receipt => Flush_Info,
+         Result  => Result);
+      Expect (Result, Success, "post-empty delta Flush failed");
+      Close (Item, Result);
+      Expect (Result, Success, "post-empty delta close failed");
+      Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "post-empty delta did not reopen");
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 44), Txn, Result);
+      Expect (Result, Success, "post-empty recovered read begin failed");
+      Get (Item, Txn, 1, Item_Key, Data, Result);
+      if Result /= Success or else Data /= Later_Value then
+         raise Program_Error with "post-empty delta did not become exact recovery authority";
+      end if;
+      Rollback (Txn, Result);
+      Expect (Result, Success, "post-empty recovered read rollback failed");
+      Close (Item, Result);
+      Expect (Result, Success, "post-empty recovered database close failed");
+   end Test_Empty_L0_Compaction;
+
    procedure Test_Flush_Certainty (Backend : not null access Backends.Backend'Class; Prefix : String) is
       --  Seven disjoint 100-ID fixture domains cover immutable-object
       --  uncertainty, HEAD uncertainty, activation failure, activation
@@ -6806,6 +7005,9 @@ package body Flyology.DB.Engine_Tests is
          Test_Manifest_And_Family_API (Store'Access);
          Test_Checkpoint_Recovery_Failures (Store'Access);
          Test_L0_Accumulation_Capacity (Store'Access);
+         --  Disjoint 100-ID domains keep the memory and files witnesses
+         --  independently diagnosable; they are test namespace choices only.
+         Test_Empty_L0_Compaction (Store'Access, "memory-empty-compaction", 32_600);
          Test_Flush_Certainty (Store'Access, "memory-flush");
          Test_Create_Publication (Store'Access);
          Test_Lower_Live_Budgets (Store'Access);
@@ -6852,6 +7054,9 @@ package body Flyology.DB.Engine_Tests is
             Test_Manifest_And_Family_API (Store'Access);
             Test_Checkpoint_Recovery_Failures (Store'Access);
             Test_L0_Accumulation_Capacity (Store'Access);
+            --  This second domain is the files-backend counterpart of the
+            --  memory fixture above and establishes no database identity rule.
+            Test_Empty_L0_Compaction (Store'Access, "files-empty-compaction", 32_700);
             Test_Flush_Certainty (Store'Access, "files-flush");
             Test_Snapshot_Write_Validation (Store'Access);
             Test_Serializable_Point_Validation (Store'Access, "files-serializable-points");

@@ -3,12 +3,12 @@ EXTENDS Naturals
 
 (***************************************************************************
 This unbounded kernel permits arbitrarily many complete L0 replacements.
-Each cycle captures exact visible and identity authority, confirms a nonempty
-set of new immutable outputs and a successor manifest, then atomically
-replaces current run authority at the captured generation. Superseded runs
-remain confirmed immutable history. Concrete merge behavior, formats,
-capacities, provider outcomes, physical garbage collection, and refinement to
-Ada remain outside this proof.
+Each cycle captures exact visible and identity authority, confirms every new
+immutable output (including the canonical empty output set) and a successor
+manifest, then atomically replaces current run authority at the captured
+generation. Superseded runs remain confirmed immutable history. Concrete merge
+behavior, formats, capacities, provider outcomes, physical garbage collection,
+and refinement to Ada remain outside this proof.
 ***************************************************************************)
 
 CONSTANTS ManifestIds, RunIds, Transactions, Identities, InitialState,
@@ -94,7 +94,7 @@ ConfirmManifest(m) ==
         recoveredIds, replayedState, replayedIds>>
 
 BeginCompaction(outputs) ==
-    /\ outputs \in SUBSET (RunIds \ storedRuns) /\ outputs # {}
+    /\ outputs \in SUBSET (RunIds \ storedRuns)
     /\ phase \in StablePhases
     /\ preparedState' = visibleState /\ preparedIds' = visibleIds
     /\ preparedRuns' = outputs /\ expectedGeneration' = headGeneration
@@ -108,7 +108,7 @@ BeginCompaction(outputs) ==
 
 Publish(m) ==
     /\ m \in confirmedManifests /\ preparedRuns \subseteq confirmedRuns
-    /\ preparedRuns # {} /\ phase = "Preparing"
+    /\ phase = "Preparing"
     /\ headGeneration = expectedGeneration
     /\ headManifest' = m /\ currentRuns' = preparedRuns
     /\ retiredRuns' = retiredRuns \cup currentRuns
@@ -205,7 +205,6 @@ AuthorityIsExactPartition ==
 
 PreparationIsExact == phase # "Preparing" \/
     (preparedState = visibleState /\ preparedIds = visibleIds
-        /\ preparedRuns # {}
         /\ preparedRuns \cap (currentRuns \cup retiredRuns) = {})
 
 RecoveryIsExact == phase # "Recovered" \/
