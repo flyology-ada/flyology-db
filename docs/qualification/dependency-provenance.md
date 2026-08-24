@@ -5,8 +5,8 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `82780e41632703df5efaa73356d3b2b53a598702`
-- Commit subject: `Problem: ListMultipartUploads cannot compose as a bounded discovery read`
+- Commit: `c94239db8b588f003d637d787515e3c90c233ca0`
+- Commit subject: `Problem: CopyObject cannot compose without losing publication certainty`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
@@ -26,11 +26,12 @@ deliberately after the Flyology runtime preparer and this repository's gates qua
 The dependency includes the reviewed backend-neutral conditional publication contract, synchronous conditional Put
 and whole Get operations, caller-owned `Client.Scoped` conditional Put plus generation-bound whole/range Get, Head,
 Delete, CreateMultipartUpload, UploadPart preparation, CompleteMultipartUpload, and AbortMultipartUpload operations,
-bounded ListParts recovery reads, bounded ListMultipartUploads discovery reads, retained SQLite generations across
-ordinary and multipart publication, and generation-aware object mutation/read coverage. The buffer-owned synchronous
-calls are waits over those same scoped state machines. Both multipart listing operations own their prepared request,
-retain response bytes only to the XML decoder's maintained document bound, validate the successful response's exact
-request echoes including Requester Pays admission, and preserve typed HTTP terminal failure and admission certainty.
+bounded ListParts recovery reads, bounded ListMultipartUploads discovery reads, CopyObject, retained SQLite
+generations across ordinary and multipart publication, and generation-aware object mutation/read coverage. The
+buffer-owned synchronous calls are waits over those same scoped state machines. Both multipart listing operations own
+their prepared request, retain response bytes only to the XML decoder's maintained document bound, validate the
+successful response's exact request echoes including Requester Pays admission, and preserve typed HTTP terminal
+failure and admission certainty.
 ListMultipartUploads additionally binds the paired key/upload cursor while documenting that separate pages do not
 share a service snapshot. Multipart completion
 owns its exact serialized XML and classifies every complete rejection or post-admission failure as unknown until
@@ -38,6 +39,9 @@ destination and exact-upload read-only reconciliation. Multipart abort likewise 
 definite success and requires exact-upload read-only reconciliation for every complete rejection or post-admission
 failure. Neither path replays, spawns a helper, or retains borrowed input. Flyology.DB composes conditional Put and
 whole Get directly for its additive `Flush_Operation`, preserving the synchronous receipt and certainty mapping.
+CopyObject likewise uses one empty non-replayable source and a bounded XML sink. Only exact validated success is
+published; precondition failure is typed, while any possibly admitted transport, response-limit, decoding, or
+embedded-error ambiguity remains unknown and requires generation-bound destination reconciliation before retry.
 Object Storage records no external HTTP/QUIC pin at this boundary; the generated DB solve likewise marks every
 HTTP/QUIC lock entry unpinned.
 

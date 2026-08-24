@@ -1,5 +1,32 @@
 # Review record
 
+## Accepted composable CopyObject dependency qualification
+
+- Parent: effect-free partial-merge successor commit `f5574b7`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage clone from
+  `82780e41632703df5efaa73356d3b2b53a598702` to the explicitly qualified local-only boundary
+  `c94239db8b588f003d637d787515e3c90c233ca0`. The clean author checkout remains read-only coordination state, the
+  root filesystem path pin remains unchanged, and no DB declaration, format, allocation limit, task, retry,
+  compaction policy, or publication protocol changes in this unit.
+- Surface and ownership: the dependency adds caller-owned `Copy_Operation`, constructor and reusable `Start` forms,
+  typed `Finish`, and a synchronous result overload that literally waits on the same owner-driven state machine. It
+  owns the prepared request, uses a one-shot empty source and XML-limit-bounded sink, retains no caller borrow after
+  request preparation, has one HTTP child, and performs no replay or helper-task scheduling.
+- Certainty boundary: exact validated completion is `Published`, and exact HTTP 412 is `Precondition_Failed`.
+  Possibly admitted transport loss, invalid or oversized response, malformed embedded HTTP-200 error, and other
+  post-admission failures remain `Outcome_Unknown`; a caller must reconcile with a generation-bound whole destination
+  Get before retry. Flyology.DB does not expose CopyObject, so qualification adds no DB copy or reconciliation policy.
+- Verification: the maintained deterministic suite rebuilds the complete DB/Object Storage/XML/HTTP/QUIC closure and
+  exercises local engine, authenticated client, filesystem crash/recovery, comparative adapters, and repository
+  provenance against the exact clean clone above. The warning-strict DB proof gate recompiles the dependency closure;
+  it proves 1,090/1,090 DB checks (166 flow, 924 prover), with zero warnings, unproved/justified checks, or
+  `pragma Assume` and clean pre/post process audits. It does not substitute upstream's reported 936/936 proof for DB
+  evidence.
+- Findings cycle: API compatibility, limited-operation ownership, empty-source and sink lifetime, cancellation and
+  finalization drain, response bounds, embedded-success error handling, publication/admission certainty,
+  author-checkout isolation, constants, documentation, and unnecessary-surface review finds no remaining P0, P1,
+  P2, or P3 issue. Historical review entries retain the exact dependency used by their campaigns.
+
 ## Accepted effect-free partial-merge successor candidate
 
 - Parent: bounded composable ListMultipartUploads dependency qualification commit `257a530`.
