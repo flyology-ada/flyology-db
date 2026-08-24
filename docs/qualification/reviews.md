@@ -1,5 +1,27 @@
 # Review record
 
+## Accepted multipart-abort Object Storage qualification
+
+- Parent: multipart-completion dependency qualification commit `9b20428`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage clone from
+  `aeb10422ba8caafc7b3eda3eceaa9619fddbd005` to the explicitly qualified local-only boundary
+  `425acbaa41833ed0613e277f50f68576b54f81f3`. The dirty author checkout remains read-only coordination state, the root
+  filesystem path pin remains unchanged, and no DB declaration, format, allocation limit, retry, task, or publication
+  policy changes in this unit.
+- Surface and certainty: the dependency adds caller-owned scoped AbortMultipartUpload and a synchronous result overload
+  that literally waits on the same state machine. Only validated HTTP 204 is `Multipart_Aborted`; definite
+  non-admission and pre-admission cancellation retain distinct spellings. Every complete rejection or post-admission
+  failure is abort-outcome unknown and requires exact-upload read-only reconciliation. Its one-shot empty source is
+  not replayed, no helper task is created, and no caller borrow survives the operation lifetime.
+- Verification: the DB root build and maintained deterministic suite compile the complete DB/Object Storage/XML/HTTP/
+  QUIC closure and exercise local engine, authenticated client, filesystem crash/recovery, the 32-case comparative
+  adapter suite, and pinned TidesDB 4/4. Repository checks bind the campaign to the exact clean clone above. The
+  warning-strict DB proof gate recompiles the dependency closure and proves all unchanged 1,088 selected checks; this
+  unit does not substitute or claim upstream proof as DB evidence.
+- Findings cycle: dependency provenance, API compatibility, abort certainty, empty-source lifetime, indexed transport
+  resolution, author-checkout isolation, constants, tests, documentation, and unnecessary-surface review finds no
+  remaining P0, P1, P2, or P3 issue. Historical review entries retain the exact dependency used by their campaigns.
+
 ## Accepted multipart-completion Object Storage qualification
 
 - Parent: client-bound synchronous Flush convergence commit `5b30cdd`.
