@@ -5,11 +5,11 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `386865021321bf95b133efbaab4d8e77086cac0b`
-- Commit subject: `Problem: Object generations cannot be retained or selected`
+- Commit: `cad6f37d8e3370b13e4462720858c7ac7ec7e311`
+- Commit subject: `Problem: Version listings cannot project common prefixes`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC source: immutable Flyology.HTTP commit
-  `db0346bbd5866a740362381c72ba2f9b4579c12d`
+  `98c0e26f7665df4fecc299abd96ca5827590f0f8`
 - Observed: 2026-08-23, America/Vancouver
 
 The dependency is local-only. Before a deterministic campaign, update the clean clone by fast-forward from its local
@@ -24,10 +24,11 @@ deliberately after the Flyology runtime preparer and this repository's gates qua
 
 The dependency includes the reviewed backend-neutral conditional publication contract, synchronous conditional Put
 and whole Get operations, and caller-owned `Client.Scoped` conditional Put plus generation-bound whole/range Get and
-Head operations. This DB slice still binds only the backend-neutral synchronous interface; adopting the composable
-surface remains a later focused review unit over the same outcome and ownership core. The dependency currently pins
-the temporary HTTP PR #33 commit above and neither repository may be published from this campaign until Object
-Storage records the merged/dev-index no-pin handoff.
+Head operations. The buffer-owned synchronous calls are waits over those same scoped state machines. This DB slice
+still binds only the backend-neutral synchronous interface; adopting the composable surface remains a later focused
+review unit over the same outcome and ownership core. The dependency currently pins the temporary HTTP PR #33 commit
+above and neither repository may be published from this campaign until Object Storage records the merged/dev-index
+no-pin handoff.
 
 The dependency's retained proof report at its qualified final base proves 936/936 checks: 180 flow and 756 prover,
 with zero warnings, unproved or justified checks, or `Assume` statements. Flyology.DB reruns its own repository,
