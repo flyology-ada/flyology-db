@@ -47,7 +47,10 @@ Put and Delete history have equal conflict authority without allocating a theore
 than the retained checkpoint boundary rejects conservatively because compacted tombstones can erase negative
 evidence. An explicit commit group is one atomic co-commit unit: members validate independently against external
 history, while existing deterministic member order resolves overlapping member writes. `Get` still returns the
-latest confirmed value, so fixed-snapshot reads are not yet operational and Milestone 3 remains pending.
+newest buffered mutation first. Otherwise it searches retained exact committed history for the newest value no later
+than the Begin sequence, then falls back to exact checkpoint-base descriptors allocated lazily from authenticated SST
+entry counts. A snapshot older than the retained checkpoint boundary returns `Conflict`; it never substitutes latest
+state or incomplete negative evidence. Milestone 3 remains pending on serializable read/range tracking.
 
 Serializable mode will additionally record point reads and normalized scan ranges and reject a post-snapshot write
 that intersects either. The initial serializable validator may conservatively reject additional transactions but may

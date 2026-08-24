@@ -1278,6 +1278,7 @@ package body Flyology.DB.Engine_Tests is
       Allocation_Item                            : Database;
       Txn                                        : Transaction;
       Ancient                                    : Transaction;
+      Snapshot_Reader                            : Transaction;
       Receipt                                    : Commit_Receipt;
       Create_Info                                : Create_Receipt;
       Family_By_ID, Family_By_Name, Stale_Family : Column_Family;
@@ -1336,8 +1337,9 @@ package body Flyology.DB.Engine_Tests is
       Database_ID                                : constant Database_Identifier := DB_ID (200);
       Manifest_ID                                : constant Identifier := ID (201);
       Transition                                 : constant Identifier := ID (202);
-      --  This same-width replacement isolates last-write sequence retention;
-      --  it adds no key/value capacity or public default.
+      --  These same-width values isolate checkpoint-base versus suffix
+      --  selection; they add no key/value capacity or public default.
+      Original_Value                             : constant Value := To_Value ([1, 2, 3]);
       Replacement_Value                          : constant Value := To_Value ([3, 2, 1]);
       --  This stable test run identity is supplied by the operation fixture;
       --  changing it affects only the unpublished SST-builder corpus.
@@ -1348,12 +1350,14 @@ package body Flyology.DB.Engine_Tests is
       Checkpoint_Run_Map                         : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (7, ID (224)), Configure_Checkpoint_Run (2, First_Run_ID)];
       --  Stable caller-owned checkpoint object and transition identities.
-      --  IDs 227/228 belong to the pre-Flush survival/history-boundary
-      --  witnesses; all four values are operation fixtures, not defaults.
+      --  IDs 227..229 belong to the pre-Flush survival/history-boundary and
+      --  post-reopen fixed-snapshot witnesses; these are operation fixtures,
+      --  not defaults.
       Checkpoint_Manifest_ID                     : constant Identifier := ID (225);
       Checkpoint_Transition_ID                   : constant Identifier := ID (226);
       Survivor_Transaction_ID                    : constant Transaction_Identifier := TX_ID (227);
       Ancient_Transaction_ID                     : constant Transaction_Identifier := TX_ID (228);
+      Snapshot_Reader_ID                         : constant Transaction_Identifier := TX_ID (229);
 
       procedure Expect_Live_LSM_Authority
         (Target : in out Database; Expected_Replay : Sequence_Number; Context_Text : String)
@@ -1506,7 +1510,7 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "pre-history-boundary transaction begin failed");
       Begin_Transaction (Item, TX_ID (203), Txn, Result);
       Expect (Result, Success, "family-limit transaction begin failed");
-      Put (Item, Txn, Family_By_ID, To_Key ([16#00#, 16#FF#]), To_Value ([1, 2, 3]), Result);
+      Put (Item, Txn, Family_By_ID, To_Key ([16#00#, 16#FF#]), Original_Value, Result);
       Expect (Result, Success, "exact family key/value limits were rejected");
       Put (Item, Txn, Family_By_ID, To_Key ([1, 2, 3]), To_Value ([1]), Result);
       Expect (Result, Capacity_Exceeded, "family key limit plus one was admitted");
@@ -1674,11 +1678,21 @@ package body Flyology.DB.Engine_Tests is
             end if;
             Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "live Flush activation");
             Get (Item, Txn, Family_By_ID, To_Key ([16#00#, 16#FF#]), Data, Result);
-            Expect (Result, Success, "Flush invalidated a live transaction or family handle");
+            if Result /= Success or else Data /= Original_Value then
+               raise Program_Error with "Flush changed the exact-boundary snapshot value";
+            end if;
             Rollback (Txn, Result);
             Expect (Result, Success, "Flush replacement read transaction did not roll back");
+            Get (Item, Ancient, Family_By_ID, To_Key ([16#EE#]), Data, Result);
+            if Result /= Conflict or else Data.Length /= 0 then
+               raise Program_Error with "read older than retained checkpoint history was not rejected";
+            end if;
             Delete (Item, Ancient, Family_By_ID, To_Key ([16#EE#]), Result);
             Expect (Result, Success, "checkpoint-stale transaction could not buffer a disjoint delete");
+            Get (Item, Ancient, Family_By_ID, To_Key ([16#EE#]), Data, Result);
+            if Result /= Not_Found or else Data.Length /= 0 then
+               raise Program_Error with "own Delete did not override an unavailable committed snapshot";
+            end if;
             Commit (Item, Ancient, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
             Expect (Result, Conflict, "transaction older than retained checkpoint history was admitted");
             Rollback (Ancient, Result);
@@ -1690,16 +1704,17 @@ package body Flyology.DB.Engine_Tests is
       Close (Item, Result);
       Expect (Result, Success, "checkpointed database close failed");
       declare
-         --  These five sites cover the exact header, whole-object, and
-         --  engine-owned payload allocations introduced by checkpoint
-         --  recovery. Each must fail before any partial engine installation.
+         --  These six sites cover the exact header, whole-object, engine-owned
+         --  payload, and exact live-entry descriptor allocations introduced by
+         --  checkpoint recovery. Each fails before partial engine installation.
          Recovery_Allocation_Points :
-           constant array (Positive range 1 .. 5) of Testing.Allocation_Fault_Point :=
+           constant array (Positive range 1 .. 6) of Testing.Allocation_Fault_Point :=
              [Testing.Recovery_Manifest_Header,
               Testing.Recovery_Manifest_Image,
               Testing.Recovery_SST_Header,
               Testing.Recovery_SST_Image,
-              Testing.Recovery_Checkpoint_Image];
+              Testing.Recovery_Checkpoint_Image,
+              Testing.Recovery_Snapshot_Base];
       begin
          for Point of Recovery_Allocation_Points loop
             Testing.Fail_Next_Allocation (Point);
@@ -1719,6 +1734,8 @@ package body Flyology.DB.Engine_Tests is
       Open_Column_Family (Item, 7, Family_Seven, Result);
       Expect (Result, Success, "checkpoint reopen second-family lookup failed");
 
+      Begin_Transaction (Item, Snapshot_Reader_ID, Snapshot_Reader, Result);
+      Expect (Result, Success, "checkpoint-base snapshot reader begin failed");
       Begin_Transaction (Item, TX_ID (204), Txn, Result);
       Expect (Result, Success, "replacement transaction begin failed");
       Put (Item, Txn, Family_By_ID, To_Key ([16#00#, 16#FF#]), Replacement_Value, Result);
@@ -1730,6 +1747,12 @@ package body Flyology.DB.Engine_Tests is
       end if;
       Expected_Live_Sequence := Receipt_Sequence (Receipt);
       Expect_Live_Entry_Sequence (Item, "replacement commit");
+      Get (Item, Snapshot_Reader, Family_By_ID, To_Key ([16#00#, 16#FF#]), Data, Result);
+      if Result /= Success or else Data /= Original_Value then
+         raise Program_Error with "checkpoint-base snapshot was replaced by a later suffix value";
+      end if;
+      Rollback (Snapshot_Reader, Result);
+      Expect (Result, Success, "checkpoint-base snapshot reader rollback failed");
 
       Close (Item, Result);
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
@@ -4484,6 +4507,7 @@ package body Flyology.DB.Engine_Tests is
       Item          : aliased Database;
       First         : aliased Transaction;
       Second        : aliased Transaction;
+      Reader        : aliased Transaction;
       --  Two members are the minimum atomic group needed to prove that one
       --  externally conflicted member rejects the whole group. This is test
       --  geometry, not a product group-capacity default.
@@ -4491,17 +4515,19 @@ package body Flyology.DB.Engine_Tests is
       Receipt       : Commit_Receipt;
       Group_Receipts : Commit_Receipt_Array (Group'Range);
       Result        : Outcome_Code;
+      Data          : Value;
       Before_Batch, Before_Head : Natural;
       After_Batch, After_Head   : Natural;
       --  These byte-distinct keys isolate same-key, tombstone, queued-race,
       --  disjoint, and empty-key authority paths. They are semantic test
-      --  witnesses only and establish no application key policy. IDs 160..175
-      --  and payload bytes 1..10 uniquely label these deterministic operations;
+      --  witnesses only and establish no application key policy. IDs 160..179
+      --  and payload bytes 1..13 uniquely label these deterministic operations;
       --  family 1 is the persisted root-family fixture, not a new default.
       Same_Key      : constant Key := To_Key ([16#A0#]);
       Delete_Key    : constant Key := To_Key ([16#A1#]);
       Queued_Key    : constant Key := To_Key ([16#A2#]);
       Disjoint_Key  : constant Key := To_Key ([16#A3#]);
+      Future_Key    : constant Key := To_Key ([16#A4#]);
       Empty_History_Key : constant Key := To_Key ([]);
    begin
       Bind_Context (Context, Backend, "snapshot-write-validation");
@@ -4520,6 +4546,48 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Conflict, "post-snapshot same-key commit was accepted");
       Rollback (Second, Result);
       Expect (Result, Success, "pre-admission snapshot conflict consumed its transaction");
+
+      Begin_Transaction (Item, TX_ID (176), Reader, Result);
+      Expect (Result, Success, "fixed-snapshot reader begin failed");
+      Begin_Transaction (Item, TX_ID (177), First, Result);
+      Expect (Result, Success, "post-snapshot replacement begin failed");
+      Put (Item, First, 1, Same_Key, To_Value ([11]), Result);
+      Expect (Result, Success, "post-snapshot replacement buffer failed");
+      Commit (Item, First, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "post-snapshot replacement commit failed");
+      Get (Item, Reader, 1, Same_Key, Data, Result);
+      if Result /= Success or else Data /= To_Value ([1]) then
+         raise Program_Error with "reader did not retain its Begin-time committed value";
+      end if;
+      Put (Item, Reader, 1, Same_Key, To_Value ([12]), Result);
+      Expect (Result, Success, "read-your-writes Put failed");
+      Get (Item, Reader, 1, Same_Key, Data, Result);
+      if Result /= Success or else Data /= To_Value ([12]) then
+         raise Program_Error with "buffered Put did not override the committed snapshot";
+      end if;
+      Delete (Item, Reader, 1, Same_Key, Result);
+      Expect (Result, Success, "read-your-writes Delete failed");
+      Get (Item, Reader, 1, Same_Key, Data, Result);
+      if Result /= Not_Found or else Data.Length /= 0 then
+         raise Program_Error with "buffered Delete did not override the committed snapshot";
+      end if;
+      Rollback (Reader, Result);
+      Expect (Result, Success, "fixed-snapshot reader rollback failed");
+
+      Begin_Transaction (Item, TX_ID (178), Reader, Result);
+      Expect (Result, Success, "pre-insert reader begin failed");
+      Begin_Transaction (Item, TX_ID (179), First, Result);
+      Expect (Result, Success, "future insert transaction begin failed");
+      Put (Item, First, 1, Future_Key, To_Value ([13]), Result);
+      Expect (Result, Success, "future insert buffer failed");
+      Commit (Item, First, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "future insert commit failed");
+      Get (Item, Reader, 1, Future_Key, Data, Result);
+      if Result /= Not_Found or else Data.Length /= 0 then
+         raise Program_Error with "reader observed a key inserted after its snapshot";
+      end if;
+      Rollback (Reader, Result);
+      Expect (Result, Success, "pre-insert reader rollback failed");
 
       Begin_Transaction (Item, TX_ID (164), First, Result);
       Begin_Transaction (Item, TX_ID (165), Second, Result);

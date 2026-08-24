@@ -213,8 +213,10 @@ package Flyology.DB is
    procedure Open_Column_Family
      (Item : in out Database; Name : Byte_Array; Family : out Column_Family; Result : out Outcome_Code);
 
-   --  Read a buffered mutation or latest confirmed committed value into owned
-   --  bytes. Data is empty on every non-Success outcome.
+   --  Read the newest buffered mutation first, then the newest committed value
+   --  at the transaction's fixed Begin snapshot, into owned bytes. Conflict
+   --  means the requested snapshot predates retained checkpoint history. Data
+   --  is empty on every non-Success outcome.
    procedure Get
      (Item     : in out Database;
       Txn      : in out Transaction;
@@ -517,6 +519,7 @@ private
       Recovery_SST_Header_Allocation,
       Recovery_SST_Image_Allocation,
       Recovery_Checkpoint_Image_Allocation,
+      Recovery_Snapshot_Base_Allocation,
       Flush_Activation_State_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
    procedure Decode_Runtime_Image_For_Test

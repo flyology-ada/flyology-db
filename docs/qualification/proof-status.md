@@ -116,6 +116,14 @@ transfer, and Ada-task race test live in the operational root body outside the s
 comes from the deterministic memory/files tests and the separate snapshot TLC/TLAPS lane; this is not a refinement
 proof between the model and implementation.
 
+The operational fixed-snapshot point-read candidate reruns the same warning-strict gate and again proves
+1,078/1,078 checks: 164 by flow analysis and 914 by provers, with zero warnings, unproved or justified checks, and
+zero `pragma Assume`. The selected `Reference_Model.Get` remains proved at six checks. The production protected
+history scan, borrowed-image lifetime, lazy checkpoint-base allocation, and recovery unwinding remain outside the
+selected SPARK units and are qualified by executable memory/files, cacheless checkpoint, allocation-fault, and
+authenticated-client tests. The separately accepted `cff2048` TLC/TLAPS model freezes the selection rule; no
+refinement proof is claimed.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

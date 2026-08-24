@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted operational fixed-snapshot point-read candidate
+
+- Parent: accepted formal fixed-snapshot point-read commit `cff2048`.
+- Scope: make public `Get` implement the frozen selection rule without changing its signature or persisted bytes.
+  Buffered Put/Delete wins. Otherwise the protected coordinator selects the newest exact retained mutation whose
+  committed sequence is no later than Begin, then falls back to exact checkpoint-base descriptors. Formal `TooOld`
+  maps to existing public `Conflict`. The coordinator returns a borrowed immutable image slice; the lifecycle lease
+  keeps it alive while copying occurs outside the protected operation.
+- Allocation and authority: checkpoint-base descriptors are allocated lazily from the checked sum of authenticated
+  SST entry counts and bounded by persisted `Maximum_Live_Entries`; no capacity-sized duplicate payload table, public
+  default, format field, or new ceiling is introduced. The 48 numeric lines in the raw added-Ada inventory reduce to
+  routine one-based indexing/arithmetic, neutral vacant values, persisted-limit comparisons, and deterministic test
+  fixtures. The six-site recovery array derives from its six enumerated fault points; IDs 160..179 and 227..229,
+  payload bytes 1..13, the A4 key, and the two same-width checkpoint values carry adjacent fixture authority comments.
+  No unresolved constant-policy finding remains.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository/provenance checks, deterministic
+  memory/files engine and format suites, authenticated client-backed create/commit/Flush/reopen, filesystem subprocess
+  crash/recovery, 32 comparative cases, pinned TidesDB 4/4, and all adapter fixtures against clean Object Storage
+  `e8362f72e5edf4cc8eb16e31d1fdbfba74db384b`. New witnesses cover prior-value selection, absence before later insert,
+  own Put/Delete, exact checkpoint-boundary lookup, too-old rejection, allocation failure before engine installation,
+  and checkpoint-base preservation after a later suffix replacement. Warning-strict GNATprove preserves 1,078/1,078
+  selected-unit checks (164 flow, 914 prover), with zero warnings, unproved/justified checks, or `pragma Assume`.
+- Findings cycle: the first implementation sweep moved result allocation/copying out of the protected coordinator.
+  Follow-up review added exact slice and descriptor-array bounds validation so malformed retained authority fails
+  `Corrupt` instead of escaping through an indexing exception, and verified unwind ownership for every allocation
+  boundary. The final sweep finds no remaining P0, P1, P2, or P3 issue. The formal `cff2048` witness/model evidence is
+  unchanged; executable correspondence tests do not claim a refinement proof.
+
 ## Accepted formal fixed-snapshot point-read candidate
 
 - Parent: operational snapshot write-validation commit `589f941`.

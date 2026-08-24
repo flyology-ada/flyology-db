@@ -1950,6 +1950,9 @@ package body Flyology.DB is
       Sequence     : Sequence_Number := 0;
    end record;
    type State_Entry_Array is array (Positive range <>) of State_Entry;
+   type State_Entry_Array_Access is access State_Entry_Array;
+   procedure Free_State_Entries is new
+     Ada.Unchecked_Deallocation (Object => State_Entry_Array, Name => State_Entry_Array_Access);
    type Snapshot_Entry_Reference is record
       --  Defaults describe an unfilled transient slot only. Populated slots
       --  borrow engine-owned immutable batch images during exclusive snapshot
@@ -2105,7 +2108,10 @@ package body Flyology.DB is
       procedure Recover_Batch (Batch : in out Runtime_Batch; Result : out Outcome_Code);
 
       procedure Recover_Checkpoint
-        (Plan : Checkpoint_Plan; Images : Checkpoint_Image_Array; Result : out Outcome_Code);
+        (Plan   : Checkpoint_Plan;
+         Images : Checkpoint_Image_Array;
+         Base   : State_Entry_Array_Access;
+         Result : out Outcome_Code);
 
       procedure Transaction_Available (Transaction_ID : Transaction_Identifier; Result : out Outcome_Code);
 
@@ -2163,11 +2169,15 @@ package body Flyology.DB is
          Is_Uncertain : out Boolean;
          Is_Fenced    : out Boolean);
 
-      procedure Lookup
-        (Family   : Column_Family_ID;
-         Item_Key : Byte_Array;
-         Data     : out Flyology.Bytes.Unbounded_Bytes;
-         Result   : out Outcome_Code);
+      procedure Lookup_At
+        (Family          : Column_Family_ID;
+         Item_Key        : Byte_Array;
+         Snapshot_At     : Sequence_Number;
+         Checkpoint_Base : State_Entry_Array_Access;
+         Image           : out Shared_Image_Access;
+         Value_Offset    : out Natural;
+         Value_Length    : out Natural;
+         Result          : out Outcome_Code);
 
       procedure Lookup_Sequence
         (Family   : Column_Family_ID;
@@ -2700,7 +2710,10 @@ package body Flyology.DB is
       end Recover_Batch;
 
       procedure Recover_Checkpoint
-        (Plan : Checkpoint_Plan; Images : Checkpoint_Image_Array; Result : out Outcome_Code)
+        (Plan   : Checkpoint_Plan;
+         Images : Checkpoint_Image_Array;
+         Base   : State_Entry_Array_Access;
+         Result : out Outcome_Code)
       is
          Candidate_Count : Natural range 0 .. Entry_Capacity := 0;
          Candidate_Bytes : Interfaces.Unsigned_64 := 0;
@@ -2759,6 +2772,11 @@ package body Flyology.DB is
                            Value_Offset => Item_Entry.Value_Offset - 1,
                            Value_Length => Item_Entry.Value_Byte_Total,
                            Sequence     => Sequence_Number (Item_Entry.Sequence));
+                        if Base = null or else Candidate_Count > Base'Length then
+                           Result := Corrupt;
+                           return;
+                        end if;
+                        Base (Candidate_Count) := Projected_Entries (Candidate_Count);
                      end;
                   end loop;
                end if;
@@ -2767,6 +2785,8 @@ package body Flyology.DB is
          if Interfaces.Unsigned_64 (Candidate_Count)
            > Interfaces.Unsigned_64 (Current_Manifest.Limits.Maximum_Live_Entries)
            or else Candidate_Bytes > Current_Manifest.Limits.Maximum_Live_State_Bytes
+           or else (Candidate_Count = 0 and then Base /= null)
+           or else (Candidate_Count > 0 and then (Base = null or else Base'Length /= Candidate_Count))
          then
             Result := Corrupt;
             return;
@@ -3338,50 +3358,147 @@ package body Flyology.DB is
          Is_Fenced := Fenced;
       end Snapshot;
 
-      procedure Lookup
-        (Family   : Column_Family_ID;
-         Item_Key : Byte_Array;
-         Data     : out Flyology.Bytes.Unbounded_Bytes;
-         Result   : out Outcome_Code)
+      procedure Lookup_At
+        (Family          : Column_Family_ID;
+         Item_Key        : Byte_Array;
+         Snapshot_At     : Sequence_Number;
+         Checkpoint_Base : State_Entry_Array_Access;
+         Image           : out Shared_Image_Access;
+         Value_Offset    : out Natural;
+         Value_Length    : out Natural;
+         Result          : out Outcome_Code)
       is
-         Matches : Boolean;
+         function Valid_Slice
+           (Source : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
+         is
+            Image_Length : constant Natural := Flyology.Bytes.Length (Source.Data);
+         begin
+            return Offset <= Image_Length and then Length <= Image_Length - Offset;
+         end Valid_Slice;
+
+         function Same_Key
+           (Source : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
+         is
+         begin
+            if Length /= Item_Key'Length then
+               return False;
+            end if;
+            for Key_Index in Item_Key'Range loop
+               if Byte
+                    (Flyology.Bytes.Element
+                       (Source.Data, Offset + (Key_Index - Item_Key'First) + 1))
+                 /= Item_Key (Key_Index)
+               then
+                  return False;
+               end if;
+            end loop;
+            return True;
+         end Same_Key;
       begin
-         Flyology.Bytes.Clear (Data);
-         for Index in Positive range 1 .. Entry_Count loop
-            Matches :=
-              Entries (Index).Family = Family
-              and then Entries (Index).Image /= null
-              and then Entries (Index).Key_Length = Item_Key'Length;
-            if Matches then
-               for Offset in Natural range 0 .. Item_Key'Length - 1 loop
-                  if Byte
-                       (Flyology.Bytes.Element
-                          (Entries (Index).Image.Data, Entries (Index).Key_Offset + Offset + 1))
-                    /= Item_Key (Item_Key'First + Offset)
-                  then
-                     Matches := False;
-                     exit;
-                  end if;
+         Image := null;
+         Value_Offset := 0;
+         Value_Length := 0;
+         if Snapshot_At < Retained_History_Boundary then
+            Result := Conflict;
+            return;
+         end if;
+         for Batch_Index in reverse Positive range 1 .. History_Count loop
+            declare
+               Batch : Runtime_Batch renames History_Batches (Batch_Index);
+            begin
+               if Batch.Image = null
+                 or else Batch.Transactions = null
+                 or else Batch.Mutations = null
+                 or else Batch.Transactions'First /= 1
+                 or else Batch.Mutations'First /= 1
+                 or else Batch.Transaction_Total > Batch.Transactions'Length
+                 or else Batch.Mutation_Total > Batch.Mutations'Length
+               then
+                  Result := Corrupt;
+                  return;
+               end if;
+               for Transaction_Index in reverse Positive range 1 .. Batch.Transaction_Total loop
+                  declare
+                     Batch_Transaction : Runtime_Transaction renames Batch.Transactions (Transaction_Index);
+                  begin
+                     if Batch_Transaction.Sequence <= Snapshot_At then
+                        if Batch_Transaction.Mutation_Count = 0
+                          or else Batch_Transaction.First_Mutation = 0
+                          or else Batch_Transaction.Mutation_Count > Batch.Mutation_Total
+                          or else Batch_Transaction.First_Mutation
+                                  > Batch.Mutation_Total - Batch_Transaction.Mutation_Count + 1
+                        then
+                           Result := Corrupt;
+                           return;
+                        end if;
+                        for Mutation_Index in reverse Positive range
+                          Batch_Transaction.First_Mutation
+                          .. Batch_Transaction.First_Mutation + Batch_Transaction.Mutation_Count - 1
+                        loop
+                           declare
+                              Mutation : Runtime_Mutation renames Batch.Mutations (Mutation_Index);
+                           begin
+                              if not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
+                                or else
+                                  (Mutation.Operation = Put_Mutation
+                                   and then not Valid_Slice
+                                                  (Batch.Image,
+                                                   Mutation.Value_Offset,
+                                                   Mutation.Value_Length))
+                              then
+                                 Result := Corrupt;
+                                 return;
+                              elsif Mutation.Family = Family
+                                and then Same_Key (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
+                              then
+                                 if Mutation.Operation = Delete_Mutation then
+                                    Result := Not_Found;
+                                 else
+                                    Image := Batch.Image;
+                                    Value_Offset := Mutation.Value_Offset;
+                                    Value_Length := Mutation.Value_Length;
+                                    Result := Success;
+                                 end if;
+                                 return;
+                              end if;
+                           end;
+                        end loop;
+                     end if;
+                  end;
                end loop;
-               if Matches then
-                  Flyology.Bytes.Reserve_Capacity (Data, Entries (Index).Value_Length);
-                  for Offset in Natural range 0 .. Entries (Index).Value_Length - 1 loop
-                     Flyology.Bytes.Append
-                       (Data,
-                        Flyology.Bytes.Element
-                          (Entries (Index).Image.Data, Entries (Index).Value_Offset + Offset + 1));
-                  end loop;
+            end;
+         end loop;
+         if Checkpoint_Base /= null then
+            for Index in Checkpoint_Base'Range loop
+               if Checkpoint_Base (Index).Image = null
+                 or else not Valid_Slice
+                               (Checkpoint_Base (Index).Image,
+                                Checkpoint_Base (Index).Key_Offset,
+                                Checkpoint_Base (Index).Key_Length)
+                 or else not Valid_Slice
+                               (Checkpoint_Base (Index).Image,
+                                Checkpoint_Base (Index).Value_Offset,
+                                Checkpoint_Base (Index).Value_Length)
+               then
+                  Result := Corrupt;
+                  return;
+               elsif Checkpoint_Base (Index).Family = Family
+                 and then Checkpoint_Base (Index).Image /= null
+                 and then Same_Key
+                            (Checkpoint_Base (Index).Image,
+                             Checkpoint_Base (Index).Key_Offset,
+                             Checkpoint_Base (Index).Key_Length)
+               then
+                  Image := Checkpoint_Base (Index).Image;
+                  Value_Offset := Checkpoint_Base (Index).Value_Offset;
+                  Value_Length := Checkpoint_Base (Index).Value_Length;
                   Result := Success;
                   return;
                end if;
-            end if;
-         end loop;
+            end loop;
+         end if;
          Result := Not_Found;
-      exception
-         when Storage_Error =>
-            Flyology.Bytes.Clear (Data);
-            Result := Capacity_Exceeded;
-      end Lookup;
+      end Lookup_At;
 
       procedure Lookup_Sequence
         (Family   : Column_Family_ID;
@@ -3696,6 +3813,10 @@ package body Flyology.DB is
       LSM_Authority     : Engine_LSM_Authority := No_LSM_Authority;
       Gate              : Coordinator (Entry_Capacity, Seen_Capacity, History_Capacity, Reserved_Capacity);
       Checkpoint_Images : Checkpoint_Image_Array := [others => null];
+      --  Exact checkpoint live-entry descriptors are allocated lazily from
+      --  authenticated SST counts. They borrow Checkpoint_Images and preserve
+      --  the compacted snapshot base after newer suffix writes replace Entries.
+      Checkpoint_Base   : State_Entry_Array_Access := null;
       Worker            : Commit_Worker_Access := null;
    end record;
 
@@ -4462,6 +4583,7 @@ package body Flyology.DB is
          State.Gate.Take_History_Batch (Index, Batch);
          Release_Runtime_Batch (Batch);
       end loop;
+      Free_State_Entries (State.Checkpoint_Base);
       for Index in State.Checkpoint_Images'Range loop
          Release_Image (State.Checkpoint_Images (Index));
       end loop;
@@ -4574,6 +4696,44 @@ package body Flyology.DB is
          Release_Checkpoint_Images (Images);
          raise;
    end Prepare_Checkpoint_Images;
+
+   procedure Prepare_Checkpoint_Base
+     (Plan : Checkpoint_Plan; Base : out State_Entry_Array_Access; Result : out Outcome_Code)
+   is
+      Entry_Total : Natural := 0;
+   begin
+      Base := null;
+      if Plan.Manifest = null then
+         Result := Success;
+         return;
+      end if;
+      for SST of Plan.SSTs loop
+         if SST /= null then
+            if SST.Entry_Total > Natural'Last - Entry_Total then
+               Result := Capacity_Exceeded;
+               return;
+            end if;
+            Entry_Total := Entry_Total + SST.Entry_Total;
+         end if;
+      end loop;
+      if Interfaces.Unsigned_64 (Entry_Total)
+        > Interfaces.Unsigned_64 (Plan.Manifest.Base.Limits.Maximum_Live_Entries)
+      then
+         Result := Corrupt;
+         return;
+      elsif Entry_Total > 0 then
+         Allocation_Faults.Check (Recovery_Snapshot_Base_Allocation);
+         Base := new State_Entry_Array (1 .. Entry_Total);
+      end if;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Free_State_Entries (Base);
+         Result := Capacity_Exceeded;
+      when others =>
+         Free_State_Entries (Base);
+         raise;
+   end Prepare_Checkpoint_Base;
 
    procedure Build_Runtime_Batch
      (Items    : Work_Group;
@@ -6405,6 +6565,7 @@ package body Flyology.DB is
       Seen_Capacity         : Positive;
       Reserved_Capacity     : Positive;
       Checkpoint_Images     : Checkpoint_Image_Array := [others => null];
+      Checkpoint_Base       : State_Entry_Array_Access := null;
    begin
       State := null;
       if Entry_Capacity_U64 = 0
@@ -6453,6 +6614,13 @@ package body Flyology.DB is
          Release_Checkpoint_Plan (Checkpoint);
          return;
       end if;
+      Prepare_Checkpoint_Base (Checkpoint, Checkpoint_Base, Result);
+      if Result /= Success then
+         Release_History (History, Count);
+         Release_Checkpoint_Images (Checkpoint_Images);
+         Release_Checkpoint_Plan (Checkpoint);
+         return;
+      end if;
       Allocation_Faults.Check (Engine_State_Allocation);
       Allocation_Faults.Check (Identity_Table_Allocation);
       Allocation_Faults.Check (Projection_Scratch_Allocation);
@@ -6468,6 +6636,8 @@ package body Flyology.DB is
       State.LSM_Authority := LSM_Authority;
       State.Checkpoint_Images := Checkpoint_Images;
       Checkpoint_Images := [others => null];
+      State.Checkpoint_Base := Checkpoint_Base;
+      Checkpoint_Base := null;
       --  A manifest-v2 checkpoint supplies its authenticated replay boundary;
       --  root and legacy manifests have no compacted-history boundary, so zero
       --  preserves their full retained suffix authority.
@@ -6478,7 +6648,8 @@ package body Flyology.DB is
          (if LSM_Authority.Enabled then Sequence_Number (LSM_Authority.Replay_Boundary) else 0),
          Incarnation);
       if Checkpoint.Manifest /= null then
-         State.Gate.Recover_Checkpoint (Checkpoint, State.Checkpoint_Images, Result);
+         State.Gate.Recover_Checkpoint
+           (Checkpoint, State.Checkpoint_Images, State.Checkpoint_Base, Result);
          if Result /= Success then
             Release_History (History, Count);
             Release_Checkpoint_Plan (Checkpoint);
@@ -6517,6 +6688,7 @@ package body Flyology.DB is
          end if;
          Release_History (History, Count);
          Release_Checkpoint_Images (Checkpoint_Images);
+         Free_State_Entries (Checkpoint_Base);
          Release_Checkpoint_Plan (Checkpoint);
          State := null;
          Result := Capacity_Exceeded;
@@ -6532,6 +6704,7 @@ package body Flyology.DB is
          end if;
          Release_History (History, Count);
          Release_Checkpoint_Images (Checkpoint_Images);
+         Free_State_Entries (Checkpoint_Base);
          Release_Checkpoint_Plan (Checkpoint);
          State := null;
          Result := Storage_Failure;
@@ -7785,6 +7958,9 @@ package body Flyology.DB is
       Uncertain     : Boolean;
       Fenced        : Boolean;
       Configuration : Column_Family_Configuration;
+      Image         : Shared_Image_Access;
+      Value_Offset  : Natural;
+      Value_Length  : Natural;
    begin
       Flyology.Bytes.Clear (Data);
       if not Txn.Active or else Txn.Owner.Arena = null then
@@ -7833,7 +8009,21 @@ package body Flyology.DB is
             end if;
          end;
       end loop;
-      Lease.State.Gate.Lookup (Family.Configuration.ID, Item_Key, Data, Result);
+      Lease.State.Gate.Lookup_At
+        (Family.Configuration.ID,
+         Item_Key,
+         Txn.Snapshot_At,
+         Lease.State.Checkpoint_Base,
+         Image,
+         Value_Offset,
+         Value_Length,
+         Result);
+      if Result = Success then
+         Flyology.Bytes.Reserve_Capacity (Data, Value_Length);
+         for Offset in Positive range 1 .. Value_Length loop
+            Flyology.Bytes.Append (Data, Flyology.Bytes.Element (Image.Data, Value_Offset + Offset));
+         end loop;
+      end if;
    exception
       when Storage_Error =>
          Flyology.Bytes.Clear (Data);
