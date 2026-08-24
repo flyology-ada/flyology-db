@@ -13,7 +13,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Private replacement operational and deletion-safety boundary proved; public API and collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
-| 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Pending |
+| 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Refresh/fencing safety boundary proved; operational replica and promotion policy pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
 
 The current implementation unit is intentionally narrower than full Milestone 2 acceptance. It activates the

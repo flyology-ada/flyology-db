@@ -283,6 +283,16 @@ predecessor deletion; discovery loss/reconstruction; and resolved-orphan deletio
 graph traversal, clock/source metadata trust, age threshold, replica lease protocol, provider delete certainty,
 batching, progress, public API, or refinement to Ada.
 
+## Replica refresh and fencing lane
+
+`ReplicaRefresh.tla` freezes monotonic read-only catch-up and exact writer fencing. A refresh captures a confirmed
+HEAD ordinal/epoch pair, may finish after authority advances, and installs only at or above its replica high-water
+pair. A writer publishes only when both its captured ordinal and epoch still equal HEAD. TLC exhausts 1,460 states at
+depth 15; stale-writer and rollback probes must violate safety, and a validated 16-state witness covers fencing,
+replacement writer publication, lagging installation, and catch-up. The bounds two and one are qualification
+geometry. `ReplicaRefreshSafetyProof.tla` proves 11 obligations over arbitrary natural ordinals/epochs. Immutable
+graph validation, transport certainty, polling, leases, promotion, progress, and Ada refinement remain outside.
+
 ## Reproduction
 
 Install the pinned tools under ignored `.deps/tla` as recorded in
@@ -307,6 +317,8 @@ The immutable-cache lane adds 623 distinct states at depth 12, one validated coa
 required stale-generation negative probe, full semantic-action coverage, and 13 of 13 strict TLAPS obligations.
 The immutable-object retention lane adds 75,337 distinct states at depth 16, one validated protection/reclamation
 witness, one required listing-only deletion probe, full semantic-action coverage, and 15 of 15 TLAPS obligations.
+The replica lane adds 1,460 distinct states at depth 15, one validated fencing/catch-up witness, two required negative
+probes, full semantic-action coverage, and 11 of 11 TLAPS obligations.
 The snapshot-isolation lane
 adds 336 distinct states at depth 10, three independently validated
 witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. The

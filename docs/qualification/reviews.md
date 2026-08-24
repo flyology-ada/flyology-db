@@ -1,5 +1,21 @@
 # Review record
 
+## Accepted formal replica-refresh and fencing candidate
+
+- Parent: immutable-object retention commit `c24ea4c`.
+- Scope: freeze exact writer fencing and monotonic read-only refresh without Ada/API/format changes or polling,
+  lease, promotion, tasking, or retry policy. A captured confirmed HEAD pair may install after authority advances, but
+  never below the replica high-water pair; writer ordinal and epoch must both remain exact at publication.
+- Verification: TLC exhausts 1,460 states/depth 15 with all nine actions covered. Stale-writer and rollback probes
+  violate `Safety`; the validated 16-state witness covers fencing, replacement publication, lagging installation,
+  and catch-up. TLAPS proves 11/11 obligations over arbitrary natural ordinal/epoch values; the finite two/one bounds
+  are adjacent-commented qualification geometry.
+- Findings cycle: the first executable pass found a P2 malformed disjunction token in the captured-refresh invariant;
+  correction produced the complete safe graph. The first strict proof pass found eight proof-boundary failures
+  because named finite phase sets were not unfolded through `TypeOK`; inlining those exact phase sets made all 11
+  obligations explicit and proved. The repeated fencing, monotonicity, certainty, constants, proof/model,
+  documentation, and unnecessary-surface sweep finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted formal immutable-object retention candidate
 
 - Parent: formal immutable-cache commit `42a78f6`.

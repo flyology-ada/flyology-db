@@ -21,6 +21,12 @@ transition identity; continuing unavailability remains unknown.
 - Per-family logical/MVCC state, memtables, immutable runs, configuration, and later compaction.
 - Read-only replicas advance monotonically by observing valid head transitions.
 
+The formal replica boundary captures one exact HEAD ordinal/writer-epoch pair, validates its complete immutable
+graph, and installs it only at or above the replica's high-water pair and no later than current authority. A captured
+older head may finish after authority advances and install as an intermediate monotonic step. Writers publish only
+from their exact captured ordinal and epoch; fencing invalidates an already prepared writer. Polling, lease duration,
+promotion, local-loss continuity, and the operational Ada surface remain undecided.
+
 The executable mutation surface remains log-only between explicit flushes, while recovery accepts either that form
 or the latest additive L0 checkpoint. Log-only recovery follows `HEAD.Latest_Batch` and the
 predecessor-batch ID in each

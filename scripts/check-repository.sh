@@ -54,6 +54,16 @@ test -f formal/tla/ObjectRetentionWitness.tla
 test -f formal/tla/ObjectRetentionWitness.cfg
 test -f formal/tla/ObjectRetentionSafetyProof.tla
 test -x formal/tla/validate_object_retention_witness.py
+test -f formal/tla/ReplicaRefresh.tla
+test -f formal/tla/ReplicaRefresh.cfg
+test -f formal/tla/ReplicaRefreshStaleWriterProbe.tla
+test -f formal/tla/ReplicaRefreshStaleWriterProbe.cfg
+test -f formal/tla/ReplicaRefreshRollbackProbe.tla
+test -f formal/tla/ReplicaRefreshRollbackProbe.cfg
+test -f formal/tla/ReplicaRefreshWitness.tla
+test -f formal/tla/ReplicaRefreshWitness.cfg
+test -f formal/tla/ReplicaRefreshSafetyProof.tla
+test -x formal/tla/validate_replica_refresh_witness.py
 test -f src/flyology-db-manifest_formats.ads
 test -f src/flyology-db-manifest_formats.adb
 test -f tests/src/flyology-db-manifest_format_tests.adb

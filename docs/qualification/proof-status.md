@@ -264,6 +264,13 @@ refinement theorem to the operational Ada implementation is claimed.
   discovery soundness, no identity reuse, and no protected deletion. The finite two-object graph and third witness
   identity are qualification geometry. Reachability traversal, age/clock policy, replica lease protocol, provider
   deletion certainty, batching, progress, public API, and refinement to Ada remain outside this proof.
+- The replica-refresh model exhausts 1,460 distinct states at depth 15 with full action coverage. Its validated
+  16-state witness fences a captured writer, publishes through the exact replacement epoch, loads ordinal one while
+  authority reaches ordinal two, installs that lagging snapshot monotonically, and catches up. Stale-writer and
+  rollback probes must violate safety. The arbitrary-natural kernel proves 11/11 TLAPS obligations for confirmed
+  authority, nonfuture captured/installed pairs, high-water equality, no rollback, and no stale publication. Concrete
+  graph validation, transport certainty, polling, leases, promotion, local-loss continuity, progress, public API,
+  and Ada refinement remain outside.
 - The snapshot-isolation write/write model exhausts 336 states at depth 10. It checks fixed Begin sequences,
   per-written-key post-snapshot rejection, disjoint concurrent commits, checkpoint advancement of the retained exact
   history boundary, and conservative rejection below that boundary. Three independently validated witnesses cover
