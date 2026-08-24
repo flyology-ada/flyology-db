@@ -41,12 +41,10 @@ is
      ((not Predicate.Has_Lower or else not Less (Name, Predicate.Lower))
       and then (not Predicate.Has_Upper or else Less (Name, Predicate.Upper)));
 
-   function Same_Range (Left, Right : Scan_Range) return Boolean is
-     (Left.Family = Right.Family
-      and then Left.Has_Lower = Right.Has_Lower
-      and then Left.Has_Upper = Right.Has_Upper
-      and then (not Left.Has_Lower or else Equal (Left.Lower, Right.Lower))
-      and then (not Left.Has_Upper or else Equal (Left.Upper, Right.Upper)));
+   function Ranges_Connect (Left, Right : Scan_Range) return Boolean
+   is (Left.Family = Right.Family
+       and then (not Left.Has_Upper or else not Right.Has_Lower or else not Less (Left.Upper, Right.Lower))
+       and then (not Right.Has_Upper or else not Left.Has_Lower or else not Less (Right.Upper, Left.Lower)));
 
    procedure Initialize (State : out Database_State) is
    begin
@@ -231,14 +229,14 @@ is
       Upper     : Key;
       Result    : out Result_Code)
    is
-      --  Captures the caller's exact normalized scan predicate before the
-      --  bounded read-set admission; no hidden range policy is introduced.
-      Candidate : constant Scan_Range :=
-        (Family    => Family,
-         Has_Lower => Has_Lower,
-         Lower     => Lower,
-         Has_Upper => Has_Upper,
-         Upper     => Upper);
+      --  Max_Ranges passes are derived from the complete bounded oracle
+      --  predicate array: every pass can add at least one previously separate
+      --  component, so no independent retry or normalization policy is chosen.
+      Candidate         : Scan_Range :=
+        (Family => Family, Has_Lower => Has_Lower, Lower => Lower, Has_Upper => Has_Upper, Upper => Upper);
+      Replacement       : Scan_Range_Array := [others => <>];
+      Replacement_Total : Range_Count := 0;
+      Expanded          : Boolean;
    begin
       if not Item.Active then
          Result := Invalid_Transaction;
@@ -251,20 +249,55 @@ is
          return;
       end if;
 
+      for Pass in Range_Index loop
+         Expanded := False;
+         for Index in Range_Index range 1 .. Item.Range_Total loop
+            if Ranges_Connect (Item.Ranges (Index), Candidate) then
+               if Candidate.Has_Lower and then not Item.Ranges (Index).Has_Lower then
+                  Candidate.Has_Lower := False;
+                  Expanded := True;
+               elsif Candidate.Has_Lower
+                 and then Item.Ranges (Index).Has_Lower
+                 and then Less (Item.Ranges (Index).Lower, Candidate.Lower)
+               then
+                  Candidate.Lower := Item.Ranges (Index).Lower;
+                  Expanded := True;
+               end if;
+               if Candidate.Has_Upper and then not Item.Ranges (Index).Has_Upper then
+                  Candidate.Has_Upper := False;
+                  Expanded := True;
+               elsif Candidate.Has_Upper
+                 and then Item.Ranges (Index).Has_Upper
+                 and then Less (Candidate.Upper, Item.Ranges (Index).Upper)
+               then
+                  Candidate.Upper := Item.Ranges (Index).Upper;
+                  Expanded := True;
+               end if;
+            end if;
+         end loop;
+         exit when not Expanded or else Pass = Range_Index'Last;
+      end loop;
+
       for Index in Range_Index range 1 .. Item.Range_Total loop
-         if Same_Range (Item.Ranges (Index), Candidate) then
-            Result := Success;
-            return;
+         if not Ranges_Connect (Item.Ranges (Index), Candidate) then
+            if Replacement_Total = Max_Ranges then
+               Result := Capacity_Exceeded;
+               return;
+            end if;
+            Replacement_Total := Replacement_Total + 1;
+            Replacement (Replacement_Total) := Item.Ranges (Index);
          end if;
       end loop;
 
-      if Item.Range_Total = Max_Ranges then
+      if Replacement_Total = Max_Ranges then
          Result := Capacity_Exceeded;
          return;
       end if;
 
-      Item.Range_Total := Item.Range_Total + 1;
-      Item.Ranges (Item.Range_Total) := Candidate;
+      Replacement_Total := Replacement_Total + 1;
+      Replacement (Replacement_Total) := Candidate;
+      Item.Ranges := Replacement;
+      Item.Range_Total := Replacement_Total;
       Result := Success;
    end Observe_Range;
 

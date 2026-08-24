@@ -273,11 +273,13 @@ package Flyology.DB is
    --  unbounded and its byte argument is ignored. When both endpoints are
    --  present, Lower must compare strictly before Upper; an empty or reversed
    --  interval returns Invalid_State. Snapshot transactions validate only.
-   --  Serializable transactions retain each distinct exact predicate lazily,
-   --  bounded by the database's persisted range-count authority and the
-   --  selected family's key limit. Capacity_Exceeded means no predicate was
-   --  retained. Present endpoint bytes are borrowed only for this call and
-   --  copied before Success. Scan uses this same endpoint rule.
+   --  Serializable transactions lazily retain normalized same-family
+   --  components: overlapping or endpoint-touching predicates become their
+   --  exact union, while cross-family predicates remain distinct. The
+   --  database's persisted range count bounds components and the selected
+   --  family's key limit bounds endpoints. Capacity_Exceeded means the exact
+   --  prior set remains retained. Present endpoint bytes are borrowed only for
+   --  this call and copied before Success. Scan uses this same endpoint rule.
    --  @param Item Open database that owns committed conflict history
    --  @param Txn Active transaction whose isolation and observations are used
    --  @param Family Valid handle selecting persisted family limits and identity
@@ -303,9 +305,10 @@ package Flyology.DB is
    --  limits; individual extents remain bounded by the selected family. There
    --  is no page size, byte default, timeout, storage I/O, or helper task.
    --  Rows is replaced atomically only on Success and remains unchanged on
-   --  every failure. A Serializable success retains the exact predicate only
-   --  after complete materialization; failure publishes neither rows nor a
-   --  predicate. Endpoint bytes are borrowed only for this call.
+   --  every failure. A Serializable success merges the exact predicate into
+   --  its normalized retained components only after complete materialization;
+   --  failure publishes neither rows nor a predicate. Endpoint bytes are
+   --  borrowed only for this call.
    --  @param Item Open database that owns fixed-snapshot state
    --  @param Txn Active transaction whose snapshot and own mutations are read
    --  @param Family Valid handle selecting persisted family limits and identity
@@ -730,10 +733,12 @@ private
 
    type Owned_Scan_Range;
    type Owned_Scan_Range_Access is access Owned_Scan_Range;
-   --  One lazily allocated exact serializable half-open predicate. Present
-   --  endpoints are copied only after family-limit and ordering validation;
-   --  absent endpoint storage is vacant and ignored. The flags and linkage are
-   --  runtime ownership state, never persisted or encoded.
+   --  One lazily allocated normalized serializable half-open component.
+   --  Same-family overlap and endpoint contact are stored as their exact
+   --  union; cross-family components remain distinct. Present endpoints are
+   --  copied only after family-limit, ordering, and normalized-count
+   --  validation; absent endpoint storage is vacant and ignored. The flags
+   --  and linkage are runtime ownership state, never persisted or encoded.
    type Owned_Scan_Range is record
       Family       : Column_Family_ID := Column_Family_ID'First;
       Has_Lower    : Boolean := False;

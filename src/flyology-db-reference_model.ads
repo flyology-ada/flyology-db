@@ -93,7 +93,8 @@ is
       Data   : out Value;
       Result : out Result_Code);
 
-   --  Record one serializable half-open scan predicate `[Lower, Upper)`.
+   --  Record one serializable half-open scan predicate `[Lower, Upper)`,
+   --  coalescing same-family overlap and endpoint contact before capacity.
    procedure Observe_Range
      (Item      : in out Transaction;
       Family    : Column_Family_ID;

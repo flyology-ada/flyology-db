@@ -39,8 +39,10 @@ Current selected packages:
   arbitrary-bound decoding, exact cursor and slice bounds, and definite initialization; and
 - `Flyology.DB.Reference_Model`, covering absence of runtime checks and definite initialization in bounded MVCC state
   transitions. Executable tests, rather than current functional proof contracts, establish the model's fixed-snapshot,
-  conflict, atomic-commit, and rollback examples. Exact duplicate scan predicates are deduplicated; full range-union
-  normalization and its functional proof remain a Milestone 3 target.
+  conflict, atomic-commit, and rollback examples. Its same-family scan predicates now normalize overlap, endpoint
+  contact, transitive bridges, and open bounds before capacity. GNATprove establishes safety and termination of the
+  bounded algorithm; functional union equivalence remains in the separate TLC/TLAPS lane rather than a refinement
+  claim.
 
 The proof does not establish provider atomicity, read freshness, transport behavior, durability barriers, or that a
 concrete I/O adapter supplies bytes faithfully. Object Storage conformance and executable boundary tests gate those
@@ -151,6 +153,16 @@ Production linked range ownership, allocation rollback, protected history compar
 scans remain outside the selected SPARK units. Deterministic memory/files boundary, fault, tombstone, group, and
 queued-race tests plus the 44,244-state TLC and 10/10 TLAPS campaign qualify those executable boundaries. This is not
 a refinement proof between the reference model and production implementation.
+
+The operational range-normalization candidate increases the warning-strict selected-unit result to 1,088/1,088:
+94 initialization, 525 run-time, 91 assertion, 306 functional-contract, and 72 termination checks. Flow analysis
+discharges 165 and provers discharge 923, with maximum successful effort 6,890 steps. Every selected unit reports
+zero warnings, unproved or justified checks, and zero `pragma Assume`. The bounded reference model's normalization
+loop, replacement indexing, and termination are proved; semantic exact-union preservation remains the independent
+3,419-state TLC and 19/19 TLAPS boundary. Production linked-list closure, allocation, unlinking, deallocation, and
+protected lifecycle ownership remain executable-test boundaries. Deterministic memory/files tests cover transitive
+bridging, same-byte cross-family separation, merges at full persisted capacity, node/lower/upper allocation rollback,
+open-bound expansion, and post-Begin conflict preservation. No refinement theorem is claimed.
 
 The bounded fixed-snapshot scan candidate preserves that same 1,084/1,084 warning-strict result and does not widen
 the selected SPARK units. The proved reference model and serializable TLA+/TLAPS lane continue to establish the

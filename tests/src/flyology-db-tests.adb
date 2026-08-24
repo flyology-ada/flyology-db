@@ -64,11 +64,14 @@ procedure Flyology.DB.Tests is
    end Expect;
 
    procedure Test_Reference_Model is
-      --  Two families, five ordered one-byte keys, and three distinct values
-      --  form the deterministic isolation corpus. Exact spellings select
-      --  read/write/range relationships and are not public defaults.
-      Family_One : constant Model.Column_Family_ID := 1;
-      Family_Two : constant Model.Column_Family_ID := 2;
+      --  Five families, five ordered one-byte keys, and three distinct values
+      --  form the deterministic isolation and normalized-range-capacity
+      --  corpus. Exact spellings select relationships, not public defaults.
+      Family_One   : constant Model.Column_Family_ID := 1;
+      Family_Two   : constant Model.Column_Family_ID := 2;
+      Family_Three : constant Model.Column_Family_ID := 3;
+      Family_Four  : constant Model.Column_Family_ID := 4;
+      Family_Five  : constant Model.Column_Family_ID := 5;
       Key_A      : constant Model.Key := Model_Key ("a");
       Key_B      : constant Model.Key := Model_Key ("b");
       Key_C      : constant Model.Key := Model_Key ("c");
@@ -185,13 +188,23 @@ procedure Flyology.DB.Tests is
       Model.Observe_Range (Reader, Family_One, True, Key_B, True, Key_D, Result);
       Expect (Result, Model.Success, "duplicate range consumed capacity");
       Model.Observe_Range (Reader, Family_One, True, Key_A, True, Key_B, Result);
-      Expect (Result, Model.Success, "second distinct range failed");
+      Expect (Result, Model.Success, "left touching range failed to normalize");
       Model.Observe_Range (Reader, Family_One, True, Key_D, True, Key_Z, Result);
-      Expect (Result, Model.Success, "third distinct range failed");
+      Expect (Result, Model.Success, "right touching range failed to normalize");
       Model.Observe_Range (Reader, Family_One, False, Key_A, True, Key_A, Result);
-      Expect (Result, Model.Success, "fourth distinct range failed");
+      Expect (Result, Model.Success, "open-lower range failed to normalize");
       Model.Observe_Range (Reader, Family_One, True, Key_Z, False, Key_Z, Result);
-      Expect (Result, Model.Capacity_Exceeded, "fifth distinct range exceeded no capacity");
+      Expect (Result, Model.Success, "open-upper range failed to form whole-family union");
+      Model.Observe_Range (Reader, Family_Two, True, Key_A, True, Key_B, Result);
+      Expect (Result, Model.Success, "second-family normalized component failed");
+      Model.Observe_Range (Reader, Family_Three, True, Key_A, True, Key_B, Result);
+      Expect (Result, Model.Success, "third-family normalized component failed");
+      Model.Observe_Range (Reader, Family_Four, True, Key_A, True, Key_B, Result);
+      Expect (Result, Model.Success, "fourth-family normalized component failed");
+      Model.Observe_Range (Reader, Family_Two, True, Key_B, True, Key_D, Result);
+      Expect (Result, Model.Success, "full-capacity merge was rejected");
+      Model.Observe_Range (Reader, Family_Five, True, Key_A, True, Key_B, Result);
+      Expect (Result, Model.Capacity_Exceeded, "fifth normalized component exceeded no capacity");
       Model.Rollback (Reader, Result);
       Expect (Result, Model.Success, "range-capacity transaction rollback failed");
 

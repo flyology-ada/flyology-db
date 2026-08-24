@@ -9026,6 +9026,55 @@ package body Flyology.DB is
       return True;
    end Same_Endpoint;
 
+   function Compare_Stored_To_Bytes
+     (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural; Value : Byte_Array) return Byte_Order
+   is
+      Common : constant Natural := Natural'Min (Stored_Length, Value'Length);
+   begin
+      if Common > 0 then
+         for Offset in Natural range 0 .. Common - 1 loop
+            if Byte (Flyology.Bytes.Element (Stored, Offset + 1)) < Value (Value'First + Offset) then
+               return Before;
+            elsif Byte (Flyology.Bytes.Element (Stored, Offset + 1)) > Value (Value'First + Offset) then
+               return After;
+            end if;
+         end loop;
+      end if;
+      if Stored_Length < Value'Length then
+         return Before;
+      elsif Stored_Length > Value'Length then
+         return After;
+      else
+         return Same;
+      end if;
+   end Compare_Stored_To_Bytes;
+
+   function Compare_Stored_Endpoints
+     (Left         : Flyology.Bytes.Unbounded_Bytes;
+      Left_Length  : Natural;
+      Right        : Flyology.Bytes.Unbounded_Bytes;
+      Right_Length : Natural) return Byte_Order
+   is
+      Common : constant Natural := Natural'Min (Left_Length, Right_Length);
+   begin
+      if Common > 0 then
+         for Offset in Natural range 0 .. Common - 1 loop
+            if Flyology.Bytes.Element (Left, Offset + 1) < Flyology.Bytes.Element (Right, Offset + 1) then
+               return Before;
+            elsif Flyology.Bytes.Element (Left, Offset + 1) > Flyology.Bytes.Element (Right, Offset + 1) then
+               return After;
+            end if;
+         end loop;
+      end if;
+      if Left_Length < Right_Length then
+         return Before;
+      elsif Left_Length > Right_Length then
+         return After;
+      else
+         return Same;
+      end if;
+   end Compare_Stored_Endpoints;
+
    procedure Record_Point_Read
      (Txn : in out Transaction; Family : Column_Family_ID; Item_Key : Byte_Array; Result : out Outcome_Code)
    is
@@ -9074,62 +9123,235 @@ package body Flyology.DB is
       Upper     : Byte_Array;
       Result    : out Outcome_Code)
    is
-      Existing  : Owned_Scan_Range_Access := Txn.Owner.Arena.Scan_Ranges;
-      Candidate : Owned_Scan_Range_Access := null;
+      Existing        : Owned_Scan_Range_Access;
+      Previous        : Owned_Scan_Range_Access;
+      Following       : Owned_Scan_Range_Access;
+      Candidate       : Owned_Scan_Range_Access := null;
+      Lower_Source    : Owned_Scan_Range_Access := null;
+      Upper_Source    : Owned_Scan_Range_Access := null;
+      Only_Merged     : Owned_Scan_Range_Access := null;
+      Final_Has_Lower : Boolean := Has_Lower;
+      Final_Has_Upper : Boolean := Has_Upper;
+      Lower_Is_Input  : Boolean := Has_Lower;
+      Upper_Is_Input  : Boolean := Has_Upper;
+      Expanded        : Boolean;
+      Merged_Count    : Interfaces.Unsigned_32 := 0;
+      Remaining_Count : Interfaces.Unsigned_32;
+      Copied_Lower    : Natural := 0;
+      Copied_Upper    : Natural := 0;
+
+      function Stored_Before_Final_Lower
+        (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural) return Boolean
+      is
+      begin
+         if Lower_Is_Input then
+            return Compare_Stored_To_Bytes (Stored, Stored_Length, Lower) = Before;
+         else
+            return Compare_Stored_Endpoints
+              (Stored, Stored_Length, Lower_Source.Lower, Lower_Source.Lower_Length)
+              = Before;
+         end if;
+      end Stored_Before_Final_Lower;
+
+      function Final_Upper_Before_Stored
+        (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural) return Boolean
+      is
+      begin
+         if Upper_Is_Input then
+            return Compare_Stored_To_Bytes (Stored, Stored_Length, Upper) = After;
+         else
+            return Compare_Stored_Endpoints
+              (Upper_Source.Upper, Upper_Source.Upper_Length, Stored, Stored_Length)
+              = Before;
+         end if;
+      end Final_Upper_Before_Stored;
+
+      function Connected_To_Final (Item : Owned_Scan_Range) return Boolean is
+      begin
+         return Item.Family = Family
+           and then
+             (not Item.Has_Upper
+              or else not Final_Has_Lower
+              or else not Stored_Before_Final_Lower (Item.Upper, Item.Upper_Length))
+           and then
+             (not Final_Has_Upper
+              or else not Item.Has_Lower
+              or else not Final_Upper_Before_Stored (Item.Lower, Item.Lower_Length));
+      end Connected_To_Final;
+
+      function Same_As_Final (Item : Owned_Scan_Range) return Boolean is
+      begin
+         return Item.Family = Family
+           and then Item.Has_Lower = Final_Has_Lower
+           and then Item.Has_Upper = Final_Has_Upper
+           and then
+             (not Final_Has_Lower
+              or else
+                (if Lower_Is_Input
+                 then Same_Endpoint (Item.Lower, Item.Lower_Length, Lower)
+                 else Compare_Stored_Endpoints
+                        (Item.Lower,
+                         Item.Lower_Length,
+                         Lower_Source.Lower,
+                         Lower_Source.Lower_Length)
+                      = Same))
+           and then
+             (not Final_Has_Upper
+              or else
+                (if Upper_Is_Input
+                 then Same_Endpoint (Item.Upper, Item.Upper_Length, Upper)
+                 else Compare_Stored_Endpoints
+                        (Item.Upper,
+                         Item.Upper_Length,
+                         Upper_Source.Upper,
+                         Upper_Source.Upper_Length)
+                      = Same));
+      end Same_As_Final;
    begin
+      loop
+         Expanded := False;
+         Existing := Txn.Owner.Arena.Scan_Ranges;
+         while Existing /= null loop
+            if Connected_To_Final (Existing.all) then
+               if Final_Has_Lower and then not Existing.Has_Lower then
+                  Final_Has_Lower := False;
+                  Lower_Is_Input := False;
+                  Lower_Source := Existing;
+                  Expanded := True;
+               elsif Final_Has_Lower
+                 and then Existing.Has_Lower
+                 and then Stored_Before_Final_Lower (Existing.Lower, Existing.Lower_Length)
+               then
+                  Lower_Is_Input := False;
+                  Lower_Source := Existing;
+                  Expanded := True;
+               end if;
+               if Final_Has_Upper and then not Existing.Has_Upper then
+                  Final_Has_Upper := False;
+                  Upper_Is_Input := False;
+                  Upper_Source := Existing;
+                  Expanded := True;
+               elsif Final_Has_Upper
+                 and then Existing.Has_Upper
+                 and then Final_Upper_Before_Stored (Existing.Upper, Existing.Upper_Length)
+               then
+                  Upper_Is_Input := False;
+                  Upper_Source := Existing;
+                  Expanded := True;
+               end if;
+            end if;
+            Existing := Existing.Next;
+         end loop;
+         exit when not Expanded;
+      end loop;
+
+      Existing := Txn.Owner.Arena.Scan_Ranges;
       while Existing /= null loop
-         if Existing.Family = Family
-           and then Existing.Has_Lower = Has_Lower
-           and then Existing.Has_Upper = Has_Upper
-           and then (not Has_Lower or else Same_Endpoint (Existing.Lower, Existing.Lower_Length, Lower))
-           and then (not Has_Upper or else Same_Endpoint (Existing.Upper, Existing.Upper_Length, Upper))
-         then
-            Result := Success;
-            return;
+         if Connected_To_Final (Existing.all) then
+            Merged_Count := Merged_Count + 1;
+            Only_Merged := Existing;
          end if;
          Existing := Existing.Next;
       end loop;
-      if Txn.Owner.Arena.Scan_Range_Count >= Txn.Scan_Range_Limit then
+
+      if Merged_Count = 1 and then Same_As_Final (Only_Merged.all) then
+         Result := Success;
+         return;
+      elsif Merged_Count > Txn.Owner.Arena.Scan_Range_Count then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+      Remaining_Count := Txn.Owner.Arena.Scan_Range_Count - Merged_Count;
+      if Remaining_Count >= Txn.Scan_Range_Limit then
          Result := Capacity_Exceeded;
          return;
       end if;
 
-      Allocation_Faults.Check (Scan_Range_Node_Allocation);
-      Candidate := new Owned_Scan_Range;
-      if Has_Lower then
-         Allocation_Faults.Check (Scan_Range_Lower_Allocation);
-         Flyology.Bytes.Reserve_Capacity (Candidate.Lower, Lower'Length);
-         for Value of Lower loop
-            Flyology.Bytes.Append (Candidate.Lower, Ada.Streams.Stream_Element (Value));
-         end loop;
-         Candidate.Lower_Length := Lower'Length;
-      end if;
-      if Has_Upper then
-         Allocation_Faults.Check (Scan_Range_Upper_Allocation);
-         Flyology.Bytes.Reserve_Capacity (Candidate.Upper, Upper'Length);
-         for Value of Upper loop
-            Flyology.Bytes.Append (Candidate.Upper, Ada.Streams.Stream_Element (Value));
-         end loop;
-         Candidate.Upper_Length := Upper'Length;
-      end if;
+      begin
+         Allocation_Faults.Check (Scan_Range_Node_Allocation);
+         Candidate := new Owned_Scan_Range;
+         if Final_Has_Lower then
+            Allocation_Faults.Check (Scan_Range_Lower_Allocation);
+            if Lower_Is_Input then
+               Flyology.Bytes.Reserve_Capacity (Candidate.Lower, Lower'Length);
+               for Value of Lower loop
+                  Flyology.Bytes.Append (Candidate.Lower, Ada.Streams.Stream_Element (Value));
+               end loop;
+               Candidate.Lower_Length := Lower'Length;
+            else
+               Flyology.Bytes.Reserve_Capacity (Candidate.Lower, Lower_Source.Lower_Length);
+               for Offset in Positive range 1 .. Lower_Source.Lower_Length loop
+                  Flyology.Bytes.Append
+                    (Candidate.Lower, Flyology.Bytes.Element (Lower_Source.Lower, Offset));
+               end loop;
+               Candidate.Lower_Length := Lower_Source.Lower_Length;
+            end if;
+         end if;
+         if Final_Has_Upper then
+            Allocation_Faults.Check (Scan_Range_Upper_Allocation);
+            if Upper_Is_Input then
+               Flyology.Bytes.Reserve_Capacity (Candidate.Upper, Upper'Length);
+               for Value of Upper loop
+                  Flyology.Bytes.Append (Candidate.Upper, Ada.Streams.Stream_Element (Value));
+               end loop;
+               Candidate.Upper_Length := Upper'Length;
+            else
+               Flyology.Bytes.Reserve_Capacity (Candidate.Upper, Upper_Source.Upper_Length);
+               for Offset in Positive range 1 .. Upper_Source.Upper_Length loop
+                  Flyology.Bytes.Append
+                    (Candidate.Upper, Flyology.Bytes.Element (Upper_Source.Upper, Offset));
+               end loop;
+               Candidate.Upper_Length := Upper_Source.Upper_Length;
+            end if;
+         end if;
+      exception
+         when Storage_Error =>
+            Free_Owned_Scan_Range (Candidate);
+            Result := Capacity_Exceeded;
+            return;
+      end;
       Candidate.Family := Family;
-      Candidate.Has_Lower := Has_Lower;
-      Candidate.Has_Upper := Has_Upper;
+      Candidate.Has_Lower := Final_Has_Lower;
+      Candidate.Has_Upper := Final_Has_Upper;
+      if Final_Has_Lower then
+         Copied_Lower := Candidate.Lower_Length;
+         Lower_Is_Input := False;
+         Lower_Source := Candidate;
+      end if;
+      if Final_Has_Upper then
+         Copied_Upper := Candidate.Upper_Length;
+         Upper_Is_Input := False;
+         Upper_Source := Candidate;
+      end if;
+
+      Previous := null;
+      Existing := Txn.Owner.Arena.Scan_Ranges;
+      while Existing /= null loop
+         Following := Existing.Next;
+         if Connected_To_Final (Existing.all) then
+            if Previous = null then
+               Txn.Owner.Arena.Scan_Ranges := Following;
+            else
+               Previous.Next := Following;
+            end if;
+            Existing.Next := null;
+            Free_Owned_Scan_Range (Existing);
+         else
+            Previous := Existing;
+         end if;
+         Existing := Following;
+      end loop;
       Candidate.Next := Txn.Owner.Arena.Scan_Ranges;
       Txn.Owner.Arena.Scan_Ranges := Candidate;
       Candidate := null;
-      Txn.Owner.Arena.Scan_Range_Count := Txn.Owner.Arena.Scan_Range_Count + 1;
-      if Has_Lower then
-         Image_Accounting.Record_Transaction_Copy (Lower'Length);
+      Txn.Owner.Arena.Scan_Range_Count := Remaining_Count + 1;
+      if Final_Has_Lower then
+         Image_Accounting.Record_Transaction_Copy (Copied_Lower);
       end if;
-      if Has_Upper then
-         Image_Accounting.Record_Transaction_Copy (Upper'Length);
+      if Final_Has_Upper then
+         Image_Accounting.Record_Transaction_Copy (Copied_Upper);
       end if;
       Result := Success;
-   exception
-      when Storage_Error =>
-         Free_Owned_Scan_Range (Candidate);
-         Result := Capacity_Exceeded;
    end Record_Scan_Range;
 
    procedure Store_Mutation

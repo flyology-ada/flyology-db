@@ -1,5 +1,38 @@
 # Review record
 
+## Accepted operational transaction-owned scan-range normalization
+
+- Parent: formal normalization boundary `8d94972`.
+- Scope and compatibility: implement the frozen half-open union rule inside the existing public `Observe_Range` and
+  `Scan` behavior without adding a declaration, result literal, default, persisted field, dependency, task, request,
+  retry, or publication path. Snapshot calls still validate without retention. Serializable calls now count
+  normalized components rather than exact distinct predicates, so overlapping/touching calls that previously could
+  reach `Capacity_Exceeded` can succeed without weakening any conflict.
+- Ownership and atomicity: production computes transitive same-family closure and the final endpoints before count
+  admission. It fully allocates and copies one replacement node, then unlinks and frees every merged component and
+  publishes the exact derived count. Node/lower/upper allocation failure frees only the unlinked replacement and
+  leaves every old node and endpoint exact. The coordinator owns an admitted arena, so the list cannot race caller
+  mutation; rollback, consumption, and finalization retain the existing complete-list release path.
+- Bounds and authority: the persisted database-wide range count continues to be the sole component ceiling, and the
+  selected family's persisted key limit remains the endpoint authority. Merging is admitted even at the ceiling;
+  only a new disjoint component can exceed it. The reference model's `Max_Ranges` closure passes derive from its
+  complete fixed oracle array and establish no runtime retry, capacity, or work budget. Test counts, families, keys,
+  fault sites, identities, and tags retain adjacent corpus-authority comments; no production value is introduced.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository checks, deterministic memory and
+  files campaigns, authenticated client operations, subprocess crash/reopen, 32 pinned comparative cases, and
+  TidesDB 4/4. New witnesses cover containment, cross-family separation, disjoint one-over rejection, two-component
+  bridge rollback and retry, lower/upper replacement rollback, open-lower expansion at full capacity, and a
+  post-Begin conflict inside the merged union. Warning-strict GNATprove proves 1,088/1,088 checks (165 flow, 923
+  prover; maximum 6,890 steps) with zero warnings, unproved/justified checks, or `pragma Assume`. The unchanged
+  combined TLA gate remains green at 3,419 states and 19/19 obligations for this lane.
+- Findings cycle: immediate ownership review found two P1 draft defects before execution: one comparator referenced
+  an unbuilt candidate, and endpoint-source pointers could have outlived freed nodes. Total stored/input comparison
+  and rebinding to the fully built candidate removed both hazards. The proof sweep found a P1 semantic mismatch in
+  the exact-deduplicating SPARK oracle; it now publishes a complete normalized replacement atomically. A first
+  conflict witness correctly exposed missing transaction mutation admission and was repaired with an out-of-range
+  marker. The repeated API, ownership, concurrency, bounds, constants, formal-model, tests, documentation, and
+  unnecessary-surface sweep finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted transaction-owned scan-range-normalization boundary
 
 - Parent: canonical empty-output L0-compaction commit `c8003b5`.

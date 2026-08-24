@@ -39,8 +39,9 @@ lazily retains distinct present/absent external points under the persisted count
 validation cover singleton and grouped commits; snapshot callers and own-write reads retain their prior behavior.
 Public `Observe_Range` now validates a canonical half-open predicate without reading rows. A false endpoint flag is
 unbounded and ignores its byte argument; a present endpoint is bounded by its selected family. Serializable calls
-retain exact distinct predicates lazily under the persisted range count, while Snapshot calls validate without
-retention. Allocation or count failure publishes no partial predicate. Admission and prepublication checks reject
+retain normalized same-family components lazily under the persisted range count, while Snapshot calls validate
+without retention. Overlap, endpoint contact, and transitive bridges become exact unions; cross-family components
+remain distinct. Allocation or count failure publishes no partial predicate. Admission and prepublication checks reject
 post-Begin writes in `[Lower, Upper)`, including open and whole-family forms, for singleton and grouped commits.
 Public `Scan` now materializes the complete selected half-open interval at the transaction's fixed snapshot, merges
 own Put/Delete mutations, and sorts by unsigned-byte lexicographic key. Its controlled result owns exact descriptors
@@ -98,9 +99,9 @@ value reconstruction and later-delta equations with TLAPS. This strengthens the 
 choosing a public trigger, automatic schedule, run-level policy, or storage budget.
 
 The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
-separation, and atomic capacity/allocation rollback before changing the runtime list. Its finite model exhausts 3,419
-states and the arbitrary-universe kernel proves 19 TLAPS obligations. Production still retains exact distinct
-predicates until the paired Ada unit lands, so this formal boundary alone does not complete transaction execution.
+separation, and atomic capacity/allocation rollback. Its finite model exhausts 3,419 states and the arbitrary-universe
+kernel proves 19 TLAPS obligations. Production and the bounded SPARK oracle now implement that rule: they build a
+complete replacement before atomically publishing the normalized set, and a full-capacity merge remains admissible.
 
 ## Formal state-machine lane
 

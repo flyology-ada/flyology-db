@@ -6061,12 +6061,13 @@ package body Flyology.DB.Engine_Tests is
       Family         : Column_Family;
       Result         : Outcome_Code;
       Data           : Value;
-      --  Two distinct predicates are the smallest ceiling that proves exact
-      --  deduplication, one-over backpressure, and failed-allocation rollback.
-      --  This is persisted test policy, not a DB default.
+      --  Two normalized components are the smallest ceiling that admits two
+      --  separated predicates while exercising a bridging merge, cross-family
+      --  separation, one-over backpressure, and allocation rollback. This is
+      --  persisted test policy, not a DB default.
       Limits         : constant Database_Limits :=
         (Default_Limits with delta Maximum_Scan_Ranges_Per_Transaction => 2);
-      --  Identity namespace 61_000..61_030 and payload tags 1..12 isolate
+      --  Identity namespace 61_000..61_031 and payload tags 1..13 isolate
       --  this deterministic campaign. They are test witnesses, not persisted
       --  format tags or application identity/value policy.
       Database_ID    : constant Database_Identifier := Database_Identifier (Numbered_ID (61_000));
@@ -6172,9 +6173,11 @@ package body Flyology.DB.Engine_Tests is
         (Item, Reader, Family, False, Key_Data (Key_A), False, Key_Data (Key_D), Result);
       Expect (Result, Success, "ignored endpoint bytes changed whole-range identity");
       Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
-      Expect (Result, Success, "exact second range was rejected");
-      Observe_Range (Item, Reader, 1, True, Key_A, True, Key_B, Result);
-      Expect (Result, Capacity_Exceeded, "one-over range was not rejected exactly");
+      Expect (Result, Success, "contained range consumed normalized capacity");
+      Observe_Range (Item, Reader, 2, True, Key_A, True, Key_B, Result);
+      Expect (Result, Success, "same bytes in another family were merged");
+      Observe_Range (Item, Reader, 2, True, Key_C, True, Key_D, Result);
+      Expect (Result, Capacity_Exceeded, "cross-family disjoint range bypassed capacity");
       Root_DB.Observe_Range (Item, Reader, Family, True, Oversized, False, Oversized, Result);
       Expect (Result, Capacity_Exceeded, "present oversized endpoint was admitted");
       Get (Item, Reader, 1, Key_C, Data, Result);
@@ -6184,18 +6187,40 @@ package body Flyology.DB.Engine_Tests is
 
       Begin_Transaction (Item, Numbered_TX_ID (61_005), Serializable, Reader, Result);
       Expect (Result, Success, "range allocation reader begin failed");
+      Observe_Range (Item, Reader, 1, True, Key_A, True, Key_B, Result);
+      Expect (Result, Success, "left bridge component failed");
+      Observe_Range (Item, Reader, 1, True, Key_C, True, Key_D, Result);
+      Expect (Result, Success, "right bridge component failed");
+      Set_Test_Allocation_Fault (Scan_Range_Node_Allocation);
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_C, Result);
+      Expect (Result, Capacity_Exceeded, "bridge node allocation failure was misclassified");
+      Observe_Range (Item, Reader, 2, True, Key_A, True, Key_B, Result);
+      Expect (Result, Capacity_Exceeded, "failed bridge changed retained component count");
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_C, Result);
+      Expect (Result, Success, "bridge retry did not coalesce both components");
+      Observe_Range (Item, Reader, 2, True, Key_A, True, Key_B, Result);
+      Expect (Result, Success, "cross-family component failed after bridge");
       Set_Test_Allocation_Fault (Scan_Range_Lower_Allocation);
-      Observe_Range (Item, Reader, 1, True, Key_A, True, Key_B, Result);
+      Observe_Range (Item, Reader, 2, True, Key_A, True, Key_C, Result);
       Expect (Result, Capacity_Exceeded, "lower allocation failure was misclassified");
-      Observe_Range (Item, Reader, 1, True, Key_A, True, Key_B, Result);
+      Observe_Range (Item, Reader, 2, True, Key_C, True, Key_D, Result);
+      Expect (Result, Capacity_Exceeded, "lower allocation failure partially replaced its component");
+      Observe_Range (Item, Reader, 2, True, Key_A, True, Key_C, Result);
       Expect (Result, Success, "lower allocation rollback did not permit retry");
       Set_Test_Allocation_Fault (Scan_Range_Upper_Allocation);
-      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
+      Observe_Range (Item, Reader, 2, True, Key_C, True, Key_D, Result);
       Expect (Result, Capacity_Exceeded, "upper allocation failure was misclassified");
-      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
+      Observe_Range (Item, Reader, 2, True, Key_D, True, Marker, Result);
+      Expect (Result, Capacity_Exceeded, "upper allocation failure partially replaced its component");
+      Observe_Range (Item, Reader, 2, True, Key_C, True, Key_D, Result);
       Expect (Result, Success, "upper allocation rollback did not permit retry");
-      Observe_Range (Item, Reader, 1, False, Key_A, True, Key_A, Result);
-      Expect (Result, Capacity_Exceeded, "failed endpoint allocation consumed the wrong slot");
+      Observe_Range (Item, Reader, 1, False, Key_A, True, Key_D, Result);
+      Expect (Result, Success, "open-lower merge was rejected at full normalized capacity");
+      Put (Item, Reader, 1, Marker, To_Value ([13]), Result);
+      Expect (Result, Success, "normalized-union reader marker failed");
+      Commit_External_Write (61_031, 1, Key_A, 13);
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "normalized open-lower union lost conflict authority");
       Rollback (Reader, Result);
       Expect (Result, Success, "range allocation rollback failed");
 
