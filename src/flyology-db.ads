@@ -219,9 +219,10 @@ package Flyology.DB is
       Result         : out Outcome_Code);
 
    --  Begin one bounded transaction at an explicit isolation level. A
-   --  Serializable transaction retains distinct external point observations
-   --  up to the database's persisted limit; a legacy manifest without that
-   --  authority is rejected as Unsupported_Format. No isolation is inferred.
+   --  Serializable transaction retains distinct external point and half-open
+   --  range observations up to their independent persisted limits; a legacy
+   --  manifest without both authorities is rejected as Unsupported_Format.
+   --  No isolation is inferred.
    --  @param Item Open database whose current sequence and persisted limits are used
    --  @param Transaction_ID Caller-stable never-reused transaction identity
    --  @param Isolation Explicit runtime isolation selection
@@ -263,6 +264,34 @@ package Flyology.DB is
       Data     : out Flyology.Bytes.Unbounded_Bytes;
       Result   : out Outcome_Code);
 
+   --  Validate and observe one canonical half-open scan predicate without
+   --  reading or returning rows. A false endpoint flag means that endpoint is
+   --  unbounded and its byte argument is ignored. When both endpoints are
+   --  present, Lower must compare strictly before Upper; an empty or reversed
+   --  interval returns Invalid_State. Snapshot transactions validate only.
+   --  Serializable transactions retain each distinct exact predicate lazily,
+   --  bounded by the database's persisted range-count authority and the
+   --  selected family's key limit. Capacity_Exceeded means no predicate was
+   --  retained. Present endpoint bytes are borrowed only for this call and
+   --  copied before Success. A future bounded scan API uses this same rule.
+   --  @param Item Open database that owns committed conflict history
+   --  @param Txn Active transaction whose isolation and observations are used
+   --  @param Family Valid handle selecting persisted family limits and identity
+   --  @param Has_Lower True when Lower is the inclusive endpoint
+   --  @param Lower Inclusive endpoint bytes, ignored when Has_Lower is false
+   --  @param Has_Upper True when Upper is the exclusive endpoint
+   --  @param Upper Exclusive endpoint bytes, ignored when Has_Upper is false
+   --  @param Result Success or the exact validation, capacity, or lifecycle outcome
+   procedure Observe_Range
+     (Item      : in out Database;
+      Txn       : in out Transaction;
+      Family    : Column_Family;
+      Has_Lower : Boolean;
+      Lower     : Byte_Array;
+      Has_Upper : Boolean;
+      Upper     : Byte_Array;
+      Result    : out Outcome_Code);
+
    --  Borrow Item_Key/Data for this call and copy them once into the
    --  transaction-owned arena; no caller bytes are retained after return.
    procedure Put
@@ -295,8 +324,9 @@ package Flyology.DB is
    --  Transaction_ID is also the immutable batch identity for this singleton.
    --  A pre-admission outcome returns a receipt with zero transaction/batch IDs;
    --  every admitted terminal outcome retains both stable identities.
-   --  Commit returns Conflict when an exact key in Txn was written after its
-   --  captured sequence or the sequence predates retained exact history.
+   --  Commit returns Conflict when a written key or retained Serializable
+   --  point/range predicate intersects a post-Begin write, or when the
+   --  captured sequence predates retained exact history.
    procedure Commit
      (Item    : in out Database;
       Txn     : in out Transaction;
@@ -311,7 +341,8 @@ package Flyology.DB is
    --  deadline, immutable batch, HEAD transition, and terminal classification.
    --  All transactions remain active on pre-admission rejection and all are
    --  consumed on admission, whatever later terminal outcome is reported.
-   --  Group members validate independently against external committed history.
+   --  Group members validate writes and retained Serializable predicates
+   --  independently against external committed history.
    --  The explicit group is one atomic co-commit unit, so overlapping member
    --  writes remain ordered by their existing deterministic member sequence.
    --  Group_ID is the exact immutable batch identity;
@@ -542,6 +573,12 @@ private
       Transaction_Payload_Allocation,
       Point_Read_Node_Allocation,
       Point_Read_Key_Allocation,
+      --  Test-only failure positions distinguish unlinked range-node and
+      --  endpoint-copy rollback. Their positions are never persisted or
+      --  exposed; adding them changes only deterministic fault coverage.
+      Scan_Range_Node_Allocation,
+      Scan_Range_Lower_Allocation,
+      Scan_Range_Upper_Allocation,
       Batch_Descriptor_Allocation,
       Storage_Sink_Allocation,
       Recovery_History_Allocation,
@@ -626,12 +663,31 @@ private
       Next       : Owned_Point_Read_Access := null;
    end record;
 
+   type Owned_Scan_Range;
+   type Owned_Scan_Range_Access is access Owned_Scan_Range;
+   --  One lazily allocated exact serializable half-open predicate. Present
+   --  endpoints are copied only after family-limit and ordering validation;
+   --  absent endpoint storage is vacant and ignored. The flags and linkage are
+   --  runtime ownership state, never persisted or encoded.
+   type Owned_Scan_Range is record
+      Family       : Column_Family_ID := Column_Family_ID'First;
+      Has_Lower    : Boolean := False;
+      Lower_Length : Natural := 0;
+      Lower        : Flyology.Bytes.Unbounded_Bytes;
+      Has_Upper    : Boolean := False;
+      Upper_Length : Natural := 0;
+      Upper        : Flyology.Bytes.Unbounded_Bytes;
+      Next         : Owned_Scan_Range_Access := null;
+   end record;
+
    type Transaction_Arena is limited record
       Mutations        : Owned_Mutation_Array_Access := null;
       Count            : Natural := 0;
       Bytes_Used       : Interfaces.Unsigned_64 := 0;
       Point_Reads      : Owned_Point_Read_Access := null;
       Point_Read_Count : Interfaces.Unsigned_32 := 0;
+      Scan_Ranges      : Owned_Scan_Range_Access := null;
+      Scan_Range_Count : Interfaces.Unsigned_32 := 0;
    end record;
    type Transaction_Arena_Access is access Transaction_Arena;
 
@@ -651,11 +707,12 @@ private
       --  is the valid empty-database snapshot and the vacant reset value; it
       --  controls write/write validation but is not a new persisted field.
       Snapshot_At : Sequence_Number := 0;
-      --  Snapshot and zero point capacity are vacant/reset state only. Begin
-      --  assigns the caller-selected runtime mode and the exact persisted
-      --  observation ceiling; neither field is a public default or persisted.
+      --  Snapshot and zero observation capacities are vacant/reset state only.
+      --  Begin assigns the caller-selected runtime mode and exact persisted
+      --  point/range ceilings; none is a public default or new persisted field.
       Isolation        : Isolation_Level := Snapshot;
       Point_Read_Limit : Interfaces.Unsigned_32 := 0;
+      Scan_Range_Limit : Interfaces.Unsigned_32 := 0;
       Owner            : Transaction_Arena_Owner;
    end record;
 

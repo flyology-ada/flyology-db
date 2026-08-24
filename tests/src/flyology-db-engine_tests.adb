@@ -345,6 +345,25 @@ package body Flyology.DB.Engine_Tests is
       end if;
    end Delete;
 
+   procedure Observe_Range
+     (Item      : in out Database;
+      Txn       : in out Transaction;
+      Family    : Column_Family_ID;
+      Has_Lower : Boolean;
+      Lower     : Key;
+      Has_Upper : Boolean;
+      Upper     : Key;
+      Result    : out Outcome_Code)
+   is
+      Handle : Column_Family;
+   begin
+      Open_Column_Family (Item, Family, Handle, Result);
+      if Result = Success then
+         Root_DB.Observe_Range
+           (Item, Txn, Handle, Has_Lower, Key_Data (Lower), Has_Upper, Key_Data (Upper), Result);
+      end if;
+   end Observe_Range;
+
    procedure Get
      (Item     : in out Database;
       Txn      : in out Transaction;
@@ -5086,6 +5105,325 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "serializable-point database close failed");
    end Test_Serializable_Point_Validation;
 
+   procedure Test_Serializable_Range_Validation
+     (Backend : not null access Backends.Backend'Class; Prefix : String)
+   is
+      Context        : aliased Storage_Context;
+      Item           : aliased Database;
+      Reader         : aliased Transaction;
+      Writer         : aliased Transaction;
+      --  Two members are the minimum atomic group proving that one retained
+      --  range conflict rejects every member; this is test geometry, not a
+      --  product group-capacity default.
+      Group          : Transaction_Array (1 .. 2);
+      Receipt        : Commit_Receipt;
+      Group_Receipts : Commit_Receipt_Array (Group'Range);
+      Create_Info    : Create_Receipt;
+      Family         : Column_Family;
+      Result         : Outcome_Code;
+      Data           : Value;
+      --  Two distinct predicates are the smallest ceiling that proves exact
+      --  deduplication, one-over backpressure, and failed-allocation rollback.
+      --  This is persisted test policy, not a DB default.
+      Limits         : constant Database_Limits :=
+        (Default_Limits with delta Maximum_Scan_Ranges_Per_Transaction => 2);
+      --  Identity namespace 61_000..61_030 and payload tags 1..12 isolate
+      --  this deterministic campaign. They are test witnesses, not persisted
+      --  format tags or application identity/value policy.
+      Database_ID    : constant Database_Identifier := Database_Identifier (Numbered_ID (61_000));
+      Transition_ID  : constant Identifier := Numbered_ID (61_001);
+      --  Bytewise A < B < C < D < marker geometry exercises inclusive,
+      --  exclusive, disjoint, open, whole-family, and group predicates. These
+      --  spellings establish no application key policy.
+      Key_A          : constant Key := To_Key ([16#10#]);
+      Key_B          : constant Key := To_Key ([16#20#]);
+      Key_C          : constant Key := To_Key ([16#30#]);
+      Key_D          : constant Key := To_Key ([16#40#]);
+      Key_B_Extended : constant Key := To_Key ([16#20#, 16#00#]);
+      Marker         : constant Key := To_Key ([16#E0#]);
+      Group_Marker_A : constant Key := To_Key ([16#E1#]);
+      Group_Marker_B : constant Key := To_Key ([16#E2#]);
+      --  One byte beyond family one's persisted 64-byte key authority proves
+      --  present-endpoint rejection and absent-endpoint byte irrelevance.
+      Oversized      : constant Byte_Array (1 .. Reference_Maximum_Key_Bytes + 1) := [others => 16#55#];
+
+      procedure Prepare_Reader
+        (Target    : in out Transaction;
+         Identity  : Natural;
+         Has_Lower : Boolean;
+         Lower     : Key;
+         Has_Upper : Boolean;
+         Upper     : Key;
+         Tag       : Byte)
+      is
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (Identity), Serializable, Target, Result);
+         Expect (Result, Success, "range reader begin failed");
+         Observe_Range (Item, Target, 1, Has_Lower, Lower, Has_Upper, Upper, Result);
+         Expect (Result, Success, "range observation failed");
+         Put (Item, Target, 1, Marker, To_Value ([Tag]), Result);
+         Expect (Result, Success, "range reader marker failed");
+      end Prepare_Reader;
+
+      procedure Commit_External_Write
+        (Identity : Natural; Family_ID : Column_Family_ID; Item_Key : Key; Tag : Byte)
+      is
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (Identity), Writer, Result);
+         Expect (Result, Success, "range writer begin failed");
+         Put (Item, Writer, Family_ID, Item_Key, To_Value ([Tag]), Result);
+         Expect (Result, Success, "range writer buffer failed");
+         Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "range writer commit failed");
+      end Commit_External_Write;
+
+      procedure Commit_External_Delete (Identity : Natural; Item_Key : Key) is
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (Identity), Writer, Result);
+         Expect (Result, Success, "range delete writer begin failed");
+         Delete (Item, Writer, 1, Item_Key, Result);
+         Expect (Result, Success, "range delete writer buffer failed");
+         Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "range delete writer commit failed");
+      end Commit_External_Delete;
+   begin
+      Bind_Context (Context, Backend, Prefix);
+      Create
+        (Item,
+         Context'Access,
+         Database_ID,
+         Manifest_ID_For (Transition_ID),
+         Transition_ID,
+         Limits,
+         Default_Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "serializable-range database create failed");
+      Open_Column_Family (Item, 1, Family, Result);
+      Expect (Result, Success, "serializable-range family open failed");
+
+      --  Snapshot validates the predicate but retains nothing, so the armed
+      --  range-node failure remains for the following Serializable call.
+      Begin_Transaction (Item, Numbered_TX_ID (61_002), Reader, Result);
+      Expect (Result, Success, "snapshot range reader begin failed");
+      Set_Test_Allocation_Fault (Scan_Range_Node_Allocation);
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
+      Expect (Result, Success, "snapshot range observation allocated");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "snapshot range rollback failed");
+      Begin_Transaction (Item, Numbered_TX_ID (61_003), Serializable, Reader, Result);
+      Expect (Result, Success, "serializable range fault probe begin failed");
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
+      Expect (Result, Capacity_Exceeded, "snapshot consumed range allocation fault");
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
+      Expect (Result, Success, "range retry after node fault failed");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "range fault probe rollback failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (61_004), Serializable, Reader, Result);
+      Expect (Result, Success, "range admission reader begin failed");
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_B, Result);
+      Expect (Result, Invalid_State, "empty range was admitted");
+      Observe_Range (Item, Reader, 1, True, Key_D, True, Key_B, Result);
+      Expect (Result, Invalid_State, "reversed range was admitted");
+      Root_DB.Observe_Range (Item, Reader, Family, False, Oversized, False, Oversized, Result);
+      Expect (Result, Success, "absent oversized endpoints were inspected");
+      Root_DB.Observe_Range
+        (Item, Reader, Family, False, Key_Data (Key_A), False, Key_Data (Key_D), Result);
+      Expect (Result, Success, "ignored endpoint bytes changed whole-range identity");
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
+      Expect (Result, Success, "exact second range was rejected");
+      Observe_Range (Item, Reader, 1, True, Key_A, True, Key_B, Result);
+      Expect (Result, Capacity_Exceeded, "one-over range was not rejected exactly");
+      Root_DB.Observe_Range (Item, Reader, Family, True, Oversized, False, Oversized, Result);
+      Expect (Result, Capacity_Exceeded, "present oversized endpoint was admitted");
+      Get (Item, Reader, 1, Key_C, Data, Result);
+      Expect (Result, Not_Found, "range capacity consumed independent point capacity");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "range admission rollback failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (61_005), Serializable, Reader, Result);
+      Expect (Result, Success, "range allocation reader begin failed");
+      Set_Test_Allocation_Fault (Scan_Range_Lower_Allocation);
+      Observe_Range (Item, Reader, 1, True, Key_A, True, Key_B, Result);
+      Expect (Result, Capacity_Exceeded, "lower allocation failure was misclassified");
+      Observe_Range (Item, Reader, 1, True, Key_A, True, Key_B, Result);
+      Expect (Result, Success, "lower allocation rollback did not permit retry");
+      Set_Test_Allocation_Fault (Scan_Range_Upper_Allocation);
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
+      Expect (Result, Capacity_Exceeded, "upper allocation failure was misclassified");
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
+      Expect (Result, Success, "upper allocation rollback did not permit retry");
+      Observe_Range (Item, Reader, 1, False, Key_A, True, Key_A, Result);
+      Expect (Result, Capacity_Exceeded, "failed endpoint allocation consumed the wrong slot");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "range allocation rollback failed");
+
+      Prepare_Reader (Reader, 61_006, True, Key_B, True, Key_D, 1);
+      Commit_External_Write (61_007, 1, Key_B, 2);
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "inclusive lower endpoint was not validated");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "lower-endpoint conflict consumed reader");
+
+      Prepare_Reader (Reader, 61_008, True, Key_B, True, Key_D, 3);
+      Commit_External_Write (61_009, 1, Key_D, 4);
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "exclusive upper endpoint conflicted");
+
+      Prepare_Reader (Reader, 61_010, False, Key_D, True, Key_B, 5);
+      Commit_External_Write (61_011, 1, Key_A, 6);
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "open-lower predicate was not validated");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "open-lower conflict consumed reader");
+
+      Prepare_Reader (Reader, 61_012, True, Key_D, False, Key_A, 7);
+      Commit_External_Write (61_013, 1, Key_D, 8);
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "open-upper predicate was not validated");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "open-upper conflict consumed reader");
+
+      Prepare_Reader (Reader, 61_014, False, Key_D, False, Key_A, 9);
+      Commit_External_Write (61_015, 1, Key_C, 10);
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "whole-family predicate was not validated");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "whole-family conflict consumed reader");
+
+      Prepare_Reader (Reader, 61_016, True, Key_B, True, Key_D, 11);
+      Commit_External_Write (61_017, 2, Key_C, 12);
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "same bytes in another family conflicted");
+
+      Prepare_Reader (Reader, 61_024, True, Key_B, True, Key_D, 11);
+      Commit_External_Write (61_025, 1, Key_A, 12);
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "key below lower endpoint conflicted");
+
+      Begin_Transaction (Item, Numbered_TX_ID (61_018), Serializable, Group (1), Result);
+      Expect (Result, Success, "range group reader begin failed");
+      Observe_Range (Item, Group (1), 1, True, Key_B, True, Key_D, Result);
+      Expect (Result, Success, "range group observation failed");
+      Put (Item, Group (1), 1, Group_Marker_A, To_Value ([1]), Result);
+      Expect (Result, Success, "range group first marker failed");
+      Begin_Transaction (Item, Numbered_TX_ID (61_019), Group (2), Result);
+      Expect (Result, Success, "range group second begin failed");
+      Put (Item, Group (2), 1, Group_Marker_B, To_Value ([2]), Result);
+      Expect (Result, Success, "range group second marker failed");
+      Commit_External_Write (61_020, 1, Key_C, 3);
+      Commit_Group
+        (Item,
+         Numbered_ID (61_021),
+         Group,
+         Test_Operation_Timeout,
+         Receipts => Group_Receipts,
+         Result   => Result);
+      Expect (Result, Conflict, "range group member predicate was not validated");
+      for Index in Group'Range loop
+         Rollback (Group (Index), Result);
+         Expect (Result, Success, "range group conflict consumed a member");
+      end loop;
+
+      Prepare_Reader (Reader, 61_026, True, Key_B, True, Key_D, 4);
+      Begin_Transaction (Item, Numbered_TX_ID (61_027), Writer, Result);
+      Expect (Result, Success, "queued range writer begin failed");
+      Put (Item, Writer, 1, Key_C, To_Value ([5]), Result);
+      Expect (Result, Success, "queued range writer buffer failed");
+      Testing.Pause_Coordinator (Item, Result);
+      Expect (Result, Success, "range queue pause failed");
+      declare
+         task type Commit_Call (Target : not null access Transaction) is
+            --  Eight MiB is the runner-qualified task stack used to create
+            --  admitted ordering witnesses, not DB task or allocation policy.
+            pragma Task_Info (Flyology.Native_Task);
+            pragma Storage_Size (8 * 1024 * 1024);
+            entry Finish (Call_Result : out Outcome_Code);
+         end Commit_Call;
+
+         task body Commit_Call is
+            Local_Receipt : Commit_Receipt;
+            Local_Result  : Outcome_Code;
+         begin
+            Commit
+              (Item, Target.all, Test_Operation_Timeout, Receipt => Local_Receipt, Result => Local_Result);
+            accept Finish (Call_Result : out Outcome_Code) do
+               Call_Result := Local_Result;
+            end Finish;
+         exception
+            when others =>
+               accept Finish (Call_Result : out Outcome_Code) do
+                  Call_Result := Storage_Failure;
+               end Finish;
+         end Commit_Call;
+
+         Writer_Call    : Commit_Call (Writer'Access);
+         Depth          : Natural := 0;
+         Query_Result   : Outcome_Code;
+         --  Two seconds bounds only each deterministic queue barrier; both
+         --  Commit calls retain their independently supplied deadlines.
+         Queue_Deadline : constant Duration := 2.0;
+      begin
+         declare
+            Deadline : constant Ada.Real_Time.Time :=
+              Ada.Real_Time.Clock + Ada.Real_Time.To_Time_Span (Queue_Deadline);
+         begin
+            loop
+               Testing.Queue_Depth (Item, Depth, Query_Result);
+               exit when (Query_Result = Success and then Depth = 1) or else Ada.Real_Time.Clock >= Deadline;
+               delay Test_Poll_Yield;
+            end loop;
+         end;
+         if Depth /= 1 then
+            Testing.Resume_Coordinator (Item, Result);
+            Writer_Call.Finish (Result);
+            raise Program_Error with "conflicting writer did not reach range queue barrier";
+         end if;
+         declare
+            Reader_Call                  : Commit_Call (Reader'Access);
+            Writer_Result, Reader_Result : Outcome_Code;
+            Deadline                     : constant Ada.Real_Time.Time :=
+              Ada.Real_Time.Clock + Ada.Real_Time.To_Time_Span (Queue_Deadline);
+         begin
+            loop
+               Testing.Queue_Depth (Item, Depth, Query_Result);
+               exit when (Query_Result = Success and then Depth = 2) or else Ada.Real_Time.Clock >= Deadline;
+               delay Test_Poll_Yield;
+            end loop;
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "range queue resume failed");
+            Writer_Call.Finish (Writer_Result);
+            Reader_Call.Finish (Reader_Result);
+            if Depth /= 2 then
+               raise Program_Error with "serializable range reader did not reach queue barrier";
+            end if;
+            Expect (Writer_Result, Success, "queued range writer failed");
+            Expect (Reader_Result, Conflict, "prepublication range validation was omitted");
+         end;
+      end;
+
+      Begin_Transaction (Item, Numbered_TX_ID (61_028), Serializable, Reader, Result);
+      Expect (Result, Success, "prefix-order range reader begin failed");
+      Observe_Range (Item, Reader, 1, True, Key_B, True, Key_B_Extended, Result);
+      Expect (Result, Success, "shorter-prefix lower endpoint was not ordered first");
+      Observe_Range (Item, Reader, 1, True, Key_B_Extended, True, Key_B, Result);
+      Expect (Result, Invalid_State, "longer-prefix reversed range was admitted");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "prefix-order range rollback failed");
+
+      Prepare_Reader (Reader, 61_029, True, Key_B, True, Key_D, 6);
+      Commit_External_Delete (61_030, Key_C);
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "range predicate ignored a committed tombstone");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "range tombstone conflict consumed reader");
+
+      Close (Item, Result);
+      Expect (Result, Success, "serializable-range database close failed");
+   end Test_Serializable_Range_Validation;
+
    procedure Test_Cap_Boundaries (Backend : not null access Backends.Backend'Class) is
       Context     : aliased Storage_Context;
       Item        : Database;
@@ -5456,6 +5794,7 @@ package body Flyology.DB.Engine_Tests is
          Test_Resolve_Lifecycle (Store'Access);
          Test_Snapshot_Write_Validation (Store'Access);
          Test_Serializable_Point_Validation (Store'Access, "memory-serializable-points");
+         Test_Serializable_Range_Validation (Store'Access, "memory-serializable-ranges");
          Test_Cap_Boundaries (Store'Access);
       end;
 
@@ -5488,6 +5827,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Flush_Certainty (Store'Access, "files-flush");
             Test_Snapshot_Write_Validation (Store'Access);
             Test_Serializable_Point_Validation (Store'Access, "files-serializable-points");
+            Test_Serializable_Range_Validation (Store'Access, "files-serializable-ranges");
             Test_Faults (Store'Access, "files-faults", 140);
          end;
          Ada.Directories.Delete_Tree (Root);

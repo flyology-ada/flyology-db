@@ -142,6 +142,16 @@ point ownership, allocation rollback, and protected admission/prepublication sca
 units; deterministic memory/files fault, capacity, group, and queued-race tests plus the 44,244-state serializable
 TLC and 10/10 TLAPS gate qualify those executable boundaries. No refinement proof is claimed.
 
+The operational serializable range-validation candidate again preserves 1,084/1,084 warning-strict checks: 93
+initialization, 522 run-time, 91 assertion, 306 functional-contract, and 72 termination checks; flow analysis
+discharges 164 and provers discharge 920, with maximum successful effort 6,890 steps. Every selected unit reports
+zero warnings, unproved or justified checks, and zero `pragma Assume`. The proved reference model covers the same
+exact-deduplication, half-open interval, snapshot non-retention, independent-capacity, and phantom-conflict rule.
+Production linked range ownership, allocation rollback, protected history comparison, and admission/prepublication
+scans remain outside the selected SPARK units. Deterministic memory/files boundary, fault, tombstone, group, and
+queued-race tests plus the 44,244-state TLC and 10/10 TLAPS campaign qualify those executable boundaries. This is not
+a refinement proof between the reference model and production implementation.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

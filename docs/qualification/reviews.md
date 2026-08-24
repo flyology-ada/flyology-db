@@ -1,5 +1,53 @@
 # Review record
 
+## Accepted operational serializable range-validation candidate
+
+- Parent: operational serializable point-validation commit `ba12783`.
+- Scope and API: add public `Observe_Range` as a low-level predicate operation, not a row-returning scan. Explicit
+  endpoint flags represent one canonical half-open interval; false means unbounded and makes the corresponding bytes
+  irrelevant. Two present endpoints require strict bytewise `Lower < Upper`. Snapshot validates without retention;
+  Serializable retains exact distinct predicates. Empty/reversed intervals use existing `Invalid_State`, while
+  family-bound, allocation, and persisted-count exhaustion use existing `Capacity_Exceeded`. No default endpoint,
+  result count, result byte ceiling, persisted field, format value, or compatibility overload is introduced.
+- Allocation and ownership: each distinct Serializable range is one lazily allocated transaction-owned node. Only
+  present endpoints are copied, each under the selected family's persisted `Max_Key_Bytes`; the independent persisted
+  range count is the only node-count authority. Node and endpoint copies complete before linkage. Count exhaustion or
+  failure at the node, lower, or upper allocation point frees the unlinked candidate and leaves the set unchanged.
+  Exact duplicates consume no slot, ignored endpoint bytes are never copied, and arena rollback, consumption, or
+  finalization releases the complete list without retaining caller bytes.
+- Conflict and concurrency: bytewise history comparison implements `Lower <= Key < Upper`, including prefix, open,
+  and whole-family forms. Admission and prepublication validation check every post-Begin committed Put or Delete
+  against writes, points, and ranges. Group members retain independent external-history validation and deterministic
+  internal ordering. The coordinator owns each admitted arena, so no range list can race caller mutation. No helper
+  task, completion slot, storage request, retry, or publication-certainty path is added. Missing retained batch images
+  now fail conflict validation closed instead of silently bypassing every key predicate.
+- Constants audit: 643 added Ada lines produced 95 raw textual inventory matches and 19 constant declarations. Four
+  comparator locals and two absolute queue deadlines are mechanically derived. Ten identity/key declarations are
+  fixed deterministic witness geometry, one oversized endpoint is derived as exactly one byte beyond the existing
+  family authority, and the remaining two declarations are the documented persisted two-range test ceiling and
+  two-second queue-barrier budget. Inline two-member group geometry, three test-only allocation-fault states, and the
+  established 8 MiB task stack carry adjacent authority comments. Routine indexing, increments, neutral vacant
+  initialization, and scenario bytes were excluded from policy findings. No production bound, timeout, format tag,
+  retry count, capacity, or default was invented; no constants decision remains unresolved.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository/provenance checks, deterministic
+  format/policy/model and memory/files engine tests, authenticated create/commit/Flush/reopen, filesystem subprocess
+  crash/recovery, 32 comparative cases, pinned TidesDB 4/4, and every adapter fixture against clean Object Storage
+  `e8362f72e5edf4cc8eb16e31d1fdbfba74db384b`. New memory/files witnesses cover snapshot non-retention, invalid and
+  prefix ordering, ignored absent endpoints, family bounds, exact duplicate/exact/one-over capacity, independent
+  point capacity, node/lower/upper allocation rollback, inclusive/exclusive/disjoint/open/whole/family-separated
+  intervals, Put and Delete conflicts, group rejection, and a writer-first queued prepublication race.
+  `./scripts/check-tla.sh` preserves every lane and passes the serializable 44,244-state/10-obligation gate.
+  Warning-strict FSF GNATprove 16.1.0 proves 1,084/1,084 selected-unit checks (164 flow, 920 prover; maximum 6,890
+  steps), with zero warnings, unproved/justified checks, or `pragma Assume`. Public leading-style GNATdoc HTML renders
+  `Observe_Range` and all eight parameter descriptions without a warning on the new entity; repository/dependency
+  documentation warnings remain outside this unit.
+- Findings cycle: the first API/ownership/concurrency sweep retained the low-level observation primitive rather than
+  inventing a bounded result-stream policy and required full construction before linkage. The executable sweep fixed
+  four P2 coverage/documentation findings: differing ignored endpoint bytes, independent point/range capacity,
+  committed tombstone intersection, and explicit public endpoint-borrow lifetime. The repeated API, ownership,
+  concurrency, bounds, constants, format, certainty, test, documentation, and proof review finds no remaining P0,
+  P1, P2, or P3 issue.
+
 ## Accepted operational serializable point-validation candidate
 
 - Parent: manifest-v3 serializable-limit commit `e6043cf`.

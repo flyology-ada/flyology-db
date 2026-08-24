@@ -19,8 +19,9 @@ bounded completion set, moving one caller-sized unique-buffer token until typed 
 and preserves the synchronous receipt and certainty mapping. Remote-provider qualification, multiple checkpoints,
 compaction, and dynamic family changes remain separate review units. Transactions now capture a Begin-time sequence
 and reject exact written keys changed by later committed history. Fixed-snapshot point reads are operational;
-explicit serializable transactions retain and validate exact successful and absent point reads. Normalized scan-range
-predicates remain Milestone 3 work.
+explicit serializable transactions retain and validate exact successful and absent point reads plus caller-observed
+half-open scan predicates. `Observe_Range` records conflict authority without pretending to return rows; a bounded
+row-returning scan remains later LSM work.
 
 ## Durability rule
 

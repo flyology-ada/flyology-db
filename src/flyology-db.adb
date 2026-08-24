@@ -100,6 +100,8 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Owned_Mutation_Array, Owned_Mutation_Array_Access);
    procedure Free_Owned_Point_Read is new
      Ada.Unchecked_Deallocation (Owned_Point_Read, Owned_Point_Read_Access);
+   procedure Free_Owned_Scan_Range is new
+     Ada.Unchecked_Deallocation (Owned_Scan_Range, Owned_Scan_Range_Access);
    procedure Free_Transaction_Arena is new
      Ada.Unchecked_Deallocation (Transaction_Arena, Transaction_Arena_Access);
 
@@ -227,6 +229,7 @@ package body Flyology.DB is
 
    procedure Release_Arena (Arena : in out Transaction_Arena_Access) is
       Point : Owned_Point_Read_Access;
+      Scan  : Owned_Scan_Range_Access;
    begin
       if Arena /= null then
          while Arena.Point_Reads /= null loop
@@ -234,6 +237,12 @@ package body Flyology.DB is
             Arena.Point_Reads := Point.Next;
             Point.Next := null;
             Free_Owned_Point_Read (Point);
+         end loop;
+         while Arena.Scan_Ranges /= null loop
+            Scan := Arena.Scan_Ranges;
+            Arena.Scan_Ranges := Scan.Next;
+            Scan.Next := null;
+            Free_Owned_Scan_Range (Scan);
          end loop;
          Free_Owned_Mutations (Arena.Mutations);
          Image_Accounting.Record_Arena_Release;
@@ -2349,11 +2358,57 @@ package body Flyology.DB is
          return True;
       end Same_History_Key;
 
+      function History_Key_Before_Bound
+        (Batch      : Runtime_Batch;
+         Mutation   : Runtime_Mutation;
+         Bound      : Flyology.Bytes.Unbounded_Bytes;
+         Bound_Size : Natural) return Boolean
+      is
+         Common : constant Natural := Natural'Min (Mutation.Key_Length, Bound_Size);
+      begin
+         if Batch.Image = null then
+            return False;
+         end if;
+         if Common > 0 then
+            for Offset in Natural range 0 .. Common - 1 loop
+               declare
+                  History_Byte : constant Ada.Streams.Stream_Element :=
+                    Flyology.Bytes.Element (Batch.Image.Data, Mutation.Key_Offset + Offset + 1);
+                  Bound_Byte   : constant Ada.Streams.Stream_Element :=
+                    Flyology.Bytes.Element (Bound, Offset + 1);
+               begin
+                  if History_Byte < Bound_Byte then
+                     return True;
+                  elsif History_Byte > Bound_Byte then
+                     return False;
+                  end if;
+               end;
+            end loop;
+         end if;
+         return Mutation.Key_Length < Bound_Size;
+      end History_Key_Before_Bound;
+
+      function History_Key_In_Range
+        (Candidate : Owned_Scan_Range; Batch : Runtime_Batch; Mutation : Runtime_Mutation) return Boolean
+      is
+      begin
+         return Candidate.Family = Mutation.Family
+           and then
+             (not Candidate.Has_Lower
+              or else not History_Key_Before_Bound
+                            (Batch, Mutation, Candidate.Lower, Candidate.Lower_Length))
+           and then
+             (not Candidate.Has_Upper
+              or else History_Key_Before_Bound
+                        (Batch, Mutation, Candidate.Upper, Candidate.Upper_Length));
+      end History_Key_In_Range;
+
       function Has_Transaction_Conflict
         (Arena       : Transaction_Arena_Access;
          Snapshot_At : Sequence_Number) return Boolean
       is
          Point : Owned_Point_Read_Access;
+         Scan  : Owned_Scan_Range_Access;
       begin
          if Arena = null or else Snapshot_At < Retained_History_Boundary then
             return True;
@@ -2362,7 +2417,7 @@ package body Flyology.DB is
             declare
                Batch : Runtime_Batch renames History_Batches (History_Index);
             begin
-               if Batch.Transactions = null or else Batch.Mutations = null then
+               if Batch.Image = null or else Batch.Transactions = null or else Batch.Mutations = null then
                   return True;
                end if;
                for Transaction of Batch.Transactions (1 .. Batch.Transaction_Total) loop
@@ -2387,6 +2442,13 @@ package body Flyology.DB is
                               return True;
                            end if;
                            Point := Point.Next;
+                        end loop;
+                        Scan := Arena.Scan_Ranges;
+                        while Scan /= null loop
+                           if History_Key_In_Range (Scan.all, Batch, Batch.Mutations (Mutation_Index)) then
+                              return True;
+                           end if;
+                           Scan := Scan.Next;
                         end loop;
                      end loop;
                   end if;
@@ -7743,6 +7805,7 @@ package body Flyology.DB is
       Txn.Snapshot_At := 0;
       Txn.Isolation := Snapshot;
       Txn.Point_Read_Limit := 0;
+      Txn.Scan_Range_Limit := 0;
    end Reset_Transaction;
 
    procedure Close (Item : in out Database; Result : out Outcome_Code) is
@@ -7787,6 +7850,7 @@ package body Flyology.DB is
       Mutation_Limit   : Interfaces.Unsigned_32;
       Payload_Limit    : Interfaces.Unsigned_64;
       Point_Read_Limit : Interfaces.Unsigned_32;
+      Scan_Range_Limit : Interfaces.Unsigned_32;
       Mutations        : Owned_Mutation_Array_Access := null;
    begin
       Reset_Transaction (Txn);
@@ -7802,7 +7866,8 @@ package body Flyology.DB is
       if Result = Success then
          Lease.State.Gate.Transaction_Limits (Mutation_Limit, Payload_Limit);
          Point_Read_Limit := Lease.State.LSM_Authority.Maximum_Point_Reads_Per_Transaction;
-         if Isolation = Serializable and then Point_Read_Limit = 0 then
+         Scan_Range_Limit := Lease.State.LSM_Authority.Maximum_Scan_Ranges_Per_Transaction;
+         if Isolation = Serializable and then (Point_Read_Limit = 0 or else Scan_Range_Limit = 0) then
             Result := Unsupported_Format;
             return;
          elsif Mutation_Limit = 0
@@ -7830,6 +7895,7 @@ package body Flyology.DB is
          Txn.Snapshot_At := Head.Highest;
          Txn.Isolation := Isolation;
          Txn.Point_Read_Limit := Point_Read_Limit;
+         Txn.Scan_Range_Limit := Scan_Range_Limit;
       end if;
    exception
       when Storage_Error =>
@@ -7929,6 +7995,49 @@ package body Flyology.DB is
       return True;
    end Same_Owned_Key;
 
+   --  Runtime ordering result for exact arbitrary-byte keys. It is neither a
+   --  persisted encoding nor an enumeration-position contract; bytewise
+   --  lexicographic ordering is the normalized scan-predicate authority.
+   type Byte_Order is (Before, Same, After);
+
+   function Compare_Bytes (Left, Right : Byte_Array) return Byte_Order is
+      Common : constant Natural := Natural'Min (Left'Length, Right'Length);
+   begin
+      if Common > 0 then
+         for Offset in Natural range 0 .. Common - 1 loop
+            if Left (Left'First + Offset) < Right (Right'First + Offset) then
+               return Before;
+            elsif Left (Left'First + Offset) > Right (Right'First + Offset) then
+               return After;
+            end if;
+         end loop;
+      end if;
+      if Left'Length < Right'Length then
+         return Before;
+      elsif Left'Length > Right'Length then
+         return After;
+      else
+         return Same;
+      end if;
+   end Compare_Bytes;
+
+   function Same_Endpoint
+     (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural; Value : Byte_Array) return Boolean
+   is
+   begin
+      if Stored_Length /= Value'Length then
+         return False;
+      end if;
+      if Stored_Length > 0 then
+         for Offset in Natural range 0 .. Stored_Length - 1 loop
+            if Byte (Flyology.Bytes.Element (Stored, Offset + 1)) /= Value (Value'First + Offset) then
+               return False;
+            end if;
+         end loop;
+      end if;
+      return True;
+   end Same_Endpoint;
+
    procedure Record_Point_Read
      (Txn : in out Transaction; Family : Column_Family_ID; Item_Key : Byte_Array; Result : out Outcome_Code)
    is
@@ -7967,6 +8076,73 @@ package body Flyology.DB is
          Free_Owned_Point_Read (Candidate);
          Result := Capacity_Exceeded;
    end Record_Point_Read;
+
+   procedure Record_Scan_Range
+     (Txn       : in out Transaction;
+      Family    : Column_Family_ID;
+      Has_Lower : Boolean;
+      Lower     : Byte_Array;
+      Has_Upper : Boolean;
+      Upper     : Byte_Array;
+      Result    : out Outcome_Code)
+   is
+      Existing  : Owned_Scan_Range_Access := Txn.Owner.Arena.Scan_Ranges;
+      Candidate : Owned_Scan_Range_Access := null;
+   begin
+      while Existing /= null loop
+         if Existing.Family = Family
+           and then Existing.Has_Lower = Has_Lower
+           and then Existing.Has_Upper = Has_Upper
+           and then (not Has_Lower or else Same_Endpoint (Existing.Lower, Existing.Lower_Length, Lower))
+           and then (not Has_Upper or else Same_Endpoint (Existing.Upper, Existing.Upper_Length, Upper))
+         then
+            Result := Success;
+            return;
+         end if;
+         Existing := Existing.Next;
+      end loop;
+      if Txn.Owner.Arena.Scan_Range_Count >= Txn.Scan_Range_Limit then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Scan_Range_Node_Allocation);
+      Candidate := new Owned_Scan_Range;
+      if Has_Lower then
+         Allocation_Faults.Check (Scan_Range_Lower_Allocation);
+         Flyology.Bytes.Reserve_Capacity (Candidate.Lower, Lower'Length);
+         for Value of Lower loop
+            Flyology.Bytes.Append (Candidate.Lower, Ada.Streams.Stream_Element (Value));
+         end loop;
+         Candidate.Lower_Length := Lower'Length;
+      end if;
+      if Has_Upper then
+         Allocation_Faults.Check (Scan_Range_Upper_Allocation);
+         Flyology.Bytes.Reserve_Capacity (Candidate.Upper, Upper'Length);
+         for Value of Upper loop
+            Flyology.Bytes.Append (Candidate.Upper, Ada.Streams.Stream_Element (Value));
+         end loop;
+         Candidate.Upper_Length := Upper'Length;
+      end if;
+      Candidate.Family := Family;
+      Candidate.Has_Lower := Has_Lower;
+      Candidate.Has_Upper := Has_Upper;
+      Candidate.Next := Txn.Owner.Arena.Scan_Ranges;
+      Txn.Owner.Arena.Scan_Ranges := Candidate;
+      Candidate := null;
+      Txn.Owner.Arena.Scan_Range_Count := Txn.Owner.Arena.Scan_Range_Count + 1;
+      if Has_Lower then
+         Image_Accounting.Record_Transaction_Copy (Lower'Length);
+      end if;
+      if Has_Upper then
+         Image_Accounting.Record_Transaction_Copy (Upper'Length);
+      end if;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Free_Owned_Scan_Range (Candidate);
+         Result := Capacity_Exceeded;
+   end Record_Scan_Range;
 
    procedure Store_Mutation
      (Item      : in out Database;
@@ -8189,6 +8365,65 @@ package body Flyology.DB is
          Flyology.Bytes.Clear (Data);
          Result := Capacity_Exceeded;
    end Get;
+
+   procedure Observe_Range
+     (Item      : in out Database;
+      Txn       : in out Transaction;
+      Family    : Column_Family;
+      Has_Lower : Boolean;
+      Lower     : Byte_Array;
+      Has_Upper : Boolean;
+      Upper     : Byte_Array;
+      Result    : out Outcome_Code)
+   is
+      Lease         : Lifecycle_Lease;
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Uncertain     : Boolean;
+      Fenced        : Boolean;
+      Configuration : Column_Family_Configuration;
+   begin
+      if not Txn.Active or else Txn.Owner.Arena = null then
+         Result := Invalid_State;
+         return;
+      end if;
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Txn.Database_ID /= Head.Database_ID or else Txn.Incarnation /= Lease.State.Gate.Current_Incarnation
+      then
+         Result := Invalid_State;
+         return;
+      elsif Uncertain then
+         Result := Outcome_Unknown;
+         return;
+      elsif Fenced then
+         Result := Stale_Writer;
+         return;
+      end if;
+      Lease.State.Gate.Validate_Family (Family, Configuration, Result);
+      if Result /= Success then
+         return;
+      elsif (Has_Lower and then Interfaces.Unsigned_64 (Lower'Length) > Configuration.Max_Key_Bytes)
+        or else (Has_Upper and then Interfaces.Unsigned_64 (Upper'Length) > Configuration.Max_Key_Bytes)
+      then
+         Result := Capacity_Exceeded;
+         return;
+      elsif Has_Lower and then Has_Upper and then Compare_Bytes (Lower, Upper) /= Before then
+         Result := Invalid_State;
+         return;
+      elsif Txn.Isolation = Snapshot then
+         Result := Success;
+         return;
+      end if;
+      Record_Scan_Range
+        (Txn, Family.Configuration.ID, Has_Lower, Lower, Has_Upper, Upper, Result);
+   exception
+      when Storage_Error =>
+         Result := Capacity_Exceeded;
+   end Observe_Range;
 
    procedure Put
      (Item     : in out Database;

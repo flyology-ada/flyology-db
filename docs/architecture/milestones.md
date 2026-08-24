@@ -8,7 +8,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 0 Foundation | Crate, guide, dependency clone/pin, architecture/format/oracle contracts, runners, provenance | Accepted at `8b9ff8c` |
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
-| 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot and serializable point validation operational; ranges pending |
+| 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Pending |
@@ -37,8 +37,12 @@ backpressure rules are frozen in a separate TLC/TLAPS lane. Manifest v3 persists
 point/range counts. The additive public isolation overload now makes Serializable explicit, and production `Get`
 lazily retains distinct present/absent external points under the persisted count. Admission and prepublication
 validation cover singleton and grouped commits; snapshot callers and own-write reads retain their prior behavior.
-The Ada scan API, range normalization, and runtime range tracking remain unimplemented, so Milestone 3 remains
-Pending.
+Public `Observe_Range` now validates a canonical half-open predicate without reading rows. A false endpoint flag is
+unbounded and ignores its byte argument; a present endpoint is bounded by its selected family. Serializable calls
+retain exact distinct predicates lazily under the persisted range count, while Snapshot calls validate without
+retention. Allocation or count failure publishes no partial predicate. Admission and prepublication checks reject
+post-Begin writes in `[Lower, Upper)`, including open and whole-family forms, for singleton and grouped commits.
+The bounded row-returning scan surface remains Milestone 4 work rather than being implied by this observation API.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
@@ -55,7 +59,9 @@ The production point validator maps that rule directly: linked observations cont
 bytes and are allocated only after an external read has produced `Success` or `Not_Found`. A node is fully built
 before it becomes transaction-owned; allocation failure and one-over capacity leave the observation set unchanged.
 Distinct point predicates participate in both admission and prepublication conflict checks, while duplicates and
-read-your-writes consume no additional slot. Normalized range predicates remain the next isolation unit.
+read-your-writes consume no additional slot. Range predicates use the same transactional ownership convention: each
+present endpoint is fully copied before linkage, exact duplicates consume no new slot, and arena finalization owns
+all reclamation. Bytewise comparison makes the lower endpoint inclusive and upper endpoint exclusive.
 
 The first-LSM work now includes current manifest-v3, readable manifest-v2, and SST-v1 formats, dynamic operational
 codecs, manifest-v3 root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator

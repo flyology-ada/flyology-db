@@ -64,9 +64,15 @@ points independently against external history. Manifest-v2 databases have no poi
 Serializable Begin returns `Unsupported_Format` rather than inventing a ceiling. Manifest v3 supplies the exact
 database-wide point count while the selected family's persisted maximum continues to bound copied key bytes.
 
-The frozen formal rule additionally records normalized scan ranges and rejects intersecting phantoms. Range tracking
-has its own persisted count and must never silently omit a predicate, but the Ada scan/range API and normalization
-representation remain intentionally unfrozen. Milestone 3 therefore remains pending on operational range tracking.
+Public `Observe_Range` operationalizes the frozen half-open predicate rule without claiming to return rows. False
+endpoint flags mean unbounded and make the corresponding bytes irrelevant; two present endpoints require strict
+bytewise `Lower < Upper`. Snapshot transactions validate but retain nothing. Serializable transactions lazily copy
+each distinct exact family/present-endpoint tuple under the persisted range count and selected family's key bound.
+Node or endpoint allocation failure and one-over capacity return `Capacity_Exceeded` without partial linkage.
+Commit admission and its prepublication recheck reject any post-Begin same-family write with
+`Lower <= Key < Upper`; open and whole-family forms follow from the same comparison. Atomic groups validate each
+member against external history. A later bounded row-returning scan must call this primitive for its predicate; it is
+not silently supplied by `Observe_Range`.
 
 Transactions carry caller-visible idempotency identities. A singleton transaction uses that exact identity as its
 immutable batch ID. An explicit group carries a separate caller-stable group ID; group and transaction IDs share one
