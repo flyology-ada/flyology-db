@@ -1,5 +1,32 @@
 # Review record
 
+## Accepted formal immutable-cache candidate
+
+- Parent: indexed HTTP/QUIC dependency handoff commit `8eae273`.
+- Scope and compatibility: freeze a disposable exact-generation cache/coalescing safety algorithm without changing
+  Ada, public declarations, persisted formats, disk layout, or resource policy. A read captures one immutable object
+  generation; cache hits, fetch ownership, joined waiters, and results must match it exactly. Corruption is a miss,
+  and complete local loss removes only disposable cache/fetch state.
+- Authority and constants: object storage remains the sole authority and old immutable generations remain stored
+  history rather than aliases for current data. The finite two-entry/two-reader and zero-versus-one-capacity values
+  are adjacent-commented qualification geometry. No cache-byte ceiling, default, timeout, retry, eviction rule,
+  public constant, or compatibility promise is introduced.
+- Verification: focused TLC exhausts 623 distinct states at depth 12 with nonzero coverage for all 11 semantic
+  actions. The stale-generation negative probe violates `Safety`; the exact 20-state machine-validated witness covers
+  coalescing, authority advance, local loss with a retained request, refetch, corruption rejection, and final exact
+  recovery. Strict TLAPS proves all 13 arbitrary-set action-preservation obligations. The combined TLA and repository
+  gates preserve all earlier campaigns.
+- Findings cycle: the first proof pass found a P1 inductiveness defect in the abstract kernel: a completed result
+  could start another fetch for the same entry and then `FinishRead` could remove the last request supporting that
+  fetch. `FinishRead` now requires the entry not be fetching. The repeat sweep found a P2 fidelity gap in that repair:
+  abstract `StartFetch` still admitted already-cached or already-completed requests unlike the finite algorithm. It
+  now requires an uncached, noncorrupt entry with a pending exact request. The first proof also found two P2 boundary
+  omissions: `Init` did not restate the assumed initial-entry membership, and quiescence did not expand the variable
+  tuple. Both are explicit now, and the repeated authority, stale-generation, coalescing, corruption, loss,
+  constants, proof/model, documentation, and unnecessary-surface sweep finds no remaining P0, P1, P2, or P3 issue.
+  Operational allocation, capacity/eviction policy, disk cache, checksum implementation, progress, and Ada
+  refinement remain later units.
+
 ## Accepted indexed HTTP/QUIC dependency handoff
 
 - Parent: private operational L0-compaction spine commit `12e6600`.

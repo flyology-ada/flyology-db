@@ -245,6 +245,15 @@ refinement theorem to the operational Ada implementation is claimed.
   codecs, capacity arithmetic, provider behavior, progress, a public trigger, or refinement. The private operational
   Ada planner/publisher is qualified separately by deterministic replacement, allocation, certainty, depublication,
   and cacheless-recovery tests.
+- The immutable-cache model exhausts 623 distinct states at depth 12 with nonzero coverage for read capture, exact
+  cache hit, fetch ownership/join/completion, authority advance, corruption rejection, eviction, and complete local
+  loss. Its validated 20-state witness fixes two-reader coalescing on one generation, later-generation refetch after
+  local loss, corrupt-entry rejection without a result, and exact final recovery. A deliberately stale-generation
+  hit must violate safety. The arbitrary-set kernel proves 13/13 strict TLAPS obligations for stored authority,
+  exact captured requests/results, one in-flight fetch identity per immutable entry, verified/corrupt cache
+  separation, and disposable local state. Zero-versus-one capacity is finite qualification geometry. Concrete
+  capacities, allocation failure, eviction order, disk layout, checksum implementation, progress, public API, and
+  refinement to Ada remain outside this proof.
 - The snapshot-isolation write/write model exhausts 336 states at depth 10. It checks fixed Begin sequences,
   per-written-key post-snapshot rejection, disjoint concurrent commits, checkpoint advancement of the retained exact
   history boundary, and conservative rejection below that boundary. Three independently validated witnesses cover

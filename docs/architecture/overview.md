@@ -40,7 +40,15 @@ The checkpoint protocol is specified separately in
 [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v3 root creation, public synchronous Flush
 and caller-composable Flush with self-contained certainty receipts, exact same-identity reconciliation, live
 coordinator replacement, additive multi-run L0 publication, and cacheless all-run recovery are operational.
-Compaction and run pruning are not.
+The private complete-replacement compaction planner/publisher is operational; its public trigger, automatic policy,
+snapshot/replica retention horizon, run pruning, and physical garbage collection are not.
+
+The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
+A read captures its generation before consulting local state, only waiters for that same generation join a fetch,
+and corrupt entries are discarded as misses. Complete local loss may discard valid/corrupt entries and in-flight
+fetch ownership but preserves object-store authority and the caller's exact requested generation. This is a safety
+contract, not an operational cache claim: concrete RAM/disk capacities, allocation, eviction, layout, progress, and
+the Ada refinement remain later decisions.
 
 ## Transaction semantics
 

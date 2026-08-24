@@ -455,6 +455,60 @@ grep -q 'Invariant WitnessPending is violated.' \
   >"$temporary_root/tlaps-l0-compaction.log" 2>&1
 grep -q 'All 26 obligations proved.' "$temporary_root/tlaps-l0-compaction.log"
 
+#  Zero-versus-one cache capacity is finite qualification geometry, not a
+#  product default. Exact immutable generations bind requests, cache entries,
+#  coalesced fetches, and results; local cache/fetch state remains disposable.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-immutable-cache-states" \
+  -config ImmutableCache.cfg ImmutableCache \
+  >"$temporary_root/tlc-immutable-cache.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-immutable-cache.log"
+! grep -q '^Warning:' "$temporary_root/tlc-immutable-cache.log"
+grep -q '623 distinct states found' "$temporary_root/tlc-immutable-cache.log"
+grep -q 'The depth of the complete state graph search is 12.' \
+  "$temporary_root/tlc-immutable-cache.log"
+for action in BeginRead CacheHit StartFetch JoinFetch CompleteFetch FinishRead \
+  AdvanceAuthority CorruptCache RejectCorruptHit EvictCache LocalLoss
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-immutable-cache.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-immutable-cache-probe-states" \
+  -config ImmutableCacheStaleProbe.cfg ImmutableCacheStaleProbe \
+  >"$temporary_root/tlc-immutable-cache-probe.log" 2>&1
+immutable_cache_probe_status=$?
+set -e
+test "$immutable_cache_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-immutable-cache-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-immutable-cache-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-immutable-cache-witness-states" \
+  -config ImmutableCacheWitness.cfg \
+  -dumpTrace json "$temporary_root/immutable-cache-witness.json" \
+  ImmutableCacheWitness \
+  >"$temporary_root/tlc-immutable-cache-witness.log" 2>&1
+immutable_cache_witness_status=$?
+set -e
+test "$immutable_cache_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-immutable-cache-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-immutable-cache-witness.log"
+"$model_root/validate_immutable_cache_witness.py" \
+  "$temporary_root/immutable-cache-witness.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-immutable-cache-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/ImmutableCacheSafetyProof.tla" \
+  >"$temporary_root/tlaps-immutable-cache.log" 2>&1
+grep -q 'All 13 obligations proved.' "$temporary_root/tlaps-immutable-cache.log"
+
 #  Qualification pins for the reviewed two-transaction/two-key model graph.
 #  They detect accidental state-space narrowing; changing the model requires a
 #  fresh graph review and an intentional update of these expected results.
@@ -688,6 +742,10 @@ printf '%s\n' "  L0 compaction TLC 15 distinct states, depth 10"
 printf '%s\n' "  L0 compaction TLAPS 26/26 obligations"
 printf '%s\n' "  L0 compaction lost-response recovery witness validated"
 printf '%s\n' "  Negative L0-compaction early-HEAD probe detected"
+printf '%s\n' "  Immutable cache TLC 623 distinct states, depth 12"
+printf '%s\n' "  Immutable cache TLAPS 13/13 obligations"
+printf '%s\n' "  Cache coalescing/loss/corruption witness validated"
+printf '%s\n' "  Negative stale-generation cache probe detected"
 printf '%s\n' "  Snapshot isolation TLC 336 distinct states, depth 10"
 printf '%s\n' "  Snapshot isolation TLAPS 6/6 obligations"
 printf '%s\n' "  Snapshot conflict/disjoint/checkpoint witnesses validated"

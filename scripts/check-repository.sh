@@ -38,6 +38,14 @@ test -f formal/tla/ManifestPublicationWitness.tla
 test -f formal/tla/ManifestPublicationFailureWitness.tla
 test -f formal/tla/ManifestRegistryMutationProbe.tla
 test -f formal/tla/ManifestSafetyProof.tla
+test -f formal/tla/ImmutableCache.tla
+test -f formal/tla/ImmutableCache.cfg
+test -f formal/tla/ImmutableCacheStaleProbe.tla
+test -f formal/tla/ImmutableCacheStaleProbe.cfg
+test -f formal/tla/ImmutableCacheWitness.tla
+test -f formal/tla/ImmutableCacheWitness.cfg
+test -f formal/tla/ImmutableCacheSafetyProof.tla
+test -x formal/tla/validate_immutable_cache_witness.py
 test -f src/flyology-db-manifest_formats.ads
 test -f src/flyology-db-manifest_formats.adb
 test -f tests/src/flyology-db-manifest_format_tests.adb

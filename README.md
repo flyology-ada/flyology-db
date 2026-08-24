@@ -22,8 +22,11 @@ it creates no helper task and preserves the synchronous receipt and certainty ma
 compaction spine now builds complete live-state runs and publishes a successor manifest that names only those fresh
 outputs through the same receipt and certainty machinery. It retains superseded immutable objects and adds no public
 trigger, composable overload, automatic scheduling, or physical-GC policy. Remote-provider qualification, the public
-compaction surface, run pruning, and dynamic family changes remain separate review units. Transactions now
-capture a Begin-time sequence
+compaction surface, run pruning, and dynamic family changes remain separate review units.
+The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
+to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
+produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.
+Transactions now capture a Begin-time sequence
 and reject exact written keys changed by later committed history. Fixed-snapshot point reads are operational;
 explicit serializable transactions retain and validate exact successful and absent point reads plus caller-observed
 half-open scan predicates. `Observe_Range` records conflict authority without reading rows. The bounded synchronous

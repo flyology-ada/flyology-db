@@ -247,6 +247,24 @@ retired run sets, exact checkpoint/suffix authority, exact recovery, and disposa
 retains retired objects and proves no physical garbage collection, concrete merge, snapshot-retention horizon,
 format, capacity arithmetic, provider behavior, liveness, or refinement to Ada.
 
+## Immutable cache lane
+
+`ImmutableCache.tla` freezes the safety boundary for a disposable cache of verified immutable objects. Each read
+captures an exact generation before consulting local state. Cache entries, one coalesced fetch owner, explicitly
+joined waiters, and completed results all retain that generation; a later authority advance therefore cannot turn an
+older entry into a hit for a newer request. Corrupt entries are removed without returning bytes, and complete local
+loss clears cache and fetch state while preserving remote authority and pending exact-generation requests. The
+finite model's two entries, two readers, and zero-versus-one capacity are qualification geometry, not database
+defaults or persisted resource policy.
+
+TLC exhausts 623 distinct states at depth 12 with nonzero coverage for every semantic action. The deliberately
+unsafe stale-generation probe returns the old entry to a new-generation request and must violate `Safety`. The
+machine-validated 20-state witness fixes one coalesced fetch, an authority advance, an interrupted/refetched request,
+corruption rejection, and exact final recovery. `ImmutableCacheSafetyProof.tla` proves 13 action-preservation
+obligations over arbitrary entry and reader sets; its fetch set represents at most one owner per exact generation.
+This lane proves no concrete capacity, allocation behavior, eviction order, disk format, checksum algorithm,
+progress, public API, or refinement to Ada.
+
 ## Reproduction
 
 Install the pinned tools under ignored `.deps/tla` as recorded in
@@ -267,6 +285,8 @@ obligations. The additive-L0 lane adds 49 distinct states at depth 17, one valid
 witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS obligations.
 The L0-compaction lane adds 15 distinct states at depth 10, one validated lost-response recovery witness, one required
 early-HEAD negative probe, full semantic-action coverage, and 26 of 26 strict TLAPS obligations.
+The immutable-cache lane adds 623 distinct states at depth 12, one validated coalescing/loss/corruption witness, one
+required stale-generation negative probe, full semantic-action coverage, and 13 of 13 strict TLAPS obligations.
 The snapshot-isolation lane
 adds 336 distinct states at depth 10, three independently validated
 witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. The
