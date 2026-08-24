@@ -2648,6 +2648,221 @@ package body Flyology.DB.Engine_Tests is
          "database-wide L0 capacity");
    end Test_L0_Accumulation_Capacity;
 
+   procedure Test_Adjacent_L0_Merge
+     (Backend : not null access Backends.Backend'Class; Prefix : String; Identity_Base : Natural)
+   is
+      Context      : aliased Storage_Context;
+      Item         : Database;
+      Txn          : Transaction;
+      Commit_Info  : Commit_Receipt;
+      Create_Info  : Create_Receipt;
+      Flush_Info   : Flush_Receipt;
+      Result       : Outcome_Code;
+      Data         : Value;
+      Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
+      After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
+      --  The caller supplies one disjoint 100-ID test namespace. +1 names the
+      --  root; +2..+4 name transactions; +10/+20/+30 name three chronological
+      --  L0 runs; their following two IDs name each manifest/HEAD transition;
+      --  +40..+42 name the merged run and successor publication. These are
+      --  corpus identities, never generated production or compaction policy.
+      --  +43..+47 and +60..+62 are rejected selection, alias, and later-suffix
+      --  probes; +51/+70 are the suffix write/read transaction identities.
+      Database_ID : constant Database_Identifier :=
+        Database_Identifier (Numbered_ID (Identity_Base));
+      First_Run   : constant Identifier := Numbered_ID (Identity_Base + 10);
+      Second_Run  : constant Identifier := Numbered_ID (Identity_Base + 20);
+      Third_Run   : constant Identifier := Numbered_ID (Identity_Base + 30);
+      Merged_Run  : constant Identifier := Numbered_ID (Identity_Base + 40);
+      --  Root plus three Flush successors plus the merge successor consumes
+      --  five revisions; the sixth slot lets the later-suffix precheck, rather
+      --  than history capacity, classify the rejected follow-up attempt.
+      --  Three L0 slots admit the witnessed pre-merge geometry. These are
+      --  persisted fixture limits, not defaults.
+      Limits : constant Database_Limits :=
+        (Default_Limits with delta
+           Maximum_Column_Families => 1,
+           Maximum_Manifest_History => 6,
+           Maximum_Total_L0_Runs => 3);
+      Families : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family (1, [Byte (Character'Pos ('m'))], 8, 8, 16, 1, 3)];
+      First_Runs : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, First_Run)];
+      Second_Runs : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, Second_Run)];
+      Third_Runs : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, Third_Run)];
+      --  Two distinct one-byte keys and three one-byte values make retained
+      --  third-run data distinguishable from the merged first/two-run value.
+      First_Key    : constant Key := To_Key ([1]);
+      Retained_Key : constant Key := To_Key ([2]);
+      Suffix_Key   : constant Key := To_Key ([3]);
+      First_Value  : constant Value := To_Value ([11]);
+      Second_Value : constant Value := To_Value ([22]);
+      Third_Value  : constant Value := To_Value ([33]);
+      Suffix_Value : constant Value := To_Value ([44]);
+
+      procedure Commit_And_Flush
+        (Transaction_Number : Natural;
+         Item_Key           : Key;
+         Item_Value         : Value;
+         Runs               : Checkpoint_Run_Identity_Array;
+         Manifest_Number    : Natural;
+         Transition_Number  : Natural)
+      is
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + Transaction_Number), Txn, Result);
+         Expect (Result, Success, "adjacent-merge transaction begin failed");
+         Put (Item, Txn, 1, Item_Key, Item_Value, Result);
+         Expect (Result, Success, "adjacent-merge Put failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "adjacent-merge commit failed");
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Identity_Base + Manifest_Number),
+            Numbered_ID (Identity_Base + Transition_Number),
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
+         Expect (Result, Success, "adjacent-merge source Flush failed");
+      end Commit_And_Flush;
+   begin
+      Bind_Context (Context, Backend, Prefix);
+      Create
+        (Item,
+         Context'Access,
+         Database_ID,
+         Manifest_ID_For (Numbered_ID (Identity_Base + 1)),
+         Numbered_ID (Identity_Base + 1),
+         Limits,
+         Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "adjacent-merge database create failed");
+      Commit_And_Flush (2, First_Key, First_Value, First_Runs, 11, 12);
+      Commit_And_Flush (3, First_Key, Second_Value, Second_Runs, 21, 22);
+      Commit_And_Flush (4, Retained_Key, Third_Value, Third_Runs, 31, 32);
+
+      Testing.Publication_Counts
+        (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+      Testing.Publish_Adjacent_Merge
+        (Item,
+         First_Run,
+         Second_Run,
+         Numbered_ID (Identity_Base + 46),
+         Numbered_ID (Identity_Base + 46),
+         Numbered_ID (Identity_Base + 47),
+         Flush_Info,
+         Result);
+      Expect (Result, Invalid_State, "merge output/manifest identity alias reached publication");
+      Testing.Publish_Adjacent_Merge
+        (Item,
+         First_Run,
+         Third_Run,
+         Numbered_ID (Identity_Base + 43),
+         Numbered_ID (Identity_Base + 44),
+         Numbered_ID (Identity_Base + 45),
+         Flush_Info,
+         Result);
+      Expect (Result, Invalid_State, "non-adjacent L0 selection reached publication");
+      Testing.Publication_Counts
+        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      if After_Batches /= Before_Batches
+        or else After_Runs /= Before_Runs
+        or else After_Manifests /= Before_Manifests
+        or else After_Heads /= Before_Heads
+      then
+         raise Program_Error with "non-adjacent L0 rejection published an object";
+      end if;
+
+      Testing.Arm (Context, After_Run_Put, Unknown_After_Entry);
+      Testing.Arm (Context, Before_Immutable_Reconciliation, Definite_Failure);
+      Testing.Publish_Adjacent_Merge
+        (Item,
+         First_Run,
+         Second_Run,
+         Merged_Run,
+         Numbered_ID (Identity_Base + 41),
+         Numbered_ID (Identity_Base + 42),
+         Flush_Info,
+         Result);
+      Expect (Result, Outcome_Unknown, "lost merged-run response was falsely classified");
+      Resolve_Flush (Item, Flush_Info, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "same-identity adjacent merge reconciliation failed");
+      if Testing.Receipt_Replaces_Current_Runs (Flush_Info)
+        or else Flush_Receipt_Run_Total (Flush_Info) /= 1
+        or else Flush_Receipt_Run (Flush_Info, 1) /= Configure_Checkpoint_Run (1, Merged_Run)
+      then
+         raise Program_Error with "adjacent L0 merge receipt lost exact output authority";
+      end if;
+      Testing.Publication_Counts
+        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      if After_Batches /= Before_Batches
+        or else After_Runs /= Before_Runs + 2
+        or else After_Manifests /= Before_Manifests + 1
+        or else After_Heads /= Before_Heads + 1
+      then
+         raise Program_Error with "adjacent L0 merge publication order/count changed";
+      end if;
+
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 51), Txn, Result);
+      Expect (Result, Success, "post-merge suffix transaction begin failed");
+      Put (Item, Txn, 1, Suffix_Key, Suffix_Value, Result);
+      Expect (Result, Success, "post-merge suffix Put failed");
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, Success, "post-merge suffix commit failed");
+      Testing.Publication_Counts
+        (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+      Testing.Publish_Adjacent_Merge
+        (Item,
+         Merged_Run,
+         Third_Run,
+         Numbered_ID (Identity_Base + 60),
+         Numbered_ID (Identity_Base + 61),
+         Numbered_ID (Identity_Base + 62),
+         Flush_Info,
+         Result);
+      Expect (Result, Invalid_State, "partial merge silently consumed a later log suffix");
+      Testing.Publication_Counts
+        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      if After_Batches /= Before_Batches
+        or else After_Runs /= Before_Runs
+        or else After_Manifests /= Before_Manifests
+        or else After_Heads /= Before_Heads
+      then
+         raise Program_Error with "later-suffix merge rejection published an object";
+      end if;
+
+      Close (Item, Result);
+      Expect (Result, Success, "adjacent-merge database close failed");
+      Testing.Remove_Run (Context, First_Run, Result);
+      Expect (Result, Success, "retired first L0 run removal failed");
+      Testing.Remove_Run (Context, Second_Run, Result);
+      Expect (Result, Success, "retired second L0 run removal failed");
+      Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "adjacent-merge cacheless reopen failed");
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 70), Txn, Result);
+      Expect (Result, Success, "adjacent-merge recovered read begin failed");
+      Get (Item, Txn, 1, First_Key, Data, Result);
+      if Result /= Success or else Data /= Second_Value then
+         raise Program_Error with "merged L0 run did not preserve the newest selected value";
+      end if;
+      Get (Item, Txn, 1, Retained_Key, Data, Result);
+      if Result /= Success or else Data /= Third_Value then
+         raise Program_Error with "adjacent L0 merge did not retain the later run";
+      end if;
+      Get (Item, Txn, 1, Suffix_Key, Data, Result);
+      if Result /= Success or else Data /= Suffix_Value then
+         raise Program_Error with "rejected partial merge lost the later log suffix";
+      end if;
+      Rollback (Txn, Result);
+      Expect (Result, Success, "adjacent-merge recovered read rollback failed");
+      Close (Item, Result);
+      Expect (Result, Success, "adjacent-merge recovered database close failed");
+   end Test_Adjacent_L0_Merge;
+
    procedure Test_Empty_L0_Compaction
      (Backend : not null access Backends.Backend'Class; Prefix : String; Identity_Base : Natural)
    is
@@ -7032,6 +7247,7 @@ package body Flyology.DB.Engine_Tests is
          Test_L0_Accumulation_Capacity (Store'Access);
          --  Disjoint 100-ID domains keep the memory and files witnesses
          --  independently diagnosable; they are test namespace choices only.
+         Test_Adjacent_L0_Merge (Store'Access, "memory-adjacent-merge", 32_400);
          Test_Empty_L0_Compaction (Store'Access, "memory-empty-compaction", 32_600);
          Test_Flush_Certainty (Store'Access, "memory-flush");
          Test_Create_Publication (Store'Access);
@@ -7081,6 +7297,7 @@ package body Flyology.DB.Engine_Tests is
             Test_L0_Accumulation_Capacity (Store'Access);
             --  This second domain is the files-backend counterpart of the
             --  memory fixture above and establishes no database identity rule.
+            Test_Adjacent_L0_Merge (Store'Access, "files-adjacent-merge", 32_500);
             Test_Empty_L0_Compaction (Store'Access, "files-empty-compaction", 32_700);
             Test_Flush_Certainty (Store'Access, "files-flush");
             Test_Snapshot_Write_Validation (Store'Access);

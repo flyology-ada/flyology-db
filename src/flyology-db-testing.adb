@@ -393,6 +393,27 @@ package body Flyology.DB.Testing is
       Publish_Test_Compaction (Item, Runs, Manifest_ID, Transition_ID, Receipt, Result);
    end Publish_Compaction;
 
+   procedure Publish_Adjacent_Merge
+     (Item          : in out Database;
+      Older_Run_ID  : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      Publish_Test_Adjacent_Merge
+        (Item,
+         Older_Run_ID,
+         Newer_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Receipt,
+         Result);
+   end Publish_Adjacent_Merge;
+
    procedure Refresh_Replica
      (Item    : in out Database;
       Timeout : Duration;

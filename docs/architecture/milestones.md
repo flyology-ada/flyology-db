@@ -104,15 +104,18 @@ The policy-neutral partial-compaction lane now places two selected consecutive r
 runs. Its finite model exhausts every two-key/two-value mutation map, validates an older/selected/newer execution
 witness, and rejects a merger that drops a selected tombstone. Its arbitrary-key/value TLAPS kernel proves that the
 newest selected mutation per key exactly replaces the pair while retained surrounding order remains unchanged.
-Operational run selection, trigger/fanout/level policy, publication integration, and a public compaction surface
-remain separate Milestone 4 and 6 work. The private runtime now supplies the narrower
+Automatic run selection, trigger/fanout/level policy, and a public compaction surface remain separate Milestone 4
+and 6 work. The private runtime now supplies the narrower
 snapshot-safe merge iteration kernel: two validated ordered nonoverlapping SSTs become one fresh-identity SST while
 every version and tombstone remains. Exact output extents are checked sums of the inputs. The manifest-aware entry
 point requires the two exact SST descriptors to be adjacent in one authenticated family and rejects an output identity
 already named by that manifest. An effect-free builder now validates the exact next checkpoint base and produces the
-corresponding successor by replacing only that pair while preserving all other persisted authority. Binding the
-captured manifest to current HEAD, storing both immutable objects, and conditionally publishing that successor remain
-separate work.
+corresponding successor by replacing only that pair while preserving all other persisted authority. A private
+synchronous publisher binds that captured manifest to current HEAD, authenticates the named SSTs, stores and confirms
+the merged SST and successor, conditionally advances HEAD, and reconciles an ambiguous object response only by
+rebuilding the same selected pair and identities. A composable selected-run reader and production policy remain
+separate work. This first publisher rejects any log suffix after the retained replay boundary; transferring that
+suffix's decoded history and identity authority through activation is not yet implemented.
 
 The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
 separation, and atomic capacity/allocation rollback. Its finite model exhausts 3,419 states and the arbitrary-universe

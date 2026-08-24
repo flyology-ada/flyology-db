@@ -273,6 +273,27 @@ completion-set owner stack, exact moved token, typed `Finish`, absolute deadline
 same-identity whole-Get reconciliation. Its private receipt mode is retained solely so `Objects_Unknown`
 reconciliation rebuilds the identical replacement bytes and identities; it is not persisted policy.
 
+The private adjacent-merge publisher is a narrower policy-neutral sibling. Its caller supplies the exact older,
+newer, output, manifest, and transition identities. Under the same exclusive checkpoint lifecycle, it binds the
+retained checkpoint manifest to the exact current HEAD generation, reads every named SST through the maintained
+header-first and generation-bound whole-object path, and admits the pair only through the manifest-aware adjacent
+merge kernel. It prepares the exact successor and current live activation base before the first write. The shared
+publisher then confirms the merged SST and successor manifest before the conditional HEAD transition. An ambiguous
+immutable-object result fences the writer and retains the selected input identities privately in the receipt so
+`Resolve_Flush` can rebuild only the same bytes and identities. It never substitutes an additive or complete-view
+plan, generates a new identity, or automatically retries.
+
+The retained checkpoint replay boundary must equal current HEAD's highest sequence. If a later log suffix exists,
+the call returns `Invalid_State` before authenticated reads, allocation, or publication. Preserving such a suffix
+would require carrying its decoded conflict-history and transaction-identity authority into the replacement
+coordinator; copying only the live image would be insufficient even though cacheless recovery could replay the log.
+This conservative precondition prevents local activation from silently weakening transaction semantics.
+
+This first execution-path witness is synchronous because its authenticated selected-run reads still use the
+backend-neutral blocking storage port. It creates no helper task and selects no event-loop blocking contract. A
+future caller-composable form must drive those range/whole reads through owner-stack Object Storage operations before
+publication; this unit does not simulate that surface or publish a public trigger.
+
 Cacheless recovery from the compacted successor validates only its named outputs and exact manifest authority; it
 does not reread depublicized predecessors to reconstruct current state. A missing, malformed, corrupt, misbound, or
 unconfirmed compacted output fails closed and installs no local state. The formal finite model exercises definite
@@ -315,5 +336,5 @@ Those choices require their own authority, crash tests, provider conformance evi
 This design does not implement automatic flushing or compaction, a public compaction trigger, run pruning, garbage
 collection, remote-provider matrix qualification, or an LSM performance claim. Its operational scope is manifest-v3
 root creation, initial whole-state runs, additive suffix-delta runs, private complete-run replacement,
-certainty-preserving checkpoint publication/reconciliation, and header-first cacheless recovery of every current run
-plus the later batch suffix.
+private caller-selected adjacent-run publication, certainty-preserving checkpoint publication/reconciliation, and
+header-first cacheless recovery of every current run plus the later batch suffix.

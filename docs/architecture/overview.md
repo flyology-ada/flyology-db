@@ -62,8 +62,12 @@ snapshot-retention horizon. Its manifest-aware entry point admits the pair only 
 descriptors in one authenticated family, and it rejects an output identity already named by that manifest. Its
 effect-free successor builder requires the exact next checkpoint base, replaces only that pair, shifts later family
 slices exactly, and preserves every persisted replay, identity, limit, family, and retained-run field. Current
-HEAD-generation binding, immutable object writes, conditional successor publication, trigger/fanout/level policy,
-and the public compaction surface remain later units.
+HEAD-generation binding and conditional successor publication are now exercised by a private synchronous witness:
+it authenticates the current immutable runs, publishes the one merged SST and successor manifest through the shared
+certainty machinery, conditionally advances HEAD, and can rebuild the exact pair after an ambiguous object response.
+It is admitted only when the checkpoint replay boundary is current; preserving a later log suffix across local
+activation, a composable selected-run reader, trigger/fanout/level policy, and the public compaction surface remain
+later units.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,

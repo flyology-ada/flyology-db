@@ -1,5 +1,45 @@
 # Review record
 
+## Accepted private adjacent-merge publication candidate
+
+- Parent: composable CopyObject dependency qualification commit `ac97706`.
+- Scope and authority: add one private synchronous execution path for a caller-selected adjacent two-run merge. The
+  caller supplies the older, newer, output, manifest, and HEAD-transition identities; the unit adds no public API,
+  trigger, schedule, fanout, level, retry, timeout default, helper task, or garbage-collection authority.
+- Read and allocation boundary: under the exclusive checkpoint lifecycle, the planner binds the retained checkpoint
+  manifest to the exact current HEAD/generation and copies its exact persisted family/run/identity extents. Every
+  current SST is authenticated through the maintained frozen-header range read and same-generation bounded whole
+  read before the manifest-aware kernel admits the selected pair. Allocation derives lazily from authenticated
+  persisted extents and current database/per-family limits; every prepublication failure releases owned candidates
+  and publishes nothing.
+- Publication and certainty: the existing publisher confirms the merged SST and exact successor manifest before the
+  conditional HEAD transition, then activates the prepared live image. A private receipt mode retains the exact
+  selected identities only for `Objects_Unknown` reconstruction; resolution rebuilds those same bytes and cannot
+  reinterpret the attempt as additive Flush or complete replacement. Accepted/lost immutable responses remain
+  `Outcome_Unknown` until exact same-identity read-only reconciliation succeeds. No automatic retry occurs.
+- Suffix safety: the successor intentionally preserves the current manifest replay/identity authority. The planner
+  therefore requires that replay boundary to equal current HEAD's highest sequence and rejects a later log suffix
+  before reads, allocation, or publication. This prevents local activation from retaining only live bytes while
+  silently dropping suffix conflict-history and transaction-identity authority.
+- Deterministic evidence: `./tests/scripts/test.sh` passes the root/tests/server build, local engine, authenticated
+  client, memory/files crash/recovery, all 32 comparative cases, pinned TidesDB 4/4, and repository provenance at
+  Object Storage `c94239db8b588f003d637d787515e3c90c233ca0`. The new memory/files witness creates three chronological
+  L0 runs, rejects nonadjacent and aliased identities without publication, forces an accepted/lost merged-run
+  response, resolves with the exact retained plan, removes both retired source objects, and reopens with the merged
+  value plus the retained later run. A post-merge suffix is rejected without objects and remains visible after
+  cacheless reopen.
+- Proof evidence: `./scripts/prove.sh` passes 1,090/1,090 selected checks (166 flow, 924 prover), with zero warnings,
+  unproved/justified checks, or `pragma Assume`; exact pre/post host-process audits are clean. The dynamic planner,
+  Object Storage calls, lifecycle, and activation remain executable boundaries rather than inferred SPARK proof.
+  The unchanged full `./scripts/check-tla.sh` regression gate is green; the partial-LSM lane exhausts 196,608 states,
+  proves 5/5 TLAPS obligations, validates the retained older/selected/newer witness, and detects the dropped-tombstone
+  negative probe. No Ada refinement theorem is claimed.
+- Findings cycle: architecture review fixed a P1 suffix-activation authority loss by adding the exact-boundary
+  precondition and witness. Implementation review fixed a P2 absent-checkpoint classification, a P2 output identity
+  alias, a P2 impossible mixed receipt mode, and a test fault that initially targeted prerequisite reads rather than
+  post-PUT reconciliation. Rebuild, full deterministic rerun, warning-strict proof, constants/ownership/certainty
+  review, and final re-review find no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted composable CopyObject dependency qualification
 
 - Parent: effect-free partial-merge successor commit `f5574b7`.

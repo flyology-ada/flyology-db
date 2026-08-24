@@ -205,6 +205,15 @@ private package Flyology.DB.Testing is
       Transition_ID : Identifier;
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code);
+   procedure Publish_Adjacent_Merge
+     (Item          : in out Database;
+      Older_Run_ID  : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code);
    procedure Refresh_Replica
      (Item    : in out Database;
       Timeout : Duration;

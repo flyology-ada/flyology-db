@@ -232,6 +232,17 @@ cover exact adjacent replacement, retained fields, shifted later-family run slic
 merged-SST round trip, and successor-manifest round trip. Current-HEAD binding, immutable object I/O, conditional
 publication, progress, policy selection, and refinement from the TLA+ partial-merge model remain outside this unit.
 
+The private adjacent-merge publication candidate reruns that same warning-strict boundary at 1,090/1,090 checks:
+166 by flow analysis and 924 by provers, with zero warnings, unproved or justified checks, or `pragma Assume`. The
+dynamic planner and publisher remain outside the selected SPARK packages. Their executable qualification binds the
+retained manifest to exact current HEAD/generation authority, authenticates every named SST with header-first and
+same-generation whole reads, admits only the selected adjacent pair, confirms the merged SST and exact successor
+before conditional HEAD publication, and reconstructs the same plan after an accepted/lost immutable response. A
+later log suffix is rejected before effects because this first activation path does not transfer suffix history and
+identity authority. Memory/files cacheless reopen after removal of both selected source runs confirms that the merged
+output and retained later run are the only current SST authority; a separately rejected suffix remains recoverable
+from the log. No SPARK proof of Object Storage, protected lifecycle, allocation, or Ada/TLA refinement is claimed.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

@@ -7247,6 +7247,225 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
    end Read_Checkpoint_SSTs;
 
+   procedure Build_Adjacent_Merge_Plan
+     (State          : not null Engine_State_Access;
+      Older_Run_ID   : Identifier;
+      Newer_Run_ID   : Identifier;
+      Output_Run_ID  : Identifier;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Deadline       : Ada.Real_Time.Time;
+      Token          : access Flyology.Cancellation.Token;
+      Plan           : out Checkpoint_Plan;
+      Result         : out Outcome_Code;
+      Allow_Fenced   : Boolean := False)
+   is
+      Base           : Manifests.Manifest;
+      Head           : Head_Snapshot;
+      Generation     : Generation_Value;
+      Uncertain      : Boolean;
+      Fenced         : Boolean;
+      Identity_Total : Natural;
+      Prior          : constant LSM_Runtime.Checkpoint_Manifest_Access := State.Checkpoint_Manifest;
+      Current        : Checkpoint_Plan;
+      Older_Index    : Natural := 0;
+      Newer_Index    : Natural := 0;
+      Family_Index   : Natural := 0;
+      Merged         : LSM_Runtime.SST_Access := null;
+      Successor      : LSM_Runtime.Checkpoint_Manifest_Access := null;
+      Allocation     : LSM_Runtime.Allocation_Status;
+      Merge_Result   : LSM_Runtime.Merge_Status;
+   begin
+      Plan := (others => <>);
+      Current := (others => <>);
+      if Is_Zero (Older_Run_ID)
+        or else Is_Zero (Newer_Run_ID)
+        or else Is_Zero (Output_Run_ID)
+        or else Is_Zero (Manifest_ID)
+        or else Is_Zero (Transition_ID)
+        or else Older_Run_ID = Newer_Run_ID
+        or else Output_Run_ID = Older_Run_ID
+        or else Output_Run_ID = Newer_Run_ID
+        or else Output_Run_ID = Manifest_ID
+        or else Output_Run_ID = Transition_ID
+        or else Manifest_ID = Transition_ID
+        or else not State.LSM_Authority.Enabled
+      then
+         Result := Invalid_State;
+         return;
+      elsif State.LSM_Authority.Maximum_Point_Reads_Per_Transaction = 0
+        or else State.LSM_Authority.Maximum_Scan_Ranges_Per_Transaction = 0
+      then
+         Result := Unsupported_Format;
+         return;
+      end if;
+
+      State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+         return;
+      elsif Fenced and then not Allow_Fenced then
+         Result := Stale_Writer;
+         return;
+      elsif Head.Highest = 0
+        or else Head.Transition_Number = Interfaces.Unsigned_64'Last
+        or else Head.Latest_Manifest = Zero_Identifier
+        or else Manifest_ID = Head.Latest_Manifest
+        or else Transition_ID = Head.Transition_ID
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+
+      State.Gate.Checkpoint_Metadata (Base, Identity_Total, Result);
+      if Result /= Success then
+         return;
+      elsif Base.Registry_Revision = Interfaces.Unsigned_64'Last
+        or else Base.Registry_Revision
+          >= Interfaces.Unsigned_64 (Base.Limits.Maximum_Manifest_History)
+        or else Interfaces.Unsigned_64 (Identity_Total)
+          > Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Checkpoint_Identities)
+      then
+         Result := Capacity_Exceeded;
+         return;
+      elsif Prior = null or else Prior.Run_Total < 2 then
+         Result := Invalid_State;
+         return;
+      elsif not LSM_Runtime.Structurally_Valid (Prior.all)
+        or else Prior.Replay_Boundary /= State.LSM_Authority.Replay_Boundary
+        or else Prior.Base.Manifest_ID /= To_Head_ID (Head.Latest_Manifest)
+        or else Prior.Family_Total /= Natural (Base.Family_Total)
+      then
+         Result := Corrupt;
+         return;
+      --  This first publisher preserves the selected manifest's replay and
+      --  identity authority. A later suffix would require transferring its
+      --  decoded history into the replacement coordinator; reject before any
+      --  read/allocation/publication rather than silently dropping it.
+      elsif Prior.Replay_Boundary /= Interfaces.Unsigned_64 (Head.Highest) then
+         Result := Invalid_State;
+         return;
+      end if;
+
+      Base.Manifest_ID := To_Head_ID (Manifest_ID);
+      Base.Previous_Manifest_ID := To_Head_ID (Head.Latest_Manifest);
+      Base.Expected_Transition_ID := To_Head_ID (Head.Transition_ID);
+      Base.Expected_Transition_Number := Head.Transition_Number;
+      Base.Publication_Transition_ID := To_Head_ID (Transition_ID);
+      Base.Publication_Transition_Number := Head.Transition_Number + 1;
+      Base.Writer_Epoch := Head.Epoch;
+      --  Exact one-step manifest predecessor policy requires every partial
+      --  merge to advance the persisted registry revision by one. Changing
+      --  this formula breaks cacheless chain validation.
+      Base.Registry_Revision := Base.Registry_Revision + 1;
+      if not Manifests.Valid_Checkpoint_Predecessor (Base, Prior.Base) then
+         Result := Corrupt;
+         return;
+      end if;
+
+      --  The current authenticated manifest is copied at its exact persisted
+      --  extents solely to own the SSTs read below. No library-selected run,
+      --  identity, key, value, or byte ceiling participates in this plan.
+      Allocation_Faults.Check (Checkpoint_Manifest_Allocation);
+      LSM_Runtime.Create_Checkpoint_Manifest
+        (Prior.Family_Total,
+         Prior.Run_Total,
+         Prior.Identity_Total,
+         Current.Manifest,
+         Allocation);
+      if Allocation /= LSM_Runtime.Allocated then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+      Current.Manifest.Base := Prior.Base;
+      Current.Manifest.Replay_Boundary := Prior.Replay_Boundary;
+      Current.Manifest.Maximum_Total_L0_Runs := Prior.Maximum_Total_L0_Runs;
+      Current.Manifest.Maximum_Checkpoint_Identities := Prior.Maximum_Checkpoint_Identities;
+      Current.Manifest.Maximum_Point_Reads_Per_Transaction :=
+        Prior.Maximum_Point_Reads_Per_Transaction;
+      Current.Manifest.Maximum_Scan_Ranges_Per_Transaction :=
+        Prior.Maximum_Scan_Ranges_Per_Transaction;
+      Current.Manifest.Families := Prior.Families;
+      Current.Manifest.Runs := Prior.Runs;
+      Current.Manifest.Identities := Prior.Identities;
+      Current.Expected_Generation := Generation;
+
+      Read_Checkpoint_SSTs (State.Storage.all, Deadline, Token, Current, Result);
+      if Result /= Success then
+         Release_Checkpoint_Plan (Current);
+         return;
+      end if;
+      for Index in Current.Manifest.Runs'Range loop
+         if To_Identifier (Current.Manifest.Runs (Index).Run_ID) = Older_Run_ID then
+            Older_Index := Index;
+         elsif To_Identifier (Current.Manifest.Runs (Index).Run_ID) = Newer_Run_ID then
+            Newer_Index := Index;
+         end if;
+      end loop;
+      if Older_Index = 0 or else Newer_Index = 0 then
+         Release_Checkpoint_Plan (Current);
+         Result := Invalid_State;
+         return;
+      end if;
+
+      LSM_Runtime.Build_Adjacent_Merge_Successor
+        (Current.Manifest.all,
+         Base,
+         Current.Recovered_SSTs (Older_Index).all,
+         Current.Recovered_SSTs (Newer_Index).all,
+         To_Head_ID (Output_Run_ID),
+         Merged,
+         Successor,
+         Merge_Result);
+      if not LSM_Runtime."=" (Merge_Result, LSM_Runtime.Merge_Completed) then
+         Release_Checkpoint_Plan (Current);
+         Result :=
+           (if LSM_Runtime."=" (Merge_Result, LSM_Runtime.Merge_Invalid_Input)
+            then Invalid_State
+            else Capacity_Exceeded);
+         return;
+      end if;
+
+      for Index in Successor.Families'Range loop
+         if Successor.Base.Families (Index).ID = Merged.Family_ID then
+            Family_Index := Index;
+            exit;
+         end if;
+      end loop;
+      if Family_Index = 0 then
+         LSM_Runtime.Release (Merged);
+         LSM_Runtime.Release (Successor);
+         Release_Checkpoint_Plan (Current);
+         Result := Corrupt;
+         return;
+      end if;
+      Plan.Manifest := Successor;
+      Successor := null;
+      Plan.SSTs (Manifests.Family_Slot (Family_Index)) := Merged;
+      Merged := null;
+      Plan.Expected_Generation := Generation;
+      Prepare_Live_Checkpoint_Base (State, Plan, Result);
+      Release_Checkpoint_Plan (Current);
+      if Result /= Success then
+         Release_Checkpoint_Plan (Plan);
+         return;
+      end if;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Merged);
+         LSM_Runtime.Release (Successor);
+         Release_Checkpoint_Plan (Current);
+         Release_Checkpoint_Plan (Plan);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Merged);
+         LSM_Runtime.Release (Successor);
+         Release_Checkpoint_Plan (Current);
+         Release_Checkpoint_Plan (Plan);
+         raise;
+   end Build_Adjacent_Merge_Plan;
+
    procedure Decode_Stored_Batch
      (Data              : in out Flyology.Bytes.Unbounded_Bytes;
       Expected_Database : Database_Identifier;
@@ -10626,7 +10845,9 @@ package body Flyology.DB is
       Transition_ID : Identifier;
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code;
-      Replace_Current_Runs : Boolean := False)
+      Replace_Current_Runs : Boolean := False;
+      Merge_Older_Run_ID   : Identifier := Zero_Identifier;
+      Merge_Newer_Run_ID   : Identifier := Zero_Identifier)
    is
       Head       : Head_Snapshot;
       Generation : Generation_Value;
@@ -10644,6 +10865,9 @@ package body Flyology.DB is
          return;
       end if;
       Receipt.Replaces_Current_Runs := Replace_Current_Runs;
+      Receipt.Merges_Adjacent_Runs := not Is_Zero (Merge_Older_Run_ID);
+      Receipt.Older_Run_ID := Merge_Older_Run_ID;
+      Receipt.Newer_Run_ID := Merge_Newer_Run_ID;
       Receipt.Run_Total := Runs'Length;
       for Offset in Natural range 0 .. Runs'Length - 1 loop
          Receipt.Runs (Offset + 1) := Runs (Runs'First + Offset);
@@ -11638,11 +11862,20 @@ package body Flyology.DB is
       Put_Result  : Put_Outcome;
       Read_Data   : Flyology.Bytes.Unbounded_Bytes;
       Read_Result : Read_Outcome;
+      Fault       : Storage_Fault_Mode;
    begin
       Storage_Port.Put_Create (Storage, Key, Image, Kind, Deadline, Token, Generation, Put_Result);
       if Put_Result = Object_Published then
          Result := Success;
       elsif Put_Result in Put_Precondition_Failed | Put_Outcome_Unknown then
+         Consume_Fault (Storage, Before_Immutable_Reconciliation, Fault);
+         if Fault /= No_Fault then
+            --  A skipped or unavailable observation after possible admission
+            --  cannot establish absence. The receipt must retain exact bytes
+            --  and identity for a later caller-driven resolution.
+            Result := Outcome_Unknown;
+            return;
+         end if;
          Storage_Port.Get_Whole
            (Storage,
             Key,
@@ -11982,6 +12215,107 @@ package body Flyology.DB is
          end if;
          Receipt.Current_Outcome := Result;
    end Publish_Checkpoint;
+
+   procedure Publish_Adjacent_Merge
+     (Item          : in out Database;
+      Older_Run_ID  : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code)
+   is
+      --  The caller supplies the sole deadline budget and every immutable
+      --  identity. This private publisher selects no merge trigger, retry,
+      --  helper task, output name, or timing default.
+      Deadline     : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State        : Engine_State_Access;
+      Plan         : Checkpoint_Plan;
+      Guard        : Checkpoint_Guard;
+      Runs         : Checkpoint_Run_Identity_Array (1 .. 1);
+      Family_Index : Natural := 0;
+   begin
+      Receipt := (others => <>);
+      Item.Life.Begin_Checkpoint (State, Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Item.Life.Await_Quiescent;
+      Build_Adjacent_Merge_Plan
+        (State,
+         Older_Run_ID,
+         Newer_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Deadline,
+         Token,
+         Plan,
+         Result);
+      if Result = Success then
+         for Index in Plan.SSTs'Range loop
+            if Plan.SSTs (Index) /= null then
+               if Family_Index /= 0 then
+                  Result := Corrupt;
+                  exit;
+               end if;
+               Family_Index := Index;
+            end if;
+         end loop;
+         if Result = Success and then Family_Index = 0 then
+            Result := Corrupt;
+         end if;
+      end if;
+      if Result = Success then
+         Runs (1) :=
+           (Family_ID => Column_Family_ID (Plan.Manifest.Base.Families (Family_Index).ID),
+            Run_ID    => Output_Run_ID);
+         Initialize_Flush_Receipt
+           (State,
+            Plan,
+            Runs,
+            Manifest_ID,
+            Transition_ID,
+            Receipt,
+            Result,
+            Merge_Older_Run_ID => Older_Run_ID,
+            Merge_Newer_Run_ID => Newer_Run_ID);
+         if Result = Success then
+            Publish_Flush_Plan (Item, State, Plan, Deadline, Token, Receipt, Guard, Result);
+         end if;
+      end if;
+      Release_Checkpoint_Plan (Plan);
+      if Guard.Active then
+         Item.Life.Finish_Checkpoint;
+         Guard.Active := False;
+      end if;
+      Receipt.Current_Outcome := Result;
+   exception
+      when others =>
+         Release_Checkpoint_Plan (Plan);
+         if Guard.Active then
+            if Receipt.Phase in Objects_Unknown | Flush_Head_Unknown then
+               State.Gate.Fence;
+               Result := Outcome_Unknown;
+            elsif Receipt.Phase = Flush_Head_Confirmed then
+               State.Gate.Fence;
+               Result := Local_Activation_Failed;
+            else
+               Result := Storage_Failure;
+            end if;
+            Item.Life.Finish_Checkpoint;
+            Guard.Active := False;
+         else
+            Result := Local_Activation_Failed;
+         end if;
+         Receipt.Current_Outcome := Result;
+   end Publish_Adjacent_Merge;
 
    procedure Synchronous_Flush_Buffer_Capacity
      (State   : not null Engine_State_Access;
@@ -12345,6 +12679,14 @@ package body Flyology.DB is
         or else Receipt.Run_Total = 0
         or else Receipt.Database_ID = Zero_Database_ID
         or else Is_Zero (Receipt.Manifest_ID)
+        or else
+          (Receipt.Merges_Adjacent_Runs
+           and then
+             (Receipt.Replaces_Current_Runs
+              or else Receipt.Run_Total /= 1
+              or else Is_Zero (Receipt.Older_Run_ID)
+              or else Is_Zero (Receipt.Newer_Run_ID)
+              or else Receipt.Older_Run_ID = Receipt.Newer_Run_ID))
       then
          Result := Invalid_State;
          Receipt.Current_Outcome := Result;
@@ -12368,15 +12710,54 @@ package body Flyology.DB is
       then
          Result := Invalid_State;
       elsif Receipt.Phase = Objects_Unknown then
-         Build_Checkpoint_Plan
-           (State,
-            Receipt.Runs (1 .. Receipt.Run_Total),
-            Receipt.Manifest_ID,
-            Receipt.Attempted_Head.Transition_ID,
-            Plan,
-            Result,
-            Replace_Current_Runs => Receipt.Replaces_Current_Runs,
-            Allow_Fenced => True);
+         if Receipt.Merges_Adjacent_Runs then
+            Build_Adjacent_Merge_Plan
+              (State,
+               Receipt.Older_Run_ID,
+               Receipt.Newer_Run_ID,
+               Receipt.Runs (1).Run_ID,
+               Receipt.Manifest_ID,
+               Receipt.Attempted_Head.Transition_ID,
+               Deadline,
+               Token,
+               Plan,
+               Result,
+               Allow_Fenced => True);
+            if Result = Success then
+               declare
+                  Exact_Output : Boolean := False;
+               begin
+                  for Index in Plan.SSTs'Range loop
+                     if Plan.SSTs (Index) /= null then
+                        if Exact_Output
+                          or else Receipt.Run_Total /= 1
+                          or else Receipt.Runs (1).Family_ID /=
+                            Column_Family_ID (Plan.Manifest.Base.Families (Index).ID)
+                          or else Receipt.Runs (1).Run_ID /=
+                            To_Identifier (Plan.SSTs (Index).Run_ID)
+                        then
+                           Result := Invalid_State;
+                           exit;
+                        end if;
+                        Exact_Output := True;
+                     end if;
+                  end loop;
+                  if Result = Success and then not Exact_Output then
+                     Result := Invalid_State;
+                  end if;
+               end;
+            end if;
+         else
+            Build_Checkpoint_Plan
+              (State,
+               Receipt.Runs (1 .. Receipt.Run_Total),
+               Receipt.Manifest_ID,
+               Receipt.Attempted_Head.Transition_ID,
+               Plan,
+               Result,
+               Replace_Current_Runs => Receipt.Replaces_Current_Runs,
+               Allow_Fenced => True);
+         end if;
          if Result = Success and then not Plan_Matches_Receipt (Plan, Current_Head, Receipt) then
             Result := Invalid_State;
          end if;
@@ -13455,6 +13836,31 @@ package body Flyology.DB is
          Receipt              => Receipt,
          Result               => Result);
    end Publish_Test_Compaction;
+
+   procedure Publish_Test_Adjacent_Merge
+     (Item          : in out Database;
+      Older_Run_ID  : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      --  The private witness removes harness timing from an explicitly
+      --  selected adjacent merge. Production trigger and deadline policy are
+      --  intentionally absent from this execution-path qualification unit.
+      Publish_Adjacent_Merge
+        (Item,
+         Older_Run_ID,
+         Newer_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Duration'Last,
+         Receipt => Receipt,
+         Result  => Result);
+   end Publish_Test_Adjacent_Merge;
 
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code)

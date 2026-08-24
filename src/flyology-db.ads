@@ -876,6 +876,13 @@ private
       --  Flush; True is complete current-run replacement. It is runtime state,
       --  not a persisted flag, public default, or automatic compaction policy.
       Replaces_Current_Runs : Boolean := False;
+      --  Private exact-plan authority for an explicitly selected adjacent
+      --  merge. The selected input identities are retained only so
+      --  Objects_Unknown reconciliation can rebuild the same immutable bytes;
+      --  they are neither a trigger nor a retained borrow.
+      Merges_Adjacent_Runs : Boolean := False;
+      Older_Run_ID         : Identifier := Zero_Identifier;
+      Newer_Run_ID         : Identifier := Zero_Identifier;
       Run_Total           : Natural range 0 .. Maximum_Initial_Column_Families := 0;
       Runs                : Flush_Run_Receipt_Array := [others => (others => <>)];
       Database_ID         : Database_Identifier := Zero_Database_ID;
@@ -936,6 +943,9 @@ private
       After_Head_Put,
       Before_Get,
       Before_Manifest_Get,
+      --  Test-only boundary between an inconclusive immutable create and its
+      --  exact-byte read-only observation. It introduces no retry policy.
+      Before_Immutable_Reconciliation,
       Before_Local_Activation);
    type Storage_Fault_Mode is (No_Fault, Definite_Failure, Unknown_After_Entry);
    type Storage_Fault_Count is array (Storage_Fault_Point) of Natural;
@@ -1174,6 +1184,15 @@ private
    procedure Publish_Test_Compaction
      (Item          : in out Database;
       Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code);
+   procedure Publish_Test_Adjacent_Merge
+     (Item          : in out Database;
+      Older_Run_ID  : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
       Receipt       : out Flush_Receipt;

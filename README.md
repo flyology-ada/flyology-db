@@ -38,8 +38,12 @@ tombstone. Its manifest-aware entry point admits only exact adjacent descriptors
 already named by that manifest. An effect-free successor builder also requires the caller-prepared base to be the
 exact next checkpoint transition, replaces only those two descriptors, and retains every family rule, replay
 boundary, identity, limit, and surrounding run. It derives all output extents from validated authority and publishes
-no partial candidate. It still does not bind the captured manifest to current HEAD authority, store either immutable
-object, select a trigger, or conditionally publish the successor.
+no partial candidate. A private synchronous publication witness now binds the retained manifest to the exact current
+HEAD generation, authenticates its SSTs with header-first generation-bound reads, and sends the merged SST and
+successor through the existing immutable confirmation, conditional HEAD, activation, and exact-identity resolution
+machinery. This first publisher requires the retained replay boundary to equal current HEAD; it rejects a later log
+suffix rather than dropping its history/identity authority during activation. It still selects no trigger, schedule,
+fanout, level policy, public API, or composable read driver.
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
 produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.
