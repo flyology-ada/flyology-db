@@ -109,6 +109,13 @@ ownership/refcounting, dynamic allocation, the protected coordinator, tasking, a
 trusted executable-test boundaries. Independent re-review accepted exact commit `c909c572` with no P0-P3 findings;
 that review does not expand the selected-unit proof boundary.
 
+The operational snapshot write-validation candidate reruns that warning-strict selected-unit gate and preserves
+1,078/1,078 checks: 164 discharged by flow analysis and 914 by provers, with zero warnings, unproved or justified
+checks, or `pragma Assume`. The new exact history retention, protected admission/prepublication scans, ownership
+transfer, and Ada-task race test live in the operational root body outside the selected SPARK units. Their assurance
+comes from the deterministic memory/files tests and the separate snapshot TLC/TLAPS lane; this is not a refinement
+proof between the model and implementation.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

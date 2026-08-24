@@ -197,7 +197,8 @@ package Flyology.DB is
    --  Drain admitted commits, stop and join the coordinator, and close Item.
    procedure Close (Item : in out Database; Result : out Outcome_Code);
 
-   --  Begin one bounded transaction with a caller-stable idempotency identity.
+   --  Begin one bounded transaction with a caller-stable idempotency identity
+   --  and capture the current global sequence for later write validation.
    procedure Begin_Transaction
      (Item           : in out Database;
       Transaction_ID : Transaction_Identifier;
@@ -254,6 +255,8 @@ package Flyology.DB is
    --  Transaction_ID is also the immutable batch identity for this singleton.
    --  A pre-admission outcome returns a receipt with zero transaction/batch IDs;
    --  every admitted terminal outcome retains both stable identities.
+   --  Commit returns Conflict when an exact key in Txn was written after its
+   --  captured sequence or the sequence predates retained exact history.
    procedure Commit
      (Item    : in out Database;
       Txn     : in out Transaction;
@@ -268,6 +271,9 @@ package Flyology.DB is
    --  deadline, immutable batch, HEAD transition, and terminal classification.
    --  All transactions remain active on pre-admission rejection and all are
    --  consumed on admission, whatever later terminal outcome is reported.
+   --  Group members validate independently against external committed history.
+   --  The explicit group is one atomic co-commit unit, so overlapping member
+   --  writes remain ordered by their existing deterministic member sequence.
    --  Group_ID is the exact immutable batch identity;
    --  callers must allocate it from the same never-reused namespace as singleton
    --  Transaction_ID values.
@@ -584,6 +590,10 @@ private
       Database_ID    : Database_Identifier := Zero_Database_ID;
       Incarnation    : Engine_Incarnation := No_Incarnation;
       Transaction_ID : Transaction_Identifier := Zero_Transaction_ID;
+      --  Snapshot sequence is captured from authenticated HEAD at Begin. Zero
+      --  is the valid empty-database snapshot and the vacant reset value; it
+      --  controls write/write validation but is not a new persisted field.
+      Snapshot_At    : Sequence_Number := 0;
       Owner          : Transaction_Arena_Owner;
    end record;
 

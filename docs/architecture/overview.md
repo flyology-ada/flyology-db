@@ -40,10 +40,18 @@ coordinator replacement, and cacheless nonempty checkpoint recovery are operatio
 
 ## Transaction semantics
 
-A transaction reads from one global snapshot and sees its own buffered mutations. Snapshot isolation rejects a
-commit when a key it writes was written after that snapshot. Serializable mode additionally records point reads and
-normalized scan ranges and rejects a post-snapshot write that intersects either. The initial serializable validator
-may conservatively reject additional transactions but may not admit write skew or phantoms forbidden by this rule.
+The target transaction reads from one global snapshot and sees its own buffered mutations. The operational first
+slice captures the global sequence at Begin and rejects a commit when an exact key it writes was written after that
+sequence. It retains each lazily allocated decoded post-checkpoint batch with its already-owned immutable image, so
+Put and Delete history have equal conflict authority without allocating a theoretical key table. A transaction older
+than the retained checkpoint boundary rejects conservatively because compacted tombstones can erase negative
+evidence. An explicit commit group is one atomic co-commit unit: members validate independently against external
+history, while existing deterministic member order resolves overlapping member writes. `Get` still returns the
+latest confirmed value, so fixed-snapshot reads are not yet operational and Milestone 3 remains pending.
+
+Serializable mode will additionally record point reads and normalized scan ranges and reject a post-snapshot write
+that intersects either. The initial serializable validator may conservatively reject additional transactions but may
+not admit write skew or phantoms forbidden by this rule.
 
 Transactions carry caller-visible idempotency identities. A singleton transaction uses that exact identity as its
 immutable batch ID. An explicit group carries a separate caller-stable group ID; group and transaction IDs share one

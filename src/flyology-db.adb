@@ -1787,6 +1787,10 @@ package body Flyology.DB is
 
    type Work_Item is record
       Transaction_ID : Transaction_Identifier := Zero_Transaction_ID;
+      --  Exact Begin-time sequence moved with admitted work. Zero is both the
+      --  empty-database snapshot and vacant-slot reset; the value is runtime
+      --  isolation authority, not a persisted default.
+      Snapshot_At    : Sequence_Number := 0;
       Arena          : Transaction_Arena_Access := null;
       Payload_Length : Interfaces.Unsigned_64 := 0;
       Deadline       : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
@@ -1833,6 +1837,7 @@ package body Flyology.DB is
       Mutations                     : Runtime_Mutation_Array_Access := null;
       Image                         : Shared_Image_Access := null;
    end record;
+   type Runtime_Batch_Array is array (Positive range <>) of Runtime_Batch;
 
    procedure Free_Runtime_Transactions is new
      Ada.Unchecked_Deallocation (Runtime_Transaction_Array, Runtime_Transaction_Array_Access);
@@ -2022,7 +2027,6 @@ package body Flyology.DB is
         Whole_Get_Operation_Access);
    type Seen_Transaction_Array is array (Positive range <>) of Transaction_Identifier;
    type Used_Batch_ID_Array is array (Positive range <>) of Identifier;
-   type History_Image_Array is array (Positive range <>) of Shared_Image_Access;
    type Reserved_Identity_Array is array (Positive range <>) of Identifier;
 
    type Family_LSM_Authority is record
@@ -2093,6 +2097,9 @@ package body Flyology.DB is
         (Head       : Head_Snapshot;
          Generation : Generation_Value;
          Manifest   : Manifests.Manifest;
+         --  Exact authenticated checkpoint replay boundary. History strictly
+         --  after it is retained; an older transaction cannot be validated.
+         History_Boundary : Sequence_Number;
          Stamp      : Engine_Incarnation);
 
       procedure Recover_Batch (Batch : in out Runtime_Batch; Result : out Outcome_Code);
@@ -2210,7 +2217,7 @@ package body Flyology.DB is
       procedure Request_Close;
       procedure Mark_Stopped;
       function History_Length return Natural;
-      procedure Take_History_Image (Index : Positive; Image : out Shared_Image_Access);
+      procedure Take_History_Batch (Index : Positive; Batch : out Runtime_Batch);
       entry Join;
       function Highest return Sequence_Number;
    private
@@ -2233,10 +2240,17 @@ package body Flyology.DB is
       Seen              : Seen_Transaction_Array (1 .. Seen_Capacity) := [others => Zero_Transaction_ID];
       Seen_Count        : Natural := 0;
       Used_Batches      : Used_Batch_ID_Array (1 .. History_Capacity) := [others => Zero_Identifier];
-      History_Images    : History_Image_Array (1 .. History_Capacity) := [others => null];
       History_Count     : Natural := 0;
+      --  Retain exact decoded batch descriptors lazily with their already-owned
+      --  immutable images. They are the post-checkpoint write authority used
+      --  for snapshot conflict checks; no theoretical key table is allocated.
+      History_Batches   : Runtime_Batch_Array (1 .. History_Capacity) := [others => (others => <>)];
       Reserved          : Reserved_Identity_Array (1 .. Reserved_Capacity) := [others => Zero_Identifier];
       Reserved_Count    : Natural := 0;
+      --  Zero is the authenticated root/legacy replay boundary. A nonzero
+      --  boundary comes only from the persisted checkpoint authority and makes
+      --  older snapshots conservatively unverifiable.
+      Retained_History_Boundary : Sequence_Number := 0;
       Uncertain         : Boolean := False;
       Fenced            : Boolean := False;
       Closing           : Boolean := False;
@@ -2251,13 +2265,78 @@ package body Flyology.DB is
         (Head       : Head_Snapshot;
          Generation : Generation_Value;
          Manifest   : Manifests.Manifest;
+         History_Boundary : Sequence_Number;
          Stamp      : Engine_Incarnation) is
       begin
          Current_Head := Head;
          Head_Generation := Generation;
          Current_Manifest := Manifest;
+         Retained_History_Boundary := History_Boundary;
          Incarnation := Stamp;
       end Initialize;
+
+      function Same_History_Key
+        (Candidate : Owned_Mutation;
+         Batch     : Runtime_Batch;
+         Mutation  : Runtime_Mutation) return Boolean
+      is
+      begin
+         if Batch.Image = null
+           or else Candidate.Family /= Mutation.Family
+           or else Candidate.Key_Length /= Mutation.Key_Length
+         then
+            return False;
+         elsif Candidate.Key_Length = 0 then
+            return True;
+         end if;
+         for Offset in Natural range 0 .. Candidate.Key_Length - 1 loop
+            if Flyology.Bytes.Element (Candidate.Payload, Offset + 1)
+              /= Flyology.Bytes.Element (Batch.Image.Data, Mutation.Key_Offset + Offset + 1)
+            then
+               return False;
+            end if;
+         end loop;
+         return True;
+      end Same_History_Key;
+
+      function Has_Write_Conflict
+        (Arena       : Transaction_Arena_Access;
+         Snapshot_At : Sequence_Number) return Boolean
+      is
+      begin
+         if Arena = null or else Snapshot_At < Retained_History_Boundary then
+            return True;
+         end if;
+         for History_Index in Positive range 1 .. History_Count loop
+            declare
+               Batch : Runtime_Batch renames History_Batches (History_Index);
+            begin
+               if Batch.Transactions = null or else Batch.Mutations = null then
+                  return True;
+               end if;
+               for Transaction of Batch.Transactions (1 .. Batch.Transaction_Total) loop
+                  if Transaction.Sequence > Snapshot_At then
+                     for Mutation_Index in
+                       Positive
+                         range Transaction.First_Mutation
+                               .. Transaction.First_Mutation + Transaction.Mutation_Count - 1
+                     loop
+                        for Candidate_Index in Positive range 1 .. Arena.Count loop
+                           if Same_History_Key
+                                (Arena.Mutations (Candidate_Index),
+                                 Batch,
+                                 Batch.Mutations (Mutation_Index))
+                           then
+                              return True;
+                           end if;
+                        end loop;
+                     end loop;
+                  end if;
+               end loop;
+            end;
+         end loop;
+         return False;
+      end Has_Write_Conflict;
 
       procedure Apply_Batch
         (Batch               : in out Runtime_Batch;
@@ -2607,8 +2686,10 @@ package body Flyology.DB is
             end loop;
             History_Count := History_Count + 1;
             Used_Batches (History_Count) := Batch_ID;
-            History_Images (History_Count) := Batch.Image;
-            Batch.Image := null;
+            --  Move the exact lazily allocated descriptor and image into the
+            --  retained suffix. Entry views keep borrowing the same image.
+            History_Batches (History_Count) := Batch;
+            Batch := (others => <>);
          end if;
          Result := Success;
       end Apply_Batch;
@@ -2793,6 +2874,9 @@ package body Flyology.DB is
          then
             Result := Capacity_Exceeded;
             return;
+         elsif Has_Write_Conflict (Txn.Owner.Arena, Txn.Snapshot_At) then
+            Result := Conflict;
+            return;
          end if;
          for Existing in Positive range 1 .. Seen_Count loop
             if Seen (Existing) = Txn.Transaction_ID then
@@ -2835,6 +2919,7 @@ package body Flyology.DB is
          Slots (Selected).Generation := Slots (Selected).Generation + 1;
          Slots (Selected).Order := Queue_Order;
          Slots (Selected).Work.Transaction_ID := Txn.Transaction_ID;
+         Slots (Selected).Work.Snapshot_At := Txn.Snapshot_At;
          Slots (Selected).Work.Payload_Length := Payload_Bytes (Txn);
          Slots (Selected).Work.Arena := Txn.Owner.Arena;
          Txn.Owner.Arena := null;
@@ -2996,6 +3081,15 @@ package body Flyology.DB is
             Result := Capacity_Exceeded;
             return;
          end if;
+         for Offset in Natural range 0 .. Transactions'Length - 1 loop
+            if Has_Write_Conflict
+                 (Transactions (Transactions'First + Offset).Owner.Arena,
+                  Transactions (Transactions'First + Offset).Snapshot_At)
+            then
+               Result := Conflict;
+               return;
+            end if;
+         end loop;
          if Total_Bytes > Current_Manifest.Limits.Maximum_Batch_Payload_Bytes - In_Flight_Bytes
            or else Queue_Order = Interfaces.Unsigned_64'Last
          then
@@ -3032,6 +3126,7 @@ package body Flyology.DB is
                Slots (Selected).Generation := Slots (Selected).Generation + 1;
                Slots (Selected).Order := Queue_Order;
                Slots (Selected).Work.Transaction_ID := Item.Transaction_ID;
+               Slots (Selected).Work.Snapshot_At := Item.Snapshot_At;
                Slots (Selected).Work.Payload_Length := Payload_Bytes (Item);
                Slots (Selected).Work.Arena := Item.Owner.Arena;
                Item.Owner.Arena := null;
@@ -3104,6 +3199,7 @@ package body Flyology.DB is
             exit when not Found;
             Count := Count + 1;
             Items (Count).Transaction_ID := Slots (Selected).Work.Transaction_ID;
+            Items (Count).Snapshot_At := Slots (Selected).Work.Snapshot_At;
             Items (Count).Arena := Slots (Selected).Work.Arena;
             Slots (Selected).Work.Arena := null;
             Items (Count).Payload_Length := Slots (Selected).Work.Payload_Length;
@@ -3124,6 +3220,10 @@ package body Flyology.DB is
             return;
          end if;
          for Left in Commit_Slot range 1 .. Count loop
+            if Has_Write_Conflict (Items (Left).Arena, Items (Left).Snapshot_At) then
+               Result := Conflict;
+               return;
+            end if;
             for Existing in Positive range 1 .. Seen_Count loop
                if Seen (Existing) = Items (Left).Transaction_ID then
                   Result := Conflict;
@@ -3561,14 +3661,14 @@ package body Flyology.DB is
          return History_Count;
       end History_Length;
 
-      procedure Take_History_Image (Index : Positive; Image : out Shared_Image_Access) is
+      procedure Take_History_Batch (Index : Positive; Batch : out Runtime_Batch) is
       begin
-         Image := null;
+         Batch := (others => <>);
          if Index <= History_Count then
-            Image := History_Images (Index);
-            History_Images (Index) := null;
+            Batch := History_Batches (Index);
+            History_Batches (Index) := (others => <>);
          end if;
-      end Take_History_Image;
+      end Take_History_Batch;
 
       entry Join when Stopped and then In_Use_Count = 0 is
       begin
@@ -4356,11 +4456,11 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Object => Engine_State, Name => Engine_State_Access);
 
    procedure Release_State_Images (State : not null Engine_State_Access) is
-      Image : Shared_Image_Access;
+      Batch : Runtime_Batch;
    begin
       for Index in Positive range 1 .. State.Gate.History_Length loop
-         State.Gate.Take_History_Image (Index, Image);
-         Release_Image (Image);
+         State.Gate.Take_History_Batch (Index, Batch);
+         Release_Runtime_Batch (Batch);
       end loop;
       for Index in State.Checkpoint_Images'Range loop
          Release_Image (State.Checkpoint_Images (Index));
@@ -6368,7 +6468,15 @@ package body Flyology.DB is
       State.LSM_Authority := LSM_Authority;
       State.Checkpoint_Images := Checkpoint_Images;
       Checkpoint_Images := [others => null];
-      State.Gate.Initialize (Head, Generation, Manifest, Incarnation);
+      --  A manifest-v2 checkpoint supplies its authenticated replay boundary;
+      --  root and legacy manifests have no compacted-history boundary, so zero
+      --  preserves their full retained suffix authority.
+      State.Gate.Initialize
+        (Head,
+         Generation,
+         Manifest,
+         (if LSM_Authority.Enabled then Sequence_Number (LSM_Authority.Replay_Boundary) else 0),
+         Incarnation);
       if Checkpoint.Manifest /= null then
          State.Gate.Recover_Checkpoint (Checkpoint, State.Checkpoint_Images, Result);
          if Result /= Success then
@@ -7390,6 +7498,7 @@ package body Flyology.DB is
       Txn.Database_ID := Zero_Database_ID;
       Txn.Incarnation := No_Incarnation;
       Txn.Transaction_ID := Zero_Transaction_ID;
+      Txn.Snapshot_At := 0;
    end Reset_Transaction;
 
    procedure Close (Item : in out Database; Result : out Outcome_Code) is
@@ -7453,6 +7562,7 @@ package body Flyology.DB is
          Txn.Database_ID := Head.Database_ID;
          Txn.Incarnation := Lease.State.Gate.Current_Incarnation;
          Txn.Transaction_ID := Transaction_ID;
+         Txn.Snapshot_At := Head.Highest;
       end if;
    exception
       when Storage_Error =>

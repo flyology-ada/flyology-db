@@ -1,5 +1,37 @@
 # Review record
 
+## Accepted operational snapshot write-validation candidate
+
+- Parent: accepted formal snapshot write-validation commit `b32ce26`.
+- Scope: capture the authenticated global sequence at Begin, retain exact decoded post-checkpoint batch descriptors
+  with their already-owned immutable images, and reject a singleton or atomic group when any written family/key was
+  committed later. Admission validation leaves rejected transactions active; the second check immediately before
+  publication consumes already-admitted conflicts. Transactions older than the authenticated checkpoint replay
+  boundary reject conservatively. Groups validate against external history and preserve their established atomic
+  deterministic ordering for overlaps within the group. This unit changes no persisted bytes, provider operation,
+  public signature, retry/certainty mapping, fixed-snapshot read behavior, or serializable predicate policy.
+- Constant-authority audit funnel: a raw added-Ada-line scan found 56 lines containing numeric tokens. Loop/index
+  arithmetic, neutral resets, family-one use, and byte payloads were classified separately from consequential values.
+  The Begin/root zero sentinel, persisted replay-boundary derivation, two-member group fixture, IDs/key bytes, two-task
+  queue depth, 8 MiB native test stack, and two-second test barrier carry adjacent source authority and compatibility
+  comments. No new product default, key/value ceiling, queue capacity, timeout, or persisted-format value remains.
+- Verification: `./tests/scripts/test.sh` passes the root/test/server builds, repository/provenance checks,
+  deterministic memory/files engine and format suites, authenticated client-backed create/commit/Flush/reopen,
+  filesystem subprocess group/manifest/Flush crash recovery, 32 comparative cases, pinned TidesDB 4/4, and all
+  adapter fixtures against clean Object Storage `e8362f72e5edf4cc8eb16e31d1fdbfba74db384b`. The new tests cover exact Put,
+  tombstone, empty-key, disjoint, external group, checkpoint-stale, pre-admission ownership, and two genuinely queued
+  Ada-task commits with exactly one success and one admitted conflict. Warning-strict FSF GNATprove 16.1.0 preserves
+  the selected deterministic boundary at 1,078/1,078 checks (164 flow, 914 prover), with zero warnings, unproved or
+  justified checks, or `pragma Assume`. `./scripts/check-tla.sh` preserves the existing 112,031/286/819-state and
+  23/12/43-obligation lanes and passes the snapshot lane at 336 states/depth 10 and 6/6 obligations, including all
+  checked witnesses and the negative unsafe-commit probe.
+- Findings cycle: the first sweep corrected an incompatible proposal to reject overlapping writes inside an explicit
+  atomic group; existing executable semantics intentionally order those members within one co-commit. Follow-up
+  review added the prepublication check needed for two independently admitted same-snapshot calls, retained tombstones
+  as exact conflict authority, exercised the checkpoint history boundary, and made the model's group exclusion and
+  the runtime's latest-value `Get` limitation explicit. The authority sweep then closed adjacent comments for the
+  replay-boundary sentinel and concurrency geometry. The final sweep finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted formal snapshot write-validation candidate
 
 - Parent: caller-composable first-checkpoint commit `ce462a8`.

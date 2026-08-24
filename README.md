@@ -17,7 +17,9 @@ live coordinator without invalidating family handles or active transactions, and
 later log suffix. An additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a
 bounded completion set, moving one caller-sized unique-buffer token until typed `Finish`; it creates no helper task
 and preserves the synchronous receipt and certainty mapping. Remote-provider qualification, multiple checkpoints,
-compaction, and dynamic family changes remain separate review units.
+compaction, and dynamic family changes remain separate review units. Transactions now capture a Begin-time sequence
+and reject exact written keys changed by later committed history; fixed-snapshot reads and serializable predicates
+remain Milestone 3 work.
 
 ## Durability rule
 

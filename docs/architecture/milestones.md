@@ -8,7 +8,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 0 Foundation | Crate, guide, dependency clone/pin, architecture/format/oracle contracts, runners, provenance | Accepted at `8b9ff8c` |
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
-| 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Write/write validation modeled and proven; production pending |
+| 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Write/write validation operational; snapshot reads/serializable pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Pending |
@@ -26,10 +26,12 @@ operations. Remote-provider matrix qualification and dynamic append-only family 
 accepting Milestone 2. The accepted owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication
 models remain abstract assurance lanes rather than a claimed refinement proof.
 
-Milestone 3 now has a formal-first write/write validation boundary. A transaction captures the global sequence at
-Begin and must prove every written key unchanged since that snapshot from retained exact history. Transactions older
-than the checkpoint history boundary reject conservatively because compacted tombstones can erase negative evidence.
-The production runtime and grouped-commit validation are not yet implemented, so Milestone 3 remains Pending.
+Milestone 3 now has a formal-first and operational write/write validation boundary. A transaction captures the global
+sequence at Begin and must prove every written key unchanged since that snapshot from retained exact history.
+Transactions older than the checkpoint history boundary reject conservatively because compacted tombstones can erase
+negative evidence. Atomic groups validate each member against external committed history and retain their existing
+deterministic intra-group ordering. Fixed-snapshot reads, serializable read/range tracking, and their persisted bounds
+are not yet implemented, so Milestone 3 remains Pending.
 
 The first-LSM work now includes exact/proven manifest-v2 and SST-v1 formats, dynamic operational codecs, manifest-v2
 root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator replacement, and

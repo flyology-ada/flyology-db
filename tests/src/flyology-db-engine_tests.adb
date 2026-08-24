@@ -1277,6 +1277,7 @@ package body Flyology.DB.Engine_Tests is
       Invalid_Item                               : Database;
       Allocation_Item                            : Database;
       Txn                                        : Transaction;
+      Ancient                                    : Transaction;
       Receipt                                    : Commit_Receipt;
       Create_Info                                : Create_Receipt;
       Family_By_ID, Family_By_Name, Stale_Family : Column_Family;
@@ -1347,11 +1348,12 @@ package body Flyology.DB.Engine_Tests is
       Checkpoint_Run_Map                         : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (7, ID (224)), Configure_Checkpoint_Run (2, First_Run_ID)];
       --  Stable caller-owned checkpoint object and transition identities.
-      --  ID 227 belongs to the pre-Flush transaction/handle survival witness;
-      --  all three are operation fixtures, not library-generated defaults.
+      --  IDs 227/228 belong to the pre-Flush survival/history-boundary
+      --  witnesses; all four values are operation fixtures, not defaults.
       Checkpoint_Manifest_ID                     : constant Identifier := ID (225);
       Checkpoint_Transition_ID                   : constant Identifier := ID (226);
       Survivor_Transaction_ID                    : constant Transaction_Identifier := TX_ID (227);
+      Ancient_Transaction_ID                     : constant Transaction_Identifier := TX_ID (228);
 
       procedure Expect_Live_LSM_Authority
         (Target : in out Database; Expected_Replay : Sequence_Number; Context_Text : String)
@@ -1500,6 +1502,8 @@ package body Flyology.DB.Engine_Tests is
       Open_Column_Family (Item, [16#C3#, 16#A8#], Stale_Family, Result);
       Expect (Result, Not_Found, "nonexact family name lookup succeeded");
 
+      Begin_Transaction (Item, Ancient_Transaction_ID, Ancient, Result);
+      Expect (Result, Success, "pre-history-boundary transaction begin failed");
       Begin_Transaction (Item, TX_ID (203), Txn, Result);
       Expect (Result, Success, "family-limit transaction begin failed");
       Put (Item, Txn, Family_By_ID, To_Key ([16#00#, 16#FF#]), To_Value ([1, 2, 3]), Result);
@@ -1673,6 +1677,12 @@ package body Flyology.DB.Engine_Tests is
             Expect (Result, Success, "Flush invalidated a live transaction or family handle");
             Rollback (Txn, Result);
             Expect (Result, Success, "Flush replacement read transaction did not roll back");
+            Delete (Item, Ancient, Family_By_ID, To_Key ([16#EE#]), Result);
+            Expect (Result, Success, "checkpoint-stale transaction could not buffer a disjoint delete");
+            Commit (Item, Ancient, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+            Expect (Result, Conflict, "transaction older than retained checkpoint history was admitted");
+            Rollback (Ancient, Result);
+            Expect (Result, Success, "pre-admission checkpoint conflict consumed its transaction");
          end;
       end;
 
@@ -4469,6 +4479,177 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "resolve-lifecycle database close failed");
    end Test_Resolve_Lifecycle;
 
+   procedure Test_Snapshot_Write_Validation (Backend : not null access Backends.Backend'Class) is
+      Context       : aliased Storage_Context;
+      Item          : aliased Database;
+      First         : aliased Transaction;
+      Second        : aliased Transaction;
+      --  Two members are the minimum atomic group needed to prove that one
+      --  externally conflicted member rejects the whole group. This is test
+      --  geometry, not a product group-capacity default.
+      Group         : Transaction_Array (1 .. 2);
+      Receipt       : Commit_Receipt;
+      Group_Receipts : Commit_Receipt_Array (Group'Range);
+      Result        : Outcome_Code;
+      Before_Batch, Before_Head : Natural;
+      After_Batch, After_Head   : Natural;
+      --  These byte-distinct keys isolate same-key, tombstone, queued-race,
+      --  disjoint, and empty-key authority paths. They are semantic test
+      --  witnesses only and establish no application key policy. IDs 160..175
+      --  and payload bytes 1..10 uniquely label these deterministic operations;
+      --  family 1 is the persisted root-family fixture, not a new default.
+      Same_Key      : constant Key := To_Key ([16#A0#]);
+      Delete_Key    : constant Key := To_Key ([16#A1#]);
+      Queued_Key    : constant Key := To_Key ([16#A2#]);
+      Disjoint_Key  : constant Key := To_Key ([16#A3#]);
+      Empty_History_Key : constant Key := To_Key ([]);
+   begin
+      Bind_Context (Context, Backend, "snapshot-write-validation");
+      Create_DB (Item, Context'Access, DB_ID (160), ID (161), Result);
+      Expect (Result, Success, "snapshot-validation database create failed");
+
+      Begin_Transaction (Item, TX_ID (162), First, Result);
+      Expect (Result, Success, "first same-key transaction begin failed");
+      Begin_Transaction (Item, TX_ID (163), Second, Result);
+      Expect (Result, Success, "second same-key transaction begin failed");
+      Put (Item, First, 1, Same_Key, To_Value ([1]), Result);
+      Put (Item, Second, 1, Same_Key, To_Value ([2]), Result);
+      Commit (Item, First, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "first same-key snapshot commit failed");
+      Commit (Item, Second, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "post-snapshot same-key commit was accepted");
+      Rollback (Second, Result);
+      Expect (Result, Success, "pre-admission snapshot conflict consumed its transaction");
+
+      Begin_Transaction (Item, TX_ID (164), First, Result);
+      Begin_Transaction (Item, TX_ID (165), Second, Result);
+      Delete (Item, First, 1, Delete_Key, Result);
+      Put (Item, Second, 1, Delete_Key, To_Value ([3]), Result);
+      Commit (Item, First, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "snapshot tombstone commit failed");
+      Commit (Item, Second, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "post-snapshot tombstone was forgotten");
+      Rollback (Second, Result);
+      Expect (Result, Success, "tombstone conflict consumed a pre-admission transaction");
+
+      Begin_Transaction (Item, TX_ID (166), First, Result);
+      Begin_Transaction (Item, TX_ID (167), Second, Result);
+      Put (Item, First, 1, Same_Key, To_Value ([4]), Result);
+      Put (Item, Second, 1, Disjoint_Key, To_Value ([5]), Result);
+      Commit (Item, First, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "disjoint snapshot first commit failed");
+      Commit (Item, Second, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "disjoint snapshot second commit was globally serialized");
+
+      Begin_Transaction (Item, TX_ID (168), Group (1), Result);
+      Begin_Transaction (Item, TX_ID (169), Group (2), Result);
+      Put (Item, Group (1), 1, Queued_Key, To_Value ([6]), Result);
+      Put (Item, Group (2), 1, Disjoint_Key, To_Value ([7]), Result);
+      Begin_Transaction (Item, TX_ID (170), First, Result);
+      Put (Item, First, 1, Queued_Key, To_Value ([8]), Result);
+      Commit (Item, First, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "external group-conflict commit failed");
+      Testing.Publication_Counts (Context, Before_Batch, Before_Head);
+      Commit_Group
+        (Item, ID (171), Group, Test_Operation_Timeout, Receipts => Group_Receipts, Result => Result);
+      Expect (Result, Conflict, "group member with an external post-snapshot write was admitted");
+      Testing.Publication_Counts (Context, After_Batch, After_Head);
+      if After_Batch /= Before_Batch or else After_Head /= Before_Head then
+         raise Program_Error with "snapshot-conflicted group changed object storage";
+      end if;
+      for Index in Group'Range loop
+         Rollback (Group (Index), Result);
+         Expect (Result, Success, "pre-admission group conflict consumed a member");
+      end loop;
+
+      Begin_Transaction (Item, TX_ID (172), First, Result);
+      Begin_Transaction (Item, TX_ID (173), Second, Result);
+      Delete (Item, First, 1, Empty_History_Key, Result);
+      Put (Item, Second, 1, Empty_History_Key, To_Value ([1]), Result);
+      Commit (Item, First, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "empty-key tombstone commit failed");
+      Commit (Item, Second, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "empty-key post-snapshot write was accepted");
+      Rollback (Second, Result);
+      Expect (Result, Success, "empty-key conflict consumed a pre-admission transaction");
+
+      Begin_Transaction (Item, TX_ID (174), First, Result);
+      Begin_Transaction (Item, TX_ID (175), Second, Result);
+      Put (Item, First, 1, Queued_Key, To_Value ([9]), Result);
+      Put (Item, Second, 1, Queued_Key, To_Value ([10]), Result);
+      Testing.Pause_Coordinator (Item, Result);
+      Expect (Result, Success, "snapshot queue pause failed");
+      declare
+         task type Commit_Call (Target : not null access Transaction) is
+            --  The harness uses bounded native Ada tasks to create two real
+            --  admitted calls. Eight MiB is the runner-qualified task stack,
+            --  not DB worker geometry or a transaction allocation default.
+            pragma Task_Info (Flyology.Native_Task);
+            pragma Storage_Size (8 * 1024 * 1024);
+            entry Finish (Call_Result : out Outcome_Code);
+         end Commit_Call;
+
+         task body Commit_Call is
+            Local_Receipt : Commit_Receipt;
+            Local_Result  : Outcome_Code;
+         begin
+            Commit
+              (Item,
+               Target.all,
+               Test_Operation_Timeout,
+               Receipt => Local_Receipt,
+               Result  => Local_Result);
+            accept Finish (Call_Result : out Outcome_Code) do
+               Call_Result := Local_Result;
+            end Finish;
+         exception
+            when others =>
+               accept Finish (Call_Result : out Outcome_Code) do
+                  Call_Result := Storage_Failure;
+               end Finish;
+         end Commit_Call;
+
+         First_Call  : Commit_Call (First'Access);
+         Second_Call : Commit_Call (Second'Access);
+         First_Result, Second_Result : Outcome_Code;
+         --  Zero is neutral observation state; the required depth of two is
+         --  derived from the two Commit_Call tasks above, not queue policy.
+         Depth, Query_Depth          : Natural := 0;
+         Query_Result                : Outcome_Code;
+         --  Two seconds bounds only this deterministic queue barrier; the two
+         --  Commit calls retain their independently supplied absolute deadline.
+         Queue_Deadline              : constant Ada.Real_Time.Time :=
+           Ada.Real_Time.Clock + Ada.Real_Time.To_Time_Span (2.0);
+      begin
+         loop
+            Testing.Queue_Depth (Item, Query_Depth, Query_Result);
+            if Query_Result = Success then
+               Depth := Query_Depth;
+            end if;
+            exit when Depth = 2 or else Ada.Real_Time.Clock >= Queue_Deadline;
+            delay Test_Poll_Yield;
+         end loop;
+         Testing.Resume_Coordinator (Item, Result);
+         Expect (Result, Success, "snapshot queue resume failed");
+         First_Call.Finish (First_Result);
+         Second_Call.Finish (Second_Result);
+         if Depth /= 2 then
+            raise Program_Error with "snapshot commits did not reach the admission barrier";
+         elsif not ((First_Result = Success and then Second_Result = Conflict)
+                    or else (First_Result = Conflict and then Second_Result = Success))
+         then
+            raise Program_Error with
+              "queued same-key snapshot commits were not one success/one conflict";
+         end if;
+      end;
+      Rollback (First, Result);
+      Expect (Result, Invalid_State, "admitted first snapshot call remained active");
+      Rollback (Second, Result);
+      Expect (Result, Invalid_State, "admitted second snapshot call remained active");
+      Close (Item, Result);
+      Expect (Result, Success, "snapshot-validation database close failed");
+   end Test_Snapshot_Write_Validation;
+
    procedure Test_Cap_Boundaries (Backend : not null access Backends.Backend'Class) is
       Context     : aliased Storage_Context;
       Item        : Database;
@@ -4837,6 +5018,7 @@ package body Flyology.DB.Engine_Tests is
          Test_Unaccepted_Resolve_Drains_Queued (Store'Access);
          Test_Shared_Context_Synchronization (Store'Access);
          Test_Resolve_Lifecycle (Store'Access);
+         Test_Snapshot_Write_Validation (Store'Access);
          Test_Cap_Boundaries (Store'Access);
       end;
 
@@ -4867,6 +5049,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Dynamic_Mutation_Descriptors (Store'Access, "files-dynamic-mutations", 23);
             Test_Checkpoint_Recovery_Failures (Store'Access);
             Test_Flush_Certainty (Store'Access, "files-flush");
+            Test_Snapshot_Write_Validation (Store'Access);
             Test_Faults (Store'Access, "files-faults", 140);
          end;
          Ada.Directories.Delete_Tree (Root);
