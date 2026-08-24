@@ -52,14 +52,21 @@ history, while existing deterministic member order resolves overlapping member w
 newest buffered mutation first. Otherwise it searches retained exact committed history for the newest value no later
 than the Begin sequence, then falls back to exact checkpoint-base descriptors allocated lazily from authenticated SST
 entry counts. A snapshot older than the retained checkpoint boundary returns `Conflict`; it never substitutes latest
-state or incomplete negative evidence. Milestone 3 remains pending on operational serializable read/range tracking.
+state or incomplete negative evidence.
 
-The formal serializable rule additionally records successful and absent point reads plus normalized scan ranges and
-rejects a post-snapshot write that intersects either. Point and range tracking have independent explicit capacity
-rejection; an observation is never silently omitted. The initial production validator may conservatively reject
-additional transactions but may not admit write skew or phantoms forbidden by this rule. The Ada isolation/range API
-and normalization representation remain intentionally unfrozen. Manifest v3 now freezes persisted independent
-point/range count authority; runtime tracking remains pending.
+The public `Isolation_Level` selects `Snapshot` or `Serializable` explicitly at Begin; the compatibility overload is
+a literal Snapshot call and supplies no public default. A serializable external `Get` retains one lazily allocated
+exact family/key predicate after either a successful or absent read. Duplicate observations deduplicate, own buffered
+Put/Delete reads bypass observation capacity, and allocation or one-over-capacity failure returns
+`Capacity_Exceeded` without partially linking an observation or poisoning the transaction. Commit admission and the
+prepublication recheck reject a post-Begin write intersecting a retained point; atomic groups validate each member's
+points independently against external history. Manifest-v2 databases have no point/range authority, so explicit
+Serializable Begin returns `Unsupported_Format` rather than inventing a ceiling. Manifest v3 supplies the exact
+database-wide point count while the selected family's persisted maximum continues to bound copied key bytes.
+
+The frozen formal rule additionally records normalized scan ranges and rejects intersecting phantoms. Range tracking
+has its own persisted count and must never silently omit a predicate, but the Ada scan/range API and normalization
+representation remain intentionally unfrozen. Milestone 3 therefore remains pending on operational range tracking.
 
 Transactions carry caller-visible idempotency identities. A singleton transaction uses that exact identity as its
 immutable batch ID. An explicit group carries a separate caller-stable group ID; group and transaction IDs share one

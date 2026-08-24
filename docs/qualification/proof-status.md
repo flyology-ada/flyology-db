@@ -133,6 +133,15 @@ does not generate code and continues with partial representation data; this is n
 The dynamic v2/v3 operational decoder, header-first object I/O, runtime allocation, and protected engine state remain
 executable-test boundaries rather than SPARK-proved code.
 
+The operational serializable point-validation candidate preserves the same warning-strict result: 1,084/1,084
+checks, comprising 93 initialization, 522 run-time, 91 assertion, 306 functional-contract, and 72 termination
+checks. Flow analysis discharges 164 and provers discharge 920; maximum successful effort remains 6,890 steps.
+Every selected unit reports zero warnings, unproved or justified checks, and zero `pragma Assume` statements. The
+proved reference model continues to cover serializable point retention and conflict semantics. Production linked
+point ownership, allocation rollback, and protected admission/prepublication scans remain outside the selected SPARK
+units; deterministic memory/files fault, capacity, group, and queued-race tests plus the 44,244-state serializable
+TLC and 10/10 TLAPS gate qualify those executable boundaries. No refinement proof is claimed.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

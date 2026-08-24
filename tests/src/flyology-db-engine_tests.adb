@@ -4776,6 +4776,316 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "snapshot-validation database close failed");
    end Test_Snapshot_Write_Validation;
 
+   procedure Test_Serializable_Point_Validation
+     (Backend : not null access Backends.Backend'Class; Prefix : String)
+   is
+      Context             : aliased Storage_Context;
+      Item                : aliased Database;
+      Reader              : aliased Transaction;
+      Writer              : aliased Transaction;
+      Group               : Transaction_Array (1 .. 2);
+      Receipt             : Commit_Receipt;
+      Group_Receipts      : Commit_Receipt_Array (Group'Range);
+      Create_Info         : Create_Receipt;
+      Result              : Outcome_Code;
+      Data                : Value;
+      --  Two distinct external observations are the smallest ceiling that
+      --  proves deduplication, exact admission, one-over backpressure, and
+      --  own-write bypass. This is persisted test policy, not a DB default.
+      Limits              : constant Database_Limits :=
+        (Default_Limits with delta Maximum_Point_Reads_Per_Transaction => 2);
+      --  Identity namespace 60_000..60_020, key tags C0..CD, and payload tags
+      --  1..16 isolate this deterministic campaign; they are test witnesses,
+      --  not persisted-format tags or application identity/value policy.
+      Database_ID         : constant Database_Identifier := Database_Identifier (Numbered_ID (60_000));
+      Transition_ID       : constant Identifier := Numbered_ID (60_001);
+      --  These byte-distinct keys isolate present, absent, disjoint, capacity,
+      --  allocation, group, and queued-conflict witnesses. Their spelling is
+      --  deterministic corpus geometry and establishes no application policy.
+      Observed_Key        : constant Key := To_Key ([16#C0#]);
+      Absent_Key          : constant Key := To_Key ([16#C1#]);
+      Disjoint_Key        : constant Key := To_Key ([16#C2#]);
+      Snapshot_Marker     : constant Key := To_Key ([16#C3#]);
+      Serializable_Marker : constant Key := To_Key ([16#C4#]);
+      Overflow_Key        : constant Key := To_Key ([16#C5#]);
+      Own_Key             : constant Key := To_Key ([16#C6#]);
+      Fault_Key_A         : constant Key := To_Key ([16#C7#]);
+      Fault_Key_B         : constant Key := To_Key ([16#C8#]);
+      Fault_Key_C         : constant Key := To_Key ([16#C9#]);
+      Fault_Marker        : constant Key := To_Key ([16#CA#]);
+      Group_Marker_A      : constant Key := To_Key ([16#CB#]);
+      Group_Marker_B      : constant Key := To_Key ([16#CC#]);
+      Queue_Marker        : constant Key := To_Key ([16#CD#]);
+   begin
+      Bind_Context (Context, Backend, Prefix);
+      Create
+        (Item,
+         Context'Access,
+         Database_ID,
+         Manifest_ID_For (Transition_ID),
+         Transition_ID,
+         Limits,
+         Default_Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "serializable-point database create failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_002), Writer, Result);
+      Expect (Result, Success, "serializable seed begin failed");
+      Put (Item, Writer, 1, Observed_Key, To_Value ([1]), Result);
+      Expect (Result, Success, "serializable seed buffer failed");
+      Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "serializable seed commit failed");
+
+      --  The compatibility overload is a literal Snapshot transaction and
+      --  therefore does not consume the armed point-allocation fault.
+      Begin_Transaction (Item, Numbered_TX_ID (60_003), Reader, Result);
+      Expect (Result, Success, "snapshot compatibility begin failed");
+      Set_Test_Allocation_Fault (Point_Read_Node_Allocation);
+      Get (Item, Reader, 1, Observed_Key, Data, Result);
+      if Result /= Success or else Data /= To_Value ([1]) then
+         raise Program_Error with "snapshot compatibility read changed";
+      end if;
+      Rollback (Reader, Result);
+      Expect (Result, Success, "snapshot compatibility rollback failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_004), Serializable, Reader, Result);
+      Expect (Result, Success, "explicit serializable begin failed");
+      Get (Item, Reader, 1, Observed_Key, Data, Result);
+      if Result /= Capacity_Exceeded or else Data.Length /= 0 then
+         raise Program_Error with "snapshot read consumed serializable allocation fault";
+      end if;
+      Get (Item, Reader, 1, Observed_Key, Data, Result);
+      if Result /= Success or else Data /= To_Value ([1]) then
+         raise Program_Error with "serializable retry after node fault failed";
+      end if;
+      Rollback (Reader, Result);
+      Expect (Result, Success, "serializable fault-probe rollback failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_005), Reader, Result);
+      Expect (Result, Success, "snapshot control reader begin failed");
+      Get (Item, Reader, 1, Observed_Key, Data, Result);
+      Expect (Result, Success, "snapshot control read failed");
+      Put (Item, Reader, 1, Snapshot_Marker, To_Value ([2]), Result);
+      Expect (Result, Success, "snapshot control marker failed");
+      Begin_Transaction (Item, Numbered_TX_ID (60_006), Writer, Result);
+      Expect (Result, Success, "snapshot control writer begin failed");
+      Put (Item, Writer, 1, Observed_Key, To_Value ([3]), Result);
+      Expect (Result, Success, "snapshot control writer buffer failed");
+      Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "snapshot control writer failed");
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "snapshot point read became a serializable conflict");
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_007), Serializable, Reader, Result);
+      Expect (Result, Success, "present-point reader begin failed");
+      Get (Item, Reader, 1, Observed_Key, Data, Result);
+      if Result /= Success or else Data /= To_Value ([3]) then
+         raise Program_Error with "serializable present read failed";
+      end if;
+      Put (Item, Reader, 1, Serializable_Marker, To_Value ([4]), Result);
+      Expect (Result, Success, "present-point marker buffer failed");
+      Begin_Transaction (Item, Numbered_TX_ID (60_008), Writer, Result);
+      Expect (Result, Success, "present-point writer begin failed");
+      Put (Item, Writer, 1, Observed_Key, To_Value ([5]), Result);
+      Expect (Result, Success, "present-point writer buffer failed");
+      Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "present-point conflicting writer failed");
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "present serializable predicate was not validated");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "present-point conflict consumed transaction");
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_009), Serializable, Reader, Result);
+      Expect (Result, Success, "absent-point reader begin failed");
+      Get (Item, Reader, 1, Absent_Key, Data, Result);
+      if Result /= Not_Found or else Data.Length /= 0 then
+         raise Program_Error with "serializable absent read failed";
+      end if;
+      Put (Item, Reader, 1, Serializable_Marker, To_Value ([6]), Result);
+      Expect (Result, Success, "absent-point marker buffer failed");
+      Begin_Transaction (Item, Numbered_TX_ID (60_010), Writer, Result);
+      Expect (Result, Success, "absent-point writer begin failed");
+      Put (Item, Writer, 1, Absent_Key, To_Value ([7]), Result);
+      Expect (Result, Success, "absent-point writer buffer failed");
+      Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "absent-point conflicting writer failed");
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Conflict, "absent serializable predicate was not validated");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "absent-point conflict consumed transaction");
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_011), Serializable, Reader, Result);
+      Expect (Result, Success, "disjoint serializable reader begin failed");
+      Get (Item, Reader, 1, Observed_Key, Data, Result);
+      Expect (Result, Success, "disjoint serializable read failed");
+      Put (Item, Reader, 1, Serializable_Marker, To_Value ([8]), Result);
+      Expect (Result, Success, "disjoint serializable marker failed");
+      Begin_Transaction (Item, Numbered_TX_ID (60_012), Writer, Result);
+      Expect (Result, Success, "disjoint serializable writer begin failed");
+      Put (Item, Writer, 1, Disjoint_Key, To_Value ([9]), Result);
+      Expect (Result, Success, "disjoint serializable writer buffer failed");
+      Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "disjoint serializable writer failed");
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "disjoint serializable transaction was globally serialized");
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_013), Serializable, Reader, Result);
+      Expect (Result, Success, "capacity reader begin failed");
+      Get (Item, Reader, 1, Observed_Key, Data, Result);
+      Expect (Result, Success, "capacity first point failed");
+      Get (Item, Reader, 1, Observed_Key, Data, Result);
+      Expect (Result, Success, "duplicate point consumed another slot");
+      Get (Item, Reader, 1, Absent_Key, Data, Result);
+      Expect (Result, Success, "capacity exact second point failed");
+      Get (Item, Reader, 1, Overflow_Key, Data, Result);
+      if Result /= Capacity_Exceeded or else Data.Length /= 0 then
+         raise Program_Error with "one-over point observation was not rejected exactly";
+      end if;
+      Put (Item, Reader, 1, Own_Key, To_Value ([10]), Result);
+      Expect (Result, Success, "own-write buffer failed at point capacity");
+      Get (Item, Reader, 1, Own_Key, Data, Result);
+      if Result /= Success or else Data /= To_Value ([10]) then
+         raise Program_Error with "own-write read consumed point capacity";
+      end if;
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "capacity rejection poisoned serializable transaction");
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_014), Serializable, Reader, Result);
+      Expect (Result, Success, "allocation-fault reader begin failed");
+      Set_Test_Allocation_Fault (Point_Read_Node_Allocation);
+      Get (Item, Reader, 1, Fault_Key_A, Data, Result);
+      Expect (Result, Capacity_Exceeded, "point-node allocation failure was misclassified");
+      Get (Item, Reader, 1, Fault_Key_A, Data, Result);
+      Expect (Result, Not_Found, "point-node rollback did not permit exact retry");
+      Set_Test_Allocation_Fault (Point_Read_Key_Allocation);
+      Get (Item, Reader, 1, Fault_Key_B, Data, Result);
+      Expect (Result, Capacity_Exceeded, "point-key allocation failure was misclassified");
+      Get (Item, Reader, 1, Fault_Key_B, Data, Result);
+      Expect (Result, Not_Found, "point-key rollback did not permit exact retry");
+      Get (Item, Reader, 1, Fault_Key_C, Data, Result);
+      Expect (Result, Capacity_Exceeded, "failed point insertion consumed the wrong capacity");
+      Put (Item, Reader, 1, Fault_Marker, To_Value ([11]), Result);
+      Expect (Result, Success, "allocation-fault marker buffer failed");
+      Commit (Item, Reader, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "allocation failure poisoned serializable transaction");
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_015), Serializable, Group (1), Result);
+      Expect (Result, Success, "serializable group reader begin failed");
+      Get (Item, Group (1), 1, Observed_Key, Data, Result);
+      Expect (Result, Success, "serializable group point read failed");
+      Put (Item, Group (1), 1, Group_Marker_A, To_Value ([12]), Result);
+      Expect (Result, Success, "serializable group first marker failed");
+      Begin_Transaction (Item, Numbered_TX_ID (60_016), Group (2), Result);
+      Expect (Result, Success, "serializable group second begin failed");
+      Put (Item, Group (2), 1, Group_Marker_B, To_Value ([13]), Result);
+      Expect (Result, Success, "serializable group second marker failed");
+      Begin_Transaction (Item, Numbered_TX_ID (60_017), Writer, Result);
+      Expect (Result, Success, "serializable group writer begin failed");
+      Put (Item, Writer, 1, Observed_Key, To_Value ([14]), Result);
+      Expect (Result, Success, "serializable group writer buffer failed");
+      Commit (Item, Writer, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "group predicate conflicting writer failed");
+      Commit_Group
+        (Item,
+         Numbered_ID (60_018),
+         Group,
+         Test_Operation_Timeout,
+         Receipts => Group_Receipts,
+         Result   => Result);
+      Expect (Result, Conflict, "serializable group member predicate was not validated");
+      for Index in Group'Range loop
+         Rollback (Group (Index), Result);
+         Expect (Result, Success, "serializable group conflict consumed a member");
+      end loop;
+
+      Begin_Transaction (Item, Numbered_TX_ID (60_019), Serializable, Reader, Result);
+      Expect (Result, Success, "queued serializable reader begin failed");
+      Get (Item, Reader, 1, Observed_Key, Data, Result);
+      Expect (Result, Success, "queued serializable point read failed");
+      Put (Item, Reader, 1, Queue_Marker, To_Value ([15]), Result);
+      Expect (Result, Success, "queued serializable marker failed");
+      Begin_Transaction (Item, Numbered_TX_ID (60_020), Writer, Result);
+      Expect (Result, Success, "queued predicate writer begin failed");
+      Put (Item, Writer, 1, Observed_Key, To_Value ([16]), Result);
+      Expect (Result, Success, "queued predicate writer buffer failed");
+      Testing.Pause_Coordinator (Item, Result);
+      Expect (Result, Success, "serializable queue pause failed");
+      declare
+         task type Commit_Call (Target : not null access Transaction) is
+            --  Eight MiB is the runner-qualified task stack used to create
+            --  admitted ordering witnesses, not DB task or allocation policy.
+            pragma Task_Info (Flyology.Native_Task);
+            pragma Storage_Size (8 * 1024 * 1024);
+            entry Finish (Call_Result : out Outcome_Code);
+         end Commit_Call;
+
+         task body Commit_Call is
+            Local_Receipt : Commit_Receipt;
+            Local_Result  : Outcome_Code;
+         begin
+            Commit
+              (Item, Target.all, Test_Operation_Timeout, Receipt => Local_Receipt, Result => Local_Result);
+            accept Finish (Call_Result : out Outcome_Code) do
+               Call_Result := Local_Result;
+            end Finish;
+         exception
+            when others =>
+               accept Finish (Call_Result : out Outcome_Code) do
+                  Call_Result := Storage_Failure;
+               end Finish;
+         end Commit_Call;
+
+         Writer_Call    : Commit_Call (Writer'Access);
+         Depth          : Natural := 0;
+         Query_Result   : Outcome_Code;
+         --  Two seconds bounds only each deterministic queue barrier; both
+         --  Commit calls retain their independently supplied deadlines.
+         Queue_Deadline : constant Duration := 2.0;
+      begin
+         declare
+            Deadline : constant Ada.Real_Time.Time :=
+              Ada.Real_Time.Clock + Ada.Real_Time.To_Time_Span (Queue_Deadline);
+         begin
+            loop
+               Testing.Queue_Depth (Item, Depth, Query_Result);
+               exit when (Query_Result = Success and then Depth = 1) or else Ada.Real_Time.Clock >= Deadline;
+               delay Test_Poll_Yield;
+            end loop;
+         end;
+         if Depth /= 1 then
+            Testing.Resume_Coordinator (Item, Result);
+            Writer_Call.Finish (Result);
+            raise Program_Error with "conflicting writer did not reach serializable queue barrier";
+         end if;
+         declare
+            Reader_Call                  : Commit_Call (Reader'Access);
+            Writer_Result, Reader_Result : Outcome_Code;
+            Deadline                     : constant Ada.Real_Time.Time :=
+              Ada.Real_Time.Clock + Ada.Real_Time.To_Time_Span (Queue_Deadline);
+         begin
+            loop
+               Testing.Queue_Depth (Item, Depth, Query_Result);
+               exit when (Query_Result = Success and then Depth = 2) or else Ada.Real_Time.Clock >= Deadline;
+               delay Test_Poll_Yield;
+            end loop;
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "serializable queue resume failed");
+            Writer_Call.Finish (Writer_Result);
+            Reader_Call.Finish (Reader_Result);
+            if Depth /= 2 then
+               raise Program_Error with "serializable reader did not reach queue barrier";
+            end if;
+            Expect (Writer_Result, Success, "queued predicate writer failed");
+            Expect (Reader_Result, Conflict, "prepublication point validation was omitted");
+         end;
+      end;
+
+      Close (Item, Result);
+      Expect (Result, Success, "serializable-point database close failed");
+   end Test_Serializable_Point_Validation;
+
    procedure Test_Cap_Boundaries (Backend : not null access Backends.Backend'Class) is
       Context     : aliased Storage_Context;
       Item        : Database;
@@ -5145,6 +5455,7 @@ package body Flyology.DB.Engine_Tests is
          Test_Shared_Context_Synchronization (Store'Access);
          Test_Resolve_Lifecycle (Store'Access);
          Test_Snapshot_Write_Validation (Store'Access);
+         Test_Serializable_Point_Validation (Store'Access, "memory-serializable-points");
          Test_Cap_Boundaries (Store'Access);
       end;
 
@@ -5176,6 +5487,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Checkpoint_Recovery_Failures (Store'Access);
             Test_Flush_Certainty (Store'Access, "files-flush");
             Test_Snapshot_Write_Validation (Store'Access);
+            Test_Serializable_Point_Validation (Store'Access, "files-serializable-points");
             Test_Faults (Store'Access, "files-faults", 140);
          end;
          Ada.Directories.Delete_Tree (Root);

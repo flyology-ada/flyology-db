@@ -1,5 +1,53 @@
 # Review record
 
+## Accepted operational serializable point-validation candidate
+
+- Parent: manifest-v3 serializable-limit commit `e6043cf`.
+- Scope and compatibility: add public runtime-only `Isolation_Level` and an explicit-isolation
+  `Begin_Transaction` overload. The existing overload is a literal Snapshot call, so existing source and behavior
+  remain unchanged and no public default is introduced. Serializable Begin rejects manifest-v1/v2 authority as
+  `Unsupported_Format`; it never supplies a fallback count or migrates persisted state. External successful and
+  absent `Get` calls retain exact family/key predicates; duplicates deduplicate and own Put/Delete reads bypass
+  observation capacity, matching the accepted formal algorithm. Normalized scan/range tracking remains a separate
+  unit.
+- Allocation and ownership: each new distinct point is one lazily allocated transaction-owned node whose key length
+  is already bounded by the selected family's persisted `Max_Key_Bytes`. The database's persisted point count is the
+  only node-count authority; there is no chunk size, global key ceiling, or eager full-capacity allocation. A node
+  and its exact key are completely constructed before linkage. Count exhaustion, node allocation failure, or key
+  allocation failure returns `Capacity_Exceeded`, leaves the set unchanged, clears returned data, and keeps the
+  transaction active. Arena rollback, failed pre-admission commit, terminal consumption, and finalization release the
+  complete list without retaining caller bytes.
+- Conflict and concurrency: admission and prepublication validation scan every post-Begin committed mutation against
+  both the write set and retained point set. Group members validate independently against external history and retain
+  existing deterministic intra-group ordering. The coordinator owns the arena after admission, so protected scans
+  cannot race caller mutation; no helper task, new completion slot, persisted byte, storage request, or publication
+  certainty rule is added.
+- Constants audit: 518 added Ada lines produced 167 raw literal/default matches and 21 constant declarations. Three
+  declarations are a copied result and absolute deadlines derived from the documented queue duration. The remaining
+  18 declarations are the persisted two-point test limit, isolated test identities/keys, and the queue duration;
+  adjacent comments classify their corpus purpose and authority. Routine loops, one-based indexing, increments, and
+  vacant zero/null state were excluded from findings. The inline two-member atomic group and runner-qualified 8 MiB
+  task stack are documented test geometry. No production capacity, byte ceiling, timeout, retry, format tag, or
+  default was introduced, and no constant-policy decision remains unresolved.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository/provenance checks, deterministic
+  format/policy/model and memory/files engine tests, authenticated client-backed create/commit/Flush/reopen,
+  filesystem subprocess crash/recovery, 32 comparative cases, pinned TidesDB 4/4, and every adapter fixture against
+  clean Object Storage `e8362f72e5edf4cc8eb16e31d1fdbfba74db384b`. New memory/files witnesses cover
+  snapshot compatibility, present and absent conflicts, disjoint success, duplicate/exact/one-over capacity,
+  own-write bypass, node/key allocation rollback, group rejection, and a writer-first queued prepublication race.
+  `./scripts/check-tla.sh` preserves all lanes and passes the serializable 44,244-state/10-obligation gate.
+  Warning-strict FSF GNATprove 16.1.0 proves 1,084/1,084 selected-unit checks (164 flow, 920 prover; maximum 6,890
+  steps), with zero warnings, unproved/justified checks, or `pragma Assume` in analyzed units. Public leading-style
+  GNATdoc HTML renders the new enum literals, overload contract, exact parameter descriptions, and updated `Get`
+  behavior; a warning run reports no undocumented element on those new/modified entities. Existing repository and
+  dependency documentation warnings remain outside this unit.
+- Findings cycle: the first sweep rejected eager full-ceiling descriptor allocation in favor of one exact node per
+  observed point, required value-copy failure to occur before point publication, and kept group-internal ordering
+  outside external-history validation. The executable-test sweep found missing setup-result assertions and tightened
+  every Begin/Get/Put oracle. The formatting sweep removed project-wide mechanical churn and corrected one token
+  spacing failure exposed by the authoritative runner. Follow-up API, ownership, concurrency, bounds, constants,
+  format, certainty, test, and proof review finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted manifest-v3 serializable-limit candidate
 
 - Parent: formal serializable-validation commit `06741c7`.

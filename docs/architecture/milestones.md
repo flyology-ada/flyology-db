@@ -8,7 +8,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 0 Foundation | Crate, guide, dependency clone/pin, architecture/format/oracle contracts, runners, provenance | Accepted at `8b9ff8c` |
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
-| 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot writes/point reads operational; serializable pending |
+| 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot and serializable point validation operational; ranges pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Pending |
@@ -33,9 +33,12 @@ negative evidence. Atomic groups validate each member against external committed
 deterministic intra-group ordering. Fixed-snapshot point reads are operational: own Put/Delete wins, retained exact
 history selects the newest committed version no later than Begin, and an exact lazily allocated checkpoint base
 preserves compacted values after suffix replacement. The serializable point/range conflict and independent
-backpressure rules are now frozen in a separate TLC/TLAPS lane. Manifest v3 persists caller-selected independent
-point/range counts, while the Ada API, scan normalization, and runtime tracking remain unimplemented, so Milestone 3
-remains Pending.
+backpressure rules are frozen in a separate TLC/TLAPS lane. Manifest v3 persists caller-selected independent
+point/range counts. The additive public isolation overload now makes Serializable explicit, and production `Get`
+lazily retains distinct present/absent external points under the persisted count. Admission and prepublication
+validation cover singleton and grouped commits; snapshot callers and own-write reads retain their prior behavior.
+The Ada scan API, range normalization, and runtime range tracking remain unimplemented, so Milestone 3 remains
+Pending.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
@@ -47,6 +50,12 @@ serializable mode. A commit rejects when a post-Begin committed write intersects
 retained ranges. Independent point/range capacity rejection is safety backpressure: reaching a bound never drops an
 observation. The finite one-slot model values are qualification geometry rather than product defaults; production
 capacities are persisted caller-authority decisions in manifest v3, with no library default.
+
+The production point validator maps that rule directly: linked observations contain the exact validated family/key
+bytes and are allocated only after an external read has produced `Success` or `Not_Found`. A node is fully built
+before it becomes transaction-owned; allocation failure and one-over capacity leave the observation set unchanged.
+Distinct point predicates participate in both admission and prepublication conflict checks, while duplicates and
+read-your-writes consume no additional slot. Normalized range predicates remain the next isolation unit.
 
 The first-LSM work now includes current manifest-v3, readable manifest-v2, and SST-v1 formats, dynamic operational
 codecs, manifest-v3 root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator

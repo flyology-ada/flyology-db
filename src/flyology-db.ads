@@ -125,6 +125,14 @@ package Flyology.DB is
       Storage_Failure,
       Stale_Writer);
 
+   --  Transaction isolation selected explicitly at Begin. Snapshot preserves
+   --  fixed-snapshot write/write validation; Serializable additionally retains
+   --  exact read predicates for commit-time validation. Enumeration positions
+   --  are runtime-only and are never persisted or placed on the wire.
+   --  @enum Snapshot Fixed snapshot plus write/write validation only
+   --  @enum Serializable Snapshot validation plus retained read predicates
+   type Isolation_Level is (Snapshot, Serializable);
+
    type Storage_Context is limited private;
    type Database is limited private;
    type Transaction is limited private;
@@ -210,6 +218,22 @@ package Flyology.DB is
       Txn            : out Transaction;
       Result         : out Outcome_Code);
 
+   --  Begin one bounded transaction at an explicit isolation level. A
+   --  Serializable transaction retains distinct external point observations
+   --  up to the database's persisted limit; a legacy manifest without that
+   --  authority is rejected as Unsupported_Format. No isolation is inferred.
+   --  @param Item Open database whose current sequence and persisted limits are used
+   --  @param Transaction_ID Caller-stable never-reused transaction identity
+   --  @param Isolation Explicit runtime isolation selection
+   --  @param Txn Vacant transaction output populated only on Success
+   --  @param Result Success or the exact lifecycle, format, identity, or capacity outcome
+   procedure Begin_Transaction
+     (Item           : in out Database;
+      Transaction_ID : Transaction_Identifier;
+      Isolation      : Isolation_Level;
+      Txn            : out Transaction;
+      Result         : out Outcome_Code);
+
    --  Open one stable family handle by its persisted numeric ID.
    procedure Open_Column_Family
      (Item : in out Database; ID : Column_Family_ID; Family : out Column_Family; Result : out Outcome_Code);
@@ -221,7 +245,16 @@ package Flyology.DB is
    --  Read the newest buffered mutation first, then the newest committed value
    --  at the transaction's fixed Begin snapshot, into owned bytes. Conflict
    --  means the requested snapshot predates retained checkpoint history. Data
-   --  is empty on every non-Success outcome.
+   --  is empty on every non-Success outcome. A Serializable external read
+   --  retains its exact family/key predicate on Success or Not_Found;
+   --  Capacity_Exceeded means a new predicate could not be retained, never
+   --  that the observation was silently omitted.
+   --  @param Item Open database that owns committed and checkpoint read authority
+   --  @param Txn Active transaction whose fixed snapshot and observations are used
+   --  @param Family Valid handle selecting persisted family limits and identity
+   --  @param Item_Key Exact arbitrary-byte key borrowed only for this call
+   --  @param Data Owned value bytes, empty on every non-Success outcome
+   --  @param Result Success, Not_Found, or the exact validation/capacity/lifecycle outcome
    procedure Get
      (Item     : in out Database;
       Txn      : in out Transaction;
@@ -507,6 +540,8 @@ private
      (No_Allocation_Fault,
       Transaction_Arena_Allocation,
       Transaction_Payload_Allocation,
+      Point_Read_Node_Allocation,
+      Point_Read_Key_Allocation,
       Batch_Descriptor_Allocation,
       Storage_Sink_Allocation,
       Recovery_History_Allocation,
@@ -579,10 +614,24 @@ private
    type Owned_Mutation_Array is array (Positive range <>) of Owned_Mutation;
    type Owned_Mutation_Array_Access is access Owned_Mutation_Array;
 
+   type Owned_Point_Read;
+   type Owned_Point_Read_Access is access Owned_Point_Read;
+   --  One lazily allocated exact serializable point predicate. Family and key
+   --  are copied from a validated Get; vacant initializers have no persisted or
+   --  application-policy meaning. Next is transaction-owned linkage only.
+   type Owned_Point_Read is record
+      Family     : Column_Family_ID := Column_Family_ID'First;
+      Key_Length : Natural := 0;
+      Key        : Flyology.Bytes.Unbounded_Bytes;
+      Next       : Owned_Point_Read_Access := null;
+   end record;
+
    type Transaction_Arena is limited record
-      Mutations  : Owned_Mutation_Array_Access := null;
-      Count      : Natural := 0;
-      Bytes_Used : Interfaces.Unsigned_64 := 0;
+      Mutations        : Owned_Mutation_Array_Access := null;
+      Count            : Natural := 0;
+      Bytes_Used       : Interfaces.Unsigned_64 := 0;
+      Point_Reads      : Owned_Point_Read_Access := null;
+      Point_Read_Count : Interfaces.Unsigned_32 := 0;
    end record;
    type Transaction_Arena_Access is access Transaction_Arena;
 
@@ -601,8 +650,13 @@ private
       --  Snapshot sequence is captured from authenticated HEAD at Begin. Zero
       --  is the valid empty-database snapshot and the vacant reset value; it
       --  controls write/write validation but is not a new persisted field.
-      Snapshot_At    : Sequence_Number := 0;
-      Owner          : Transaction_Arena_Owner;
+      Snapshot_At : Sequence_Number := 0;
+      --  Snapshot and zero point capacity are vacant/reset state only. Begin
+      --  assigns the caller-selected runtime mode and the exact persisted
+      --  observation ceiling; neither field is a public default or persisted.
+      Isolation        : Isolation_Level := Snapshot;
+      Point_Read_Limit : Interfaces.Unsigned_32 := 0;
+      Owner            : Transaction_Arena_Owner;
    end record;
 
    --  In-memory vacant HEADs use the current persisted version and canonical

@@ -98,6 +98,8 @@ package body Flyology.DB is
    procedure Free_Shared_Image is new Ada.Unchecked_Deallocation (Shared_Image_Record, Shared_Image_Access);
    procedure Free_Owned_Mutations is new
      Ada.Unchecked_Deallocation (Owned_Mutation_Array, Owned_Mutation_Array_Access);
+   procedure Free_Owned_Point_Read is new
+     Ada.Unchecked_Deallocation (Owned_Point_Read, Owned_Point_Read_Access);
    procedure Free_Transaction_Arena is new
      Ada.Unchecked_Deallocation (Transaction_Arena, Transaction_Arena_Access);
 
@@ -224,8 +226,15 @@ package body Flyology.DB is
    end Destroy_Shared_Image;
 
    procedure Release_Arena (Arena : in out Transaction_Arena_Access) is
+      Point : Owned_Point_Read_Access;
    begin
       if Arena /= null then
+         while Arena.Point_Reads /= null loop
+            Point := Arena.Point_Reads;
+            Arena.Point_Reads := Point.Next;
+            Point.Next := null;
+            Free_Owned_Point_Read (Point);
+         end loop;
          Free_Owned_Mutations (Arena.Mutations);
          Image_Accounting.Record_Arena_Release;
          Free_Transaction_Arena (Arena);
@@ -2319,10 +2328,32 @@ package body Flyology.DB is
          return True;
       end Same_History_Key;
 
-      function Has_Write_Conflict
+      function Same_History_Key
+        (Candidate : Owned_Point_Read; Batch : Runtime_Batch; Mutation : Runtime_Mutation) return Boolean is
+      begin
+         if Batch.Image = null
+           or else Candidate.Family /= Mutation.Family
+           or else Candidate.Key_Length /= Mutation.Key_Length
+         then
+            return False;
+         elsif Candidate.Key_Length = 0 then
+            return True;
+         end if;
+         for Offset in Natural range 0 .. Candidate.Key_Length - 1 loop
+            if Flyology.Bytes.Element (Candidate.Key, Offset + 1)
+              /= Flyology.Bytes.Element (Batch.Image.Data, Mutation.Key_Offset + Offset + 1)
+            then
+               return False;
+            end if;
+         end loop;
+         return True;
+      end Same_History_Key;
+
+      function Has_Transaction_Conflict
         (Arena       : Transaction_Arena_Access;
          Snapshot_At : Sequence_Number) return Boolean
       is
+         Point : Owned_Point_Read_Access;
       begin
          if Arena = null or else Snapshot_At < Retained_History_Boundary then
             return True;
@@ -2350,13 +2381,20 @@ package body Flyology.DB is
                               return True;
                            end if;
                         end loop;
+                        Point := Arena.Point_Reads;
+                        while Point /= null loop
+                           if Same_History_Key (Point.all, Batch, Batch.Mutations (Mutation_Index)) then
+                              return True;
+                           end if;
+                           Point := Point.Next;
+                        end loop;
                      end loop;
                   end if;
                end loop;
             end;
          end loop;
          return False;
-      end Has_Write_Conflict;
+      end Has_Transaction_Conflict;
 
       procedure Apply_Batch
         (Batch               : in out Runtime_Batch;
@@ -2904,7 +2942,7 @@ package body Flyology.DB is
          then
             Result := Capacity_Exceeded;
             return;
-         elsif Has_Write_Conflict (Txn.Owner.Arena, Txn.Snapshot_At) then
+         elsif Has_Transaction_Conflict (Txn.Owner.Arena, Txn.Snapshot_At) then
             Result := Conflict;
             return;
          end if;
@@ -3112,7 +3150,7 @@ package body Flyology.DB is
             return;
          end if;
          for Offset in Natural range 0 .. Transactions'Length - 1 loop
-            if Has_Write_Conflict
+            if Has_Transaction_Conflict
                  (Transactions (Transactions'First + Offset).Owner.Arena,
                   Transactions (Transactions'First + Offset).Snapshot_At)
             then
@@ -3250,7 +3288,7 @@ package body Flyology.DB is
             return;
          end if;
          for Left in Commit_Slot range 1 .. Count loop
-            if Has_Write_Conflict (Items (Left).Arena, Items (Left).Snapshot_At) then
+            if Has_Transaction_Conflict (Items (Left).Arena, Items (Left).Snapshot_At) then
                Result := Conflict;
                return;
             end if;
@@ -7703,6 +7741,8 @@ package body Flyology.DB is
       Txn.Incarnation := No_Incarnation;
       Txn.Transaction_ID := Zero_Transaction_ID;
       Txn.Snapshot_At := 0;
+      Txn.Isolation := Snapshot;
+      Txn.Point_Read_Limit := 0;
    end Reset_Transaction;
 
    procedure Close (Item : in out Database; Result : out Outcome_Code) is
@@ -7728,14 +7768,26 @@ package body Flyology.DB is
       Txn            : out Transaction;
       Result         : out Outcome_Code)
    is
-      Lease          : Lifecycle_Lease;
-      Head           : Head_Snapshot;
-      Generation     : Generation_Value;
-      Uncertain      : Boolean;
-      Fenced         : Boolean;
-      Mutation_Limit : Interfaces.Unsigned_32;
-      Payload_Limit  : Interfaces.Unsigned_64;
-      Mutations      : Owned_Mutation_Array_Access := null;
+   begin
+      Begin_Transaction (Item, Transaction_ID, Snapshot, Txn, Result);
+   end Begin_Transaction;
+
+   procedure Begin_Transaction
+     (Item           : in out Database;
+      Transaction_ID : Transaction_Identifier;
+      Isolation      : Isolation_Level;
+      Txn            : out Transaction;
+      Result         : out Outcome_Code)
+   is
+      Lease            : Lifecycle_Lease;
+      Head             : Head_Snapshot;
+      Generation       : Generation_Value;
+      Uncertain        : Boolean;
+      Fenced           : Boolean;
+      Mutation_Limit   : Interfaces.Unsigned_32;
+      Payload_Limit    : Interfaces.Unsigned_64;
+      Point_Read_Limit : Interfaces.Unsigned_32;
+      Mutations        : Owned_Mutation_Array_Access := null;
    begin
       Reset_Transaction (Txn);
       if Is_Zero (Transaction_ID) then
@@ -7749,7 +7801,11 @@ package body Flyology.DB is
       Lease.State.Gate.Transaction_Available (Transaction_ID, Result);
       if Result = Success then
          Lease.State.Gate.Transaction_Limits (Mutation_Limit, Payload_Limit);
-         if Mutation_Limit = 0
+         Point_Read_Limit := Lease.State.LSM_Authority.Maximum_Point_Reads_Per_Transaction;
+         if Isolation = Serializable and then Point_Read_Limit = 0 then
+            Result := Unsupported_Format;
+            return;
+         elsif Mutation_Limit = 0
            or else Interfaces.Unsigned_64 (Mutation_Limit) > Interfaces.Unsigned_64 (Natural'Last)
            or else Payload_Limit = 0
          then
@@ -7759,7 +7815,12 @@ package body Flyology.DB is
          Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
          Allocation_Faults.Check (Transaction_Arena_Allocation);
          Mutations := new Owned_Mutation_Array (1 .. Natural (Mutation_Limit));
-         Txn.Owner.Arena := new Transaction_Arena'(Mutations => Mutations, Count => 0, Bytes_Used => 0);
+         Txn.Owner.Arena :=
+           new Transaction_Arena'
+             (Mutations => Mutations,
+              Count => 0,
+              Bytes_Used => 0,
+              others => <>);
          Mutations := null;
          Image_Accounting.Record_Arena_Allocation;
          Txn.Active := True;
@@ -7767,6 +7828,8 @@ package body Flyology.DB is
          Txn.Incarnation := Lease.State.Gate.Current_Incarnation;
          Txn.Transaction_ID := Transaction_ID;
          Txn.Snapshot_At := Head.Highest;
+         Txn.Isolation := Isolation;
+         Txn.Point_Read_Limit := Point_Read_Limit;
       end if;
    exception
       when Storage_Error =>
@@ -7852,6 +7915,58 @@ package body Flyology.DB is
       end loop;
       return True;
    end Same_Owned_Key;
+
+   function Same_Owned_Key (Point : Owned_Point_Read; Item_Key : Byte_Array) return Boolean is
+   begin
+      if Point.Key_Length /= Item_Key'Length then
+         return False;
+      end if;
+      for Offset in Natural range 0 .. Item_Key'Length - 1 loop
+         if Byte (Flyology.Bytes.Element (Point.Key, Offset + 1)) /= Item_Key (Item_Key'First + Offset) then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end Same_Owned_Key;
+
+   procedure Record_Point_Read
+     (Txn : in out Transaction; Family : Column_Family_ID; Item_Key : Byte_Array; Result : out Outcome_Code)
+   is
+      Existing  : Owned_Point_Read_Access := Txn.Owner.Arena.Point_Reads;
+      Candidate : Owned_Point_Read_Access := null;
+   begin
+      while Existing /= null loop
+         if Existing.Family = Family and then Same_Owned_Key (Existing.all, Item_Key) then
+            Result := Success;
+            return;
+         end if;
+         Existing := Existing.Next;
+      end loop;
+      if Txn.Owner.Arena.Point_Read_Count >= Txn.Point_Read_Limit then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Point_Read_Node_Allocation);
+      Candidate := new Owned_Point_Read;
+      Allocation_Faults.Check (Point_Read_Key_Allocation);
+      Flyology.Bytes.Reserve_Capacity (Candidate.Key, Item_Key'Length);
+      for Value of Item_Key loop
+         Flyology.Bytes.Append (Candidate.Key, Ada.Streams.Stream_Element (Value));
+      end loop;
+      Candidate.Family := Family;
+      Candidate.Key_Length := Item_Key'Length;
+      Candidate.Next := Txn.Owner.Arena.Point_Reads;
+      Txn.Owner.Arena.Point_Reads := Candidate;
+      Candidate := null;
+      Txn.Owner.Arena.Point_Read_Count := Txn.Owner.Arena.Point_Read_Count + 1;
+      Image_Accounting.Record_Transaction_Copy (Item_Key'Length);
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Free_Owned_Point_Read (Candidate);
+         Result := Capacity_Exceeded;
+   end Record_Point_Read;
 
    procedure Store_Mutation
      (Item      : in out Database;
@@ -8054,6 +8169,20 @@ package body Flyology.DB is
          for Offset in Positive range 1 .. Value_Length loop
             Flyology.Bytes.Append (Data, Flyology.Bytes.Element (Image.Data, Value_Offset + Offset));
          end loop;
+      end if;
+      if Txn.Isolation = Serializable and then Result in Success | Not_Found then
+         declare
+            Read_Result        : constant Outcome_Code := Result;
+            Observation_Result : Outcome_Code;
+         begin
+            Record_Point_Read (Txn, Family.Configuration.ID, Item_Key, Observation_Result);
+            if Observation_Result = Success then
+               Result := Read_Result;
+            else
+               Flyology.Bytes.Clear (Data);
+               Result := Observation_Result;
+            end if;
+         end;
       end if;
    exception
       when Storage_Error =>
@@ -10980,7 +11109,8 @@ package body Flyology.DB is
                     new Transaction_Arena'
                       (Mutations  => Mutations,
                        Count      => 1,
-                       Bytes_Used => Interfaces.Unsigned_64 (2 + Mutations (1).Value_Length));
+                       Bytes_Used => Interfaces.Unsigned_64 (2 + Mutations (1).Value_Length),
+                       others     => <>);
                   Image_Accounting.Record_Arena_Allocation;
                exception
                   when others =>
