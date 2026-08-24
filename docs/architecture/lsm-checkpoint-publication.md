@@ -298,14 +298,14 @@ transition anchor for the latest retained batch and an exact replay-boundary che
 the oldest suffix batch names. Thus a manifest-only successor can preserve the suffix, while an orphan batch or a
 suffix attached to another checkpoint still fails closed.
 
-This first execution-path witness is synchronous because its authenticated selected-run reads still use the
-backend-neutral blocking storage port. It creates no helper task and selects no event-loop blocking contract. A
-future caller-composable form must drive those range/whole reads through owner-stack Object Storage operations before
-publication; this unit does not simulate that surface or publish a public trigger. The planner now isolates the
-effect-free authority snapshot from selected-run loading and from effect-free successor construction. Both sides of
-that seam own exact persisted extents, and successor construction revalidates every populated SST against its
-authenticated manifest descriptor. The blocking wrapper remains behaviorally unchanged, while a later owner-driven
-loader can populate the same plan without reimplementing merge admission, suffix transfer, or activation authority.
+The client-backed path is caller-composable without a helper task. After the effect-free authority snapshot, one DB
+parent serially drives a bodyless HEAD, exact-generation frozen-header range, and same-generation bounded whole Get
+for every manifest-named run. One moved caller-selected buffer supplies all read and publication bodies; one absolute
+deadline and cancellation source cover the entire operation. Every loaded SST is revalidated against its exact
+database, family, and descriptor before the effect-free successor builder runs. The private synchronous client
+wrapper is a literal wait on that operation and therefore shares its ownership, capacity, certainty, and result
+mapping. Backend-neutral memory/files selected reads remain on the blocking storage port and create no helper task.
+Neither path publishes a public trigger or selects run, level, fanout, retry, or schedule policy.
 
 `LSMPartialCompactionEquivalence.tla` now models the same abstract execution order: merge the selected consecutive
 runs, transfer one finite suffix batch and its identity authority unchanged, reconstruct the successor run view, and

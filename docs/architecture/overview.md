@@ -69,8 +69,10 @@ When a later log suffix exists, the plan clones its exact decoded transactions, 
 ownership before publication. Activation reconstructs only the successor SST view and then replays that suffix, so
 snapshot conflicts, seen identities, and live values survive coordinator replacement. Cacheless recovery requires
 the validated manifest chain to anchor the latest batch transition and the exact checkpoint boundary at which its
-suffix begins. A composable selected-run reader, trigger/fanout/level policy, and the public compaction surface remain
-later units.
+suffix begins. Client-backed selected-run reads now execute as one owner-driven HEAD, generation-bound header range,
+and same-generation whole-object sequence before the same publisher runs; the synchronous private wrapper literally
+waits on that operation. Backend-neutral memory/files reads remain blocking without helper tasks. Automatic
+trigger/fanout/level policy and the public compaction surface remain later units.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,

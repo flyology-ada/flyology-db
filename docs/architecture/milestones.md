@@ -110,11 +110,12 @@ snapshot-safe merge iteration kernel: two validated ordered nonoverlapping SSTs 
 every version and tombstone remains. Exact output extents are checked sums of the inputs. The manifest-aware entry
 point requires the two exact SST descriptors to be adjacent in one authenticated family and rejects an output identity
 already named by that manifest. An effect-free builder now validates the exact next checkpoint base and produces the
-corresponding successor by replacing only that pair while preserving all other persisted authority. A private
-synchronous publisher binds that captured manifest to current HEAD, authenticates the named SSTs, stores and confirms
-the merged SST and successor, conditionally advances HEAD, and reconciles an ambiguous object response only by
-rebuilding the same selected pair and identities. A composable selected-run reader and production policy remain
-separate work. A later log suffix is cloned at its exact decoded transaction/mutation extents before publication,
+corresponding successor by replacing only that pair while preserving all other persisted authority. The private
+publisher binds that captured manifest to current HEAD, authenticates the named SSTs, stores and confirms the merged
+SST and successor, conditionally advances HEAD, and reconciles an ambiguous object response only by rebuilding the
+same selected pair and identities. Client-backed selected reads run through the caller-owned completion set and the
+synchronous form waits on that operation; backend-neutral memory/files reads remain blocking. Production policy
+remains separate work. A later log suffix is cloned at its exact decoded transaction/mutation extents before publication,
 with shared ownership of its immutable images. The replacement coordinator reconstructs only the successor run base,
 then replays the suffix to preserve conflict and identity authority. Recovery admits that topology only through exact
 batch-to-manifest-chain and suffix-to-checkpoint-boundary anchors.

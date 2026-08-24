@@ -2067,10 +2067,17 @@ package body Flyology.DB is
    type Flush_Driver_Phase is
      (Flush_Idle,
       Waiting_For_Quiescence,
+      Reading_Selected_Head,
+      Reading_Selected_Header,
+      Reading_Selected_Whole,
       Putting_Immutable,
       Reading_Immutable,
       Putting_Head,
       Flush_Terminal);
+
+   --  Private constructor authority only. These positions are never persisted
+   --  or exposed and select no automatic compaction trigger or run policy.
+   type Flush_Plan_Mode is (Additive_Plan, Complete_Replacement_Plan, Adjacent_Merge_Plan);
 
    type Prepared_Flush_Image is record
       Owner  : Shared_Image_Access := null;
@@ -2086,24 +2093,36 @@ package body Flyology.DB is
    type Flush_Driver_State is record
       Engine              : Engine_State_Access := null;
       Plan                : Checkpoint_Plan;
+      Selected_Source     : Checkpoint_Plan;
+      Selected_Base       : Manifests.Manifest;
+      Selected_Head       : Head_Snapshot;
       Runs                : Flush_Run_Receipt_Array := [others => (others => <>)];
       Run_Total           : Natural range 0 .. Maximum_Initial_Column_Families := 0;
       Manifest_ID         : Identifier := Zero_Identifier;
       Transition_ID       : Identifier := Zero_Identifier;
+      Older_Run_ID        : Identifier := Zero_Identifier;
+      Newer_Run_ID        : Identifier := Zero_Identifier;
+      Output_Run_ID       : Identifier := Zero_Identifier;
       Run_Images          : Prepared_Flush_Image_Array := [others => (others => <>)];
       Manifest_Image      : Prepared_Flush_Image;
       Head_Image          : Prepared_Flush_Image;
-      --  Zero is the transient "before first/after last family" cursor. The
-      --  persisted manifest family slots remain one-based and never use it.
+      --  Zero is the transient "before first/after last" cursor for both the
+      --  family publication scan and selected-run reader. Persisted manifest
+      --  family/run indices remain one-based and never use it.
       Current_Family_Slot : Natural range 0 .. Maximum_Initial_Column_Families := 0;
+      Selected_Run_Index  : Natural := 0;
+      Selected_Family_Slot : Natural range 0 .. Maximum_Initial_Column_Families := 0;
+      Selected_Object_Length : Natural := 0;
+      Selected_Generation : Generation_Value;
+      Selected_Admission  : LSM_Runtime.SST_Header_Admission := (others => <>);
       Current_Kind        : Stored_Object_Kind := Run_Object;
       Phase               : Flush_Driver_Phase := Flush_Idle;
       Precheck_Result     : Outcome_Code := Success;
       Checkpoint_Admitted : Boolean := False;
-      --  Private constructor-selected algorithm mode. False is additive Flush;
-      --  True is complete current-run replacement. This is neither persisted
-      --  nor a public trigger, automatic policy, capacity, or default.
-      Replace_Current_Runs : Boolean := False;
+      --  Fresh-state additive mode is only a vacant initializer. Every Start
+      --  assigns its explicit private constructor-selected algorithm before
+      --  the driver can run.
+      Mode                : Flush_Plan_Mode := Additive_Plan;
    end record;
 
    procedure Free_Flush_Driver_State is new
@@ -2112,6 +2131,14 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation
        (Flyology.Object_Storage.Client.Scoped.Whole_Get_Operation,
         Whole_Get_Operation_Access);
+   procedure Free_Range_Get_Operation is new
+     Ada.Unchecked_Deallocation
+       (Flyology.Object_Storage.Client.Scoped.Range_Get_Operation,
+        Range_Get_Operation_Access);
+   procedure Free_Head_Operation is new
+     Ada.Unchecked_Deallocation
+       (Flyology.Object_Storage.Client.Scoped.Head_Operation,
+        Head_Operation_Access);
    type Seen_Transaction_Array is array (Positive range <>) of Transaction_Identifier;
    type Used_Batch_ID_Array is array (Positive range <>) of Identifier;
    type Reserved_Identity_Array is array (Positive range <>) of Identifier;
@@ -11230,6 +11257,7 @@ package body Flyology.DB is
          Release_Image (Value.Manifest_Image.Owner);
          Release_Image (Value.Head_Image.Owner);
          Release_Checkpoint_Plan (Value.Plan);
+         Release_Checkpoint_Plan (Value.Selected_Source);
          Free_Flush_Driver_State (Value);
       end if;
    end Release_Flush_State;
@@ -11878,6 +11906,494 @@ package body Flyology.DB is
       end if;
    end Complete_Current_Put;
 
+   function Selected_Read_Failure
+     (Failure : Client_Scoped.Failure_Reason) return Outcome_Code
+   is
+   begin
+      return
+        (case Failure is
+           when Client_Scoped.Cancelled          => Cancelled,
+           when Client_Scoped.Timed_Out          => Timed_Out,
+           when Client_Scoped.Response_Too_Large => Capacity_Exceeded,
+           when others                           => Storage_Failure);
+   end Selected_Read_Failure;
+
+   function Selected_Rejection
+     (Status : Flyology.HTTP.Status_Code) return Outcome_Code
+   is
+     --  S3 GetObject/HeadObject fixes 404 as missing immutable authority and
+     --  412 as exact-generation mismatch. Both invalidate a manifest-named
+     --  SST; other complete rejections remain provider/storage failures.
+     (if Status in 404 | 412 then Corrupt else Storage_Failure);
+
+   --  The selected header range is exactly the frozen SST-v1 header consumed
+   --  by Inspect_SST_Header. Changing this source field is a persisted-format
+   --  compatibility change, not a read-size tuning choice.
+   Selected_SST_Header_Length : constant Positive := LSM_Runtime.LSM.SST_Header_Length;
+
+   procedure Copy_Selected_Payload
+     (Item     : Flyology.Buffers.Unique_Buffer;
+      Expected : Positive;
+      Image    : out LSM_Runtime.Image_Access)
+   is
+      procedure Copy (Data : Ada.Streams.Stream_Element_Array) is
+      begin
+         if Data'Length /= Expected then
+            raise Program_Error with "selected-run payload length changed before decode";
+         end if;
+         for Offset in Natural range 0 .. Expected - 1 loop
+            Image (Offset) := Byte (Data (Data'First + Ada.Streams.Stream_Element_Offset (Offset)));
+         end loop;
+      end Copy;
+   begin
+      Image := null;
+      Allocation_Faults.Check (Recovery_SST_Image_Allocation);
+      Image := new Formats.Byte_Array'(0 .. Expected - 1 => 0);
+      Flyology.Buffers.With_Readable_Data (Item, Copy'Access);
+   exception
+      when others =>
+         LSM_Runtime.Release (Image);
+         raise;
+   end Copy_Selected_Payload;
+
+   procedure Start_Next_Selected_Head (Item : in out Flush_Operation);
+
+   procedure Complete_Selected_Plan (Item : in out Flush_Operation) is
+      State        : Flush_Driver_State renames Item.Driver_State.all;
+      Family_Index : Natural := 0;
+      Result       : Outcome_Code;
+   begin
+      Complete_Adjacent_Merge_Plan
+        (State.Engine,
+         State.Older_Run_ID,
+         State.Newer_Run_ID,
+         State.Output_Run_ID,
+         State.Selected_Base,
+         State.Selected_Head,
+         State.Selected_Source,
+         State.Plan,
+         Result);
+      if Result /= Success then
+         Complete_Composable_Flush (Item, Result);
+         return;
+      end if;
+      for Index in State.Plan.SSTs'Range loop
+         if State.Plan.SSTs (Index) /= null then
+            if Family_Index /= 0 then
+               Complete_Composable_Flush (Item, Corrupt);
+               return;
+            end if;
+            Family_Index := Index;
+         end if;
+      end loop;
+      if Family_Index = 0 then
+         Complete_Composable_Flush (Item, Corrupt);
+         return;
+      end if;
+      State.Run_Total := 1;
+      State.Runs (1) :=
+        (Family_ID => Column_Family_ID (State.Plan.Manifest.Base.Families (Family_Index).ID),
+         Run_ID    => State.Output_Run_ID);
+      Initialize_Flush_Receipt
+        (State.Engine,
+         State.Plan,
+         State.Runs (1 .. 1),
+         State.Manifest_ID,
+         State.Transition_ID,
+         Item.Final_Receipt,
+         Result,
+         Merge_Older_Run_ID => State.Older_Run_ID,
+         Merge_Newer_Run_ID => State.Newer_Run_ID);
+      if Result = Success then
+         Prepare_Flush_Images (Item, State, Result);
+      end if;
+      if Result /= Success then
+         Complete_Composable_Flush (Item, Result);
+      elsif Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Composable_Flush (Item, Cancelled);
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Composable_Flush (Item, Timed_Out);
+      else
+         State.Current_Family_Slot := 0;
+         Start_Next_Immutable (Item);
+      end if;
+   exception
+      when Storage_Error =>
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Composable_Flush (Item, Error);
+   end Complete_Selected_Plan;
+
+   procedure Start_Selected_Whole (Item : in out Flush_Operation) is
+      State : Flush_Driver_State renames Item.Driver_State.all;
+      Fault : Storage_Fault_Mode;
+   begin
+      Consume_Fault (Item.Storage.all, Before_Get, Fault);
+      if Fault /= No_Fault then
+         Complete_Composable_Flush (Item, Storage_Failure);
+         return;
+      elsif Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Composable_Flush (Item, Cancelled);
+         return;
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Composable_Flush (Item, Timed_Out);
+         return;
+      elsif Item.Read_Child = null then
+         raise Program_Error with "selected-run whole child was not prepared";
+      end if;
+      Client_Scoped.Start_Get_Whole
+        (Item.Read_Child.all,
+         Item.HTTP,
+         Item.Storage.Client_Origin,
+         UStrings.To_String (Item.Storage.Bucket),
+         Run_Key
+           (Item.Storage.all,
+            To_Identifier (State.Selected_Source.Manifest.Runs (State.Selected_Run_Index).Run_ID)),
+         Item.Payload'Unchecked_Access,
+         Item.Storage.Client_Identity.all,
+         Item.HTTP_Deadline,
+         Expected_Entity_Tag   => Quoted_Generation (State.Selected_Generation),
+         Region                => UStrings.To_String (Item.Storage.Client_Region),
+         Style                 => Item.Storage.Client_Style,
+         Expected_Bucket_Owner => UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
+         Request_Payer         => UStrings.To_String (Item.Storage.Client_Request_Payer),
+         Checksum_Mode         => Item.Storage.Client_Checksum_Mode,
+         Token                 => Item.Cancellation);
+      State.Phase := Reading_Selected_Whole;
+      Flyology.Operations.Continue_After (Item, Item.Read_Child.all);
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Composable_Flush (Item, Error);
+   end Start_Selected_Whole;
+
+   procedure Complete_Selected_Header (Item : in out Flush_Operation) is
+      State         : Flush_Driver_State renames Item.Driver_State.all;
+      Outcome       : Client_Scoped.Range_Get_Result;
+      Image         : LSM_Runtime.Image_Access := null;
+      Decode_Status : LSM_Runtime.Decode_Status;
+      Generation    : Generation_Value;
+      Valid         : Boolean := False;
+   begin
+      begin
+         Client_Scoped.Finish (Item.Range_Child.all, Outcome);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Range_Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Range_Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Range_Child.all)
+            then
+               Flyology.Operations.Release (Item.Range_Child.all);
+            end if;
+            Fail_Composable_Flush (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Range_Child.all);
+      if Outcome.Kind = Client_Scoped.Range_Get_Exchange_Failed then
+         Complete_Composable_Flush (Item, Selected_Read_Failure (Outcome.Failure));
+         return;
+      elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
+         Complete_Composable_Flush (Item, Selected_Rejection (Outcome.Response.Status));
+         return;
+      end if;
+      Set_Quoted_Generation
+        (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+      if not Valid
+        or else Generation /= State.Selected_Generation
+        --  A complete single-range response is exactly HTTP 206 under the
+        --  maintained Object Storage range contract.
+        or else Outcome.Response.Status /= 206
+        or else not Outcome.Has_Resolved_Range
+        or else Outcome.Resolved.First /= 0
+        or else Outcome.Resolved.Last /= OS.Byte_Count (Selected_SST_Header_Length - 1)
+        or else Outcome.Resolved.Total_Length /= OS.Byte_Count (State.Selected_Object_Length)
+        or else Flyology.Buffers.Length (Item.Payload) /= Selected_SST_Header_Length
+      then
+         Complete_Composable_Flush (Item, Corrupt);
+         return;
+      end if;
+      Copy_Selected_Payload (Item.Payload, Selected_SST_Header_Length, Image);
+      LSM_Runtime.Inspect_SST_Header
+        (Image.all,
+         State.Selected_Source.Manifest.Base.Database_ID,
+         State.Selected_Source.Manifest.Base.Families (State.Selected_Family_Slot).ID,
+         State.Selected_Source.Manifest.Runs (State.Selected_Run_Index),
+         Interfaces.Unsigned_64 (State.Selected_Object_Length),
+         State.Selected_Admission,
+         Decode_Status);
+      LSM_Runtime.Release (Image);
+      if Decode_Status = LSM_Runtime.Decoded then
+         Start_Selected_Whole (Item);
+      elsif Decode_Status
+            in LSM_Runtime.Limit_Exceeded
+             | LSM_Runtime.Allocation_Failed
+             | LSM_Runtime.Runtime_Incompatible
+      then
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      elsif Decode_Status = LSM_Runtime.Unsupported_Version then
+         Complete_Composable_Flush (Item, Unsupported_Format);
+      else
+         Complete_Composable_Flush (Item, Corrupt);
+      end if;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Image);
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      when Error : others =>
+         LSM_Runtime.Release (Image);
+         Fail_Composable_Flush (Item, Error);
+   end Complete_Selected_Header;
+
+   procedure Start_Selected_Header (Item : in out Flush_Operation) is
+      State : Flush_Driver_State renames Item.Driver_State.all;
+   begin
+      if Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Composable_Flush (Item, Cancelled);
+         return;
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Composable_Flush (Item, Timed_Out);
+         return;
+      elsif Item.Range_Child = null then
+         raise Program_Error with "selected-run range child was not prepared";
+      end if;
+      Client_Scoped.Start_Get_Range
+        (Item.Range_Child.all,
+         Item.HTTP,
+         Item.Storage.Client_Origin,
+         UStrings.To_String (Item.Storage.Bucket),
+         Run_Key
+           (Item.Storage.all,
+            To_Identifier (State.Selected_Source.Manifest.Runs (State.Selected_Run_Index).Run_ID)),
+         (Kind  => OS.Bounded_Range,
+          First => 0,
+          Last  => OS.Byte_Count (Selected_SST_Header_Length - 1),
+          Count => 0),
+         Item.Payload'Unchecked_Access,
+         Item.Storage.Client_Identity.all,
+         Item.HTTP_Deadline,
+         Quoted_Generation (State.Selected_Generation),
+         Region                => UStrings.To_String (Item.Storage.Client_Region),
+         Style                 => Item.Storage.Client_Style,
+         Expected_Bucket_Owner => UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
+         Request_Payer         => UStrings.To_String (Item.Storage.Client_Request_Payer),
+         Checksum_Mode         => Item.Storage.Client_Checksum_Mode,
+         Token                 => Item.Cancellation);
+      State.Phase := Reading_Selected_Header;
+      Flyology.Operations.Continue_After (Item, Item.Range_Child.all);
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Composable_Flush (Item, Error);
+   end Start_Selected_Header;
+
+   procedure Complete_Selected_Head (Item : in out Flush_Operation) is
+      State      : Flush_Driver_State renames Item.Driver_State.all;
+      Outcome    : Client_Scoped.Head_Result;
+      Generation : Generation_Value;
+      Valid      : Boolean := False;
+      --  A valid SST must contain the exact frozen header and integrity
+      --  trailer; the formula comes from SST-v1 persisted framing.
+      Minimum    : constant Natural :=
+        Selected_SST_Header_Length + LSM_Runtime.LSM.Object_Trailer_Length;
+   begin
+      begin
+         Client_Scoped.Finish (Item.Head_Child.all, Outcome);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Head_Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Head_Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Head_Child.all)
+            then
+               Flyology.Operations.Release (Item.Head_Child.all);
+            end if;
+            Fail_Composable_Flush (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Head_Child.all);
+      if Outcome.Kind = Client_Scoped.Head_Exchange_Failed then
+         Complete_Composable_Flush (Item, Selected_Read_Failure (Outcome.Failure));
+         return;
+      elsif Outcome.Response.Kind = Client_Low_Level.Head_Object_Rejected then
+         Complete_Composable_Flush (Item, Selected_Rejection (Outcome.Response.Status));
+         return;
+      end if;
+      Set_Quoted_Generation
+        (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+      if not Valid
+        --  A complete successful HeadObject is exactly HTTP 200 under the
+        --  maintained Object Storage contract.
+        or else Outcome.Response.Status /= 200
+        or else Outcome.Response.Result.Content_Length > OS.Byte_Count (Natural'Last)
+      then
+         Complete_Composable_Flush (Item, Corrupt);
+         return;
+      end if;
+      State.Selected_Object_Length := Natural (Outcome.Response.Result.Content_Length);
+      State.Selected_Generation := Generation;
+      if State.Selected_Object_Length < Minimum then
+         Complete_Composable_Flush (Item, Corrupt);
+      elsif State.Selected_Object_Length > Flyology.Buffers.Buffer_Capacity (Item.Payload) then
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      else
+         Start_Selected_Header (Item);
+      end if;
+   exception
+      when Error : others =>
+         Fail_Composable_Flush (Item, Error);
+   end Complete_Selected_Head;
+
+   procedure Complete_Selected_Whole (Item : in out Flush_Operation) is
+      State         : Flush_Driver_State renames Item.Driver_State.all;
+      Outcome       : Client_Scoped.Whole_Get_Result;
+      Image         : LSM_Runtime.Image_Access := null;
+      Decode_Status : LSM_Runtime.Decode_Status;
+      Generation    : Generation_Value;
+      Valid         : Boolean := False;
+   begin
+      begin
+         Client_Scoped.Finish (Item.Read_Child.all, Outcome);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Read_Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Read_Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Read_Child.all)
+            then
+               Flyology.Operations.Release (Item.Read_Child.all);
+            end if;
+            Fail_Composable_Flush (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Read_Child.all);
+      if Outcome.Kind = Client_Scoped.Whole_Get_Exchange_Failed then
+         Complete_Composable_Flush (Item, Selected_Read_Failure (Outcome.Failure));
+         return;
+      elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
+         Complete_Composable_Flush (Item, Selected_Rejection (Outcome.Response.Status));
+         return;
+      end if;
+      Set_Quoted_Generation
+        (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+      if not Valid
+        or else Generation /= State.Selected_Generation
+        --  A complete successful whole GetObject is exactly HTTP 200 under
+        --  the maintained Object Storage contract.
+        or else Outcome.Response.Status /= 200
+        or else not Outcome.Response.Result.Content_Length.Is_Set
+        or else Outcome.Response.Result.Content_Length.Value /=
+          OS.Byte_Count (State.Selected_Admission.Object_Length)
+        or else State.Selected_Admission.Object_Length /= State.Selected_Object_Length
+        or else Flyology.Buffers.Length (Item.Payload) /= State.Selected_Admission.Object_Length
+      then
+         Complete_Composable_Flush (Item, Corrupt);
+         return;
+      end if;
+      Copy_Selected_Payload
+        (Item.Payload, Positive (State.Selected_Admission.Object_Length), Image);
+      LSM_Runtime.Decode_SST
+        (Image.all,
+         State.Selected_Source.Manifest.Base.Database_ID,
+         State.Selected_Source.Manifest.Base.Families (State.Selected_Family_Slot).ID,
+         State.Selected_Source.Manifest.Runs (State.Selected_Run_Index),
+         State.Selected_Source.Manifest.Base.Families (State.Selected_Family_Slot).Max_Key_Bytes,
+         State.Selected_Source.Manifest.Base.Families (State.Selected_Family_Slot).Max_Value_Bytes,
+         State.Selected_Source.Recovered_SSTs (State.Selected_Run_Index),
+         Decode_Status);
+      LSM_Runtime.Release (Image);
+      if Decode_Status = LSM_Runtime.Decoded then
+         Start_Next_Selected_Head (Item);
+      elsif Decode_Status
+            in LSM_Runtime.Limit_Exceeded
+             | LSM_Runtime.Allocation_Failed
+             | LSM_Runtime.Runtime_Incompatible
+      then
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      elsif Decode_Status = LSM_Runtime.Unsupported_Version then
+         Complete_Composable_Flush (Item, Unsupported_Format);
+      else
+         Complete_Composable_Flush (Item, Corrupt);
+      end if;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Image);
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      when Error : others =>
+         LSM_Runtime.Release (Image);
+         Fail_Composable_Flush (Item, Error);
+   end Complete_Selected_Whole;
+
+   procedure Start_Next_Selected_Head (Item : in out Flush_Operation) is
+      State      : Flush_Driver_State renames Item.Driver_State.all;
+      Parameters : Client_Low_Level.Head_Object_Parameters := (others => <>);
+      Fault      : Storage_Fault_Mode;
+   begin
+      if State.Selected_Run_Index >= State.Selected_Source.Manifest.Run_Total then
+         Complete_Selected_Plan (Item);
+         return;
+      end if;
+      State.Selected_Run_Index := State.Selected_Run_Index + 1;
+      State.Selected_Family_Slot := 0;
+      for Family_Index in State.Selected_Source.Manifest.Families'Range loop
+         declare
+            Family : LSM_Runtime.Family_LSM_State renames
+              State.Selected_Source.Manifest.Families (Family_Index);
+         begin
+            if Family.Run_Total > 0
+              and then State.Selected_Run_Index in
+                Family.First_Run .. Family.First_Run + Family.Run_Total - 1
+            then
+               State.Selected_Family_Slot := Family_Index;
+               exit;
+            end if;
+         end;
+      end loop;
+      if State.Selected_Family_Slot = 0 then
+         Complete_Composable_Flush (Item, Corrupt);
+         return;
+      end if;
+      Consume_Fault (Item.Storage.all, Before_Get, Fault);
+      if Fault /= No_Fault then
+         Complete_Composable_Flush (Item, Storage_Failure);
+         return;
+      elsif Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Composable_Flush (Item, Cancelled);
+         return;
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Composable_Flush (Item, Timed_Out);
+         return;
+      elsif Item.Head_Child = null then
+         raise Program_Error with "selected-run HEAD child was not prepared";
+      end if;
+      State.Selected_Object_Length := 0;
+      State.Selected_Generation := (others => <>);
+      State.Selected_Admission := (others => <>);
+      Parameters.Expected_Bucket_Owner := Item.Storage.Expected_Bucket_Owner;
+      Parameters.Request_Payer := Item.Storage.Client_Request_Payer;
+      Parameters.Checksum_Mode := Item.Storage.Client_Checksum_Mode;
+      Client_Scoped.Start_Head_Object
+        (Item.Head_Child.all,
+         Item.HTTP,
+         Item.Storage.Client_Origin,
+         UStrings.To_String (Item.Storage.Bucket),
+         Run_Key
+           (Item.Storage.all,
+            To_Identifier (State.Selected_Source.Manifest.Runs (State.Selected_Run_Index).Run_ID)),
+         Parameters,
+         Item.Storage.Client_Identity.all,
+         Item.HTTP_Deadline,
+         UStrings.To_String (Item.Storage.Client_Region),
+         Item.Storage.Client_Style,
+         Item.Cancellation);
+      State.Phase := Reading_Selected_Head;
+      Flyology.Operations.Continue_After (Item, Item.Head_Child.all);
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Composable_Flush (Item, Error);
+   end Start_Next_Selected_Head;
+
    procedure Prepare_Composable_Flush (Item : in out Flush_Operation) is
       State  : Flush_Driver_State renames Item.Driver_State.all;
       Result : Outcome_Code;
@@ -11892,6 +12408,52 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Timed_Out);
          return;
       end if;
+      if State.Mode = Adjacent_Merge_Plan then
+         Prepare_Adjacent_Merge_Source
+           (State.Engine,
+            State.Older_Run_ID,
+            State.Newer_Run_ID,
+            State.Output_Run_ID,
+            State.Manifest_ID,
+            State.Transition_ID,
+            State.Selected_Base,
+            State.Selected_Head,
+            State.Selected_Source,
+            Result);
+         if Result /= Success then
+            Complete_Composable_Flush (Item, Result);
+            return;
+         end if;
+         Allocation_Faults.Check (Recovery_SST_Image_Allocation);
+         State.Selected_Source.Recovered_SSTs :=
+           new Recovered_SST_Array'
+             (1 .. State.Selected_Source.Manifest.Run_Total => null);
+         Item.Head_Child :=
+           new Client_Scoped.Head_Operation
+             (Item.Set.all'Unchecked_Access,
+              Item.HTTP.all'Unchecked_Access,
+              (if Item.Cancellation = null
+               then null
+               else Item.Cancellation.all'Unchecked_Access));
+         Item.Range_Child :=
+           new Client_Scoped.Range_Get_Operation
+             (Item.Set.all'Unchecked_Access,
+              Item.HTTP.all'Unchecked_Access,
+              Item.Payload'Unchecked_Access,
+              (if Item.Cancellation = null
+               then null
+               else Item.Cancellation.all'Unchecked_Access));
+         Item.Read_Child :=
+           new Client_Scoped.Whole_Get_Operation
+             (Item.Set.all'Unchecked_Access,
+              Item.HTTP.all'Unchecked_Access,
+              Item.Payload'Unchecked_Access,
+              (if Item.Cancellation = null
+               then null
+               else Item.Cancellation.all'Unchecked_Access));
+         Start_Next_Selected_Head (Item);
+         return;
+      end if;
       Build_Checkpoint_Plan
         (State.Engine,
          State.Runs (1 .. State.Run_Total),
@@ -11899,7 +12461,7 @@ package body Flyology.DB is
          State.Transition_ID,
          State.Plan,
          Result,
-         Replace_Current_Runs => State.Replace_Current_Runs);
+         Replace_Current_Runs => State.Mode = Complete_Replacement_Plan);
       if Result /= Success then
          Complete_Composable_Flush (Item, Result);
          return;
@@ -11912,7 +12474,7 @@ package body Flyology.DB is
          State.Transition_ID,
          Item.Final_Receipt,
          Result,
-         Replace_Current_Runs => State.Replace_Current_Runs);
+         Replace_Current_Runs => State.Mode = Complete_Replacement_Plan);
       if Result /= Success then
          Complete_Composable_Flush (Item, Result);
          return;
@@ -12005,6 +12567,27 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Timed_Out);
       elsif Event = Flyology.Operations.Dependency_Changed
         and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Reading_Selected_Head
+        and then Item.Head_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Head_Child.all)
+      then
+         Complete_Selected_Head (Item);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Reading_Selected_Header
+        and then Item.Range_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Range_Child.all)
+      then
+         Complete_Selected_Header (Item);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Reading_Selected_Whole
+        and then Item.Read_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Read_Child.all)
+      then
+         Complete_Selected_Whole (Item);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
         and then Item.Driver_State.Phase in Putting_Immutable | Putting_Head
         and then Flyology.Operations.Is_Terminal (Item.Put_Child)
       then
@@ -12041,14 +12624,40 @@ package body Flyology.DB is
          if Flyology.Operations.Is_Active (Item) then
             Request_Cancellation (Item);
          end if;
+      elsif Item.Head_Child /= null and then Flyology.Operations.Is_Active (Item.Head_Child.all) then
+         Flyology.Operations.Cancel (Item.Head_Child.all);
+      elsif Item.Head_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Head_Child.all)
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Reading_Selected_Head
+      then
+         Complete_Selected_Head (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Request_Cancellation (Item);
+         end if;
+      elsif Item.Range_Child /= null and then Flyology.Operations.Is_Active (Item.Range_Child.all) then
+         Flyology.Operations.Cancel (Item.Range_Child.all);
+      elsif Item.Range_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Range_Child.all)
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Reading_Selected_Header
+      then
+         Complete_Selected_Header (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Request_Cancellation (Item);
+         end if;
       elsif Item.Read_Child /= null and then Flyology.Operations.Is_Active (Item.Read_Child.all) then
          Flyology.Operations.Cancel (Item.Read_Child.all);
       elsif Item.Read_Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Read_Child.all)
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Phase = Reading_Immutable
+        and then Item.Driver_State.Phase in Reading_Selected_Whole | Reading_Immutable
       then
-         Complete_Immutable_Read (Item);
+         if Item.Driver_State.Phase = Reading_Selected_Whole then
+            Complete_Selected_Whole (Item);
+         else
+            Complete_Immutable_Read (Item);
+         end if;
          if Flyology.Operations.Is_Active (Item) then
             Request_Cancellation (Item);
          end if;
@@ -12073,7 +12682,10 @@ package body Flyology.DB is
       Transition_ID        : Identifier;
       Payload_Buffer       : in out Flyology.Buffers.Unique_Buffer;
       Timeout              : Duration;
-      Replace_Current_Runs : Boolean;
+      Mode                 : Flush_Plan_Mode;
+      Older_Run_ID         : Identifier;
+      Newer_Run_ID         : Identifier;
+      Output_Run_ID        : Identifier;
       Lease                : access Lifecycle_Lease := null)
    is
       Result     : Outcome_Code;
@@ -12089,6 +12701,8 @@ package body Flyology.DB is
       elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
         or else Operation.Driver_State /= null
         or else Operation.Read_Child /= null
+        or else Operation.Range_Child /= null
+        or else Operation.Head_Child /= null
       then
          raise Program_Error with "Flush operation retains unconsumed ownership";
       elsif Lease /= null
@@ -12123,13 +12737,29 @@ package body Flyology.DB is
       if Operation.Driver_State /= null then
          Operation.Driver_State.Manifest_ID := Manifest_ID;
          Operation.Driver_State.Transition_ID := Transition_ID;
-         Operation.Driver_State.Replace_Current_Runs := Replace_Current_Runs;
-         if Runs'Length = 0
-           or else Runs'Length > Maximum_Initial_Column_Families
-           or else Is_Zero (Manifest_ID)
+         Operation.Driver_State.Mode := Mode;
+         Operation.Driver_State.Older_Run_ID := Older_Run_ID;
+         Operation.Driver_State.Newer_Run_ID := Newer_Run_ID;
+         Operation.Driver_State.Output_Run_ID := Output_Run_ID;
+         if Is_Zero (Manifest_ID)
            or else Is_Zero (Transition_ID)
            or else Manifest_ID = Transition_ID
          then
+            Operation.Driver_State.Precheck_Result := Invalid_State;
+         elsif Mode = Adjacent_Merge_Plan then
+            if Runs'Length /= 0
+              or else Is_Zero (Older_Run_ID)
+              or else Is_Zero (Newer_Run_ID)
+              or else Is_Zero (Output_Run_ID)
+              or else Older_Run_ID = Newer_Run_ID
+              or else Output_Run_ID = Older_Run_ID
+              or else Output_Run_ID = Newer_Run_ID
+              or else Output_Run_ID = Manifest_ID
+              or else Output_Run_ID = Transition_ID
+            then
+               Operation.Driver_State.Precheck_Result := Invalid_State;
+            end if;
+         elsif Runs'Length = 0 or else Runs'Length > Maximum_Initial_Column_Families then
             Operation.Driver_State.Precheck_Result := Invalid_State;
          else
             Operation.Driver_State.Run_Total := Runs'Length;
@@ -12210,7 +12840,7 @@ package body Flyology.DB is
    begin
       Start_Composable_Checkpoint
         (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
-         Replace_Current_Runs => False);
+         Additive_Plan, Zero_Identifier, Zero_Identifier, Zero_Identifier);
    end Start_Flush;
 
    procedure Start_Test_Compaction
@@ -12223,8 +12853,35 @@ package body Flyology.DB is
    begin
       Start_Composable_Checkpoint
         (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
-         Replace_Current_Runs => True);
+         Complete_Replacement_Plan, Zero_Identifier, Zero_Identifier, Zero_Identifier);
    end Start_Test_Compaction;
+
+   procedure Start_Composable_Adjacent_Merge
+     (Operation      : in out Flush_Operation;
+      Older_Run_ID   : Identifier;
+      Newer_Run_ID   : Identifier;
+      Output_Run_ID  : Identifier;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Lease          : access Lifecycle_Lease := null)
+   is
+      No_Runs : Checkpoint_Run_Identity_Array (1 .. 0);
+   begin
+      Start_Composable_Checkpoint
+        (Operation,
+         No_Runs,
+         Manifest_ID,
+         Transition_ID,
+         Payload_Buffer,
+         Timeout,
+         Adjacent_Merge_Plan,
+         Older_Run_ID,
+         Newer_Run_ID,
+         Output_Run_ID,
+         Lease);
+   end Start_Composable_Adjacent_Merge;
 
    procedure Finish
      (Operation      : in out Flush_Operation;
@@ -12241,6 +12898,12 @@ package body Flyology.DB is
       Release_Flush_State (Operation.Driver_State);
       if Operation.Read_Child /= null then
          Free_Whole_Get_Operation (Operation.Read_Child);
+      end if;
+      if Operation.Range_Child /= null then
+         Free_Range_Get_Operation (Operation.Range_Child);
+      end if;
+      if Operation.Head_Child /= null then
+         Free_Head_Operation (Operation.Head_Child);
       end if;
       if Operation.Has_Saved_Error then
          Ada.Exceptions.Raise_Exception
@@ -12263,6 +12926,12 @@ package body Flyology.DB is
       Release_Flush_State (Item.Driver_State);
       if Item.Read_Child /= null then
          Free_Whole_Get_Operation (Item.Read_Child);
+      end if;
+      if Item.Range_Child /= null then
+         Free_Range_Get_Operation (Item.Range_Child);
+      end if;
+      if Item.Head_Child /= null then
+         Free_Head_Operation (Item.Head_Child);
       end if;
       Flyology.Buffers.Release (Item.Payload);
    end Finalize;
@@ -12641,6 +13310,11 @@ package body Flyology.DB is
          Receipt.Current_Outcome := Result;
    end Publish_Checkpoint;
 
+   procedure Synchronous_Flush_Buffer_Capacity
+     (State   : not null Engine_State_Access;
+      Maximum : out Natural;
+      Result  : out Outcome_Code);
+
    procedure Publish_Adjacent_Merge
      (Item          : in out Database;
       Older_Run_ID  : Identifier;
@@ -12662,8 +13336,88 @@ package body Flyology.DB is
       Guard        : Checkpoint_Guard;
       Runs         : Checkpoint_Run_Identity_Array (1 .. 1);
       Family_Index : Natural := 0;
+      Lease        : aliased Lifecycle_Lease;
+      Storage      : access Storage_Context;
+      Maximum      : Natural := 0;
+      --  One DB parent, one Object Storage child, one HTTP exchange, and one
+      --  transport child are the exact selected-merge owner stack. This is
+      --  private operation geometry, not a DB queue or public capacity.
+      Synchronous_Set_Capacity : constant := 4;
    begin
       Receipt := (others => <>);
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Storage := Lease.State.Storage;
+      if Storage.HTTP_Client /= null then
+         if Storage.Client_Identity = null then
+            Result := Invalid_State;
+            Receipt.Current_Outcome := Result;
+            return;
+         end if;
+         Synchronous_Flush_Buffer_Capacity (Lease.State, Maximum, Result);
+         if Result /= Success then
+            Receipt.Current_Outcome := Result;
+            return;
+         end if;
+         declare
+            Set : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+            --  Exactly one moved payload token is reused serially across
+            --  selected reads and publication. Capacity one expresses that
+            --  ownership geometry and is not a persisted or public ceiling.
+            Pool : aliased Flyology.Buffers.Pool
+              (Block_Size => Positive (Maximum), Capacity => 1);
+            Payload_Buffer : Flyology.Buffers.Unique_Buffer (Pool'Access);
+            Operation      : Flush_Operation
+              (Set'Access,
+               Item'Unchecked_Access,
+               Storage,
+               Storage.HTTP_Client,
+               Pool'Access,
+               Token);
+            Started : Boolean := False;
+         begin
+            Flyology.Buffers.Acquire (Payload_Buffer);
+            Start_Composable_Adjacent_Merge
+              (Operation,
+               Older_Run_ID,
+               Newer_Run_ID,
+               Output_Run_ID,
+               Manifest_ID,
+               Transition_ID,
+               Payload_Buffer,
+               Timeout,
+               Lease'Access);
+            Started := True;
+            Flyology.Operations.Wait_All (Set);
+            Finish (Operation, Receipt, Result, Payload_Buffer);
+         exception
+            when Storage_Error =>
+               Receipt := (if Started then Operation.Final_Receipt else (others => <>));
+               Result :=
+                 (if not Started or else Receipt.Phase = No_Flush_Publication
+                  then Capacity_Exceeded
+                  elsif Receipt.Phase in Objects_Unknown | Flush_Head_Unknown
+                  then Outcome_Unknown
+                  elsif Receipt.Phase = Flush_Head_Confirmed
+                  then Local_Activation_Failed
+                  else Storage_Failure);
+               Receipt.Current_Outcome := Result;
+            when others =>
+               Receipt := (if Started then Operation.Final_Receipt else (others => <>));
+               Result :=
+                 (if Started and then Receipt.Phase in Objects_Unknown | Flush_Head_Unknown
+                  then Outcome_Unknown
+                  elsif Started and then Receipt.Phase = Flush_Head_Confirmed
+                  then Local_Activation_Failed
+                  else Storage_Failure);
+               Receipt.Current_Outcome := Result;
+         end;
+         return;
+      end if;
+      Release (Lease);
       Item.Life.Begin_Checkpoint (State, Result);
       if Result /= Success then
          Receipt.Current_Outcome := Result;
@@ -12925,8 +13679,11 @@ package body Flyology.DB is
                   Transition_ID,
                   Payload_Buffer,
                   Timeout,
-                  Replace_Current_Runs => False,
-                  Lease                => Lease'Access);
+                  Additive_Plan,
+                  Zero_Identifier,
+                  Zero_Identifier,
+                  Zero_Identifier,
+                  Lease'Access);
                Started := True;
                Flyology.Operations.Wait_All (Set);
                Finish (Operation, Receipt, Result, Payload_Buffer);

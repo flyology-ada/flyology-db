@@ -245,6 +245,17 @@ Recovery accepts the descendant HEAD only through exact validated manifest-chain
 its checkpoint boundary. No SPARK proof of Object Storage, protected lifecycle, allocation, or Ada/TLA refinement is
 claimed.
 
+The owner-driven selected-run reader preserves that warning-strict boundary at 1,090/1,090 checks: 94
+initialization, 526 run-time, 91 assertion, 306 functional-contract, and 73 termination checks; flow analysis
+discharges 166 and provers discharge 924. The maintained `./scripts/prove.sh` wrapper exits zero with its explicit
+success sentinel, every selected unit reports zero warnings or `pragma Assume` statements, and the report contains
+no unproved or justified check. The new client-backed HEAD, exact-generation frozen-header range, same-generation
+whole Get, moved-buffer ownership, cancellation, and synchronous wait remain executable integration boundaries
+rather than selected SPARK units. The authenticated client probe qualifies their exact generation/length/descriptor
+binding, pre-read failure without publication, explicit same-identity retry, merged receipt, and cacheless reopen.
+The abstract adjacent-merge algorithm is unchanged, so this execution-path unit does not claim a fresh TLA+ run or
+an Ada refinement theorem.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

@@ -150,8 +150,8 @@ package Flyology.DB is
    --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
    --  caller-selected scratch capacity; the DB introduces no body-size
    --  default or ceiling. The current owner stack needs four reusable set
-   --  slots while a conditional Put or reconciliation Get is active: DB,
-   --  Object Storage, HTTP exchange, and transport.
+   --  slots while a conditional Put, reconciliation Get, or selected-run read
+   --  is active: DB, Object Storage, HTTP exchange, and transport.
    type Flush_Operation
      (Set          : not null access Flyology.Operations.Completion_Set'Class;
       Item         : not null access Database;
@@ -897,6 +897,8 @@ private
    type Flush_Driver_State;
    type Flush_Driver_State_Access is access Flush_Driver_State;
    type Whole_Get_Operation_Access is access Flyology.Object_Storage.Client.Scoped.Whole_Get_Operation;
+   type Range_Get_Operation_Access is access Flyology.Object_Storage.Client.Scoped.Range_Get_Operation;
+   type Head_Operation_Access is access Flyology.Object_Storage.Client.Scoped.Head_Operation;
 
    --  @exclude
    type Flush_Operation
@@ -911,6 +913,8 @@ private
       Put_Child        : Flyology.Object_Storage.Client.Scoped.Conditional_Put_Operation
         (Set, HTTP, Cancellation);
       Read_Child       : Whole_Get_Operation_Access := null;
+      Range_Child      : Range_Get_Operation_Access := null;
+      Head_Child       : Head_Operation_Access := null;
       Driver_State     : Flush_Driver_State_Access := null;
       --  Vacant-operation sentinel only. Start_Flush replaces it with the one
       --  caller-derived monotonic deadline before the operation can be active.

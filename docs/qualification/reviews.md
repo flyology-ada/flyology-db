@@ -1,5 +1,45 @@
 # Review record
 
+## Accepted owner-driven adjacent-merge selected-run reader
+
+- Parent: selected-run planning seam commit `12fbcb0`.
+- Scope and authority: connect only the private caller-selected adjacent two-run merge to the established
+  composable Object Storage reads. The caller still supplies the older, newer, output, manifest, and transition
+  identities. This unit adds no public compaction operation, trigger, level, fanout, schedule, retry, timeout,
+  garbage-collection rule, helper task, or allocation ceiling.
+- Owner-stack read path: after the effect-free authority snapshot, one DB parent serially drives bodyless HEAD,
+  exact-generation frozen-header range, and same-generation bounded whole Get operations for every manifest-named
+  SST. One caller-selected buffer token moves into the parent and is reused across all reads and immutable
+  publication; typed `Finish` restores that exact token into any vacant same-pool handle. One absolute monotonic
+  deadline and cancellation source cover the entire operation. The private synchronous client form literally waits
+  on this state machine. Backend-neutral memory/files selected reads remain blocking without helper tasks.
+- Validation and certainty: every complete read must retain the HEAD generation, exact object length, frozen header
+  admission, manifest database/family/run descriptor, and complete SST decode before successor construction.
+  Missing or generation-mismatched manifest authority fails closed. Selected-read failures publish nothing. Once
+  immutable publication starts, the established receipt phases continue to distinguish definite failure from
+  `Outcome_Unknown`; the operation never retries under a new identity.
+- Dynamic allocation and constants: selected SST arrays use the exact authenticated manifest run extent, decoded
+  keys/values use persisted database and per-family limits, and the synchronous buffer bound is derived by the
+  maintained checked-arithmetic helper. The header range derives from frozen SST-v1 framing. Completion-set capacity
+  four and buffer-pool capacity one document the exact serial owner stack and single moved-token geometry; neither
+  is a public or persisted policy ceiling.
+- Verification: `./tests/scripts/test.sh` passes repository provenance at exact Object Storage
+  `a632cc4b0bd4687e02b09cff7923ab4f9fccbfcf`, the local engine, authenticated client-backed
+  create/commit/Flush/compaction/adjacent-merge/reopen path, filesystem crash and cacheless recovery, all 32
+  comparative tests, and pinned TidesDB 4/4. The focused client witness injects a definite failure before the first
+  selected read, observes no publication, explicitly retries the same identities, validates the merged receipt, and
+  reopens without local cache to recover the later value. `./scripts/prove.sh` exits zero and proves 1,090/1,090
+  selected checks; its maintained success sentinel is present and the exact pre/post host process audits are clean.
+  The abstract adjacent-merge algorithm is unchanged, so the previously accepted exhaustive TLC/TLAPS gate remains
+  the formal algorithm boundary and is not represented as a fresh run for this execution-path unit.
+- Findings cycle: architecture and implementation review covers generation capture, response completion, buffer and
+  child-operation lifetime, cancellation races, deadline propagation, allocation rollback, publication certainty,
+  public surface, constants, and synchronous/composable equivalence. The sweep identified and fixed one P1: an
+  unexpected typed-child `Finish` exception could leave a consumed child operation's completion-set slot reserved;
+  all three selected-read children now release that slot before terminal parent failure. It also fixed one P2 by
+  documenting the selected-run zero cursor beside its declaration. Rebuild, full deterministic rerun, warning-strict
+  proof, and final re-review find no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted adjacent-merge selected-run planning seam
 
 - Parent: complete PutObject and ListObjectsV2 dependency qualification commit `370a243`.
