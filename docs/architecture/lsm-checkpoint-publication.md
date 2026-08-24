@@ -5,8 +5,9 @@ SST-v1 bytes, a private SPARK reference decoder, and a byte-identical dynamicall
 is the allocation and validation boundary. New Create operations publish an empty manifest-v2 root carrying the
 explicit LSM policy. Cacheless Open now admits a complete nonempty first checkpoint, reconstructs its exact state and
 identity partition, and replays only later batches. The internal checkpoint planner assembles an exact successor and
-its family SSTs. A private synchronous publisher creates deterministic recovery fixtures, but no public Flush or
-publication receipt is live yet. Existing manifest-v1 databases remain readable for log-only operation.
+its family SSTs. Public synchronous `Flush` and `Resolve_Flush` publish and reconcile that first checkpoint through a
+self-contained receipt, and the retained testing entry point is a literal wait on the same state machine. Existing
+manifest-v1 databases remain readable for log-only operation.
 
 ## Staged compatibility decision
 
@@ -14,10 +15,10 @@ A checkpoint uses column-family manifest object version 2 and immutable SST obje
 version 1 remains readable as a log-only registry and limit authority, but it cannot name runs or a replay boundary.
 There is no in-place rewrite and no implicit migration. New databases start with a manifest-v2 root whose replay
 boundary, run set, and identity ledger are empty; Create persists every database and family LSM limit supplied by the
-caller. The later public Flush upgrade writes complete immutable SST runs and a successor manifest-v2 object before
-one exact conditional HEAD transition. Exact wire widths, offsets, checksums, goldens, corruption fixtures, decoder
-proofs, dynamic admission, and the cacheless reader are active without claiming the private fixture publisher as a
-production operation.
+caller. Public Flush writes complete immutable SST runs and a successor manifest-v2 object before one exact
+conditional HEAD transition. Exact wire widths, offsets, checksums, goldens, corruption fixtures, decoder proofs,
+dynamic admission, and the cacheless reader apply to the same production state machine used by deterministic test
+fixtures.
 
 Create, Open, create reconciliation, and ambiguous-commit resolution retain the authenticated manifest-v2 policy
 in live engine state. Legacy v1 activation retains an explicit no-LSM sentinel and never synthesizes replacement
@@ -63,7 +64,7 @@ keys. The manifest and runs are immutable; provider generations remain opaque va
 
 ## Publication state machine
 
-The synchronous first implementation will serialize `Flush` through the existing bounded native Ada coordinator.
+The synchronous first implementation serializes `Flush` against the existing bounded native Ada coordinator.
 There is no automatic flush task, task per run, detached helper, or compaction task in this stage. Once admitted, a
 flush follows one absolute deadline and retains a self-contained receipt with the stable run and manifest IDs, exact
 expected HEAD generation/transition, attempted transition identity, replay boundary, and phase.
@@ -106,6 +107,15 @@ transition or a fully validated reachable successor; an unaccepted conditional w
 ordinal/transition can conclude rejection. Continued unavailability remains unknown. A stale expected generation
 cannot publish. Backpressure before step 3 produces no run, manifest, or partial visible state.
 
+The receipt distinguishes immutable-object uncertainty, HEAD uncertainty, confirmed HEAD awaiting local activation,
+and a terminal result. Immutable-object resolution rebuilds the exact deterministic plan from the fenced coordinator
+and uses only the retained identities; pre-existing objects must match byte for byte. HEAD resolution is read-only and
+accepts success only when cacheless recovery reaches the exact checkpoint manifest and replay boundary. A completed
+HEAD transition first fences the old coordinator, then installs a newly allocated coordinator from the exact plan.
+If that local allocation or installation fails, `Local_Activation_Failed` preserves durable-success certainty and
+`Resolve_Flush` can activate the same checkpoint from cacheless recovery. Normal success leaves the database open and
+usable; it does not require close/reopen.
+
 Later transaction commits preserve the published manifest ID. The checkpoint does not change the visible state: it
 only replaces the authoritative representation of the committed prefix. No run or manifest is visible before the
 successful HEAD transition, and unreachable complete objects remain orphans.
@@ -142,8 +152,8 @@ TLC or future gates.
 
 ## Non-goals
 
-This unit does not implement a public checkpoint publication API or receipt, ambiguous-publication reconciliation,
-automatic flushing, multiple checkpoints, compaction, run pruning, garbage collection, scans, MVCC, snapshots,
-remote-provider matrix qualification, a public DB-level composable checkpoint operation, or an LSM performance
-claim. The operational scope is manifest-v2 root creation, exact whole-checkpoint planning, a private success-path
-fixture publisher, and header-first cacheless recovery of one nonempty first checkpoint plus its later batch suffix.
+This unit does not implement automatic flushing, multiple checkpoints, compaction, run pruning, garbage collection,
+scans, MVCC, snapshots, remote-provider matrix qualification, a public DB-level composable checkpoint operation, or
+an LSM performance claim. The operational scope is manifest-v2 root creation, exact whole-checkpoint planning,
+certainty-preserving synchronous first-checkpoint publication/reconciliation, and header-first cacheless recovery of
+one nonempty first checkpoint plus its later batch suffix.

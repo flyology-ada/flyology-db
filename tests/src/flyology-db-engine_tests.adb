@@ -1344,9 +1344,11 @@ package body Flyology.DB.Engine_Tests is
       Checkpoint_Run_Map                         : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (7, ID (224)), Configure_Checkpoint_Run (2, First_Run_ID)];
       --  Stable caller-owned checkpoint object and transition identities.
-      --  They are operation fixtures, not library-generated defaults.
+      --  ID 227 belongs to the pre-Flush transaction/handle survival witness;
+      --  all three are operation fixtures, not library-generated defaults.
       Checkpoint_Manifest_ID                     : constant Identifier := ID (225);
       Checkpoint_Transition_ID                   : constant Identifier := ID (226);
+      Survivor_Transaction_ID                    : constant Transaction_Identifier := TX_ID (227);
 
       procedure Expect_Live_LSM_Authority
         (Target : in out Database; Expected_Replay : Sequence_Number; Context_Text : String)
@@ -1521,6 +1523,7 @@ package body Flyology.DB.Engine_Tests is
          Snapshot_Low, Snapshot_High                    : Sequence_Number;
          Checkpoint_Runs, Checkpoint_Identities         : Natural;
          Checkpoint_Replay                              : Sequence_Number;
+         Flush_Info                                     : Flush_Receipt;
          Before_Batches, Before_Manifests, Before_Heads : Natural;
          After_Batches, After_Manifests, After_Heads    : Natural;
          Snapshot_Allocation_Points                     :
@@ -1528,17 +1531,20 @@ package body Flyology.DB.Engine_Tests is
              [Testing.Checkpoint_References, Testing.Checkpoint_SST];
 
          procedure Expect_Invalid_Run_Map (Map : Checkpoint_Run_Identity_Array; Context_Text : String) is
+            Invalid_Receipt : Flush_Receipt;
          begin
-            Testing.Build_First_Checkpoint
+            Flush
               (Item,
                Map,
                Checkpoint_Manifest_ID,
                Checkpoint_Transition_ID,
-               Checkpoint_Runs,
-               Checkpoint_Identities,
-               Checkpoint_Replay,
-               Result);
+               Test_Operation_Timeout,
+               Receipt => Invalid_Receipt,
+               Result  => Result);
             Expect (Result, Invalid_State, Context_Text);
+            if Flush_Receipt_Manifest_ID (Invalid_Receipt) /= Zero_Identifier then
+               raise Program_Error with Context_Text & " returned an admitted Flush receipt";
+            end if;
             Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
             if After_Batches /= Before_Batches
               or else After_Manifests /= Before_Manifests
@@ -1630,9 +1636,27 @@ package body Flyology.DB.Engine_Tests is
             Before_Runs, After_Runs : Natural;
          begin
             Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
-            Testing.Publish_First_Checkpoint
-              (Item, Checkpoint_Run_Map, Checkpoint_Manifest_ID, Checkpoint_Transition_ID, Result);
+            Begin_Transaction (Item, Survivor_Transaction_ID, Txn, Result);
+            Expect (Result, Success, "pre-Flush transaction setup failed");
+            Flush
+              (Item,
+               Checkpoint_Run_Map,
+               Checkpoint_Manifest_ID,
+               Checkpoint_Transition_ID,
+               Test_Operation_Timeout,
+               Receipt => Flush_Info,
+               Result  => Result);
             Expect (Result, Success, "first checkpoint publication failed");
+            if Flush_Receipt_Outcome (Flush_Info) /= Success
+              or else Flush_Receipt_Manifest_ID (Flush_Info) /= Checkpoint_Manifest_ID
+              or else Flush_Receipt_Transition_ID (Flush_Info) /= Checkpoint_Transition_ID
+              or else Flush_Receipt_Replay_Boundary (Flush_Info) /= Expected_Live_Sequence
+              or else Flush_Receipt_Run_Total (Flush_Info) /= Checkpoint_Run_Map'Length
+              or else Flush_Receipt_Run (Flush_Info, 1) /= Checkpoint_Run_Map (1)
+              or else Flush_Receipt_Run (Flush_Info, 2) /= Checkpoint_Run_Map (2)
+            then
+               raise Program_Error with "successful Flush receipt lost exact operation authority";
+            end if;
             Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
             if After_Batches /= Before_Batches
               or else After_Runs /= Before_Runs + 2
@@ -1641,6 +1665,11 @@ package body Flyology.DB.Engine_Tests is
             then
                raise Program_Error with "first checkpoint publication order/count changed";
             end if;
+            Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "live Flush activation");
+            Get (Item, Txn, Family_By_ID, To_Key ([16#00#, 16#FF#]), Data, Result);
+            Expect (Result, Success, "Flush invalidated a live transaction or family handle");
+            Rollback (Txn, Result);
+            Expect (Result, Success, "Flush replacement read transaction did not roll back");
          end;
       end;
 
@@ -1850,10 +1879,11 @@ package body Flyology.DB.Engine_Tests is
          Database_ID   : Database_Identifier;
          Run_ID        : Identifier)
       is
-         Txn     : Transaction;
-         Receipt : Commit_Receipt;
-         Result  : Outcome_Code;
-         Runs    : constant Checkpoint_Run_Identity_Array :=
+         Txn        : Transaction;
+         Receipt    : Commit_Receipt;
+         Flush_Info : Flush_Receipt;
+         Result     : Outcome_Code;
+         Runs       : constant Checkpoint_Run_Identity_Array :=
            [Configure_Checkpoint_Run (1, Run_ID),
             Configure_Checkpoint_Run (2, Numbered_ID (Identity_Base + 11)),
             Configure_Checkpoint_Run (3, Numbered_ID (Identity_Base + 12)),
@@ -1872,8 +1902,14 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, Prefix & " mutation failed");
          Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
          Expect (Result, Success, Prefix & " commit failed");
-         Testing.Publish_First_Checkpoint
-           (Item, Runs, Numbered_ID (Identity_Base + 20), Numbered_ID (Identity_Base + 21), Result);
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Identity_Base + 20),
+            Numbered_ID (Identity_Base + 21),
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
          Expect (Result, Success, Prefix & " checkpoint publication failed");
          Close (Item, Result);
          Expect (Result, Success, Prefix & " checkpoint close failed");
@@ -2001,6 +2037,252 @@ package body Flyology.DB.Engine_Tests is
            (Context, Probe, Database_ID, "checksum-valid wrong-family checkpoint run was accepted");
       end;
    end Test_Checkpoint_Recovery_Failures;
+
+   procedure Test_Flush_Certainty (Backend : not null access Backends.Backend'Class; Prefix : String) is
+      --  Six disjoint 100-ID fixture domains cover immutable-object
+      --  uncertainty, HEAD uncertainty, activation failure, activation
+      --  allocation failure, cancellation, and rival publication. Within each domain, +1 is the
+      --  root transition, +2 the committed transaction, +10 .. +17 the exact
+      --  family run map, +20/+21 the Flush manifest/transition, and +30 the
+      --  post-result usability probe; rival publication uses +31. These are
+      --  test namespace authority only. The exact one-byte [1] -> [2]
+      --  committed value and rival [3] -> [4] value are visibility witnesses,
+      --  not key/value policy.
+      Run_Unknown_Base      : constant Natural := 24_500;
+      Head_Unknown_Base     : constant Natural := 24_600;
+      Activation_Fault_Base : constant Natural := 24_700;
+      Activation_Alloc_Base : constant Natural := 24_800;
+      Cancellation_Base     : constant Natural := 24_900;
+      Rival_Base            : constant Natural := 25_000;
+
+      procedure Prepare
+        (Context       : aliased in out Storage_Context;
+         Item          : in out Database;
+         Suffix        : String;
+         Identity_Base : Natural;
+         Runs          : out Checkpoint_Run_Identity_Array;
+         Result        : out Outcome_Code)
+      is
+         Txn     : Transaction;
+         Receipt : Commit_Receipt;
+      begin
+         Bind_Context (Context, Backend, Prefix & "-" & Suffix);
+         Create_DB
+           (Item,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Identity_Base)),
+            Numbered_ID (Identity_Base + 1),
+            Result);
+         if Result /= Success then
+            return;
+         end if;
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 2), Txn, Result);
+         if Result /= Success then
+            return;
+         end if;
+         Put (Item, Txn, 1, To_Key ([1]), To_Value ([2]), Result);
+         if Result /= Success then
+            return;
+         end if;
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         if Result /= Success then
+            return;
+         end if;
+         for Offset in Runs'Range loop
+            Runs (Offset) :=
+              Configure_Checkpoint_Run
+                (Column_Family_ID (Offset - Runs'First + 1),
+                 Numbered_ID (Identity_Base + 10 + Offset - Runs'First));
+         end loop;
+      end Prepare;
+
+      procedure Expect_Usable (Item : in out Database; Identity_Base : Natural; Context_Text : String) is
+         Txn    : Transaction;
+         Result : Outcome_Code;
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 30), Txn, Result);
+         Expect (Result, Success, Context_Text & " left the coordinator unavailable");
+         Rollback (Txn, Result);
+         Expect (Result, Success, Context_Text & " transaction cleanup failed");
+      end Expect_Usable;
+   begin
+      declare
+         Context : aliased Storage_Context;
+         Item    : Database;
+         Runs    : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Receipt : Flush_Receipt;
+         Result  : Outcome_Code;
+      begin
+         Prepare (Context, Item, "run-unknown", Run_Unknown_Base, Runs, Result);
+         Expect (Result, Success, "immutable-unknown Flush setup failed");
+         Testing.Arm (Context, After_Run_Put, Unknown_After_Entry);
+         Testing.Arm (Context, Before_Get, Definite_Failure);
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Run_Unknown_Base + 20),
+            Numbered_ID (Run_Unknown_Base + 21),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Outcome_Unknown, "lost run response was falsely classified");
+         Resolve_Flush (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "same-identity run reconciliation did not finish Flush");
+         Expect_Usable (Item, Run_Unknown_Base, "resolved immutable-object uncertainty");
+         Close (Item, Result);
+         Expect (Result, Success, "resolved immutable-unknown database did not close");
+      end;
+
+      declare
+         Context : aliased Storage_Context;
+         Item    : Database;
+         Runs    : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Receipt : Flush_Receipt;
+         Result  : Outcome_Code;
+      begin
+         Prepare (Context, Item, "head-unknown", Head_Unknown_Base, Runs, Result);
+         Expect (Result, Success, "HEAD-unknown Flush setup failed");
+         Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Head_Unknown_Base + 20),
+            Numbered_ID (Head_Unknown_Base + 21),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Outcome_Unknown, "lost Flush HEAD response was falsely classified");
+         Resolve_Flush (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "cacheless HEAD reconciliation did not finish Flush");
+         Expect_Usable (Item, Head_Unknown_Base, "resolved HEAD uncertainty");
+         Close (Item, Result);
+         Expect (Result, Success, "resolved HEAD-unknown database did not close");
+      end;
+
+      declare
+         Context : aliased Storage_Context;
+         Item    : Database;
+         Runs    : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Receipt : Flush_Receipt;
+         Result  : Outcome_Code;
+      begin
+         Prepare (Context, Item, "activation-fault", Activation_Fault_Base, Runs, Result);
+         Expect (Result, Success, "activation-fault Flush setup failed");
+         Testing.Arm (Context, Before_Local_Activation, Definite_Failure);
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Activation_Fault_Base + 20),
+            Numbered_ID (Activation_Fault_Base + 21),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Local_Activation_Failed, "durable Flush activation failure lost certainty");
+         Resolve_Flush (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "confirmed Flush could not recover local activation");
+         Expect_Usable (Item, Activation_Fault_Base, "recovered activation fault");
+         Close (Item, Result);
+         Expect (Result, Success, "activation-fault database did not close");
+      end;
+
+      declare
+         Context : aliased Storage_Context;
+         Item    : Database;
+         Runs    : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Receipt : Flush_Receipt;
+         Result  : Outcome_Code;
+      begin
+         Prepare (Context, Item, "activation-allocation", Activation_Alloc_Base, Runs, Result);
+         Expect (Result, Success, "activation-allocation Flush setup failed");
+         Testing.Fail_Next_Allocation (Testing.Flush_Activation_State);
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Activation_Alloc_Base + 20),
+            Numbered_ID (Activation_Alloc_Base + 21),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Local_Activation_Failed, "Flush activation allocation was not classified locally");
+         Resolve_Flush (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "allocation-failed Flush could not activate from recovery");
+         Expect_Usable (Item, Activation_Alloc_Base, "recovered activation allocation");
+         Close (Item, Result);
+         Expect (Result, Success, "activation-allocation database did not close");
+      end;
+
+      declare
+         Context : aliased Storage_Context;
+         Item    : Database;
+         Runs    : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Receipt : Flush_Receipt;
+         Stop    : aliased Flyology.Cancellation.Token;
+         Result  : Outcome_Code;
+      begin
+         Prepare (Context, Item, "cancelled", Cancellation_Base, Runs, Result);
+         Expect (Result, Success, "cancelled Flush setup failed");
+         Stop.Request;
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Cancellation_Base + 20),
+            Numbered_ID (Cancellation_Base + 21),
+            Test_Operation_Timeout,
+            Stop'Access,
+            Receipt,
+            Result);
+         Expect (Result, Cancelled, "pre-publication Flush cancellation was not definite");
+         Expect_Usable (Item, Cancellation_Base, "cancelled Flush");
+         Close (Item, Result);
+         Expect (Result, Success, "cancelled Flush database did not close");
+      end;
+
+      declare
+         Context      : aliased Storage_Context;
+         Item         : Database;
+         Rival        : Database;
+         Rival_Txn    : Transaction;
+         Rival_Info   : Commit_Receipt;
+         Runs         : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Receipt      : Flush_Receipt;
+         Result       : Outcome_Code;
+         Rival_Result : Outcome_Code;
+      begin
+         Prepare (Context, Item, "rival", Rival_Base, Runs, Result);
+         Expect (Result, Success, "rival Flush setup failed");
+         Testing.Arm (Context, Before_Head_Put, Unknown_After_Entry);
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Rival_Base + 20),
+            Numbered_ID (Rival_Base + 21),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Outcome_Unknown, "unaccepted Flush HEAD was falsely classified");
+         Resolve_Flush (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Outcome_Unknown, "unchanged predecessor falsely resolved Flush");
+         Open
+           (Rival,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Rival_Base)),
+            Test_Operation_Timeout,
+            Result => Rival_Result);
+         Expect (Rival_Result, Success, "rival writer could not open exact predecessor");
+         Resolve_Flush (Rival, Receipt, Test_Operation_Timeout, Result => Rival_Result);
+         Expect (Rival_Result, Invalid_State, "Flush receipt crossed its originating engine incarnation");
+         Begin_Transaction (Rival, Numbered_TX_ID (Rival_Base + 31), Rival_Txn, Rival_Result);
+         Put (Rival, Rival_Txn, 1, To_Key ([3]), To_Value ([4]), Rival_Result);
+         Commit (Rival, Rival_Txn, Test_Operation_Timeout, Receipt => Rival_Info, Result => Rival_Result);
+         Expect (Rival_Result, Success, "rival successor publication failed");
+         Resolve_Flush (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Stale_Writer, "exact rival transition did not reject lost Flush");
+         Close (Rival, Rival_Result);
+         Expect (Rival_Result, Success, "rival writer did not close");
+         Close (Item, Result);
+         Expect (Result, Success, "stale Flush writer did not close");
+      end;
+   end Test_Flush_Certainty;
 
    procedure Test_Create_Publication (Backend : not null access Backends.Backend'Class) is
       Context : aliased Storage_Context;
@@ -4487,6 +4769,7 @@ package body Flyology.DB.Engine_Tests is
          Test_Allocation_Failures (Store'Access);
          Test_Manifest_And_Family_API (Store'Access);
          Test_Checkpoint_Recovery_Failures (Store'Access);
+         Test_Flush_Certainty (Store'Access, "memory-flush");
          Test_Create_Publication (Store'Access);
          Test_Lower_Live_Budgets (Store'Access);
          Test_Recovery_Format_Edges (Store'Access);
@@ -4525,6 +4808,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Large_Production_Profile (Store'Access, "files-large-profile", 22);
             Test_Dynamic_Mutation_Descriptors (Store'Access, "files-dynamic-mutations", 23);
             Test_Checkpoint_Recovery_Failures (Store'Access);
+            Test_Flush_Certainty (Store'Access, "files-flush");
             Test_Faults (Store'Access, "files-faults", 140);
          end;
          Ada.Directories.Delete_Tree (Root);

@@ -33,10 +33,11 @@ complete manifest chain before the batch chain and installs neither partial regi
 1 remains decodable for inspection but operational Open returns `Unsupported_Format`; no migration or write path
 silently upgrades an existing manifest-v1 database.
 
-The staged first-checkpoint protocol is specified separately in
-[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v2 root creation and cacheless nonempty
-checkpoint recovery are operational. The private deterministic publisher exists only to build recovery fixtures;
-the certainty-preserving public Flush surface remains the next focused publication unit.
+The first-checkpoint protocol is specified separately in
+[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v2 root creation, public synchronous Flush
+with self-contained certainty receipts, exact same-identity reconciliation, live coordinator replacement, and
+cacheless nonempty checkpoint recovery are operational. The deterministic testing publisher is a literal unbounded
+wait on that public state machine.
 
 ## Transaction semantics
 

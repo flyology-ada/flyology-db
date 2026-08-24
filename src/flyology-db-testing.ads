@@ -21,7 +21,8 @@ private package Flyology.DB.Testing is
       Recovery_Manifest_Image,
       Recovery_SST_Header,
       Recovery_SST_Image,
-      Recovery_Checkpoint_Image);
+      Recovery_Checkpoint_Image,
+      Flush_Activation_State);
 
    procedure Fail_Next_Allocation (Point : Allocation_Fault_Point);
    procedure Decode_Runtime_Image

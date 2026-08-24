@@ -22,7 +22,8 @@ package body Flyology.DB.Testing is
            when Recovery_Manifest_Image   => Recovery_Manifest_Image_Allocation,
            when Recovery_SST_Header       => Recovery_SST_Header_Allocation,
            when Recovery_SST_Image        => Recovery_SST_Image_Allocation,
-           when Recovery_Checkpoint_Image => Recovery_Checkpoint_Image_Allocation);
+           when Recovery_Checkpoint_Image => Recovery_Checkpoint_Image_Allocation,
+           when Flush_Activation_State    => Flush_Activation_State_Allocation);
    end Fail_Next_Allocation;
 
    procedure Decode_Runtime_Image

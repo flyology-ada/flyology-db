@@ -239,6 +239,80 @@ begin
          Flyology.DB.Close (Item, Result);
          Require (Result = Flyology.DB.Success, "durable HEAD recovery close failed");
       end;
+   elsif Ada.Command_Line.Argument (1) = "flush-head-crash" then
+      Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
+      Require (Status = OS.Success, "Flush-head bucket create failed");
+      declare
+         Context     : aliased Flyology.DB.Storage_Context;
+         Item        : Flyology.DB.Database;
+         Txn         : Flyology.DB.Transaction;
+         Family      : Flyology.DB.Column_Family;
+         Create_Info : Flyology.DB.Create_Receipt;
+         Commit_Info : Flyology.DB.Commit_Receipt;
+         Flush_Info  : Flyology.DB.Flush_Receipt;
+         Result      : Flyology.DB.Outcome_Code;
+         --  Crash fixture identities 60 .. 68 assign exact database, root,
+         --  transaction, two-run, checkpoint-manifest, HEAD-transition, and
+         --  recovery-reader roles. They are isolated test inputs, not
+         --  persisted kind tags.
+         Runs        : constant Flyology.DB.Checkpoint_Run_Identity_Array :=
+           [Flyology.DB.Configure_Checkpoint_Run (1, ID (64)),
+            Flyology.DB.Configure_Checkpoint_Run (2, ID (65))];
+      begin
+         Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, "flush-head");
+         Flyology.DB.Create
+           (Item,
+            Context'Access,
+            DB_ID (60),
+            ID (62),
+            ID (61),
+            Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Require (Result = Flyology.DB.Success, "Flush-head database create failed");
+         Flyology.DB.Begin_Transaction (Item, TX_ID (63), Txn, Result);
+         Flyology.DB.Open_Column_Family (Item, 1, Family, Result);
+         Flyology.DB.Put (Item, Txn, Family, [1], [2], Result);
+         Flyology.DB.Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Require (Result = Flyology.DB.Success, "Flush-head transaction failed");
+         Testing.Arm (Context, Before_Local_Activation, Definite_Failure);
+         Flyology.DB.Flush
+           (Item, Runs, ID (66), ID (67), Test_Operation_Timeout, Receipt => Flush_Info, Result => Result);
+         Require
+           (Result = Flyology.DB.Local_Activation_Failed,
+            "durable Flush HEAD lost activation classification");
+         --  Exit 137 is the runner's deliberate process-crash witness; the
+         --  paired verify action requires this exact status before recovery.
+         GNAT.OS_Lib.OS_Exit (137);
+      end;
+   elsif Ada.Command_Line.Argument (1) = "flush-head-verify" then
+      declare
+         Context : aliased Flyology.DB.Storage_Context;
+         Item    : Flyology.DB.Database;
+         Txn     : Flyology.DB.Transaction;
+         Family  : Flyology.DB.Column_Family;
+         Value   : Flyology.Bytes.Unbounded_Bytes;
+         Result  : Flyology.DB.Outcome_Code;
+      begin
+         Flyology.DB.Object_Storage.Bind (Context, Store'Access, Bucket, "flush-head");
+         Flyology.DB.Open (Item, Context'Access, DB_ID (60), Test_Operation_Timeout, Result => Result);
+         Require (Result = Flyology.DB.Success, "durable Flush HEAD did not recover after process loss");
+         Flyology.DB.Begin_Transaction (Item, TX_ID (68), Txn, Result);
+         Flyology.DB.Open_Column_Family (Item, 1, Family, Result);
+         Flyology.DB.Get (Item, Txn, Family, [1], Value, Result);
+         --  Key 1 and value 2 are the exact one-byte crash/recovery witness
+         --  written above; they carry no application key/value policy.
+         Require
+           (Result = Flyology.DB.Success
+            and then Flyology.Bytes.Length (Value) = 1
+            and then Flyology.Bytes.Element (Value, 1) = 2,
+            "durable Flush checkpoint lost its exact value");
+         Flyology.DB.Rollback (Txn, Result);
+         Flyology.DB.Close (Item, Result);
+         Require (Result = Flyology.DB.Success, "durable Flush recovery close failed");
+      end;
    else
       raise Program_Error with "unknown crash-probe action";
    end if;

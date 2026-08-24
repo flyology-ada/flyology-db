@@ -118,6 +118,8 @@ package Flyology.DB is
    type Transaction is limited private;
    type Create_Receipt is private;
    type Commit_Receipt is private;
+   --  Self-contained first-checkpoint publication and reconciliation state.
+   type Flush_Receipt is private;
    --  Project admission policy documented by the synchronous topology: one
    --  public atomic group has at most eight members. This is a bounded API and
    --  coordinator-capacity choice, not a wire-count limit or database default.
@@ -275,6 +277,79 @@ package Flyology.DB is
    --  Immutable batch identity retained by the receipt.
    function Receipt_Batch_ID (Item : Commit_Receipt) return Identifier;
 
+   --  Publish the first complete immutable checkpoint at the current committed
+   --  boundary. Runs must map every persisted family to one caller-stable run
+   --  identity; empty families consume no run object or run identity. Every
+   --  identity that names an attempted object or HEAD becomes unavailable for
+   --  reuse once its publication begins. One absolute monotonic deadline
+   --  covers planning, publication, reconciliation, and local activation.
+   --  Outcome_Unknown must be resolved and never replayed as a new operation.
+   --  @param Item Open database whose committed prefix is checkpointed
+   --  @param Runs Exact caller-owned family/run identity map borrowed for this call
+   --  @param Manifest_ID Stable immutable checkpoint manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Receipt Self-contained operation identity and certainty record
+   --  @param Result Terminal or presently unknown operation outcome
+   procedure Flush
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code);
+
+   --  Continue exact immutable-object reconciliation or reconcile the
+   --  attempted HEAD retained by Receipt. Resolve_Flush never changes an
+   --  identity and never republishes application work under a new identity.
+   --  @param Item Same open database retained by the original Flush
+   --  @param Receipt Original nonterminal Flush receipt, updated in place
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Result Terminal or still-unknown resolution outcome
+   procedure Resolve_Flush
+     (Item    : in out Database;
+      Receipt : in out Flush_Receipt;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null;
+      Result  : out Outcome_Code);
+
+   --  Outcome most recently assigned to Receipt.
+   --  @param Item Flush receipt to inspect
+   --  @return Most recent certainty-preserving outcome
+   function Flush_Receipt_Outcome (Item : Flush_Receipt) return Outcome_Code;
+
+   --  Stable immutable checkpoint manifest identity carried by Receipt.
+   --  @param Item Flush receipt to inspect
+   --  @return Exact manifest identity or zero before admission
+   function Flush_Receipt_Manifest_ID (Item : Flush_Receipt) return Identifier;
+
+   --  Attempted HEAD transition identity, or zero before storage admission.
+   --  @param Item Flush receipt to inspect
+   --  @return Exact attempted transition identity or zero
+   function Flush_Receipt_Transition_ID (Item : Flush_Receipt) return Identifier;
+
+   --  Exact committed sequence represented by the checkpoint.
+   --  @param Item Flush receipt to inspect
+   --  @return Exact replay boundary or zero before admission
+   function Flush_Receipt_Replay_Boundary (Item : Flush_Receipt) return Sequence_Number;
+
+   --  Number of exact family/run mappings retained by Receipt.
+   --  @param Item Flush receipt to inspect
+   --  @return Retained mapping count or zero before admission
+   function Flush_Receipt_Run_Total (Item : Flush_Receipt) return Natural;
+
+   --  Return retained family/run mapping Index. Constraint_Error is raised
+   --  when Index is outside 1 .. Flush_Receipt_Run_Total (Item).
+   --  @param Item Flush receipt to inspect
+   --  @param Index One-based retained mapping index
+   --  @return Exact caller-supplied family/run mapping
+   --  @exception Constraint_Error Index is outside the retained map
+   function Flush_Receipt_Run (Item : Flush_Receipt; Index : Positive) return Checkpoint_Run_Identity;
+
    --  Return the highest sequence confirmed visible while Item is safely open.
    procedure Highest_Visible (Item : in out Database; Value : out Sequence_Number; Result : out Outcome_Code);
 
@@ -292,6 +367,15 @@ private
    --  not a content hash or wire-format field; changing it alters provider
    --  compatibility and protected-state memory.
    Maximum_Generation_Bytes : constant := 256;
+
+   subtype Generation_Length is Natural range 0 .. Maximum_Generation_Bytes;
+   --  Opaque provider-generation storage uses the adjacent compatibility cap;
+   --  Length is the exact authenticated byte count and Data is never parsed as
+   --  a checksum or persisted DB field.
+   type Generation_Value is record
+      Length : Generation_Length := 0;
+      Data   : String (1 .. Maximum_Generation_Bytes) := [others => Character'Val (0)];
+   end record;
 
    --  Bounded batch-codec reference/proof dimensions fixed by the v1 format
    --  qualification corpus. They never narrow persisted family key/value
@@ -353,7 +437,8 @@ private
       Recovery_Manifest_Image_Allocation,
       Recovery_SST_Header_Allocation,
       Recovery_SST_Image_Allocation,
-      Recovery_Checkpoint_Image_Allocation);
+      Recovery_Checkpoint_Image_Allocation,
+      Flush_Activation_State_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code);
@@ -471,6 +556,32 @@ private
       Attempted_Head    : Head_Snapshot;
    end record;
 
+   --  Receipt phases are in-memory certainty states, never persisted enum
+   --  positions. Objects_Unknown permits only same-identity exact-byte
+   --  continuation; Flush_Head_Unknown requires read-only HEAD reconciliation;
+   --  Flush_Head_Confirmed records durable success awaiting local activation.
+   type Flush_Receipt_Phase is
+     (No_Flush_Publication, Objects_Unknown, Flush_Head_Unknown, Flush_Head_Confirmed, Flush_Resolved);
+
+   --  The fixed receipt map is derived from the manifest-v1/v2 64-family
+   --  compatibility ceiling. It retains caller identities without borrowing
+   --  the caller array or introducing a second Flush-specific capacity.
+   subtype Flush_Run_Receipt_Array is Checkpoint_Run_Identity_Array (1 .. Maximum_Initial_Column_Families);
+
+   type Flush_Receipt is record
+      Current_Outcome     : Outcome_Code := Invalid_State;
+      Phase               : Flush_Receipt_Phase := No_Flush_Publication;
+      Run_Total           : Natural range 0 .. Maximum_Initial_Column_Families := 0;
+      Runs                : Flush_Run_Receipt_Array := [others => (others => <>)];
+      Database_ID         : Database_Identifier := Zero_Database_ID;
+      Incarnation         : Engine_Incarnation := 0;
+      Manifest_ID         : Identifier := Zero_Identifier;
+      Replay_Boundary     : Sequence_Number := 0;
+      Expected_Generation : Generation_Value;
+      Expected_Head       : Head_Snapshot;
+      Attempted_Head      : Head_Snapshot;
+   end record;
+
    type Storage_Fault_Point is
      (Before_Batch_Put,
       After_Batch_Put,
@@ -558,6 +669,7 @@ private
       procedure Finish_Resolve (State : not null Engine_State_Access; Visible : Sequence_Number);
       procedure Cancel_Resolve;
       procedure Finish_Checkpoint;
+      procedure Finish_Checkpoint (State : not null Engine_State_Access; Visible : Sequence_Number);
       procedure Cancel_Checkpoint;
       procedure Set_Visible (Value : Sequence_Number);
       function Highest (Result : out Outcome_Code) return Sequence_Number;

@@ -299,12 +299,6 @@ package body Flyology.DB is
       end Allocate;
    end Incarnation_Source;
 
-   subtype Generation_Length is Natural range 0 .. Maximum_Generation_Bytes;
-   type Generation_Value is record
-      Length : Generation_Length := 0;
-      Data   : String (1 .. Maximum_Generation_Bytes) := [others => Character'Val (0)];
-   end record;
-
    type Read_Outcome is
      (Object_Read,
       Object_Missing,
@@ -3582,11 +3576,12 @@ package body Flyology.DB is
    end Sort_Snapshot_References;
 
    procedure Build_Family_SST
-     (State     : not null Engine_State_Access;
-      Family_ID : Column_Family_ID;
-      Run_ID    : Identifier;
-      Value     : out LSM_Runtime.SST_Access;
-      Result    : out Outcome_Code)
+     (State        : not null Engine_State_Access;
+      Family_ID    : Column_Family_ID;
+      Run_ID       : Identifier;
+      Value        : out LSM_Runtime.SST_Access;
+      Result       : out Outcome_Code;
+      Allow_Fenced : Boolean := False)
    is
       References      : Snapshot_Entry_Reference_Array_Access := null;
       Entry_Total     : Natural;
@@ -3629,7 +3624,7 @@ package body Flyology.DB is
       if Uncertain then
          Result := Outcome_Unknown;
          return;
-      elsif Fenced then
+      elsif Fenced and then not Allow_Fenced then
          Result := Stale_Writer;
          return;
       end if;
@@ -3762,7 +3757,8 @@ package body Flyology.DB is
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
       Plan          : out Checkpoint_Plan;
-      Result        : out Outcome_Code)
+      Result        : out Outcome_Code;
+      Allow_Fenced  : Boolean := False)
    is
       Base           : Manifests.Manifest;
       Head           : Head_Snapshot;
@@ -3798,7 +3794,7 @@ package body Flyology.DB is
       if Uncertain then
          Result := Outcome_Unknown;
          return;
-      elsif Fenced then
+      elsif Fenced and then not Allow_Fenced then
          Result := Stale_Writer;
          return;
       elsif Head.Highest = 0
@@ -3869,7 +3865,7 @@ package body Flyology.DB is
             Family_ID : constant Column_Family_ID := Column_Family_ID (Base.Families (Family_Index).ID);
             Run_ID    : constant Identifier := Run_For (Family_ID);
          begin
-            Build_Family_SST (State, Family_ID, Run_ID, Plan.SSTs (Family_Index), Result);
+            Build_Family_SST (State, Family_ID, Run_ID, Plan.SSTs (Family_Index), Result, Allow_Fenced);
             if Result = Success then
                Run_Total := Run_Total + 1;
             elsif Result = Not_Found then
@@ -4092,6 +4088,16 @@ package body Flyology.DB is
          if Mode /= Checkpointing or else Active_Calls /= 0 or else Current = null then
             raise Program_Error with "invalid database checkpoint completion";
          end if;
+         Mode := Opened;
+      end Finish_Checkpoint;
+
+      procedure Finish_Checkpoint (State : not null Engine_State_Access; Visible : Sequence_Number) is
+      begin
+         if Mode /= Checkpointing or else Active_Calls /= 0 or else Current = null then
+            raise Program_Error with "invalid database checkpoint replacement";
+         end if;
+         Current := State;
+         Last_Visible := Visible;
          Mode := Opened;
       end Finish_Checkpoint;
 
@@ -7948,6 +7954,601 @@ package body Flyology.DB is
    function Receipt_Batch_ID (Item : Commit_Receipt) return Identifier
    is (Item.Batch_ID);
 
+   procedure Confirm_Immutable_Object
+     (Storage  : in out Storage_Context;
+      Key      : String;
+      Kind     : Stored_Object_Kind;
+      Image    : not null Shared_Image_Access;
+      Deadline : Ada.Real_Time.Time;
+      Token    : access Flyology.Cancellation.Token;
+      Result   : out Outcome_Code)
+   is
+      Generation  : Generation_Value;
+      Put_Result  : Put_Outcome;
+      Read_Data   : Flyology.Bytes.Unbounded_Bytes;
+      Read_Result : Read_Outcome;
+   begin
+      Storage_Port.Put_Create (Storage, Key, Image, Kind, Deadline, Token, Generation, Put_Result);
+      if Put_Result = Object_Published then
+         Result := Success;
+      elsif Put_Result in Put_Precondition_Failed | Put_Outcome_Unknown then
+         Storage_Port.Get_Whole
+           (Storage,
+            Key,
+            Kind,
+            Deadline,
+            Token,
+            Read_Data,
+            Generation,
+            Read_Result,
+            Flyology.Bytes.Length (Image.Data));
+         if Read_Result = Object_Read and then Exact_Bytes (Image, Read_Data) then
+            Result := Success;
+         elsif Read_Result = Object_Read then
+            Result := Conflict;
+         else
+            --  Once a create-if-absent call can have entered the provider, a
+            --  failed observation cannot prove that the immutable object was
+            --  absent. Resolution must retain the same identity and bytes.
+            Result := Outcome_Unknown;
+         end if;
+      elsif Put_Result = Put_Cancelled then
+         Result := Cancelled;
+      elsif Put_Result = Put_Timed_Out then
+         Result := Timed_Out;
+      else
+         Result := Storage_Failure;
+      end if;
+   end Confirm_Immutable_Object;
+
+   procedure Stop_Replaced_Engine (State : in out Engine_State_Access) is
+   begin
+      State.Gate.Request_Close;
+      State.Gate.Join;
+      Free_Worker (State.Worker);
+      Release_State_Images (State);
+      Free_State (State);
+   end Stop_Replaced_Engine;
+
+   procedure Activate_Flush_Plan
+     (Item       : in out Database;
+      Old_State  : in out Engine_State_Access;
+      Plan       : in out Checkpoint_Plan;
+      Generation : Generation_Value;
+      Receipt    : in out Flush_Receipt;
+      Guard      : in out Checkpoint_Guard;
+      Result     : out Outcome_Code)
+   is
+      Manifest         : constant Manifests.Manifest := Plan.Manifest.Base;
+      LSM_Authority    : constant Engine_LSM_Authority := To_Engine_LSM_Authority (Plan.Manifest.all);
+      History          : Batch_History_Access := null;
+      History_Count    : Natural := 0;
+      New_State        : Engine_State_Access := null;
+      --  Flush changes only the durable representation of the same open
+      --  database. Reusing the live incarnation preserves valid family
+      --  handles and active transaction ownership across coordinator swap.
+      Stamp            : constant Engine_Incarnation := Old_State.Gate.Current_Incarnation;
+      Activation_Fault : Storage_Fault_Mode;
+   begin
+      Receipt.Phase := Flush_Head_Confirmed;
+      Receipt.Current_Outcome := Success;
+      Old_State.Gate.Fence;
+      Consume_Fault (Old_State.Storage.all, Before_Local_Activation, Activation_Fault);
+      if Activation_Fault /= No_Fault then
+         Result := Local_Activation_Failed;
+      else
+         Allocation_Faults.Check (Flush_Activation_State_Allocation);
+         Allocate_Engine
+           (Item.Life'Unchecked_Access,
+            Old_State.Storage,
+            Receipt.Attempted_Head,
+            Generation,
+            Manifest,
+            LSM_Authority,
+            Plan,
+            Stamp,
+            History,
+            History_Count,
+            New_State,
+            Result);
+         if Result /= Success then
+            Release_History (History, History_Count);
+            Release_Checkpoint_Plan (Plan);
+            Result := Local_Activation_Failed;
+         end if;
+      end if;
+      if Result /= Success then
+         Receipt.Current_Outcome := Local_Activation_Failed;
+         return;
+      end if;
+
+      Item.Life.Finish_Checkpoint (New_State, Receipt.Attempted_Head.Highest);
+      Guard.Active := False;
+      Stop_Replaced_Engine (Old_State);
+      Receipt.Phase := Flush_Resolved;
+      Receipt.Current_Outcome := Success;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Plan);
+         Receipt.Current_Outcome := Local_Activation_Failed;
+         Result := Local_Activation_Failed;
+   end Activate_Flush_Plan;
+
+   procedure Publish_Flush_Plan
+     (Item     : in out Database;
+      State    : in out Engine_State_Access;
+      Plan     : in out Checkpoint_Plan;
+      Deadline : Ada.Real_Time.Time;
+      Token    : access Flyology.Cancellation.Token;
+      Receipt  : in out Flush_Receipt;
+      Guard    : in out Checkpoint_Guard;
+      Result   : out Outcome_Code)
+   is
+      Encoded        : LSM_Runtime.Image_Access := null;
+      Owner          : Shared_Image_Access := null;
+      New_Generation : Generation_Value;
+      Put_Result     : Put_Outcome;
+      Encode_Result  : LSM_Runtime.Encode_Status;
+   begin
+      Receipt.Phase := Objects_Unknown;
+      for SST of Plan.SSTs loop
+         if SST /= null then
+            LSM_Runtime.Encode_SST (SST.all, Encoded, Encode_Result);
+            if Encode_Result /= LSM_Runtime.Encoded then
+               Result := Corrupt;
+               Receipt.Phase := Flush_Resolved;
+               Receipt.Current_Outcome := Result;
+               return;
+            end if;
+            Owner := New_Image (Encoded.all);
+            LSM_Runtime.Release (Encoded);
+            Confirm_Immutable_Object
+              (State.Storage.all,
+               Run_Key (State.Storage.all, To_Identifier (SST.Run_ID)),
+               Run_Object,
+               Owner,
+               Deadline,
+               Token,
+               Result);
+            Release_Image (Owner);
+            if Result /= Success then
+               Receipt.Current_Outcome := Result;
+               if Result = Outcome_Unknown then
+                  State.Gate.Fence;
+               else
+                  Receipt.Phase := Flush_Resolved;
+               end if;
+               return;
+            end if;
+         end if;
+      end loop;
+
+      LSM_Runtime.Encode_Checkpoint_Manifest (Plan.Manifest.all, Encoded, Encode_Result);
+      if Encode_Result /= LSM_Runtime.Encoded then
+         Result := Corrupt;
+         Receipt.Phase := Flush_Resolved;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Owner := New_Image (Encoded.all);
+      LSM_Runtime.Release (Encoded);
+      Confirm_Immutable_Object
+        (State.Storage.all,
+         Manifest_Key (State.Storage.all, Receipt.Manifest_ID),
+         Manifest_Object,
+         Owner,
+         Deadline,
+         Token,
+         Result);
+      Release_Image (Owner);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         if Result = Outcome_Unknown then
+            State.Gate.Fence;
+         else
+            Receipt.Phase := Flush_Resolved;
+         end if;
+         return;
+      elsif Token /= null and then Token.Requested then
+         Result := Cancelled;
+         Receipt.Phase := Flush_Resolved;
+         Receipt.Current_Outcome := Result;
+         return;
+      elsif Deadline <= Ada.Real_Time.Clock then
+         Result := Timed_Out;
+         Receipt.Phase := Flush_Resolved;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+
+      Owner := New_Image (Formats.Encode_Head (To_Head (Receipt.Attempted_Head)));
+      Receipt.Phase := Flush_Head_Unknown;
+      Storage_Port.Put_Replace
+        (State.Storage.all,
+         Full_Key (State.Storage.all, Head_Key_Suffix),
+         Owner,
+         Receipt.Expected_Generation,
+         Deadline,
+         Token,
+         New_Generation,
+         Put_Result);
+      Release_Image (Owner);
+      if Put_Result = Object_Published then
+         Activate_Flush_Plan (Item, State, Plan, New_Generation, Receipt, Guard, Result);
+      elsif Put_Result = Put_Precondition_Failed then
+         State.Gate.Fence;
+         Receipt.Phase := Flush_Resolved;
+         Receipt.Current_Outcome := Stale_Writer;
+         Result := Stale_Writer;
+      elsif Put_Result = Put_Outcome_Unknown then
+         State.Gate.Fence;
+         Receipt.Current_Outcome := Outcome_Unknown;
+         Result := Outcome_Unknown;
+      elsif Put_Result = Put_Cancelled then
+         Receipt.Phase := Flush_Resolved;
+         Receipt.Current_Outcome := Cancelled;
+         Result := Cancelled;
+      elsif Put_Result = Put_Timed_Out then
+         Receipt.Phase := Flush_Resolved;
+         Receipt.Current_Outcome := Timed_Out;
+         Result := Timed_Out;
+      else
+         Receipt.Phase := Flush_Resolved;
+         Receipt.Current_Outcome := Storage_Failure;
+         Result := Storage_Failure;
+      end if;
+   exception
+      when others =>
+         LSM_Runtime.Release (Encoded);
+         Release_Image (Owner);
+         if Receipt.Phase in Objects_Unknown | Flush_Head_Unknown then
+            State.Gate.Fence;
+            Result := Outcome_Unknown;
+         else
+            Result := Local_Activation_Failed;
+         end if;
+         Receipt.Current_Outcome := Result;
+   end Publish_Flush_Plan;
+
+   function Plan_Matches_Receipt
+     (Plan : Checkpoint_Plan; Head : Head_Snapshot; Receipt : Flush_Receipt) return Boolean
+   is
+      Attempted : constant Head_Snapshot :=
+        (Database_ID            => Head.Database_ID,
+         Version                => Head.Version,
+         Epoch                  => Head.Epoch,
+         Highest                => Head.Highest,
+         Latest_Batch           => Head.Latest_Batch,
+         Latest_Manifest        => Receipt.Manifest_ID,
+         Transition_ID          => Receipt.Attempted_Head.Transition_ID,
+         Predecessor_Transition => Head.Transition_ID,
+         Transition_Number      => Head.Transition_Number + 1);
+   begin
+      return
+        Plan.Manifest /= null
+        and then Head = Receipt.Expected_Head
+        and then Plan.Expected_Generation = Receipt.Expected_Generation
+        and then Plan.Manifest.Replay_Boundary = Interfaces.Unsigned_64 (Receipt.Replay_Boundary)
+        and then To_Identifier (Plan.Manifest.Base.Manifest_ID) = Receipt.Manifest_ID
+        and then Attempted = Receipt.Attempted_Head;
+   end Plan_Matches_Receipt;
+
+   procedure Flush
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code)
+   is
+      --  The sole deadline is derived from caller policy; Flush introduces no
+      --  retry, per-object, or local-activation timeout.
+      Deadline   : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State      : Engine_State_Access;
+      Plan       : Checkpoint_Plan;
+      Head       : Head_Snapshot;
+      Generation : Generation_Value;
+      Uncertain  : Boolean;
+      Fenced     : Boolean;
+      Guard      : Checkpoint_Guard;
+   begin
+      Receipt := (others => <>);
+      Item.Life.Begin_Checkpoint (State, Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Item.Life.Await_Quiescent;
+      Build_First_Checkpoint_Plan (State, Runs, Manifest_ID, Transition_ID, Plan, Result);
+      if Result = Success then
+         State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+         if Uncertain
+           or else Fenced
+           or else Generation /= Plan.Expected_Generation
+           or else Runs'Length > Maximum_Initial_Column_Families
+         then
+            Result := (if Uncertain then Outcome_Unknown elsif Fenced then Stale_Writer else Invalid_State);
+         else
+            Receipt.Run_Total := Runs'Length;
+            for Offset in Natural range 0 .. Runs'Length - 1 loop
+               Receipt.Runs (Offset + 1) := Runs (Runs'First + Offset);
+            end loop;
+            Receipt.Database_ID := Head.Database_ID;
+            Receipt.Incarnation := State.Gate.Current_Incarnation;
+            Receipt.Manifest_ID := Manifest_ID;
+            Receipt.Replay_Boundary := Sequence_Number (Plan.Manifest.Replay_Boundary);
+            Receipt.Expected_Generation := Generation;
+            Receipt.Expected_Head := Head;
+            Receipt.Attempted_Head :=
+              (Database_ID            => Head.Database_ID,
+               Version                => Head.Version,
+               Epoch                  => Head.Epoch,
+               Highest                => Head.Highest,
+               Latest_Batch           => Head.Latest_Batch,
+               Latest_Manifest        => Manifest_ID,
+               Transition_ID          => Transition_ID,
+               Predecessor_Transition => Head.Transition_ID,
+               Transition_Number      => Head.Transition_Number + 1);
+            Publish_Flush_Plan (Item, State, Plan, Deadline, Token, Receipt, Guard, Result);
+         end if;
+      end if;
+      Release_Checkpoint_Plan (Plan);
+      if Guard.Active then
+         Item.Life.Finish_Checkpoint;
+         Guard.Active := False;
+      end if;
+      Receipt.Current_Outcome := Result;
+   exception
+      when others =>
+         Release_Checkpoint_Plan (Plan);
+         if Guard.Active then
+            if Receipt.Phase in Objects_Unknown | Flush_Head_Unknown then
+               State.Gate.Fence;
+               Result := Outcome_Unknown;
+            elsif Receipt.Phase = Flush_Head_Confirmed then
+               State.Gate.Fence;
+               Result := Local_Activation_Failed;
+            else
+               Result := Storage_Failure;
+            end if;
+            Item.Life.Finish_Checkpoint;
+            Guard.Active := False;
+         else
+            Result := Local_Activation_Failed;
+         end if;
+         Receipt.Current_Outcome := Result;
+   end Flush;
+
+   procedure Activate_Recovered_Flush
+     (Item          : in out Database;
+      Old_State     : in out Engine_State_Access;
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Manifest      : Manifests.Manifest;
+      LSM_Authority : Engine_LSM_Authority;
+      Checkpoint    : in out Checkpoint_Plan;
+      History       : in out Batch_History_Access;
+      History_Count : in out Natural;
+      Receipt       : in out Flush_Receipt;
+      Guard         : in out Checkpoint_Guard;
+      Result        : out Outcome_Code)
+   is
+      New_State        : Engine_State_Access := null;
+      --  Recovery activates the same logical open database after confirmed
+      --  Flush publication, so the original handle incarnation remains valid.
+      Stamp            : constant Engine_Incarnation := Old_State.Gate.Current_Incarnation;
+      Activation_Fault : Storage_Fault_Mode;
+   begin
+      Receipt.Phase := Flush_Head_Confirmed;
+      Receipt.Current_Outcome := Success;
+      Old_State.Gate.Fence;
+      Consume_Fault (Old_State.Storage.all, Before_Local_Activation, Activation_Fault);
+      if Activation_Fault = No_Fault then
+         Allocation_Faults.Check (Flush_Activation_State_Allocation);
+         Allocate_Engine
+           (Item.Life'Unchecked_Access,
+            Old_State.Storage,
+            Head,
+            Generation,
+            Manifest,
+            LSM_Authority,
+            Checkpoint,
+            Stamp,
+            History,
+            History_Count,
+            New_State,
+            Result);
+      else
+         Result := Local_Activation_Failed;
+      end if;
+      if Result /= Success then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Receipt.Current_Outcome := Local_Activation_Failed;
+         Result := Local_Activation_Failed;
+         return;
+      end if;
+      Item.Life.Finish_Checkpoint (New_State, Head.Highest);
+      Guard.Active := False;
+      Stop_Replaced_Engine (Old_State);
+      Receipt.Phase := Flush_Resolved;
+      Receipt.Current_Outcome := Success;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Receipt.Current_Outcome := Local_Activation_Failed;
+         Result := Local_Activation_Failed;
+   end Activate_Recovered_Flush;
+
+   procedure Resolve_Flush
+     (Item    : in out Database;
+      Receipt : in out Flush_Receipt;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null;
+      Result  : out Outcome_Code)
+   is
+      --  Resolution receives a fresh caller budget but still performs no
+      --  hidden retry; every child uses this one absolute deadline.
+      Deadline      : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State         : Engine_State_Access;
+      Plan          : Checkpoint_Plan;
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Current_Head  : Head_Snapshot;
+      Current_Gen   : Generation_Value;
+      Uncertain     : Boolean;
+      Fenced        : Boolean;
+      Manifest      : Manifests.Manifest;
+      Root          : Manifests.Manifest;
+      LSM_Authority : Engine_LSM_Authority;
+      History       : Batch_History_Access := null;
+      History_Count : Natural := 0;
+      Guard         : Checkpoint_Guard;
+   begin
+      if Receipt.Phase not in Objects_Unknown | Flush_Head_Unknown | Flush_Head_Confirmed
+        or else Receipt.Run_Total = 0
+        or else Receipt.Database_ID = Zero_Database_ID
+        or else Is_Zero (Receipt.Manifest_ID)
+      then
+         Result := Invalid_State;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Item.Life.Begin_Checkpoint (State, Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Item.Life.Await_Quiescent;
+      State.Gate.Snapshot (Current_Head, Current_Gen, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+      elsif Receipt.Incarnation /= State.Gate.Current_Incarnation
+        or else not Fenced
+        or else Current_Head /= Receipt.Expected_Head
+        or else Current_Gen /= Receipt.Expected_Generation
+      then
+         Result := Invalid_State;
+      elsif Receipt.Phase = Objects_Unknown then
+         Build_First_Checkpoint_Plan
+           (State,
+            Receipt.Runs (1 .. Receipt.Run_Total),
+            Receipt.Manifest_ID,
+            Receipt.Attempted_Head.Transition_ID,
+            Plan,
+            Result,
+            Allow_Fenced => True);
+         if Result = Success and then not Plan_Matches_Receipt (Plan, Current_Head, Receipt) then
+            Result := Invalid_State;
+         end if;
+         if Result = Success then
+            Publish_Flush_Plan (Item, State, Plan, Deadline, Token, Receipt, Guard, Result);
+         end if;
+      else
+         Read_Recovery
+           (State.Storage.all,
+            Receipt.Database_ID,
+            Deadline,
+            Token,
+            Head,
+            Generation,
+            Manifest,
+            Root,
+            LSM_Authority,
+            Plan,
+            History,
+            History_Count,
+            Result);
+         if Result = Success
+           and then Plan.Manifest /= null
+           and then To_Identifier (Plan.Manifest.Base.Manifest_ID) = Receipt.Manifest_ID
+           and then Plan.Manifest.Replay_Boundary = Interfaces.Unsigned_64 (Receipt.Replay_Boundary)
+           and then (Head = Receipt.Attempted_Head
+                     or else (Head.Transition_Number > Receipt.Attempted_Head.Transition_Number
+                              and then Head.Latest_Manifest = Receipt.Manifest_ID))
+         then
+            Activate_Recovered_Flush
+              (Item,
+               State,
+               Head,
+               Generation,
+               Manifest,
+               LSM_Authority,
+               Plan,
+               History,
+               History_Count,
+               Receipt,
+               Guard,
+               Result);
+         elsif Result = Success and then Head = Receipt.Attempted_Head then
+            --  The exact attempted HEAD can only be valid when cacheless
+            --  recovery also reaches its exact checkpoint manifest/boundary.
+            --  Missing or mismatched immutable authority is corruption, not a
+            --  competing-writer rejection.
+            Result := Corrupt;
+         elsif Result = Success and then Head.Transition_Number >= Receipt.Attempted_Head.Transition_Number
+         then
+            State.Gate.Fence;
+            Receipt.Phase := Flush_Resolved;
+            Result := Stale_Writer;
+         elsif Result = Success then
+            Result := Outcome_Unknown;
+         end if;
+      end if;
+      Release_History (History, History_Count);
+      Release_Checkpoint_Plan (Plan);
+      if Guard.Active then
+         Item.Life.Finish_Checkpoint;
+         Guard.Active := False;
+      end if;
+      Receipt.Current_Outcome := Result;
+   exception
+      when others =>
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Plan);
+         if Guard.Active then
+            State.Gate.Fence;
+            Item.Life.Finish_Checkpoint;
+            Guard.Active := False;
+         end if;
+         Result :=
+           (if Receipt.Phase = Flush_Head_Confirmed then Local_Activation_Failed else Outcome_Unknown);
+         Receipt.Current_Outcome := Result;
+   end Resolve_Flush;
+
+   function Flush_Receipt_Outcome (Item : Flush_Receipt) return Outcome_Code
+   is (Item.Current_Outcome);
+
+   function Flush_Receipt_Manifest_ID (Item : Flush_Receipt) return Identifier
+   is (Item.Manifest_ID);
+
+   function Flush_Receipt_Transition_ID (Item : Flush_Receipt) return Identifier
+   is (Item.Attempted_Head.Transition_ID);
+
+   function Flush_Receipt_Replay_Boundary (Item : Flush_Receipt) return Sequence_Number
+   is (Item.Replay_Boundary);
+
+   function Flush_Receipt_Run_Total (Item : Flush_Receipt) return Natural
+   is (Item.Run_Total);
+
+   function Flush_Receipt_Run (Item : Flush_Receipt; Index : Positive) return Checkpoint_Run_Identity is
+   begin
+      if Index > Item.Run_Total then
+         raise Constraint_Error with "flush receipt run index is out of range";
+      end if;
+      return Item.Runs (Index);
+   end Flush_Receipt_Run;
+
    procedure Highest_Visible (Item : in out Database; Value : out Sequence_Number; Result : out Outcome_Code)
    is
    begin
@@ -8802,157 +9403,12 @@ package body Flyology.DB is
       Transition_ID : Identifier;
       Result        : out Outcome_Code)
    is
-      State          : Engine_State_Access;
-      Plan           : Checkpoint_Plan;
-      Encoded        : LSM_Runtime.Image_Access := null;
-      Owner          : Shared_Image_Access := null;
-      Head           : Head_Snapshot;
-      Generation     : Generation_Value;
-      New_Generation : Generation_Value;
-      Uncertain      : Boolean;
-      Fenced         : Boolean;
-      Put_Result     : Put_Outcome;
-      Encode_Result  : LSM_Runtime.Encode_Status;
-      Guard          : Checkpoint_Guard;
-      pragma Unreferenced (Guard);
-
-      function Put_Outcome_Result (Value : Put_Outcome; Is_Head : Boolean) return Outcome_Code
-      is (case Value is
-            when Object_Published        => Success,
-            when Put_Precondition_Failed => (if Is_Head then Stale_Writer else Conflict),
-            when Put_Outcome_Unknown     => Outcome_Unknown,
-            when Put_Cancelled           => Cancelled,
-            when Put_Timed_Out           => Timed_Out,
-            when Put_Definite_Failure    => Storage_Failure);
-
-      procedure Execute is
-         Attempted : Head_Snapshot;
-      begin
-         Build_First_Checkpoint_Plan (State, Runs, Manifest_ID, Transition_ID, Plan, Result);
-         if Result /= Success then
-            return;
-         end if;
-         State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
-         if Uncertain
-           or else Fenced
-           or else Generation /= Plan.Expected_Generation
-           or else Head.Highest /= Sequence_Number (Plan.Manifest.Replay_Boundary)
-           or else Head.Transition_ID /= To_Identifier (Plan.Manifest.Base.Expected_Transition_ID)
-           or else Head.Transition_Number /= Plan.Manifest.Base.Expected_Transition_Number
-         then
-            Result := (if Uncertain then Outcome_Unknown elsif Fenced then Stale_Writer else Invalid_State);
-            return;
-         end if;
-
-         for SST of Plan.SSTs loop
-            if SST /= null then
-               LSM_Runtime.Encode_SST (SST.all, Encoded, Encode_Result);
-               if Encode_Result /= LSM_Runtime.Encoded then
-                  Result := Corrupt;
-                  return;
-               end if;
-               Owner := New_Image (Encoded.all);
-               LSM_Runtime.Release (Encoded);
-               Storage_Port.Put_Create
-                 (State.Storage.all,
-                  Run_Key (State.Storage.all, To_Identifier (SST.Run_ID)),
-                  Owner,
-                  Run_Object,
-                  --  This private deterministic fixture has no independent
-                  --  timing policy; the production Flush API will receive one
-                  --  caller-owned absolute operation deadline.
-                  Ada.Real_Time.Time_Last,
-                  null,
-                  New_Generation,
-                  Put_Result);
-               Release_Image (Owner);
-               Result := Put_Outcome_Result (Put_Result, Is_Head => False);
-               if Result /= Success then
-                  return;
-               end if;
-            end if;
-         end loop;
-
-         LSM_Runtime.Encode_Checkpoint_Manifest (Plan.Manifest.all, Encoded, Encode_Result);
-         if Encode_Result /= LSM_Runtime.Encoded then
-            Result := Corrupt;
-            return;
-         end if;
-         Owner := New_Image (Encoded.all);
-         LSM_Runtime.Release (Encoded);
-         Storage_Port.Put_Create
-           (State.Storage.all,
-            Manifest_Key (State.Storage.all, Manifest_ID),
-            Owner,
-            Manifest_Object,
-            Ada.Real_Time.Time_Last,
-            null,
-            New_Generation,
-            Put_Result);
-         Release_Image (Owner);
-         Result := Put_Outcome_Result (Put_Result, Is_Head => False);
-         if Result /= Success then
-            return;
-         end if;
-
-         Attempted :=
-           (Database_ID            => Head.Database_ID,
-            Version                => Head.Version,
-            Epoch                  => Head.Epoch,
-            Highest                => Head.Highest,
-            Latest_Batch           => Head.Latest_Batch,
-            Latest_Manifest        => Manifest_ID,
-            Transition_ID          => Transition_ID,
-            Predecessor_Transition => Head.Transition_ID,
-            Transition_Number      => Head.Transition_Number + 1);
-         Owner := New_Image (Formats.Encode_Head (To_Head (Attempted)));
-         Storage_Port.Put_Replace
-           (State.Storage.all,
-            Full_Key (State.Storage.all, Head_Key_Suffix),
-            Owner,
-            Plan.Expected_Generation,
-            Ada.Real_Time.Time_Last,
-            null,
-            New_Generation,
-            Put_Result);
-         Release_Image (Owner);
-         Result := Put_Outcome_Result (Put_Result, Is_Head => True);
-         if Result = Success then
-            --  The private publisher deliberately has no local installation
-            --  path. Fence the pre-checkpoint coordinator so the fixture must
-            --  close and exercise cacheless recovery before more mutations.
-            State.Gate.Fence;
-         end if;
-      end Execute;
+      Receipt : Flush_Receipt;
    begin
-      Item.Life.Begin_Checkpoint (State, Result);
-      if Result /= Success then
-         return;
-      end if;
-      Guard.Life := Item.Life'Unchecked_Access;
-      Guard.Active := True;
-      Item.Life.Await_Quiescent;
-      Execute;
-      LSM_Runtime.Release (Encoded);
-      Release_Image (Owner);
-      Release_Checkpoint_Plan (Plan);
-      Item.Life.Finish_Checkpoint;
-      Guard.Active := False;
-   exception
-      when Storage_Error =>
-         LSM_Runtime.Release (Encoded);
-         Release_Image (Owner);
-         Release_Checkpoint_Plan (Plan);
-         Item.Life.Finish_Checkpoint;
-         Guard.Active := False;
-         Result := Capacity_Exceeded;
-      when others =>
-         LSM_Runtime.Release (Encoded);
-         Release_Image (Owner);
-         Release_Checkpoint_Plan (Plan);
-         Item.Life.Finish_Checkpoint;
-         Guard.Active := False;
-         raise;
+      --  The retained testing entry point is a literal unbounded wait on the
+      --  public certainty-preserving state machine; it adds no fixture-only
+      --  publication semantics or timing policy.
+      Flush (Item, Runs, Manifest_ID, Transition_ID, Duration'Last, Receipt => Receipt, Result => Result);
    end Publish_Test_First_Checkpoint;
 
    procedure Decode_Runtime_Image_For_Test

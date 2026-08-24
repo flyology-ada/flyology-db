@@ -28,10 +28,10 @@ manifest-publication
 models remain abstract assurance lanes rather than a claimed refinement proof.
 
 The first-LSM work now includes exact/proven manifest-v2 and SST-v1 formats, dynamic operational codecs, manifest-v2
-root creation, and cacheless recovery of one complete nonempty first checkpoint plus its strictly later batch suffix.
-Recovery restores live values, last-write sequences, and the exact never-reused checkpoint identity ledger from
-persisted authority. The only current nonempty publisher is private deterministic test infrastructure: public Flush
-certainty/reconciliation, multiple checkpoints, scans, compaction, and provider qualification remain later focused
+root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator replacement, and
+cacheless recovery of one complete nonempty checkpoint plus its strictly later batch suffix. Recovery restores live
+values, last-write sequences, and the exact never-reused checkpoint identity ledger from persisted authority.
+Multiple checkpoints, scans, compaction, DB-level composable Flush, and provider qualification remain later focused
 units, so Milestone 4 remains Pending.
 
 ## Formal state-machine lane
