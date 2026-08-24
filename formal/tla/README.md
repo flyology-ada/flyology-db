@@ -135,6 +135,22 @@ action never records an invalid commit. It does not prove retention sufficiency,
 grouped commits, byte-key equality, progress, or refinement to Ada. The witness traces are checked design examples,
 not proof or executable-refinement evidence.
 
+## Fixed-snapshot point-read lane
+
+`SnapshotReads.tla` freezes the next point-read rule independently from write admission. A transaction reads its own
+buffered Put/Delete first. Otherwise it selects the newest committed value no later than its fixed Begin sequence. If
+that sequence predates the retained checkpoint boundary, the read reports `TooOld`; it never substitutes the latest
+value when exact evidence is incomplete. The two transactions, two values, and two committed-version slots are finite
+qualification geometry complete for this model, not product limits or a proposed retention representation.
+
+TLC exhausts 7,530 states at depth 14 and requires nonzero coverage for Begin, Put/Delete buffering, commit, read, and
+checkpoint. Three independently checked traces pin an old committed value that survives a later Put, a buffered Put
+that wins over later committed state, and conservative `TooOld` after checkpoint advancement. The negative model reads the
+latest value despite a different expected result and must trip the explicit bad-read monitor. The unbounded TLAPS
+kernel proves seven inductive obligations over arbitrary nonempty transaction and value sets. It proves type/sequence
+soundness and exact selection by the modeled read action; it does not prove byte lookup, retained-history sufficiency,
+allocation/ownership, serializable predicates, progress, or refinement to Ada.
+
 ## Witness projection
 
 `CommitPublicationWitness.tla` adds a deliberate invariant violation that asks TLC for one useful path. The

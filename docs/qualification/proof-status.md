@@ -160,6 +160,13 @@ proof between the model and implementation.
   and action-by-action preservation of state/sequence bounds and the invalid-commit monitor. It does not prove
   retention sufficiency, reads, serializable predicates, grouped commits, byte-key equality, progress, or refinement
   to Ada.
+- The fixed-snapshot point-read model exhausts 7,530 states at depth 14. It checks read-your-writes before committed
+  state, newest committed version selection no later than Begin, and conservative `TooOld` below the checkpoint
+  history boundary. Independent validators require old-value, own-write, and too-old traces, while a negative model
+  must trip the bad-read monitor when it substitutes latest state. Its unbounded kernel proves 7/7 strict obligations
+  for type/sequence preservation and exact modeled selection. The two-version finite representation is qualification
+  geometry, not product retention; byte lookup, allocation, retained-history sufficiency, progress, serializable
+  predicates, and refinement to Ada remain outside this proof.
 
 The TLAPS kernel is a batch-atomic abstraction assigning every batch an arbitrary nonempty transaction set, with
 pairwise-disjoint ownership between batches. It proves publication-epoch monotonicity, acknowledged whole-batch

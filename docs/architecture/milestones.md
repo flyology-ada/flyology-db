@@ -8,7 +8,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 0 Foundation | Crate, guide, dependency clone/pin, architecture/format/oracle contracts, runners, provenance | Accepted at `8b9ff8c` |
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
-| 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Write/write validation operational; snapshot reads/serializable pending |
+| 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Write validation operational; fixed reads proven, runtime/serializable pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Pending |
@@ -32,6 +32,10 @@ Transactions older than the checkpoint history boundary reject conservatively be
 negative evidence. Atomic groups validate each member against external committed history and retain their existing
 deterministic intra-group ordering. Fixed-snapshot reads, serializable read/range tracking, and their persisted bounds
 are not yet implemented, so Milestone 3 remains Pending.
+
+The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
+history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
+conservative too-old outcome. This is a formal design boundary only; the production `Get` still returns latest state.
 
 The first-LSM work now includes exact/proven manifest-v2 and SST-v1 formats, dynamic operational codecs, manifest-v2
 root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator replacement, and

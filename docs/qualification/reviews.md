@@ -1,5 +1,29 @@
 # Review record
 
+## Accepted formal fixed-snapshot point-read candidate
+
+- Parent: operational snapshot write-validation commit `589f941`.
+- Scope: freeze point-read selection before production changes. A transaction reads its buffered Put/Delete first;
+  otherwise it selects the newest committed value no later than its fixed Begin sequence. A snapshot below the
+  retained checkpoint boundary reports `TooOld` rather than substituting incomplete or latest authority. This unit
+  adds no Ada runtime behavior, public outcome, allocation, persisted format, serializable predicate, group rule, or
+  claim of refinement.
+- Constant authority: two transactions, two values, and two committed-version slots are finite qualification geometry
+  complete for the bounded scenario, not product retention, key/value, or transaction limits. Sequence one and the
+  first model value seed one real committed prior version so the witness exercises old-value selection; zero is the
+  no-checkpoint/absent-history sentinel. The pinned 7,530-state/depth-14 graph changes only after model-graph review.
+- Verification: `./scripts/check-tla.sh` preserves the existing 112,031/286/819/336-state commit, manifest,
+  checkpoint, and write-validation lanes and their 23/12/43/6 TLAPS obligations. The new lane exhausts 7,530 states
+  at depth 14 with nonzero Begin, Put/Delete buffer, Commit, Read, and Checkpoint coverage; validates exact old-value,
+  read-your-writes, and checkpoint-too-old traces; rejects the deliberately wrong latest-value read; and proves 7/7
+  strict TLAPS obligations. `./scripts/check-repository.sh`, Python bytecode compilation, shell syntax, and
+  `git diff --check` pass.
+- Findings cycle: the first sweep replaced an absence-only trace with a real prior-value witness. The proof sweep
+  changed the bad-read flag from a type-only monitor to an explicit selected-versus-expected comparison and made the
+  initial value-membership authority an explicit theorem premise after TLAPS rejected the implicit assumption. The
+  integration sweep fixed the instrumented `RecordRead` coverage label and an incompletely specified negative action;
+  the complete gate then passed. Final review finds no remaining P0, P1, P2, or P3 issue in this formal-only boundary.
+
 ## Accepted operational snapshot write-validation candidate
 
 - Parent: accepted formal snapshot write-validation commit `b32ce26`.

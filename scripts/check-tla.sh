@@ -353,6 +353,73 @@ done
   >"$temporary_root/tlaps-snapshot-isolation.log" 2>&1
 grep -q 'All 6 obligations proved.' "$temporary_root/tlaps-snapshot-isolation.log"
 
+#  The two transactions, two values, and two committed-version slots are
+#  finite qualification geometry, not product retention or value limits. The
+#  pinned graph prevents accidental narrowing without a reviewed model change.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-snapshot-reads-states" \
+  -config SnapshotReads.cfg SnapshotReads \
+  >"$temporary_root/tlc-snapshot-reads.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-snapshot-reads.log"
+! grep -q '^Warning:' "$temporary_root/tlc-snapshot-reads.log"
+grep -q '7530 distinct states found' "$temporary_root/tlc-snapshot-reads.log"
+grep -q 'The depth of the complete state graph search is 14.' \
+  "$temporary_root/tlc-snapshot-reads.log"
+for action in Begin BufferPut BufferDelete Commit RecordRead Checkpoint
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-snapshot-reads.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-snapshot-reads-probe-states" \
+  -config SnapshotReadsUnsafeProbe.cfg SnapshotReadsUnsafeProbe \
+  >"$temporary_root/tlc-snapshot-reads-probe.log" 2>&1
+snapshot_read_probe_status=$?
+set -e
+test "$snapshot_read_probe_status" -eq 12
+grep -q 'Invariant NoBadRead is violated.' \
+  "$temporary_root/tlc-snapshot-reads-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-snapshot-reads-probe.log"
+
+for snapshot_read_witness in old own too-old
+do
+  case "$snapshot_read_witness" in
+    old)
+      snapshot_read_module=SnapshotReadsOldWitness
+      ;;
+    own)
+      snapshot_read_module=SnapshotReadsOwnWitness
+      ;;
+    too-old)
+      snapshot_read_module=SnapshotReadsTooOldWitness
+      ;;
+  esac
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-snapshot-read-$snapshot_read_witness-states" \
+    -config "$snapshot_read_module.cfg" \
+    -dumpTrace json "$temporary_root/snapshot-read-$snapshot_read_witness.json" \
+    "$snapshot_read_module" \
+    >"$temporary_root/tlc-snapshot-read-$snapshot_read_witness.log" 2>&1
+  snapshot_read_witness_status=$?
+  set -e
+  test "$snapshot_read_witness_status" -eq 12
+  grep -q 'Invariant WitnessPending is violated.' \
+    "$temporary_root/tlc-snapshot-read-$snapshot_read_witness.log"
+  ! grep -q '^Warning:' "$temporary_root/tlc-snapshot-read-$snapshot_read_witness.log"
+  "$model_root/validate_snapshot_read_witnesses.py" \
+    "$snapshot_read_witness" "$temporary_root/snapshot-read-$snapshot_read_witness.json"
+done
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-snapshot-reads-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/SnapshotReadsSafetyProof.tla" \
+  >"$temporary_root/tlaps-snapshot-reads.log" 2>&1
+grep -q 'All 7 obligations proved.' "$temporary_root/tlaps-snapshot-reads.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -372,3 +439,7 @@ printf '%s\n' "  Snapshot isolation TLC 336 distinct states, depth 10"
 printf '%s\n' "  Snapshot isolation TLAPS 6/6 obligations"
 printf '%s\n' "  Snapshot conflict/disjoint/checkpoint witnesses validated"
 printf '%s\n' "  Negative unsafe snapshot commit probe detected"
+printf '%s\n' "  Snapshot reads TLC 7530 distinct states, depth 14"
+printf '%s\n' "  Snapshot reads TLAPS 7/7 obligations"
+printf '%s\n' "  Snapshot old/own/too-old witnesses validated"
+printf '%s\n' "  Negative latest-value snapshot read probe detected"
