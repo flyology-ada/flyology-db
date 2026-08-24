@@ -29,6 +29,10 @@ The LSM read-equivalence lane independently checks that a complete live-state re
 live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
 later delta containing Puts, Deletes, or untouched keys. This closes concrete replacement-read semantics without
 claiming an Ada refinement theorem or selecting compaction policy.
+A separate partial-merge lane places two selected consecutive runs between retained older and newer runs. It proves
+that replacing the selected pair with its newest mutation per key preserves every read, including the essential rule
+that a newest selected tombstone remains present to mask older retained values. It selects no compaction trigger,
+fanout, level sizing, schedule, capacity, or public API, and it does not claim an operational Ada partial merger.
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
 produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.

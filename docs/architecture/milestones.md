@@ -100,6 +100,13 @@ concrete delete/put execution witness, rejects a replacement that omits one live
 value reconstruction and later-delta equations with TLAPS. This strengthens the private replacement spine without
 choosing a public trigger, automatic schedule, run-level policy, or storage budget.
 
+The policy-neutral partial-compaction lane now places two selected consecutive runs between retained older and newer
+runs. Its finite model exhausts every two-key/two-value mutation map, validates an older/selected/newer execution
+witness, and rejects a merger that drops a selected tombstone. Its arbitrary-key/value TLAPS kernel proves that the
+newest selected mutation per key exactly replaces the pair while retained surrounding order remains unchanged.
+Operational run selection and merge iteration, trigger/fanout/level policy, capacity arithmetic, publication, and a
+public compaction surface remain separate Milestone 4 and 6 work.
+
 The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
 separation, and atomic capacity/allocation rollback. Its finite model exhausts 3,419 states and the arbitrary-universe
 kernel proves 19 TLAPS obligations. Production and the bounded SPARK oracle now implement that rule: they build a

@@ -525,6 +525,61 @@ grep -q 'Invariant WitnessPending is violated.' \
   >"$temporary_root/tlaps-lsm-equivalence.log" 2>&1
 grep -q 'All 6 obligations proved.' "$temporary_root/tlaps-lsm-equivalence.log"
 
+#  Two selected consecutive runs sit between retained older and newer runs.
+#  Two keys and two values are finite qualification geometry. Partial merge
+#  preserves the newest selected mutation per key, including tombstones.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-lsm-partial-equivalence-states" \
+  -config LSMPartialCompactionEquivalence.cfg LSMPartialCompactionEquivalence \
+  >"$temporary_root/tlc-lsm-partial-equivalence.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-lsm-partial-equivalence.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lsm-partial-equivalence.log"
+grep -q '196608 distinct states found' "$temporary_root/tlc-lsm-partial-equivalence.log"
+grep -q 'The depth of the complete state graph search is 3.' \
+  "$temporary_root/tlc-lsm-partial-equivalence.log"
+for action in BuildPartialMerge RecoverMergedRuns
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-lsm-partial-equivalence.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-lsm-partial-equivalence-probe-states" \
+  -config LSMPartialCompactionEquivalenceProbe.cfg \
+  LSMPartialCompactionEquivalenceProbe \
+  >"$temporary_root/tlc-lsm-partial-equivalence-probe.log" 2>&1
+lsm_partial_equivalence_probe_status=$?
+set -e
+test "$lsm_partial_equivalence_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-lsm-partial-equivalence-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lsm-partial-equivalence-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-lsm-partial-equivalence-witness-states" \
+  -config LSMPartialCompactionEquivalenceWitness.cfg \
+  -dumpTrace json "$temporary_root/lsm-partial-compaction-equivalence.json" \
+  LSMPartialCompactionEquivalenceWitness \
+  >"$temporary_root/tlc-lsm-partial-equivalence-witness.log" 2>&1
+lsm_partial_equivalence_witness_status=$?
+set -e
+test "$lsm_partial_equivalence_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-lsm-partial-equivalence-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lsm-partial-equivalence-witness.log"
+"$model_root/validate_lsm_partial_compaction_equivalence_witness.py" \
+  "$temporary_root/lsm-partial-compaction-equivalence.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-lsm-partial-equivalence-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/LSMPartialCompactionEquivalenceSafetyProof.tla" \
+  >"$temporary_root/tlaps-lsm-partial-equivalence.log" 2>&1
+grep -q 'All 5 obligations proved.' "$temporary_root/tlaps-lsm-partial-equivalence.log"
+
 #  Zero-versus-one cache capacity is finite qualification geometry, not a
 #  product default. Exact immutable generations bind requests, cache entries,
 #  coalesced fetches, and results; local cache/fetch state remains disposable.
@@ -981,6 +1036,10 @@ printf '%s\n' "  LSM read equivalence TLC 576 distinct states, depth 4"
 printf '%s\n' "  LSM read equivalence TLAPS 6/6 obligations"
 printf '%s\n' "  LSM replacement/delete/replay witness validated"
 printf '%s\n' "  Negative omitted-live-key replacement probe detected"
+printf '%s\n' "  Partial LSM merge TLC 196608 distinct states, depth 3"
+printf '%s\n' "  Partial LSM merge TLAPS 5/5 obligations"
+printf '%s\n' "  Partial LSM older/selected/newer merge witness validated"
+printf '%s\n' "  Negative dropped-tombstone partial-merge probe detected"
 printf '%s\n' "  Immutable cache TLC 623 distinct states, depth 12"
 printf '%s\n' "  Immutable cache TLAPS 13/13 obligations"
 printf '%s\n' "  Cache coalescing/loss/corruption witness validated"

@@ -1,5 +1,27 @@
 # Review record
 
+## Accepted policy-neutral partial-LSM merge boundary
+
+- Parent: multipart-abort dependency qualification commit `478cca7`.
+- Scope and authority: add only a formal read-equivalence lane for replacing two selected consecutive runs while
+  retaining one older and one newer run in order. The merger preserves the newest selected mutation per key,
+  including tombstones. This is an algorithmic consequence of oldest-to-newest run recovery, not a selected trigger,
+  fanout, level size, schedule, resource capacity, publication protocol, public declaration, or operational Ada
+  partial merger.
+- Bounded evidence: TLC exhausts all 196,608 states at depth 3 over four two-key/two-value mutation maps and exercises
+  both semantic actions. The negative probe drops a newest selected tombstone and violates safety. The checked
+  three-action witness retains older/newer runs, merges the selected pair, preserves the tombstone in the output, and
+  validates exact pre/post point reads.
+- Unbounded evidence: strict SMT-backed TLAPS proves 5/5 obligations over arbitrary nonempty key/value sets for
+  newest-mutation selection, tombstone retention, mutation composition, selected-pair equivalence, and equality after
+  surrounding older/newer runs. The maintained combined TLA/TLAPS gate reruns all prior publication, isolation, LSM,
+  cache, retention, replica, and range-normalization lanes.
+- Findings cycle: the first explicit sweep found one P2: the finite model's named tombstone-retention invariant used
+  disjoined implications and was weaker than its name, although exact merged-run equality still protected safety.
+  The invariant now requires both tombstone cases conjunctively. Reverification and re-review find no remaining P0,
+  P1, P2, or P3 issue. No Ada constants, allocations, tasks, persisted bytes, dependencies, or ownership contracts
+  change in this unit.
+
 ## Accepted multipart-abort Object Storage qualification
 
 - Parent: multipart-completion dependency qualification commit `9b20428`.

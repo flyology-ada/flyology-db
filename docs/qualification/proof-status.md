@@ -277,8 +277,13 @@ permitting an empty fresh-output set. No refinement theorem to the operational A
   two-value captured views and later Put/Delete/no-mutation maps. Its validated four-action witness deletes one
   recovered live key and puts one formerly absent key; omitting a live replacement entry must violate safety. The
   arbitrary-key/value kernel proves 6/6 strict TLAPS obligations for canonical Put-only replacement, exact recovery,
-  and equivalence under any later delta. Neither lane proves operational merge refinement, snapshot retention
-  sufficiency, physical reclamation, codecs, capacity arithmetic, provider behavior, progress, or a public trigger.
+  and equivalence under any later delta. The policy-neutral partial-merge model separately exhausts 196,608 states at
+  depth 3 across every two-key/two-value older/selected-pair/newer mutation map. Its validated three-action witness
+  preserves exact reads through the merge, while a probe that drops the newest selected tombstone must violate
+  safety. The arbitrary-key/value kernel proves 5/5 strict TLAPS obligations for newest selected mutation and
+  tombstone retention, mutation composition, selected-pair equivalence, and equality with retained surrounding
+  runs. These lanes do not prove operational merge refinement, run selection, snapshot retention sufficiency,
+  physical reclamation, codecs, capacity arithmetic, provider behavior, progress, or a public trigger.
   The private operational
   Ada planner/publisher is qualified separately by deterministic replacement, allocation, certainty, depublication,
   and cacheless-recovery tests.
