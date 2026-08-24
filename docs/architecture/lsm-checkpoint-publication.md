@@ -277,22 +277,38 @@ The private adjacent-merge publisher is a narrower policy-neutral sibling. Its c
 newer, output, manifest, and transition identities. Under the same exclusive checkpoint lifecycle, it binds the
 retained checkpoint manifest to the exact current HEAD generation, reads every named SST through the maintained
 header-first and generation-bound whole-object path, and admits the pair only through the manifest-aware adjacent
-merge kernel. It prepares the exact successor and current live activation base before the first write. The shared
+merge kernel. It prepares the exact successor and its SST-derived activation base before the first write. The shared
 publisher then confirms the merged SST and successor manifest before the conditional HEAD transition. An ambiguous
 immutable-object result fences the writer and retains the selected input identities privately in the receipt so
 `Resolve_Flush` can rebuild only the same bytes and identities. It never substitutes an additive or complete-view
 plan, generates a new identity, or automatically retries.
 
-The retained checkpoint replay boundary must equal current HEAD's highest sequence. If a later log suffix exists,
-the call returns `Invalid_State` before authenticated reads, allocation, or publication. Preserving such a suffix
-would require carrying its decoded conflict-history and transaction-identity authority into the replacement
-coordinator; copying only the live image would be insufficient even though cacheless recovery could replay the log.
-This conservative precondition prevents local activation from silently weakening transaction semantics.
+If the retained checkpoint replay boundary precedes current HEAD, the quiescent planner clones every decoded suffix
+batch at its exact transaction and mutation extents and retains shared ownership of each immutable image before the
+first write. It validates newest-to-oldest predecessor continuity, exact current-HEAD publication of the newest
+batch, and the oldest batch's transition from the retained checkpoint. Allocation or validation failure releases the
+complete candidate and publishes nothing. The replacement coordinator reconstructs its base strictly from the
+successor's authenticated SSTs, then replays the cloned suffix oldest-to-newest. This preserves live values,
+write-conflict history, seen transaction IDs, used batch IDs, and the never-reused identity ledger; copying only the
+live image would not suffice.
+
+Cacheless recovery applies the same authority boundary without trusting the current HEAD as the batch's immediate
+publication transition. The already-validated immutable manifest predecessor chain must contain an exact expected
+transition anchor for the latest retained batch and an exact replay-boundary checkpoint whose publication transition
+the oldest suffix batch names. Thus a manifest-only successor can preserve the suffix, while an orphan batch or a
+suffix attached to another checkpoint still fails closed.
 
 This first execution-path witness is synchronous because its authenticated selected-run reads still use the
 backend-neutral blocking storage port. It creates no helper task and selects no event-loop blocking contract. A
 future caller-composable form must drive those range/whole reads through owner-stack Object Storage operations before
 publication; this unit does not simulate that surface or publish a public trigger.
+
+`LSMPartialCompactionEquivalence.tla` now models the same abstract execution order: merge the selected consecutive
+runs, transfer one finite suffix batch and its identity authority unchanged, reconstruct the successor run view, and
+apply the suffix afterward. Its witness requires both read equivalence and retained identity authority; its negative
+probe still demonstrates that dropping a selected tombstone is unsafe. The arbitrary-key/value TLAPS kernel proves
+read equivalence with an arbitrary later suffix. It does not prove the Ada descriptor clone, protected-coordinator
+snapshot, immutable manifest anchors, or ownership implementation.
 
 Cacheless recovery from the compacted successor validates only its named outputs and exact manifest authority; it
 does not reread depublicized predecessors to reconstruct current state. A missing, malformed, corrupt, misbound, or

@@ -1874,11 +1874,16 @@ package body Flyology.DB is
       Image                         : Shared_Image_Access := null;
    end record;
    type Runtime_Batch_Array is array (Positive range <>) of Runtime_Batch;
+   subtype History_Slot is Positive range 1 .. Maximum_History_Batches;
+   type Batch_History is array (Positive range <>) of Runtime_Batch;
+   type Batch_History_Access is access Batch_History;
+   type Manifest_History is array (History_Slot) of Manifests.Manifest;
 
    procedure Free_Runtime_Transactions is new
      Ada.Unchecked_Deallocation (Runtime_Transaction_Array, Runtime_Transaction_Array_Access);
    procedure Free_Runtime_Mutations is new
      Ada.Unchecked_Deallocation (Runtime_Mutation_Array, Runtime_Mutation_Array_Access);
+   procedure Free_Batch_History is new Ada.Unchecked_Deallocation (Batch_History, Batch_History_Access);
 
    procedure Release_Image (Image : in out Shared_Image_Access) is
       Last : Boolean := False;
@@ -1904,6 +1909,8 @@ package body Flyology.DB is
       end if;
       Batch := (others => <>);
    end Release_Runtime_Batch;
+
+   procedure Release_History (History : in out Batch_History_Access; Count : in out Natural);
 
    function Mutation_Count (Txn : Transaction) return Natural
    is (if Txn.Owner.Arena = null then 0 else Txn.Owner.Arena.Count);
@@ -2048,6 +2055,8 @@ package body Flyology.DB is
       Recovered_SSTs      : Recovered_SST_Array_Access := null;
       Images              : Checkpoint_Image_Array_Access := null;
       Base                : State_Entry_Array_Access := null;
+      History             : Batch_History_Access := null;
+      History_Count       : Natural := 0;
       Activation_Ready    : Boolean := False;
       Expected_Generation : Generation_Value;
    end record;
@@ -2371,6 +2380,15 @@ package body Flyology.DB is
       procedure Request_Close;
       procedure Mark_Stopped;
       function History_Length return Natural;
+      procedure History_Batch_Shape
+        (Index             : Positive;
+         Transaction_Total : out Natural;
+         Mutation_Total    : out Natural;
+         Result            : out Outcome_Code);
+      procedure Copy_History_Batch
+        (Index  : Positive;
+         Batch  : in out Runtime_Batch;
+         Result : out Outcome_Code);
       procedure Take_History_Batch (Index : Positive; Batch : out Runtime_Batch);
       entry Join;
       function Highest return Sequence_Number;
@@ -4554,6 +4572,82 @@ package body Flyology.DB is
          return History_Count;
       end History_Length;
 
+      procedure History_Batch_Shape
+        (Index             : Positive;
+         Transaction_Total : out Natural;
+         Mutation_Total    : out Natural;
+         Result            : out Outcome_Code)
+      is
+      begin
+         Transaction_Total := 0;
+         Mutation_Total := 0;
+         if Index > History_Count
+           or else History_Batches (Index).Transactions = null
+           or else History_Batches (Index).Mutations = null
+           or else History_Batches (Index).Image = null
+           or else History_Batches (Index).Transaction_Total = 0
+           or else History_Batches (Index).Mutation_Total = 0
+           or else History_Batches (Index).Transactions'Length
+                     /= History_Batches (Index).Transaction_Total
+           or else History_Batches (Index).Mutations'Length /= History_Batches (Index).Mutation_Total
+         then
+            Result := Corrupt;
+         else
+            Transaction_Total := History_Batches (Index).Transaction_Total;
+            Mutation_Total := History_Batches (Index).Mutation_Total;
+            Result := Success;
+         end if;
+      end History_Batch_Shape;
+
+      procedure Copy_History_Batch
+        (Index  : Positive;
+         Batch  : in out Runtime_Batch;
+         Result : out Outcome_Code)
+      is
+      begin
+         if Index > History_Count then
+            Result := Corrupt;
+            return;
+         end if;
+         declare
+            Source : Runtime_Batch renames History_Batches (Index);
+         begin
+            if Source.Transactions = null
+              or else Source.Mutations = null
+              or else Source.Image = null
+              or else Source.Transaction_Total = 0
+              or else Source.Mutation_Total = 0
+              or else Source.Transactions'Length /= Source.Transaction_Total
+              or else Source.Mutations'Length /= Source.Mutation_Total
+              or else Batch.Transactions = null
+              or else Batch.Mutations = null
+              or else Batch.Image /= null
+              or else Batch.Transactions'Length /= Source.Transaction_Total
+              or else Batch.Mutations'Length /= Source.Mutation_Total
+            then
+               Result := Corrupt;
+               return;
+            end if;
+            Batch.Database_ID := Source.Database_ID;
+            Batch.Epoch := Source.Epoch;
+            Batch.Batch_ID := Source.Batch_ID;
+            Batch.Previous_Batch_ID := Source.Previous_Batch_ID;
+            Batch.Expected_Transition_ID := Source.Expected_Transition_ID;
+            Batch.Expected_Transition_Number := Source.Expected_Transition_Number;
+            Batch.Publication_Transition_ID := Source.Publication_Transition_ID;
+            Batch.Publication_Transition_Number := Source.Publication_Transition_Number;
+            Batch.First_Sequence := Source.First_Sequence;
+            Batch.Last_Sequence := Source.Last_Sequence;
+            Batch.Transaction_Total := Source.Transaction_Total;
+            Batch.Mutation_Total := Source.Mutation_Total;
+            Batch.Transactions.all := Source.Transactions.all;
+            Batch.Mutations.all := Source.Mutations.all;
+            Source.Image.References.Retain;
+            Batch.Image := Source.Image;
+            Result := Success;
+         end;
+      end Copy_History_Batch;
+
       procedure Take_History_Batch (Index : Positive; Batch : out Runtime_Batch) is
       begin
          Batch := (others => <>);
@@ -4917,6 +5011,7 @@ package body Flyology.DB is
          Free_Checkpoint_Images (Plan.Images);
       end if;
       Free_State_Entries (Plan.Base);
+      Release_History (Plan.History, Plan.History_Count);
       Plan.Activation_Ready := False;
    end Release_Checkpoint_Plan;
 
@@ -6425,6 +6520,37 @@ package body Flyology.DB is
        and then Head.Transition_Number = Batch.Publication_Transition_Number
        and then Head.Highest = Batch.Last_Sequence);
 
+   function Runtime_Anchored_By_Manifest_Chain
+     (Batch          : Runtime_Batch;
+      Head           : Head_Snapshot;
+      Manifests_Seen : Manifest_History;
+      Manifest_Count : Natural) return Boolean
+   is
+   begin
+      if Batch.Image = null
+        or else Manifest_Count = 0
+        or else Manifest_Count > Manifests_Seen'Length
+        or else Head.Database_ID /= Batch.Database_ID
+        or else Head.Epoch /= Batch.Epoch
+        or else Head.Latest_Batch /= Batch.Batch_ID
+        or else Head.Highest /= Batch.Last_Sequence
+      then
+         return False;
+      end if;
+      for Index in Positive range 1 .. Manifest_Count loop
+         if To_Database_ID (Manifests_Seen (Index).Database_ID) = Batch.Database_ID
+           and then Manifests_Seen (Index).Writer_Epoch = Batch.Epoch
+           and then To_Identifier (Manifests_Seen (Index).Expected_Transition_ID)
+              = Batch.Publication_Transition_ID
+           and then Manifests_Seen (Index).Expected_Transition_Number
+                      = Batch.Publication_Transition_Number
+         then
+            return True;
+         end if;
+      end loop;
+      return False;
+   end Runtime_Anchored_By_Manifest_Chain;
+
    function Runtime_Valid_Predecessor (Current, Previous : Runtime_Batch) return Boolean is
       Gap       : Interfaces.Unsigned_64;
       Epoch_Gap : Interfaces.Unsigned_64;
@@ -6760,13 +6886,6 @@ package body Flyology.DB is
          State.Gate.Mark_Stopped;
    end Commit_Worker;
 
-   subtype History_Slot is Positive range 1 .. Maximum_History_Batches;
-   type Batch_History is array (Positive range <>) of Runtime_Batch;
-   type Batch_History_Access is access Batch_History;
-   type Manifest_History is array (History_Slot) of Manifests.Manifest;
-
-   procedure Free_Batch_History is new Ada.Unchecked_Deallocation (Batch_History, Batch_History_Access);
-
    procedure Release_History (History : in out Batch_History_Access; Count : in out Natural) is
    begin
       if History /= null then
@@ -6777,6 +6896,104 @@ package body Flyology.DB is
       end if;
       Count := 0;
    end Release_History;
+
+   procedure Snapshot_Engine_History
+     (State   : not null Engine_State_Access;
+      History : out Batch_History_Access;
+      Count   : out Natural;
+      Result  : out Outcome_Code)
+   is
+      Source_Count : constant Natural := State.Gate.History_Length;
+   begin
+      History := null;
+      Count := 0;
+      if Source_Count = 0 then
+         Result := Success;
+         return;
+      elsif Source_Count > Maximum_History_Batches then
+         Result := Corrupt;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Recovery_History_Allocation);
+      History := new Batch_History'(1 .. Source_Count => (others => <>));
+      Count := Source_Count;
+      for Source_Index in Positive range 1 .. Source_Count loop
+         declare
+            --  Allocate_Engine consumes recovery history newest-first and
+            --  replays it in reverse. The live coordinator retains it
+            --  oldest-first, so snapshot into the recovery order explicitly.
+            Target_Index      : constant Positive := Source_Count - Source_Index + 1;
+            Transaction_Total : Natural;
+            Mutation_Total    : Natural;
+         begin
+            State.Gate.History_Batch_Shape
+              (Source_Index, Transaction_Total, Mutation_Total, Result);
+            if Result /= Success
+              or else Transaction_Total = 0
+              or else Mutation_Total = 0
+            then
+               Release_History (History, Count);
+               Result := Corrupt;
+               return;
+            end if;
+            Allocation_Faults.Check (Recovery_History_Allocation);
+            History (Target_Index).Transactions :=
+              new Runtime_Transaction_Array (1 .. Transaction_Total);
+            Allocation_Faults.Check (Recovery_History_Allocation);
+            History (Target_Index).Mutations := new Runtime_Mutation_Array (1 .. Mutation_Total);
+            State.Gate.Copy_History_Batch (Source_Index, History (Target_Index), Result);
+            if Result /= Success then
+               Release_History (History, Count);
+               return;
+            end if;
+         end;
+      end loop;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Release_History (History, Count);
+         Result := Capacity_Exceeded;
+      when others =>
+         Release_History (History, Count);
+         raise;
+   end Snapshot_Engine_History;
+
+   function Valid_History_Snapshot
+     (History    : Batch_History_Access;
+      Count      : Natural;
+      Head       : Head_Snapshot;
+      Checkpoint : LSM_Runtime.Checkpoint_Manifest) return Boolean
+   is
+   begin
+      if History = null
+        or else Count = 0
+        or else Count > History'Length
+        or else not Runtime_Published_By (History (1), Head)
+      then
+         return False;
+      end if;
+      declare
+         Oldest : Runtime_Batch renames History (Count);
+      begin
+         if Checkpoint.Replay_Boundary = Interfaces.Unsigned_64'Last
+           or else Oldest.First_Sequence /= Sequence_Number (Checkpoint.Replay_Boundary) + 1
+           or else Oldest.Expected_Transition_ID
+                     /= To_Identifier (Checkpoint.Base.Publication_Transition_ID)
+           or else Oldest.Expected_Transition_Number /= Checkpoint.Base.Publication_Transition_Number
+         then
+            return False;
+         end if;
+      end;
+      if Count > 1 then
+         for Index in Positive range 1 .. Count - 1 loop
+            if not Runtime_Valid_Predecessor (History (Index), History (Index + 1)) then
+               return False;
+            end if;
+         end loop;
+      end if;
+      return True;
+   end Valid_History_Snapshot;
 
    procedure Decode_Stored_Manifest_With_Authority
      (Data              : Small_Metadata_Buffer;
@@ -7275,6 +7492,25 @@ package body Flyology.DB is
       Successor      : LSM_Runtime.Checkpoint_Manifest_Access := null;
       Allocation     : LSM_Runtime.Allocation_Status;
       Merge_Result   : LSM_Runtime.Merge_Status;
+
+      procedure Clone_SST
+        (Source : LSM_Runtime.SST;
+         Target : out LSM_Runtime.SST_Access;
+         Status : out Outcome_Code)
+      is
+         Clone_Status : LSM_Runtime.Allocation_Status;
+      begin
+         Target := null;
+         Allocation_Faults.Check (Recovery_SST_Image_Allocation);
+         LSM_Runtime.Create_SST
+           (Source.Entry_Total, Source.Payload_Byte_Total, Target, Clone_Status);
+         if Clone_Status = LSM_Runtime.Allocated then
+            Target.all := Source;
+            Status := Success;
+         else
+            Status := Capacity_Exceeded;
+         end if;
+      end Clone_SST;
    begin
       Plan := (others => <>);
       Current := (others => <>);
@@ -7337,13 +7573,6 @@ package body Flyology.DB is
         or else Prior.Family_Total /= Natural (Base.Family_Total)
       then
          Result := Corrupt;
-         return;
-      --  This first publisher preserves the selected manifest's replay and
-      --  identity authority. A later suffix would require transferring its
-      --  decoded history into the replacement coordinator; reject before any
-      --  read/allocation/publication rather than silently dropping it.
-      elsif Prior.Replay_Boundary /= Interfaces.Unsigned_64 (Head.Highest) then
-         Result := Invalid_State;
          return;
       end if;
 
@@ -7444,7 +7673,58 @@ package body Flyology.DB is
       Plan.SSTs (Manifests.Family_Slot (Family_Index)) := Merged;
       Merged := null;
       Plan.Expected_Generation := Generation;
-      Prepare_Live_Checkpoint_Base (State, Plan, Result);
+
+      --  Local activation must be rebuilt from exactly the successor's runs,
+      --  not the live coordinator view: the latter may also include a
+      --  post-checkpoint batch suffix. Retained predecessor runs move from the
+      --  authenticated current plan; the one new merged run is cloned at its
+      --  exact derived extent so publication and activation have independent
+      --  ownership. Allocate_Engine replays the separately snapshotted suffix.
+      if Plan.Manifest.Run_Total > 0 then
+         Allocation_Faults.Check (Recovery_SST_Image_Allocation);
+         Plan.Recovered_SSTs :=
+           new Recovered_SST_Array'(1 .. Plan.Manifest.Run_Total => null);
+      end if;
+      for Successor_Index in Plan.Manifest.Runs'Range loop
+         if To_Identifier (Plan.Manifest.Runs (Successor_Index).Run_ID) = Output_Run_ID then
+            Clone_SST
+              (Plan.SSTs (Manifests.Family_Slot (Family_Index)).all,
+               Plan.Recovered_SSTs (Successor_Index),
+               Result);
+         else
+            Result := Corrupt;
+            for Current_Index in Current.Manifest.Runs'Range loop
+               if Current.Manifest.Runs (Current_Index).Run_ID = Plan.Manifest.Runs (Successor_Index).Run_ID
+               then
+                  Plan.Recovered_SSTs (Successor_Index) := Current.Recovered_SSTs (Current_Index);
+                  Current.Recovered_SSTs (Current_Index) := null;
+                  Result := Success;
+                  exit;
+               end if;
+            end loop;
+         end if;
+         if Result /= Success then
+            Release_Checkpoint_Plan (Current);
+            Release_Checkpoint_Plan (Plan);
+            return;
+         end if;
+      end loop;
+      Prepare_Checkpoint_Images (Plan, Result);
+      if Result = Success then
+         Prepare_Checkpoint_Base (Plan, Result);
+      end if;
+      if Result = Success
+        and then Plan.Manifest.Replay_Boundary < Interfaces.Unsigned_64 (Head.Highest)
+      then
+         Snapshot_Engine_History (State, Plan.History, Plan.History_Count, Result);
+         if Result = Success
+           and then
+             (Plan.History_Count = 0
+              or else not Valid_History_Snapshot (Plan.History, Plan.History_Count, Head, Prior.all))
+         then
+            Result := Corrupt;
+         end if;
+      end if;
       Release_Checkpoint_Plan (Current);
       if Result /= Success then
          Release_Checkpoint_Plan (Plan);
@@ -7510,9 +7790,29 @@ package body Flyology.DB is
       --  corresponding dynamic checkpoint before its owned payload was
       --  released; immutable-chain validation thereafter needs only its base.
       Checkpoint_Manifests : array (History_Slot) of Boolean := [others => False];
+      Checkpoint_Replay_Boundaries : array (History_Slot) of Interfaces.Unsigned_64 := [others => 0];
       Manifest_Count      : Natural := 0;
       Current_Manifest_ID : Identifier;
       Replay_Boundary     : Sequence_Number := 0;
+
+      function Starts_After_Checkpoint (Batch : Runtime_Batch) return Boolean is
+      begin
+         for Index in Positive range 1 .. Manifest_Count loop
+            if Checkpoint_Manifests (Index)
+              and then Checkpoint_Replay_Boundaries (Index) = Interfaces.Unsigned_64 (Replay_Boundary)
+              and then To_Database_ID (Manifests_Seen (Index).Database_ID) = Batch.Database_ID
+              and then Manifests_Seen (Index).Writer_Epoch = Batch.Epoch
+              and then To_Identifier (Manifests_Seen (Index).Publication_Transition_ID)
+                         = Batch.Expected_Transition_ID
+              and then Manifests_Seen (Index).Publication_Transition_Number
+                         = Batch.Expected_Transition_Number
+            then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Starts_After_Checkpoint;
+
       procedure Load is
       begin
          Head := (others => <>);
@@ -7604,6 +7904,9 @@ package body Flyology.DB is
                   Checkpoint.Manifest,
                   Result);
                Checkpoint_Manifests (Manifest_Count) := Checkpoint.Manifest /= null;
+               if Checkpoint.Manifest /= null then
+                  Checkpoint_Replay_Boundaries (Manifest_Count) := Checkpoint.Manifest.Replay_Boundary;
+               end if;
             else
                declare
                   Prior_Authority  : Engine_LSM_Authority;
@@ -7624,6 +7927,9 @@ package body Flyology.DB is
                      Prior_Checkpoint,
                      Result);
                   Checkpoint_Manifests (Manifest_Count) := Prior_Checkpoint /= null;
+                  if Prior_Checkpoint /= null then
+                     Checkpoint_Replay_Boundaries (Manifest_Count) := Prior_Checkpoint.Replay_Boundary;
+                  end if;
                   LSM_Runtime.Release (Prior_Checkpoint);
                end;
             end if;
@@ -7735,12 +8041,20 @@ package body Flyology.DB is
               (Batch_Data,
                Database_ID,
                To_Public_Limits (Manifest.Limits),
-               Count = 1,
+               False,
                Head,
                History (Count),
                Batch_Result);
             if Batch_Result /= Success then
                Result := Batch_Result;
+               return;
+            elsif Count = 1
+              and then not Runtime_Published_By (History (Count), Head)
+              and then
+                not Runtime_Anchored_By_Manifest_Chain
+                      (History (Count), Head, Manifests_Seen, Manifest_Count)
+            then
+               Result := Corrupt;
                return;
             elsif History (Count).Batch_ID /= Current_Batch_ID then
                Result := Corrupt;
@@ -7753,11 +8067,7 @@ package body Flyology.DB is
                   exit;
                end if;
             elsif History (Count).First_Sequence = Replay_Boundary + 1 then
-               if History (Count).Expected_Transition_ID
-                 /= To_Identifier (Checkpoint.Manifest.Base.Publication_Transition_ID)
-                 or else History (Count).Expected_Transition_Number
-                         /= Checkpoint.Manifest.Base.Publication_Transition_Number
-               then
+               if not Starts_After_Checkpoint (History (Count)) then
                   Result := Corrupt;
                   return;
                end if;
@@ -11942,6 +12252,13 @@ package body Flyology.DB is
          Result := Local_Activation_Failed;
       else
          Allocation_Faults.Check (Flush_Activation_State_Allocation);
+         --  Move the prepublication suffix snapshot out of Plan before passing
+         --  both objects as writable actuals. Allocate_Engine consumes this
+         --  recovery-ordered history on every success or failure path.
+         History := Plan.History;
+         History_Count := Plan.History_Count;
+         Plan.History := null;
+         Plan.History_Count := 0;
          Allocate_Engine
            (Item.Life'Unchecked_Access,
             Old_State.Storage,

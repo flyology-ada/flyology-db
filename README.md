@@ -41,8 +41,11 @@ boundary, identity, limit, and surrounding run. It derives all output extents fr
 no partial candidate. A private synchronous publication witness now binds the retained manifest to the exact current
 HEAD generation, authenticates its SSTs with header-first generation-bound reads, and sends the merged SST and
 successor through the existing immutable confirmation, conditional HEAD, activation, and exact-identity resolution
-machinery. This first publisher requires the retained replay boundary to equal current HEAD; it rejects a later log
-suffix rather than dropping its history/identity authority during activation. It still selects no trigger, schedule,
+machinery. The successor publisher also supports a later log suffix: before publication it clones the exact decoded
+batch descriptors and shared immutable-image ownership, rebuilds the activation base strictly from successor SSTs,
+and replays the suffix into the replacement coordinator. Cacheless recovery accepts the same topology only when the
+validated manifest predecessor chain anchors
+both the latest batch publication and the checkpoint boundary it follows. It still selects no trigger, schedule,
 fanout, level policy, public API, or composable read driver.
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or

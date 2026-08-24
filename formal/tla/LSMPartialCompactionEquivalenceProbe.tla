@@ -13,10 +13,12 @@ UnsafeBuild ==
     /\ newerRun[K1] = NoMutation
     /\ mergedRun' = [MergeSelected(selectedFirst, selectedSecond)
         EXCEPT ![K1] = NoMutation]
+    /\ transferredSuffix' = suffixBatch
+    /\ identityRetained' = TRUE
     /\ phase' = "Built"
     /\ lastAction' = "BuildPartialMerge"
     /\ UNCHANGED <<olderRun, selectedFirst, selectedSecond, newerRun,
-        beforeView, afterView>>
+        suffixBatch, beforeView, afterView>>
 
 NextWithProbe == Next \/ UnsafeBuild
 SpecWithProbe == Init /\ [][NextWithProbe]_vars

@@ -65,8 +65,11 @@ slices exactly, and preserves every persisted replay, identity, limit, family, a
 HEAD-generation binding and conditional successor publication are now exercised by a private synchronous witness:
 it authenticates the current immutable runs, publishes the one merged SST and successor manifest through the shared
 certainty machinery, conditionally advances HEAD, and can rebuild the exact pair after an ambiguous object response.
-It is admitted only when the checkpoint replay boundary is current; preserving a later log suffix across local
-activation, a composable selected-run reader, trigger/fanout/level policy, and the public compaction surface remain
+When a later log suffix exists, the plan clones its exact decoded transactions, mutations, and immutable-image
+ownership before publication. Activation reconstructs only the successor SST view and then replays that suffix, so
+snapshot conflicts, seen identities, and live values survive coordinator replacement. Cacheless recovery requires
+the validated manifest chain to anchor the latest batch transition and the exact checkpoint boundary at which its
+suffix begins. A composable selected-run reader, trigger/fanout/level policy, and the public compaction surface remain
 later units.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.

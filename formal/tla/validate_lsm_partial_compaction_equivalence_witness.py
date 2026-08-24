@@ -53,7 +53,12 @@ def validate(states: list[dict[str, object]]) -> None:
     exact_map(final.get("second"), {"K1": "Tombstone", "K2": "V2"}, "second selected run")
     exact_map(final.get("merged"), {"K1": "Tombstone", "K2": "V2"}, "merged run")
     exact_map(final.get("newer"), {"K1": "V1", "K2": "NoMutation"}, "newer run")
-    expected_view = {"K1": "V1", "K2": "V2"}
+    expected_suffix = {"K1": "NoMutation", "K2": "V1"}
+    exact_map(final.get("suffix"), expected_suffix, "source suffix")
+    exact_map(final.get("transferredSuffix"), expected_suffix, "transferred suffix")
+    if final.get("identityRetained") is not True:
+        fail("suffix transaction identity was not retained")
+    expected_view = {"K1": "V1", "K2": "V1"}
     exact_map(final.get("before"), expected_view, "pre-merge view")
     exact_map(final.get("after"), expected_view, "post-merge view")
 

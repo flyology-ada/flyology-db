@@ -290,16 +290,18 @@ publication, retention, and progress remain in their separate lanes.
 `LSMPartialCompactionEquivalence.tla` freezes the distinct read rule for a partial merge. Two selected consecutive
 runs sit between one retained older and one retained newer run. The merger keeps the newest selected mutation per
 key; unlike complete live-state replacement, that mutation can be a tombstone because an older retained value may
-still need masking. TLC exhausts 196,608 distinct states at depth 3 across all two-key/two-value mutations and checks
-exact pre/post recovery equality. `LSMPartialCompactionEquivalenceProbe.tla` drops a selected tombstone and must
-violate safety. `LSMPartialCompactionEquivalenceWitness.tla` plus its validator fixes a concrete retained-older,
-selected-pair, retained-newer path whose merged tombstone is subsequently overwritten by the newer run.
+still need masking. A post-checkpoint log suffix is transferred unchanged, including its transaction-identity
+authority, and is replayed after the merged SST view. TLC exhausts 3,145,728 distinct states at depth 3 across all
+two-key/two-value run and suffix mutations and checks exact pre/post recovery equality plus suffix authority
+transfer. `LSMPartialCompactionEquivalenceProbe.tla` transfers the suffix correctly but drops a selected tombstone
+and must violate safety. `LSMPartialCompactionEquivalenceWitness.tla` plus its validator fixes a concrete
+retained-older, selected-pair, retained-newer, and later-suffix path.
 
 `LSMPartialCompactionEquivalenceSafetyProof.tla` proves five strict obligations over arbitrary nonempty key and value
 sets: newest selected mutation retention, selected tombstone retention, single-key mutation composition, whole-view
-selected-run equivalence, and equality with retained older/newer runs. The lane chooses no run-selection condition,
-trigger, fanout, level size, schedule, resource capacity, publication protocol, or public API. It also claims no
-refinement to an operational Ada partial merger.
+selected-run equivalence, and equality after any suffix over retained older/newer runs. The lane chooses no
+run-selection condition, trigger, fanout, level size, schedule, resource capacity, publication protocol, or public
+API. It also claims no refinement to an operational Ada partial merger.
 
 ## Immutable cache lane
 

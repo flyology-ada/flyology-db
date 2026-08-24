@@ -4,10 +4,11 @@
 This unbounded kernel proves policy-neutral partial LSM compaction for
 arbitrary nonempty key and value sets. Replacing two consecutive selected
 runs with their newest mutation per key preserves all reads while retained
-older and newer runs remain in order. Tombstones are mutations and therefore
-remain when they are the newest selected mutation. Formats, sequence-range
-selection, allocation, publication, retention, scheduling, and progress stay
-in their separate lanes.
+older and newer runs remain in order and an unchanged post-checkpoint suffix
+is applied afterward. Tombstones are mutations and therefore remain when they
+are the newest selected mutation. Identity-transfer ownership, formats,
+sequence-range selection, allocation, publication, retention, scheduling, and
+progress stay in their separate lanes.
 ***************************************************************************)
 
 CONSTANTS Keys, Values, NoValue, NoMutation, Tombstone
@@ -44,11 +45,11 @@ ComposeMutation(earlier, later) ==
 MergeSelected(first, second) ==
     [k \in Keys |-> ComposeMutation(first[k], second[k])]
 
-RecoverBefore(older, first, second, newer) ==
-    ApplyRun(ApplyRun(ApplyRun(ApplyRun(EmptyView, older), first), second), newer)
+RecoverBefore(older, first, second, newer, suffix) ==
+    ApplyRun(ApplyRun(ApplyRun(ApplyRun(ApplyRun(EmptyView, older), first), second), newer), suffix)
 
-RecoverAfter(older, merged, newer) ==
-    ApplyRun(ApplyRun(ApplyRun(EmptyView, older), merged), newer)
+RecoverAfter(older, merged, newer, suffix) ==
+    ApplyRun(ApplyRun(ApplyRun(ApplyRun(EmptyView, older), merged), newer), suffix)
 
 THEOREM NewestSelectedMutationIsRetained ==
     \A first, second \in [Keys -> Mutations] :
@@ -87,9 +88,9 @@ THEOREM SelectedMergePreservesView ==
 
 THEOREM PartialMergePreservesEveryRead ==
     DistinctSentinels =>
-        \A older, first, second, newer \in [Keys -> Mutations] :
-            RecoverBefore(older, first, second, newer)
-              = RecoverAfter(older, MergeSelected(first, second), newer)
+        \A older, first, second, newer, suffix \in [Keys -> Mutations] :
+            RecoverBefore(older, first, second, newer, suffix)
+              = RecoverAfter(older, MergeSelected(first, second), newer, suffix)
 <1> QED BY DEF DistinctSentinels, ViewValues, Mutations, EmptyView,
     ApplyRun, ApplyMutation, MergeSelected, ComposeMutation,
     RecoverBefore, RecoverAfter

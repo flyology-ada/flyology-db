@@ -2654,6 +2654,7 @@ package body Flyology.DB.Engine_Tests is
       Context      : aliased Storage_Context;
       Item         : Database;
       Txn          : Transaction;
+      Older_Txn    : Transaction;
       Commit_Info  : Commit_Receipt;
       Create_Info  : Create_Receipt;
       Flush_Info   : Flush_Receipt;
@@ -2666,8 +2667,9 @@ package body Flyology.DB.Engine_Tests is
       --  L0 runs; their following two IDs name each manifest/HEAD transition;
       --  +40..+42 name the merged run and successor publication. These are
       --  corpus identities, never generated production or compaction policy.
-      --  +43..+47 and +60..+62 are rejected selection, alias, and later-suffix
-      --  probes; +51/+70 are the suffix write/read transaction identities.
+      --  +43..+47 name rejected selection/alias probes; +60..+62 name the
+      --  suffix-preserving successor, and +63..+65 its allocation-failure
+      --  attempt. +51/+52/+70 are suffix/snapshot/read transaction identities.
       Database_ID : constant Database_Identifier :=
         Database_Identifier (Numbered_ID (Identity_Base));
       First_Run   : constant Identifier := Numbered_ID (Identity_Base + 10);
@@ -2675,8 +2677,8 @@ package body Flyology.DB.Engine_Tests is
       Third_Run   : constant Identifier := Numbered_ID (Identity_Base + 30);
       Merged_Run  : constant Identifier := Numbered_ID (Identity_Base + 40);
       --  Root plus three Flush successors plus the merge successor consumes
-      --  five revisions; the sixth slot lets the later-suffix precheck, rather
-      --  than history capacity, classify the rejected follow-up attempt.
+      --  five revisions; the sixth slot admits the follow-up adjacent merge
+      --  while its post-checkpoint suffix remains separate replay authority.
       --  Three L0 slots admit the witnessed pre-merge geometry. These are
       --  persisted fixture limits, not defaults.
       Limits : constant Database_Limits :=
@@ -2809,12 +2811,34 @@ package body Flyology.DB.Engine_Tests is
 
       Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 51), Txn, Result);
       Expect (Result, Success, "post-merge suffix transaction begin failed");
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 52), Older_Txn, Result);
+      Expect (Result, Success, "pre-suffix snapshot transaction begin failed");
       Put (Item, Txn, 1, Suffix_Key, Suffix_Value, Result);
       Expect (Result, Success, "post-merge suffix Put failed");
       Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
       Expect (Result, Success, "post-merge suffix commit failed");
       Testing.Publication_Counts
         (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+      Testing.Fail_Next_Allocation (Testing.Recovery_History);
+      Testing.Publish_Adjacent_Merge
+        (Item,
+         Merged_Run,
+         Third_Run,
+         Numbered_ID (Identity_Base + 63),
+         Numbered_ID (Identity_Base + 64),
+         Numbered_ID (Identity_Base + 65),
+         Flush_Info,
+         Result);
+      Expect (Result, Capacity_Exceeded, "suffix-history allocation failure reached publication");
+      Testing.Publication_Counts
+        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      if After_Batches /= Before_Batches
+        or else After_Runs /= Before_Runs
+        or else After_Manifests /= Before_Manifests
+        or else After_Heads /= Before_Heads
+      then
+         raise Program_Error with "suffix-history allocation failure published an object";
+      end if;
       Testing.Publish_Adjacent_Merge
         (Item,
          Merged_Run,
@@ -2824,16 +2848,23 @@ package body Flyology.DB.Engine_Tests is
          Numbered_ID (Identity_Base + 62),
          Flush_Info,
          Result);
-      Expect (Result, Invalid_State, "partial merge silently consumed a later log suffix");
+      Expect (Result, Success, "partial merge rejected a retained log suffix");
       Testing.Publication_Counts
         (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
       if After_Batches /= Before_Batches
-        or else After_Runs /= Before_Runs
-        or else After_Manifests /= Before_Manifests
-        or else After_Heads /= Before_Heads
+        or else After_Runs /= Before_Runs + 1
+        or else After_Manifests /= Before_Manifests + 1
+        or else After_Heads /= Before_Heads + 1
       then
-         raise Program_Error with "later-suffix merge rejection published an object";
+         raise Program_Error with "later-suffix adjacent merge publication order/count changed";
       end if;
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 51), Txn, Result);
+      Expect (Result, Conflict, "partial merge forgot a retained transaction identity");
+      Put (Item, Older_Txn, 1, Suffix_Key, First_Value, Result);
+      Expect (Result, Success, "pre-suffix snapshot write failed");
+      Commit
+        (Item, Older_Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, Conflict, "partial merge forgot retained write-conflict history");
 
       Close (Item, Result);
       Expect (Result, Success, "adjacent-merge database close failed");
@@ -2841,6 +2872,10 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "retired first L0 run removal failed");
       Testing.Remove_Run (Context, Second_Run, Result);
       Expect (Result, Success, "retired second L0 run removal failed");
+      Testing.Remove_Run (Context, Merged_Run, Result);
+      Expect (Result, Success, "retired intermediate merged run removal failed");
+      Testing.Remove_Run (Context, Third_Run, Result);
+      Expect (Result, Success, "retired third L0 run removal failed");
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "adjacent-merge cacheless reopen failed");
       Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 70), Txn, Result);
@@ -2855,7 +2890,7 @@ package body Flyology.DB.Engine_Tests is
       end if;
       Get (Item, Txn, 1, Suffix_Key, Data, Result);
       if Result /= Success or else Data /= Suffix_Value then
-         raise Program_Error with "rejected partial merge lost the later log suffix";
+         raise Program_Error with "partial merge lost the retained later log suffix";
       end if;
       Rollback (Txn, Result);
       Expect (Result, Success, "adjacent-merge recovered read rollback failed");

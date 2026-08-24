@@ -525,9 +525,11 @@ grep -q 'Invariant WitnessPending is violated.' \
   >"$temporary_root/tlaps-lsm-equivalence.log" 2>&1
 grep -q 'All 6 obligations proved.' "$temporary_root/tlaps-lsm-equivalence.log"
 
-#  Two selected consecutive runs sit between retained older and newer runs.
-#  Two keys and two values are finite qualification geometry. Partial merge
-#  preserves the newest selected mutation per key, including tombstones.
+#  Two selected consecutive runs sit between retained older and newer runs,
+#  followed by one post-checkpoint log suffix. Two keys and two values are
+#  finite qualification geometry, not product policy. Partial merge preserves
+#  the newest selected mutation per key, including tombstones, and transfers
+#  the suffix and its transaction-identity authority unchanged.
 "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
   -workers 1 -coverage 1 -metadir "$temporary_root/tlc-lsm-partial-equivalence-states" \
   -config LSMPartialCompactionEquivalence.cfg LSMPartialCompactionEquivalence \
@@ -535,7 +537,7 @@ grep -q 'All 6 obligations proved.' "$temporary_root/tlaps-lsm-equivalence.log"
 grep -q 'Model checking completed. No error has been found.' \
   "$temporary_root/tlc-lsm-partial-equivalence.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-lsm-partial-equivalence.log"
-grep -q '196608 distinct states found' "$temporary_root/tlc-lsm-partial-equivalence.log"
+grep -q '3145728 distinct states found' "$temporary_root/tlc-lsm-partial-equivalence.log"
 grep -q 'The depth of the complete state graph search is 3.' \
   "$temporary_root/tlc-lsm-partial-equivalence.log"
 for action in BuildPartialMerge RecoverMergedRuns
@@ -1036,9 +1038,9 @@ printf '%s\n' "  LSM read equivalence TLC 576 distinct states, depth 4"
 printf '%s\n' "  LSM read equivalence TLAPS 6/6 obligations"
 printf '%s\n' "  LSM replacement/delete/replay witness validated"
 printf '%s\n' "  Negative omitted-live-key replacement probe detected"
-printf '%s\n' "  Partial LSM merge TLC 196608 distinct states, depth 3"
+printf '%s\n' "  Partial LSM merge TLC 3145728 distinct states, depth 3"
 printf '%s\n' "  Partial LSM merge TLAPS 5/5 obligations"
-printf '%s\n' "  Partial LSM older/selected/newer merge witness validated"
+printf '%s\n' "  Partial LSM older/selected/newer/suffix merge witness validated"
 printf '%s\n' "  Negative dropped-tombstone partial-merge probe detected"
 printf '%s\n' "  Immutable cache TLC 623 distinct states, depth 12"
 printf '%s\n' "  Immutable cache TLAPS 13/13 obligations"

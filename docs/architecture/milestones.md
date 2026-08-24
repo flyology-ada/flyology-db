@@ -114,8 +114,10 @@ corresponding successor by replacing only that pair while preserving all other p
 synchronous publisher binds that captured manifest to current HEAD, authenticates the named SSTs, stores and confirms
 the merged SST and successor, conditionally advances HEAD, and reconciles an ambiguous object response only by
 rebuilding the same selected pair and identities. A composable selected-run reader and production policy remain
-separate work. This first publisher rejects any log suffix after the retained replay boundary; transferring that
-suffix's decoded history and identity authority through activation is not yet implemented.
+separate work. A later log suffix is cloned at its exact decoded transaction/mutation extents before publication,
+with shared ownership of its immutable images. The replacement coordinator reconstructs only the successor run base,
+then replays the suffix to preserve conflict and identity authority. Recovery admits that topology only through exact
+batch-to-manifest-chain and suffix-to-checkpoint-boundary anchors.
 
 The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
 separation, and atomic capacity/allocation rollback. Its finite model exhausts 3,419 states and the arbitrary-universe

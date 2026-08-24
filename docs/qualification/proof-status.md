@@ -238,10 +238,12 @@ dynamic planner and publisher remain outside the selected SPARK packages. Their 
 retained manifest to exact current HEAD/generation authority, authenticates every named SST with header-first and
 same-generation whole reads, admits only the selected adjacent pair, confirms the merged SST and exact successor
 before conditional HEAD publication, and reconstructs the same plan after an accepted/lost immutable response. A
-later log suffix is rejected before effects because this first activation path does not transfer suffix history and
-identity authority. Memory/files cacheless reopen after removal of both selected source runs confirms that the merged
-output and retained later run are the only current SST authority; a separately rejected suffix remains recoverable
-from the log. No SPARK proof of Object Storage, protected lifecycle, allocation, or Ada/TLA refinement is claimed.
+later log suffix is now cloned before effects at its exact decoded extents and replayed after SST-only replacement
+activation. Memory/files witnesses retain duplicate-identity and write-conflict authority, reject injected history
+allocation before publication, remove all retired input runs, and reopen from the final merged output plus the suffix.
+Recovery accepts the descendant HEAD only through exact validated manifest-chain anchors for the latest batch and
+its checkpoint boundary. No SPARK proof of Object Storage, protected lifecycle, allocation, or Ada/TLA refinement is
+claimed.
 
 ## TLA+ state-machine assurance
 
@@ -313,12 +315,13 @@ from the log. No SPARK proof of Object Storage, protected lifecycle, allocation,
   two-value captured views and later Put/Delete/no-mutation maps. Its validated four-action witness deletes one
   recovered live key and puts one formerly absent key; omitting a live replacement entry must violate safety. The
   arbitrary-key/value kernel proves 6/6 strict TLAPS obligations for canonical Put-only replacement, exact recovery,
-  and equivalence under any later delta. The policy-neutral partial-merge model separately exhausts 196,608 states at
-  depth 3 across every two-key/two-value older/selected-pair/newer mutation map. Its validated three-action witness
-  preserves exact reads through the merge, while a probe that drops the newest selected tombstone must violate
-  safety. The arbitrary-key/value kernel proves 5/5 strict TLAPS obligations for newest selected mutation and
-  tombstone retention, mutation composition, selected-pair equivalence, and equality with retained surrounding
-  runs. These lanes do not prove operational merge refinement, run selection, snapshot retention sufficiency,
+  and equivalence under any later delta. The policy-neutral partial-merge model separately exhausts 3,145,728 states
+  at depth 3 across every two-key/two-value older/selected-pair/newer/suffix mutation map. Its validated three-action
+  witness preserves exact reads and suffix transaction-identity authority through the merge, while a probe that
+  transfers the suffix correctly but drops the newest selected tombstone must violate safety. The arbitrary-key/value
+  kernel proves 5/5 strict TLAPS obligations for newest selected mutation and tombstone retention, mutation
+  composition, selected-pair equivalence, and equality after any suffix over retained surrounding runs. These lanes
+  do not prove operational merge refinement, run selection, snapshot retention sufficiency,
   physical reclamation, codecs, capacity arithmetic, provider behavior, progress, or a public trigger.
   The private operational
   Ada planner/publisher is qualified separately by deterministic replacement, allocation, certainty, depublication,

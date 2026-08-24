@@ -1,5 +1,42 @@
 # Review record
 
+## Accepted suffix-preserving adjacent-merge activation
+
+- Parent: composable DeleteObjects dependency qualification commit `917bcc1`.
+- Scope and authority: extend only the private caller-selected adjacent two-run merge so an exact post-checkpoint log
+  suffix can survive successor publication and local coordinator replacement. The caller still supplies every run,
+  manifest, and transition identity. This unit adds no public API, trigger, level, fanout, schedule, retry, timeout,
+  task, garbage-collection rule, or allocation ceiling.
+- Prepublication ownership: under the existing quiescent checkpoint lifecycle, the planner allocates transaction and
+  mutation descriptor arrays from each retained runtime batch's exact decoded extents, copies its complete scalar and
+  descriptor authority, and retains shared ownership of the immutable batch image. It validates the newest batch
+  against current HEAD, the oldest batch against the retained checkpoint transition, and every intervening batch
+  predecessor. Allocation, shape, or authority failure releases the candidate and publishes no object.
+- Activation and recovery: the activation base is derived strictly from the successor manifest's authenticated SSTs;
+  retained SST ownership moves from the current plan and the new merged SST is cloned at its exact derived extent.
+  The replacement coordinator recovers that base and then replays the plan-owned suffix oldest-to-newest, preserving
+  values, snapshot write-conflict evidence, transaction IDs, batch IDs, and checkpoint identity authority. Cacheless
+  recovery accepts a manifest-only HEAD descendant only when its already-validated predecessor chain contains the
+  exact database, writer epoch, transition, and replay-boundary checkpoint anchors for the retained suffix.
+- Deterministic and formal evidence: `./tests/scripts/test.sh` passes repository integrity, local engine, authenticated
+  client, memory/files crash and cacheless recovery, all 32 comparative tests, and pinned TidesDB 4/4 against Object
+  Storage `4d6925e2138f18fca2d24d0f63ed0f0319bdbad9`. The focused witness rejects injected history allocation without
+  publication, publishes the second adjacent merge with a live suffix, retains duplicate-ID and write/write-conflict
+  authority, removes all four retired inputs, and reopens from only the final merged output plus suffix. The complete
+  TLA gate exhausts 3,145,728 partial-merge states at depth 3, proves 5/5 arbitrary-key/value TLAPS obligations,
+  validates exact suffix/identity transfer, and detects the tombstone-dropping negative probe. `./scripts/prove.sh`
+  proves 1,090/1,090 selected checks (166 flow, 924 prover), with zero selected-unit warnings, unproved/justified
+  checks, or `pragma Assume`; exact pre/post formal-process audits are clean.
+- Findings cycle: architecture review fixed three P1 risks before acceptance: rebuilding activation from the live view
+  would conflate suffix and checkpoint authority; allocating suffix ownership after HEAD publication could leave no
+  exact rollback path; and recovery authenticated the latest batch only against immediate HEAD rather than a valid
+  manifest-only descendant. Executable recovery then exposed and fixed a second P1: the oldest suffix batch must bind
+  to its exact predecessor checkpoint in the validated chain, not necessarily the current checkpoint. Implementation
+  review fixed P2 ownership/type hardening for pre-owned copy targets, exact database/epoch anchors, and overlapping
+  writable actuals; the full TLA run fixed a stale P2 concrete-witness expectation. Rebuild, deterministic rerun,
+  formal rerun, constants/public-contract/ownership/certainty review, and final re-review find no remaining P0, P1,
+  P2, or P3 issue.
+
 ## Accepted composable DeleteObjects dependency qualification
 
 - Parent: private adjacent-merge publication commit `8bf41b0`.
