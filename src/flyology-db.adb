@@ -4256,9 +4256,6 @@ package body Flyology.DB is
       if Is_Zero (Run_ID) or else not State.LSM_Authority.Enabled then
          Result := Invalid_State;
          return;
-      elsif State.LSM_Authority.Replay_Boundary /= 0 then
-         Result := Unsupported_Format;
-         return;
       end if;
       for Family of State.LSM_Authority.Families loop
          if Family.ID = Interfaces.Unsigned_32 (Family_ID) then
@@ -4269,9 +4266,6 @@ package body Flyology.DB is
       end loop;
       if not Authority_Found then
          Result := Not_Found;
-         return;
-      elsif Authority.Run_Total /= 0 then
-         Result := Unsupported_Format;
          return;
       end if;
 
@@ -4406,7 +4400,7 @@ package body Flyology.DB is
       end loop;
    end Sort_Checkpoint_Identities;
 
-   procedure Build_First_Checkpoint_Plan
+   procedure Build_Checkpoint_Plan
      (State         : not null Engine_State_Access;
       Runs          : Checkpoint_Run_Identity_Array;
       Manifest_ID   : Identifier;
@@ -4440,7 +4434,6 @@ package body Flyology.DB is
         or else Is_Zero (Transition_ID)
         or else Manifest_ID = Transition_ID
         or else not State.LSM_Authority.Enabled
-        or else State.LSM_Authority.Replay_Boundary /= 0
       then
          Result := Invalid_State;
          return;
@@ -4475,11 +4468,13 @@ package body Flyology.DB is
       elsif Base.Registry_Revision = Interfaces.Unsigned_64'Last then
          Result := Capacity_Exceeded;
          return;
-      --  A first checkpoint and its immutable root predecessor require two
-      --  reachable manifest slots. This is derived from the publication
-      --  shape, not a new default; a one-slot persisted database must remain
-      --  log-only rather than publish an unreopenable successor.
-      elsif Base.Limits.Maximum_Manifest_History < 2 then
+      --  Root revision one and exact one-step predecessor validation make
+      --  Registry_Revision the current manifest-chain depth. The persisted
+      --  history limit is therefore the sole authority for another immutable
+      --  successor; equality rejects before any object publication.
+      elsif Base.Registry_Revision
+        >= Interfaces.Unsigned_64 (Base.Limits.Maximum_Manifest_History)
+      then
          Result := Capacity_Exceeded;
          return;
       elsif Interfaces.Unsigned_64 (Identity_Total)
@@ -4626,7 +4621,7 @@ package body Flyology.DB is
       when others =>
          Release_Checkpoint_Plan (Plan);
          raise;
-   end Build_First_Checkpoint_Plan;
+   end Build_Checkpoint_Plan;
 
    protected body Database_Lifecycle is
 
@@ -6352,30 +6347,45 @@ package body Flyology.DB is
          raise;
    end Read_Leading_Manifest;
 
-   function Valid_Checkpoint_Predecessor
-     (Current : LSM_Runtime.Checkpoint_Manifest; Previous : Manifests.Manifest) return Boolean is
+   function Valid_Checkpoint_Base_Predecessor
+     (Current, Previous : Manifests.Manifest) return Boolean is
    begin
-      if not LSM_Runtime.Structurally_Valid (Current)
+      if not Manifests.Structurally_Valid (Current)
         or else not Manifests.Structurally_Valid (Previous)
-        or else Manifests.Is_Root (Current.Base)
-        or else Current.Base.Database_ID /= Previous.Database_ID
-        or else Current.Base.Previous_Manifest_ID /= Previous.Manifest_ID
-        or else Current.Base.Limits /= Previous.Limits
-        or else Current.Base.Family_Total /= Previous.Family_Total
+        or else Manifests.Is_Root (Current)
+        or else Current.Database_ID /= Previous.Database_ID
+        or else Current.Previous_Manifest_ID /= Previous.Manifest_ID
+        or else Current.Limits /= Previous.Limits
+        or else Current.Family_Total /= Previous.Family_Total
         or else Previous.Registry_Revision = Interfaces.Unsigned_64'Last
-        or else Current.Base.Registry_Revision /= Previous.Registry_Revision + 1
-        or else Current.Base.Writer_Epoch < Previous.Writer_Epoch
-        or else Current.Base.Expected_Transition_Number < Previous.Publication_Transition_Number
+        or else Current.Registry_Revision /= Previous.Registry_Revision + 1
+        or else Current.Writer_Epoch < Previous.Writer_Epoch
+        or else Current.Expected_Transition_Number < Previous.Publication_Transition_Number
       then
          return False;
       end if;
       for Index in Manifests.Family_Slot range 1 .. Previous.Family_Total loop
-         if Current.Base.Families (Index) /= Previous.Families (Index) then
+         if Current.Families (Index) /= Previous.Families (Index) then
             return False;
          end if;
       end loop;
-      return True;
-   end Valid_Checkpoint_Predecessor;
+      declare
+         --  Exact transition reachability uses the same persisted ordinal and
+         --  epoch formula as append-only registry successors. Gap zero binds
+         --  the same transition; gap one requires the immediate next identity.
+         --  These are structural cases, not configurable retry/history policy.
+         Ordinal_Gap : constant Interfaces.Unsigned_64 :=
+           Current.Expected_Transition_Number - Previous.Publication_Transition_Number;
+         Epoch_Gap   : constant Interfaces.Unsigned_64 := Current.Writer_Epoch - Previous.Writer_Epoch;
+      begin
+         return
+           Epoch_Gap <= Ordinal_Gap
+           and then (if Ordinal_Gap = 0
+                     then Current.Expected_Transition_ID = Previous.Publication_Transition_ID
+                     elsif Ordinal_Gap = 1
+                     then Current.Expected_Transition_ID /= Previous.Publication_Transition_ID);
+      end;
+   end Valid_Checkpoint_Base_Predecessor;
 
    procedure Read_Checkpoint_SSTs
      (Storage  : in out Storage_Context;
@@ -6578,6 +6588,10 @@ package body Flyology.DB is
       Current_Batch_ID    : Identifier;
       Ignored_Generation  : Generation_Value;
       Manifests_Seen      : Manifest_History := [others => Manifests.Empty_Manifest];
+      --  True records that header-first decoding structurally validated the
+      --  corresponding dynamic checkpoint before its owned payload was
+      --  released; immutable-chain validation thereafter needs only its base.
+      Checkpoint_Manifests : array (History_Slot) of Boolean := [others => False];
       Manifest_Count      : Natural := 0;
       Current_Manifest_ID : Identifier;
       Replay_Boundary     : Sequence_Number := 0;
@@ -6671,22 +6685,29 @@ package body Flyology.DB is
                   LSM_Authority,
                   Checkpoint.Manifest,
                   Result);
+               Checkpoint_Manifests (Manifest_Count) := Checkpoint.Manifest /= null;
             else
-               Storage_Port.Get_Whole
-                 (Storage,
-                  Manifest_Key (Storage, Current_Manifest_ID),
-                  Manifest_Object,
-                  Deadline,
-                  Token,
-                  Data,
-                  Length,
-                  Ignored_Generation,
-                  Read_Result);
-               if Read_Result /= Object_Read then
-                  Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
-                  return;
-               end if;
-               Decode_Stored_Manifest (Data, Length, Database_ID, Manifests_Seen (Manifest_Count), Result);
+               declare
+                  Prior_Authority  : Engine_LSM_Authority;
+                  Prior_Checkpoint : LSM_Runtime.Checkpoint_Manifest_Access := null;
+               begin
+                  --  Every predecessor may itself be a dynamically sized
+                  --  checkpoint manifest. Header-first whole-object decoding
+                  --  validates it before only its fixed base is retained for
+                  --  immutable-chain validation.
+                  Read_Leading_Manifest
+                    (Storage,
+                     Current_Manifest_ID,
+                     Database_ID,
+                     Deadline,
+                     Token,
+                     Manifests_Seen (Manifest_Count),
+                     Prior_Authority,
+                     Prior_Checkpoint,
+                     Result);
+                  Checkpoint_Manifests (Manifest_Count) := Prior_Checkpoint /= null;
+                  LSM_Runtime.Release (Prior_Checkpoint);
+               end;
             end if;
             if Result /= Success then
                return;
@@ -6698,12 +6719,10 @@ package body Flyology.DB is
                Result := Corrupt;
                return;
             elsif Manifest_Count > 1
-              and then (if Manifest_Count = 2
-                          and then Checkpoint.Manifest /= null
-                          and then not Manifests.Is_Root (Checkpoint.Manifest.Base)
+              and then (if Checkpoint_Manifests (Manifest_Count - 1)
                         then
-                          not Valid_Checkpoint_Predecessor
-                                (Checkpoint.Manifest.all, Manifests_Seen (Manifest_Count))
+                          not Valid_Checkpoint_Base_Predecessor
+                                (Manifests_Seen (Manifest_Count - 1), Manifests_Seen (Manifest_Count))
                         else
                           not Manifests.Valid_Predecessor
                                 (Manifests_Seen (Manifest_Count - 1), Manifests_Seen (Manifest_Count)))
@@ -10152,7 +10171,7 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Timed_Out);
          return;
       end if;
-      Build_First_Checkpoint_Plan
+      Build_Checkpoint_Plan
         (State.Engine,
          State.Runs (1 .. State.Run_Total),
          State.Manifest_ID,
@@ -10792,7 +10811,7 @@ package body Flyology.DB is
       Guard.Life := Item.Life'Unchecked_Access;
       Guard.Active := True;
       Item.Life.Await_Quiescent;
-      Build_First_Checkpoint_Plan (State, Runs, Manifest_ID, Transition_ID, Plan, Result);
+      Build_Checkpoint_Plan (State, Runs, Manifest_ID, Transition_ID, Plan, Result);
       if Result = Success then
          Initialize_Flush_Receipt
            (State, Plan, Runs, Manifest_ID, Transition_ID, Receipt, Result);
@@ -10942,7 +10961,7 @@ package body Flyology.DB is
       then
          Result := Invalid_State;
       elsif Receipt.Phase = Objects_Unknown then
-         Build_First_Checkpoint_Plan
+         Build_Checkpoint_Plan
            (State,
             Receipt.Runs (1 .. Receipt.Run_Total),
             Receipt.Manifest_ID,
@@ -11884,7 +11903,7 @@ package body Flyology.DB is
       Guard.Life := Item.Life'Unchecked_Access;
       Guard.Active := True;
       Item.Life.Await_Quiescent;
-      Build_First_Checkpoint_Plan (State, Runs, Manifest_ID, Transition_ID, Plan, Result);
+      Build_Checkpoint_Plan (State, Runs, Manifest_ID, Transition_ID, Plan, Result);
       if Result = Success then
          LSM_Runtime.Encode_Checkpoint_Manifest (Plan.Manifest.all, Image, Encode_Result);
          if Encode_Result /= LSM_Runtime.Encoded then

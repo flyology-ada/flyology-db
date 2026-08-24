@@ -1,5 +1,46 @@
 # Review record
 
+## Accepted successive whole-state checkpoint candidate
+
+- Parent: bounded fixed-snapshot scan commit `eb96a96`.
+- Scope and compatibility: extend the existing synchronous/composable `Flush` state machine so every later nonempty
+  flush writes one complete current-state SST per family, publishes a new immutable checkpoint manifest naming only
+  those replacement runs, and advances the existing conditional authority head. Public signatures, result kinds,
+  defaults, formats, and ownership do not change. Old runs and manifests remain immutable stored predecessors for
+  later garbage collection. This is repeated complete-snapshot replacement, not multi-run L0 accumulation or
+  compaction, and makes no full-LSM claim.
+- Authority, certainty, and ownership: the authenticated `Maximum_Manifest_History` is the sole chain-depth authority;
+  an exhausted history returns `Capacity_Exceeded` before run, manifest, or HEAD effects. `Registry_Revision` is the
+  exact one-based chain depth. The operation owns its plan and exact caller-supplied identities, uses no helper task or
+  retry, and retains the established conditional publication mapping. A lost accepted replacement HEAD response is
+  `Outcome_Unknown` until read-only reconciliation proves the exact transition or a conclusive successor. Recovery
+  reads every dynamic predecessor header-first, validates the checkpoint-specific chain, reconstructs only the
+  current replacement runs, and fails closed when a named predecessor is absent or malformed.
+- Constants audit: 282 added nonblank Ada lines yield 67 broad numeric/default/Boolean inventory matches and 14
+  declared constants. Consequential values reduce to exact ordinal/epoch gaps derived from persisted predecessor and
+  successor fields, isolated replacement identity ranges, and the two-slot persisted-history branch fixture. Their
+  adjacent comments state purpose, stable source authority, test or derived classification, and compatibility impact.
+  Routine indexing, increments, neutral initialization, scenario bytes, and values directly copied from persisted
+  authority introduce no independent choice. No production capacity, byte ceiling, timeout, retry, format tag,
+  default, or public constant is introduced, and no policy decision remains unresolved.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository checks, deterministic memory/files
+  engine tests, authenticated create/commit/Flush/reopen, filesystem subprocess crash/recovery, 32 comparative cases,
+  pinned TidesDB 4/4, and all fixtures. New witnesses cover two successive checkpoints, exact replacement state,
+  fixed-snapshot reads, cacheless reopen, old immutable retention, missing dynamic predecessor corruption, persisted
+  two-slot backpressure without effects, and accepted-but-lost replacement HEAD reconciliation. The combined
+  `./scripts/check-tla.sh` gate adds a 37-state/depth-17 model, validated 18-action recovery witness, rejected early
+  HEAD probe, and 24/24 strict TLAPS obligations while preserving every prior lane. Warning-strict FSF GNATprove
+  16.1.0 proves 1,084/1,084 selected-unit checks (164 flow, 920 prover; maximum 6,890 steps), with zero warnings,
+  unproved/justified checks, or `pragma Assume`.
+- Findings cycle: the runtime sweep found a P1 cacheless-recovery defect: older dynamic checkpoint predecessors were
+  decoded through the fixed legacy path and then checked with the ordinary registry predicate. Header-first decode of
+  every dynamic predecessor plus an exact checkpoint-base predecessor predicate fixes the chain without weakening
+  corruption rejection. The formal sweep made initial identity/transaction authority explicit for TLAPS, required
+  the execution witness to resolve the lost response before crash, and added the missing-predecessor corruption case.
+  A formatting sweep removed broad mechanical churn after project-mode `gnatformat` rejected the repository's global
+  preprocessor configuration. Repeated API, ownership, concurrency, bounds, constants, format, certainty, test,
+  documentation, and proof review finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted bounded fixed-snapshot scan candidate
 
 - Parent: operational serializable range-validation commit `2f64062`.

@@ -1437,13 +1437,20 @@ package body Flyology.DB.Engine_Tests is
         [Configure_Checkpoint_Run (7, ID (224)), Configure_Checkpoint_Run (2, First_Run_ID)];
       --  Stable caller-owned checkpoint object and transition identities.
       --  IDs 227..229 belong to the pre-Flush survival/history-boundary and
-      --  post-reopen fixed-snapshot witnesses; these are operation fixtures,
-      --  not defaults.
+      --  post-reopen fixed-snapshot witnesses. IDs 230..233 identify the
+      --  second whole-state replacement runs, manifest, and HEAD transition;
+      --  ID 234 is its fixed-snapshot reader. They are operation fixtures,
+      --  not defaults or format policy.
       Checkpoint_Manifest_ID                     : constant Identifier := ID (225);
       Checkpoint_Transition_ID                   : constant Identifier := ID (226);
       Survivor_Transaction_ID                    : constant Transaction_Identifier := TX_ID (227);
       Ancient_Transaction_ID                     : constant Transaction_Identifier := TX_ID (228);
       Snapshot_Reader_ID                         : constant Transaction_Identifier := TX_ID (229);
+      Second_Checkpoint_Run_Map                  : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (7, ID (230)), Configure_Checkpoint_Run (2, ID (231))];
+      Second_Checkpoint_Manifest_ID              : constant Identifier := ID (232);
+      Second_Checkpoint_Transition_ID            : constant Identifier := ID (233);
+      Second_Snapshot_Reader_ID                  : constant Transaction_Identifier := TX_ID (234);
 
       procedure Expect_Live_LSM_Authority
         (Target : in out Database; Expected_Replay : Sequence_Number; Context_Text : String)
@@ -1850,10 +1857,57 @@ package body Flyology.DB.Engine_Tests is
       Rollback (Snapshot_Reader, Result);
       Expect (Result, Success, "checkpoint-base snapshot reader rollback failed");
 
+      Begin_Transaction (Item, Second_Snapshot_Reader_ID, Snapshot_Reader, Result);
+      Expect (Result, Success, "replacement-checkpoint snapshot reader begin failed");
+      declare
+         Flush_Info                                                   : Flush_Receipt;
+         Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
+         After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
+      begin
+         Testing.Publication_Counts
+           (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+         Flush
+           (Item,
+            Second_Checkpoint_Run_Map,
+            Second_Checkpoint_Manifest_ID,
+            Second_Checkpoint_Transition_ID,
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
+         Expect (Result, Success, "second checkpoint publication failed");
+         if Flush_Receipt_Outcome (Flush_Info) /= Success
+           or else Flush_Receipt_Manifest_ID (Flush_Info) /= Second_Checkpoint_Manifest_ID
+           or else Flush_Receipt_Transition_ID (Flush_Info) /= Second_Checkpoint_Transition_ID
+           or else Flush_Receipt_Replay_Boundary (Flush_Info) /= Expected_Live_Sequence
+           or else Flush_Receipt_Run_Total (Flush_Info) /= Second_Checkpoint_Run_Map'Length
+           or else Flush_Receipt_Run (Flush_Info, 1) /= Second_Checkpoint_Run_Map (1)
+           or else Flush_Receipt_Run (Flush_Info, 2) /= Second_Checkpoint_Run_Map (2)
+         then
+            raise Program_Error with "second Flush receipt lost exact operation authority";
+         end if;
+         Testing.Publication_Counts
+           (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Runs /= Before_Runs + 2
+           or else After_Manifests /= Before_Manifests + 1
+           or else After_Heads /= Before_Heads + 1
+         then
+            raise Program_Error with "second checkpoint publication order/count changed";
+         end if;
+      end;
+      Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "second checkpoint activation");
+      Expect_Live_Entry_Sequence (Item, "second checkpoint activation");
+      Get (Item, Snapshot_Reader, Family_By_ID, To_Key ([16#00#, 16#FF#]), Data, Result);
+      if Result /= Success or else Data /= Replacement_Value then
+         raise Program_Error with "replacement checkpoint changed a fixed snapshot value";
+      end if;
+      Rollback (Snapshot_Reader, Result);
+      Expect (Result, Success, "replacement-checkpoint snapshot reader rollback failed");
+
       Close (Item, Result);
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "family-handle database reopen failed");
-      Expect_Live_LSM_Authority (Item, Expected_Live_Sequence - 1, "suffix replay reopen");
+      Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "second checkpoint reopen");
       Expect_Live_Entry_Sequence (Item, "cacheless reopen");
       Begin_Transaction (Item, TX_ID (205), Txn, Result);
       Get (Item, Txn, Stale_Family, To_Key ([16#00#, 16#FF#]), Data, Result);
@@ -1875,6 +1929,11 @@ package body Flyology.DB.Engine_Tests is
       Rollback (Txn, Result);
       Close (Other, Result);
       Close (Item, Result);
+      Expect (Result, Success, "replacement checkpoint database did not close");
+      Testing.Remove_Manifest (Context, Checkpoint_Manifest_ID, Result);
+      Expect (Result, Success, "replacement predecessor manifest removal failed");
+      Open (Retry, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Corrupt, "missing dynamic checkpoint predecessor was accepted");
 
       declare
          Rejected : Boolean := False;
@@ -2019,16 +2078,20 @@ package body Flyology.DB.Engine_Tests is
    end Test_Manifest_And_Family_API;
 
    procedure Test_Checkpoint_Recovery_Failures (Backend : not null access Backends.Backend'Class) is
-      --  Four disjoint deterministic fixture domains separate manifest-capacity,
-      --  missing, checksum-corrupt, and descriptor-mismatch object graphs.
+      --  Five disjoint deterministic fixture domains separate first-checkpoint
+      --  capacity, successive-checkpoint capacity, missing, checksum-corrupt,
+      --  and descriptor-mismatch object graphs.
       --  Within each domain, +1 is the root transition, +2 the transaction,
       --  +10 .. +17 the family run map, and +20/+21 the checkpoint manifest/
-      --  transition. These values are test identity authority only and never
-      --  library defaults.
-      Manifest_Capacity_Base : constant Natural := 23_900;
-      Missing_Run_Base       : constant Natural := 24_000;
-      Corrupt_Run_Base       : constant Natural := 24_100;
-      Wrong_Descriptor_Base  : constant Natural := 24_200;
+      --  transition. The successive-capacity domain additionally uses +3 for
+      --  its suffix, +30 .. +37 for replacement runs, and +40/+41 for the
+      --  rejected successor. These values are test identity authority only
+      --  and never library defaults.
+      Manifest_Capacity_Base   : constant Natural := 23_900;
+      Successive_Capacity_Base : constant Natural := 23_950;
+      Missing_Run_Base         : constant Natural := 24_000;
+      Corrupt_Run_Base         : constant Natural := 24_100;
+      Wrong_Descriptor_Base    : constant Natural := 24_200;
 
       procedure Prepare
         (Context       : aliased in out Storage_Context;
@@ -2153,6 +2216,98 @@ package body Flyology.DB.Engine_Tests is
       end;
 
       declare
+         Context                                                    : aliased Storage_Context;
+         Item                                                       : Database;
+         Txn                                                        : Transaction;
+         Receipt                                                    : Commit_Receipt;
+         Flush_Info                                                 : Flush_Receipt;
+         Create_Info                                                : Create_Receipt;
+         Result                                                     : Outcome_Code;
+         Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
+         After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
+         --  Two persisted manifest slots admit the root and first checkpoint
+         --  but no second successor. This is a test of persisted authority,
+         --  not a product default or newly selected capacity.
+         Limits                                                     : constant Database_Limits :=
+           (Default_Limits with delta Maximum_Manifest_History => 2);
+         First_Runs : constant Checkpoint_Run_Identity_Array :=
+           [Configure_Checkpoint_Run (1, Numbered_ID (Successive_Capacity_Base + 10)),
+            Configure_Checkpoint_Run (2, Numbered_ID (Successive_Capacity_Base + 11)),
+            Configure_Checkpoint_Run (3, Numbered_ID (Successive_Capacity_Base + 12)),
+            Configure_Checkpoint_Run (4, Numbered_ID (Successive_Capacity_Base + 13)),
+            Configure_Checkpoint_Run (5, Numbered_ID (Successive_Capacity_Base + 14)),
+            Configure_Checkpoint_Run (6, Numbered_ID (Successive_Capacity_Base + 15)),
+            Configure_Checkpoint_Run (7, Numbered_ID (Successive_Capacity_Base + 16)),
+            Configure_Checkpoint_Run (8, Numbered_ID (Successive_Capacity_Base + 17))];
+         Second_Runs : constant Checkpoint_Run_Identity_Array :=
+           [Configure_Checkpoint_Run (1, Numbered_ID (Successive_Capacity_Base + 30)),
+            Configure_Checkpoint_Run (2, Numbered_ID (Successive_Capacity_Base + 31)),
+            Configure_Checkpoint_Run (3, Numbered_ID (Successive_Capacity_Base + 32)),
+            Configure_Checkpoint_Run (4, Numbered_ID (Successive_Capacity_Base + 33)),
+            Configure_Checkpoint_Run (5, Numbered_ID (Successive_Capacity_Base + 34)),
+            Configure_Checkpoint_Run (6, Numbered_ID (Successive_Capacity_Base + 35)),
+            Configure_Checkpoint_Run (7, Numbered_ID (Successive_Capacity_Base + 36)),
+            Configure_Checkpoint_Run (8, Numbered_ID (Successive_Capacity_Base + 37))];
+      begin
+         Bind_Context (Context, Backend, "successive-checkpoint-manifest-capacity");
+         Create
+           (Item,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Successive_Capacity_Base)),
+            Manifest_ID_For (Numbered_ID (Successive_Capacity_Base + 1)),
+            Numbered_ID (Successive_Capacity_Base + 1),
+            Limits,
+            Default_Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "two-slot manifest database create failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Successive_Capacity_Base + 2), Txn, Result);
+         Expect (Result, Success, "two-slot first transaction begin failed");
+         Put (Item, Txn, 1, To_Key ([1]), To_Value ([2]), Result);
+         Expect (Result, Success, "two-slot first mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "two-slot first commit failed");
+         Flush
+           (Item,
+            First_Runs,
+            Numbered_ID (Successive_Capacity_Base + 20),
+            Numbered_ID (Successive_Capacity_Base + 21),
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
+         Expect (Result, Success, "two-slot first checkpoint failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Successive_Capacity_Base + 3), Txn, Result);
+         Expect (Result, Success, "two-slot suffix transaction begin failed");
+         Put (Item, Txn, 1, To_Key ([1]), To_Value ([3]), Result);
+         Expect (Result, Success, "two-slot suffix mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "two-slot suffix commit failed");
+         Testing.Publication_Counts
+           (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+         Flush
+           (Item,
+            Second_Runs,
+            Numbered_ID (Successive_Capacity_Base + 40),
+            Numbered_ID (Successive_Capacity_Base + 41),
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
+         Expect (Result, Capacity_Exceeded, "full manifest history admitted a second checkpoint");
+         Testing.Publication_Counts
+           (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Runs /= Before_Runs
+           or else After_Manifests /= Before_Manifests
+           or else After_Heads /= Before_Heads
+         then
+            raise Program_Error with "second-checkpoint history rejection published an object";
+         end if;
+         Close (Item, Result);
+         Expect (Result, Success, "two-slot manifest database close failed");
+      end;
+
+      declare
          Context     : aliased Storage_Context;
          Source      : Database;
          Probe       : Database;
@@ -2203,7 +2358,10 @@ package body Flyology.DB.Engine_Tests is
       --  allocation failure, cancellation, and rival publication. Within each domain, +1 is the
       --  root transition, +2 the committed transaction, +10 .. +17 the exact
       --  family run map, +20/+21 the Flush manifest/transition, and +30 the
-      --  post-result usability probe; rival publication uses +31. These are
+      --  post-result usability probe; the HEAD-unknown domain also uses +31
+      --  for a suffix transaction, +40 .. +47 for replacement runs, and
+      --  +50/+51 for its second manifest/transition. Rival publication uses
+      --  +31 in its disjoint domain. These are
       --  test namespace authority only. The exact one-byte [1] -> [2]
       --  committed value and rival [3] -> [4] value are visibility witnesses,
       --  not key/value policy.
@@ -2293,11 +2451,14 @@ package body Flyology.DB.Engine_Tests is
       end;
 
       declare
-         Context : aliased Storage_Context;
-         Item    : Database;
-         Runs    : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
-         Receipt : Flush_Receipt;
-         Result  : Outcome_Code;
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Txn         : Transaction;
+         Commit_Info : Commit_Receipt;
+         Runs        : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Replacement : Checkpoint_Run_Identity_Array (1 .. Default_Families'Length);
+         Receipt     : Flush_Receipt;
+         Result      : Outcome_Code;
       begin
          Prepare (Context, Item, "head-unknown", Head_Unknown_Base, Runs, Result);
          Expect (Result, Success, "HEAD-unknown Flush setup failed");
@@ -2314,6 +2475,31 @@ package body Flyology.DB.Engine_Tests is
          Resolve_Flush (Item, Receipt, Test_Operation_Timeout, Result => Result);
          Expect (Result, Success, "cacheless HEAD reconciliation did not finish Flush");
          Expect_Usable (Item, Head_Unknown_Base, "resolved HEAD uncertainty");
+         Begin_Transaction (Item, Numbered_TX_ID (Head_Unknown_Base + 31), Txn, Result);
+         Expect (Result, Success, "successive HEAD-unknown suffix begin failed");
+         Put (Item, Txn, 1, To_Key ([1]), To_Value ([3]), Result);
+         Expect (Result, Success, "successive HEAD-unknown suffix mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "successive HEAD-unknown suffix commit failed");
+         for Offset in Replacement'Range loop
+            Replacement (Offset) :=
+              Configure_Checkpoint_Run
+                (Column_Family_ID (Offset - Replacement'First + 1),
+                 Numbered_ID (Head_Unknown_Base + 40 + Offset - Replacement'First));
+         end loop;
+         Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+         Flush
+           (Item,
+            Replacement,
+            Numbered_ID (Head_Unknown_Base + 50),
+            Numbered_ID (Head_Unknown_Base + 51),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Outcome_Unknown, "lost replacement HEAD response was falsely classified");
+         Resolve_Flush (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "replacement HEAD reconciliation did not finish Flush");
+         Expect_Usable (Item, Head_Unknown_Base, "resolved replacement HEAD uncertainty");
          Close (Item, Result);
          Expect (Result, Success, "resolved HEAD-unknown database did not close");
       end;
@@ -6153,6 +6339,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Runtime_Sized_Value (Store'Access, "files-runtime-sized", 21);
             Test_Large_Production_Profile (Store'Access, "files-large-profile", 22);
             Test_Dynamic_Mutation_Descriptors (Store'Access, "files-dynamic-mutations", 23);
+            Test_Manifest_And_Family_API (Store'Access);
             Test_Checkpoint_Recovery_Failures (Store'Access);
             Test_Flush_Certainty (Store'Access, "files-flush");
             Test_Snapshot_Write_Validation (Store'Access);

@@ -71,7 +71,7 @@ sets. TLAPS proves stored-before-confirmed/HEAD, predecessor storage, append-onl
 cache state. It intentionally omits byte encoding, UTF-8, ordinals, liveness, provider behavior, and any refinement
 theorem to the Ada codec or future engine.
 
-## First LSM checkpoint lane
+## LSM checkpoint lanes
 
 `CheckpointPublication.tla` is a separate finite model for the staged first-checkpoint protocol. Two committed
 transactions span two families. The flush stores and confirms one complete sorted L0 run per family, stores and
@@ -109,6 +109,20 @@ immutable manifest version 3, readable predecessor version 2, and SST kind 4/ver
 corruption tests, and bounded SPARK coverage for the current codec. Operational Create/Flush/recovery use the same
 dynamically allocated format state machine. No refinement theorem connects these bytes to this TLA+ model; its
 historical first-checkpoint witness still names the version-2 shape whose LSM payload v3 preserves unchanged.
+
+`SuccessiveCheckpointPublication.tla` is a focused second-checkpoint model rather than an expansion of the pinned
+first-checkpoint state graph. One transaction is captured by the first complete run, a later transaction remains in
+the replay suffix, and a second complete run replaces current checkpoint authority. The finite two-versus-three
+manifest-history choice exists only to cover persisted-history backpressure; it is not a product default. The model
+also covers an accepted lost second-HEAD response, exact resolution, crash/recovery, and retention of old immutable
+bytes outside current visibility. `SuccessiveCheckpointPartialProbe.tla` deliberately publishes the second HEAD
+before confirming its new run and manifest and must violate the normal safety predicate.
+`SuccessiveCheckpointRecoveryWitness.tla` selects the accepted-lost response, read-only resolution, crash, and
+recovery path; `validate_successive_checkpoint_witness.py` checks its exact action sequence and final authority.
+
+`SuccessiveCheckpointSafetyProof.tla` generalizes the same algorithm to arbitrary sets and any number of replacement
+cycles. It proves ordering, exact checkpoint/suffix partitioning, exact recovery, and local-cache disposability. It
+does not prove format bytes, manifest-depth arithmetic, provider behavior, capacities, or refinement to Ada.
 
 ## Snapshot-isolation validation lane
 
@@ -216,7 +230,10 @@ gate must report 112,031 distinct states at depth 14, record a successful `Prepa
 strict TLAPS must prove 23 of 23 obligations. The manifest lane adds 286 distinct states at depth 10 and 12 of 12
 strict TLAPS obligations. The first-checkpoint lane adds 819 distinct states at depth 19, three independently
 validated witnesses, four required integrated negative probes, full normal-action coverage, and 43 of 43 strict
-TLAPS obligations. The snapshot-isolation lane adds 336 distinct states at depth 10, three independently validated
+TLAPS obligations. The successive-checkpoint lane adds 37 distinct states at depth 17, one validated lost-response
+recovery witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS
+obligations. The snapshot-isolation lane
+adds 336 distinct states at depth 10, three independently validated
 witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. The
 fixed-snapshot read lane adds 7,530 states at depth 14, three validated witnesses, one negative probe, and 7 of 7
 strict TLAPS obligations. The serializable lane adds 44,244 states at depth 13, four validated witnesses, one

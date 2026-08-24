@@ -9,7 +9,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
-| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Pending |
+| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Whole-state replacement operational; multi-run L0 pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
@@ -21,7 +21,7 @@ accepted manifest-v1 encoding through operational HEAD version 2 for provider-ne
 Create requires an explicit root manifest identity, transition identity, database limits, and initial family table;
 Open resolves handles by stable ID or exact name and validates manifest authority before replaying batches. HEAD-v1
 images remain inspection-only and return `Unsupported_Format` operationally. The authenticated client binding now
-exercises create, commit, composable first-checkpoint Flush, and cacheless reopen through Object Storage scoped
+exercises create, commit, composable checkpoint Flush, and cacheless reopen through Object Storage scoped
 operations. Remote-provider matrix qualification and dynamic append-only family changes remain prerequisites for
 accepting Milestone 2. The accepted owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication
 models remain abstract assurance lanes rather than a claimed refinement proof.
@@ -68,12 +68,13 @@ present endpoint is fully copied before linkage, exact duplicates consume no new
 all reclamation. Bytewise comparison makes the lower endpoint inclusive and upper endpoint exclusive.
 
 The first-LSM work now includes current manifest-v3, readable manifest-v2, and SST-v1 formats, dynamic operational
-codecs, manifest-v3 root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator
-replacement, and cacheless recovery of one complete nonempty checkpoint plus its strictly later batch suffix. Recovery restores live
+codecs, manifest-v3 root creation, public synchronous and composable Flush/receipt reconciliation, live coordinator
+replacement, successive whole-state checkpoint replacement, and cacheless recovery of the latest complete nonempty
+checkpoint plus its strictly later batch suffix. Recovery restores live
 values, last-write sequences, and the exact never-reused checkpoint identity ledger from persisted authority.
 The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token through the same certainty contract
-without a helper task. Multiple checkpoints, streaming/physical scans, compaction, and provider qualification remain
-later focused units, so Milestone 4 remains Pending.
+without a helper task. Multi-run L0 accumulation, streaming/physical scans, compaction, and provider qualification
+remain later focused units, so Milestone 4 remains incomplete.
 
 ## Formal state-machine lane
 

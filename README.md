@@ -10,14 +10,16 @@ transaction.
 
 This repository is under active development. The current acceptance state and remaining work are recorded in
 [the milestone plan](docs/architecture/milestones.md). No production qualification or performance claim is made.
-The pending operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v2 roots with explicit
+The current operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v2 roots with explicit
 LSM limits, stable column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/
-database limits. Public synchronous `Flush` publishes and reconciles one complete first checkpoint, replaces the
-live coordinator without invalidating family handles or active transactions, and cacheless recovery replays only its
-later log suffix. An additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a
-bounded completion set, moving one caller-sized unique-buffer token until typed `Finish`; it creates no helper task
-and preserves the synchronous receipt and certainty mapping. Remote-provider qualification, multiple checkpoints,
-compaction, and dynamic family changes remain separate review units. Transactions now capture a Begin-time sequence
+database limits. Public synchronous `Flush` publishes and reconciles a complete checkpoint; a later call replaces
+current checkpoint authority with a new whole-state snapshot while old immutable objects remain stored. It replaces
+the live coordinator without invalidating family handles or active transactions, and cacheless recovery replays only
+the latest checkpoint's later log suffix. An additive caller-owned `Flush_Operation` drives that same checkpoint
+protocol directly through a bounded completion set, moving one caller-sized unique-buffer token until typed `Finish`;
+it creates no helper task and preserves the synchronous receipt and certainty mapping. Remote-provider qualification,
+multi-run L0 accumulation, compaction, and dynamic family changes remain separate review units. Transactions now
+capture a Begin-time sequence
 and reject exact written keys changed by later committed history. Fixed-snapshot point reads are operational;
 explicit serializable transactions retain and validate exact successful and absent point reads plus caller-observed
 half-open scan predicates. `Observe_Range` records conflict authority without reading rows. The bounded synchronous

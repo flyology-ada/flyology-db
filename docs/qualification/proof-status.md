@@ -160,6 +160,15 @@ Deterministic memory/files tests cover ordering, snapshot and own-write visibili
 scan allocation position, predicate-retention atomicity, and checkpoint-plus-suffix recovery. No refinement proof is
 claimed between the formal algorithm and production `Scan`.
 
+The successive whole-state checkpoint candidate again preserves the warning-strict 1,084/1,084 result: 93
+initialization, 522 run-time, 91 assertion, 306 functional-contract, and 72 termination checks; flow analysis
+discharges 164 and provers discharge 920, with maximum successful effort 6,890 steps. Every selected unit reports
+zero warnings, unproved or justified checks, and zero `pragma Assume`. Complete-live-state checkpoint planning,
+persisted manifest-history admission, dynamic predecessor object I/O, checkpoint-chain validation, protected
+installation, and task activation remain outside the selected SPARK units. Deterministic memory/files replacement,
+backpressure, lost-response reconciliation, cacheless reopen, and missing-predecessor tests plus the separate
+successive-checkpoint TLC/TLAPS lane qualify those executable boundaries. No refinement proof is claimed.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:
@@ -196,6 +205,16 @@ claimed between the formal algorithm and production `Scan`.
   publication, disjoint checkpoint/later authority, no replay overlap, exact recovery, and disposable local cache.
   It does not prove concrete run construction, sorting, corruption, capacity arithmetic, reconciliation, codecs, or
   refinement to Ada.
+- The successive whole-state checkpoint model exhausts 37 distinct states at depth 17 with nonzero semantic-action
+  coverage. It checks first and replacement checkpoint publication, complete current-state runs, immutable retained
+  predecessors, exact persisted history backpressure before effects, accepted-but-lost second HEAD response,
+  read-only reconciliation, crash, and cacheless recovery. A checked 18-action witness requires the lost response to
+  be resolved before crash and validates the exact manifest/run/transaction/identity chain after recovery. A
+  deliberately early second-HEAD probe must violate safety. Its arbitrary-set, unbounded-cycle kernel proves 24/24
+  strict TLAPS obligations for stored/confirmed ordering, exact HEAD references, immutable history, complete
+  checkpoint authority, recovery, and disposable local state. Concrete codecs, sorting, allocation, provider
+  behavior, progress, garbage collection, multi-run levels, compaction, and refinement to Ada remain outside this
+  proof.
 - The snapshot-isolation write/write model exhausts 336 states at depth 10. It checks fixed Begin sequences,
   per-written-key post-snapshot rejection, disjoint concurrent commits, checkpoint advancement of the retained exact
   history boundary, and conservative rejection below that boundary. Three independently validated witnesses cover

@@ -1,4 +1,4 @@
-# First LSM checkpoint publication design
+# LSM checkpoint publication design
 
 This document freezes the semantic checkpoint-publication decision. The format layer defines current manifest-v3,
 readable predecessor manifest-v2, and exact SST-v1 bytes, plus a private SPARK reference decoder and a byte-identical
@@ -7,8 +7,10 @@ publish an empty manifest-v3 root carrying the explicit LSM policy. Cacheless Op
 first checkpoint, reconstructs its exact state and
 identity partition, and replays only later batches. The internal checkpoint planner assembles an exact successor and
 its family SSTs. Public synchronous `Flush`, caller-composable `Flush_Operation`, and `Resolve_Flush` publish and
-reconcile that first checkpoint through the same self-contained receipt and certainty rules. Existing manifest-v1
-databases remain readable for log-only operation.
+reconcile checkpoints through the same self-contained receipt and certainty rules. The first operational unit
+publishes one checkpoint. The successive-replacement unit reuses that API to publish later complete snapshots before
+multi-run L0 accumulation and compaction are introduced. Existing manifest-v1 databases remain readable for log-only
+operation.
 
 ## Staged compatibility decision
 
@@ -143,6 +145,37 @@ Later transaction commits preserve the published manifest ID. The checkpoint doe
 only replaces the authoritative representation of the committed prefix. No run or manifest is visible before the
 successful HEAD transition, and unreachable complete objects remain orphans.
 
+## Successive whole-state replacement
+
+A later `Flush` may replace an existing checkpoint with a new complete whole-state checkpoint. It does not append a
+second current L0 run. For each nonempty family, the planner writes one newly identified immutable run containing the
+complete live family state at the new replay boundary; empty families again name no run. The successor manifest names
+only those new runs and links immutably to the prior manifest. Prior manifests and runs remain immutable and stored,
+but are not current read authority after the HEAD transition. Reclamation remains a later garbage-collection unit.
+
+This stage is intentionally a checkpoint replacement, not compaction: it neither merges a current multi-run set nor
+claims level policy. It removes the one-checkpoint operational restriction and exercises repeated publication,
+activation, cacheless recovery, and history backpressure using the existing format. True incremental L0 accumulation
+will later preserve multiple current run descriptors and tombstones and will use the already persisted per-family and
+database run limits.
+
+The current manifest's `Registry_Revision` is also its exact one-based immutable predecessor-chain depth: roots are
+revision one and every successor increments once under predecessor validation. A new checkpoint requires
+`Registry_Revision < Maximum_Manifest_History`; equality is definite `Capacity_Exceeded` before any immutable object
+publication. This derives the next available history slot from persisted authority and introduces no flush-count
+default. Integer exhaustion likewise rejects before effects.
+
+Checkpoint replacement retains the complete admitted identity ledger through the new boundary. The newly activated
+engine reconstructs the exact live state and identity authority from the replacement runs, discards the old local
+checkpoint images only after the lifecycle has installed and exposed the successor, and starts with an empty replay
+suffix. Existing family handles retain the engine incarnation. Active calls drain before planning, and no pointer or
+borrow into the replaced engine survives its joined finalization.
+
+The same certainty boundary applies to every checkpoint ordinal. Immutable objects are confirmed byte-for-byte
+before HEAD admission; a lost accepted HEAD response remains unknown until cacheless recovery reaches the exact new
+manifest and replay boundary. Rebuilding an `Objects_Unknown` plan uses only the receipt's original identities.
+Repeated publication never creates a replacement identity or retries an application transaction.
+
 ## Cacheless recovery
 
 Recovery after total local loss starts from `meta/HEAD`; listing and local state are never authority. It reads and
@@ -173,10 +206,25 @@ Concrete family/run contents, sorting, corruption, capacity arithmetic, provider
 binary codecs, and a refinement relation to Ada remain outside that kernel and are covered here only by exhaustive
 TLC or future gates.
 
+`SuccessiveCheckpointPublication.tla` separately freezes replacement. Its finite geometry publishes a first
+checkpoint, commits one later suffix transaction, and either backpressures at a persisted two-manifest history or
+confirms and conditionally publishes a complete second checkpoint under a three-manifest history. It covers an
+accepted lost second-HEAD response, read-only resolution, crash, exact recovery, replacement of the current run, and
+the fact that old immutable bytes remain stored but no longer define current visibility. A negative probe publishes
+the second HEAD before its run and manifest are confirmed and must violate the integrated safety predicate. A
+separate machine-validated witness selects the accepted-lost response, read-only resolution, crash, and exact
+recovery path for comparison with the production corpus.
+
+`SuccessiveCheckpointSafetyProof.tla` is the corresponding unbounded replacement kernel. It permits arbitrarily many
+prepare/confirm/publish cycles over arbitrary state and identity sets. Strict TLAPS proves stored-before-confirmed and
+confirmed-before-HEAD ordering, exact checkpoint/suffix partitioning after every replacement, exact recovery, and
+disposable local state. Manifest-chain arithmetic, concrete bytes, sorting, provider reconciliation, persisted
+capacity arithmetic, and a refinement relation to Ada remain outside this kernel.
+
 ## Non-goals
 
-This unit does not implement automatic flushing, multiple checkpoints, compaction, run pruning, garbage collection,
-scans, MVCC, snapshots, remote-provider matrix qualification, or an LSM performance claim. The operational scope is
-manifest-v3 root creation, exact whole-checkpoint planning, certainty-preserving synchronous and composable
-first-checkpoint publication/reconciliation, and header-first cacheless recovery of one nonempty first checkpoint
-plus its later batch suffix.
+This design does not implement automatic flushing, multi-run L0 accumulation, compaction, run pruning, garbage
+collection, remote-provider matrix qualification, or an LSM performance claim. Its operational scope is manifest-v3
+root creation, exact whole-checkpoint planning, certainty-preserving synchronous and composable checkpoint
+publication/reconciliation, successive complete replacement, and header-first cacheless recovery of the latest
+checkpoint plus its later batch suffix.

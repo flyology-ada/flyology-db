@@ -286,6 +286,63 @@ done
   >"$temporary_root/tlaps-checkpoint.log" 2>&1
 grep -q 'All 43 obligations proved.' "$temporary_root/tlaps-checkpoint.log"
 
+#  The two-versus-three manifest history choice is finite qualification
+#  geometry that covers definite backpressure and a permitted replacement; it
+#  is not a product default. The pinned graph detects accidental narrowing.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-successive-checkpoint-states" \
+  -config SuccessiveCheckpointPublication.cfg SuccessiveCheckpointPublication \
+  >"$temporary_root/tlc-successive-checkpoint.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-successive-checkpoint.log"
+! grep -q '^Warning:' "$temporary_root/tlc-successive-checkpoint.log"
+grep -q '37 distinct states found' "$temporary_root/tlc-successive-checkpoint.log"
+grep -q 'The depth of the complete state graph search is 17.' \
+  "$temporary_root/tlc-successive-checkpoint.log"
+for action in CommitPrefix BeginFirst StoreFirstRun ConfirmFirstRun \
+  StoreFirstManifest ConfirmFirstManifest PublishFirst CommitSuffix \
+  RejectSecondHistoryCapacity BeginSecond StoreSecondRun ConfirmSecondRun \
+  StoreSecondManifest ConfirmSecondManifest PublishSecondAs ResolveSecond \
+  Crash Recover
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-successive-checkpoint.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-successive-checkpoint-probe-states" \
+  -config SuccessiveCheckpointPartialProbe.cfg SuccessiveCheckpointPartialProbe \
+  >"$temporary_root/tlc-successive-checkpoint-probe.log" 2>&1
+successive_checkpoint_probe_status=$?
+set -e
+test "$successive_checkpoint_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-successive-checkpoint-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-successive-checkpoint-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-successive-checkpoint-witness-states" \
+  -config SuccessiveCheckpointRecoveryWitness.cfg \
+  -dumpTrace json "$temporary_root/successive-checkpoint-recovery.json" \
+  SuccessiveCheckpointRecoveryWitness \
+  >"$temporary_root/tlc-successive-checkpoint-witness.log" 2>&1
+successive_checkpoint_witness_status=$?
+set -e
+test "$successive_checkpoint_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-successive-checkpoint-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-successive-checkpoint-witness.log"
+"$model_root/validate_successive_checkpoint_witness.py" \
+  "$temporary_root/successive-checkpoint-recovery.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-successive-checkpoint-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/SuccessiveCheckpointSafetyProof.tla" \
+  >"$temporary_root/tlaps-successive-checkpoint.log" 2>&1
+grep -q 'All 24 obligations proved.' "$temporary_root/tlaps-successive-checkpoint.log"
+
 #  Qualification pins for the reviewed two-transaction/two-key model graph.
 #  They detect accidental state-space narrowing; changing the model requires a
 #  fresh graph review and an intentional update of these expected results.
@@ -507,6 +564,10 @@ printf '%s\n' "  Checkpoint TLC 819 distinct states, depth 19"
 printf '%s\n' "  Checkpoint TLAPS 43/43 obligations"
 printf '%s\n' "  Checkpoint committed/rejected/recovery witnesses validated"
 printf '%s\n' "  Negative checkpoint stale/partial/family/ledger probes detected"
+printf '%s\n' "  Successive checkpoint TLC 37 distinct states, depth 17"
+printf '%s\n' "  Successive checkpoint TLAPS 24/24 obligations"
+printf '%s\n' "  Successive checkpoint lost-response recovery witness validated"
+printf '%s\n' "  Negative successive-checkpoint early-HEAD probe detected"
 printf '%s\n' "  Snapshot isolation TLC 336 distinct states, depth 10"
 printf '%s\n' "  Snapshot isolation TLAPS 6/6 obligations"
 printf '%s\n' "  Snapshot conflict/disjoint/checkpoint witnesses validated"

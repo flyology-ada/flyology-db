@@ -21,8 +21,9 @@ transition identity; continuing unavailability remains unknown.
 - Per-family logical/MVCC state, memtables, immutable runs, configuration, and later compaction.
 - Read-only replicas advance monotonically by observing valid head transitions.
 
-The executable mutation surface remains log-only, but recovery accepts either that log-only form or one complete
-nonempty first checkpoint. Log-only recovery follows `HEAD.Latest_Batch` and the predecessor-batch ID in each
+The executable mutation surface remains log-only between explicit flushes, while recovery accepts either that form
+or the latest complete nonempty whole-state checkpoint. Log-only recovery follows `HEAD.Latest_Batch` and the
+predecessor-batch ID in each
 immutable commit object, then rebuilds logical state in sequence order without local state or listing. HEAD version 2
 names an immutable root column-family manifest before any batch is decoded. New Create operations encode that root as
 manifest version 3 with an empty checkpoint partition and explicit database-wide run, identity, and serializable
@@ -35,10 +36,11 @@ registry nor partial state. HEAD version
 1 remains decodable for inspection but operational Open returns `Unsupported_Format`; no migration or write path
 silently upgrades an existing manifest-v1 database.
 
-The first-checkpoint protocol is specified separately in
+The checkpoint protocol is specified separately in
 [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v3 root creation, public synchronous Flush
 and caller-composable Flush with self-contained certainty receipts, exact same-identity reconciliation, live
-coordinator replacement, and cacheless nonempty checkpoint recovery are operational.
+coordinator replacement, successive whole-state checkpoint replacement, and cacheless latest-checkpoint recovery are
+operational. Multi-run L0 accumulation and compaction are not.
 
 ## Transaction semantics
 

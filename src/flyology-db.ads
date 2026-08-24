@@ -142,9 +142,9 @@ package Flyology.DB is
    type Scan_Result is limited private;
    type Create_Receipt is private;
    type Commit_Receipt is private;
-   --  Self-contained first-checkpoint publication and reconciliation state.
+   --  Self-contained checkpoint publication and reconciliation state.
    type Flush_Receipt is private;
-   --  Caller-composable first-checkpoint publication. The discriminants are
+   --  Caller-composable checkpoint publication. The discriminants are
    --  retained borrows: Set, Item, Storage, HTTP, Payload_Pool, and
    --  Cancellation must outlive terminal Finish or scope-abandonment drain.
    --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
@@ -433,7 +433,7 @@ package Flyology.DB is
    --  Immutable batch identity retained by the receipt.
    function Receipt_Batch_ID (Item : Commit_Receipt) return Identifier;
 
-   --  Start first-checkpoint publication in an established operation. All
+   --  Start checkpoint publication in an established operation. All
    --  initiating owner and request-shape validation, pool compatibility,
    --  completion-slot reservation, and lifecycle admission precede ownership
    --  transfer. Successful Start
@@ -483,9 +483,12 @@ package Flyology.DB is
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
        Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
-   --  Publish the first complete immutable checkpoint at the current committed
-   --  boundary. Runs must map every persisted family to one caller-stable run
-   --  identity; empty families consume no run object or run identity. Every
+   --  Publish a complete immutable checkpoint at the current committed
+   --  boundary. A later call replaces current checkpoint authority with a new
+   --  whole-state snapshot; prior immutable objects remain stored but are not
+   --  current visibility. Runs must map every persisted family to one
+   --  caller-stable run identity; empty families consume no run object or run
+   --  identity. Every
    --  identity that names an attempted object or HEAD becomes unavailable for
    --  reuse once its publication begins. One absolute monotonic deadline
    --  covers planning, publication, reconciliation, and local activation.
