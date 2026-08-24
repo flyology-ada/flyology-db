@@ -1,5 +1,31 @@
 # Review record
 
+## Accepted composable DeleteObjects dependency qualification
+
+- Parent: private adjacent-merge publication commit `8bf41b0`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage clone from
+  `c94239db8b588f003d637d787515e3c90c233ca0` to exact committed local main
+  `4d6925e2138f18fca2d24d0f63ed0f0319bdbad9`. The dirty author checkout remains read-only coordination state, the
+  root filesystem path pin remains unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration,
+  persisted format, allocation limit, task, retry, compaction policy, or publication protocol changes.
+- Surface and ownership: Object Storage adds caller-owned `Delete_Objects_Operation`, constructor and reusable
+  `Start_Delete_Objects`, typed `Finish`, and a synchronous result overload implemented as a wait on that same scoped
+  state machine. It copies and serializes the bounded request before admission, owns the exact XML as a one-shot
+  non-replayable body, retains no borrowed request input, drives one HTTP child, and creates no helper task.
+- Result and certainty boundary: only a validated HTTP 200 yields `Batch_Processed`, retaining the complete ordered
+  per-entry Deleted/Error response. Definite rejection/non-admission and pre-admission cancellation are distinct;
+  possible admission, transport loss, invalid/oversized response, or decoding failure remains
+  `Batch_Outcome_Unknown`. A caller must reconcile every requested exact generation read-only before retry. DB does
+  not expose batch deletion in this unit, so the qualification selects no DB deletion or reconciliation policy.
+- Verification: `./tests/scripts/test.sh` rebuilds the complete DB/Object Storage/XML/HTTP/QUIC closure and passes the
+  local engine, authenticated client, filesystem crash/recovery, all 32 comparative cases, pinned TidesDB 4/4, and
+  repository provenance at exact `4d6925e`. `./scripts/prove.sh` proves 1,090/1,090 DB checks (166 flow, 924 prover),
+  with zero warnings, unproved/justified checks, or `pragma Assume` and clean pre/post host audits. Upstream's reported
+  936/936 proof is corroborating dependency evidence, not a substitute for the DB campaign.
+- Findings cycle: dependency/API, limited ownership, request-copy and body lifetime, cancellation/finalization drain,
+  per-entry response retention, publication/admission certainty, author-checkout isolation, constants,
+  documentation, and unnecessary-surface review finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted private adjacent-merge publication candidate
 
 - Parent: composable CopyObject dependency qualification commit `ac97706`.

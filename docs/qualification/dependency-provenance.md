@@ -5,8 +5,8 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `c94239db8b588f003d637d787515e3c90c233ca0`
-- Commit subject: `Problem: CopyObject cannot compose without losing publication certainty`
+- Commit: `4d6925e2138f18fca2d24d0f63ed0f0319bdbad9`
+- Commit subject: `Problem: DeleteObjects cannot compose without losing batch certainty`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
@@ -27,7 +27,8 @@ The dependency includes the reviewed backend-neutral conditional publication con
 and whole Get operations, caller-owned `Client.Scoped` conditional Put plus generation-bound whole/range Get, Head,
 Delete, CreateMultipartUpload, UploadPart preparation, CompleteMultipartUpload, and AbortMultipartUpload operations,
 bounded ListParts recovery reads, bounded ListMultipartUploads discovery reads, CopyObject, retained SQLite
-generations across ordinary and multipart publication, and generation-aware object mutation/read coverage. The
+generations across ordinary and multipart publication, composable DeleteObjects, and generation-aware object
+mutation/read coverage. The
 buffer-owned synchronous calls are waits over those same scoped state machines. Both multipart listing operations own
 their prepared request, retain response bytes only to the XML decoder's maintained document bound, validate the
 successful response's exact request echoes including Requester Pays admission, and preserve typed HTTP terminal
@@ -42,6 +43,10 @@ whole Get directly for its additive `Flush_Operation`, preserving the synchronou
 CopyObject likewise uses one empty non-replayable source and a bounded XML sink. Only exact validated success is
 published; precondition failure is typed, while any possibly admitted transport, response-limit, decoding, or
 embedded-error ambiguity remains unknown and requires generation-bound destination reconciliation before retry.
+DeleteObjects owns its exact serialized one-shot request and retains every per-entry Deleted/Error result only after a
+validated HTTP 200 response. Definite non-admission is typed; any admitted or inconclusive failure remains
+`Batch_Outcome_Unknown` and requires per-generation read-only reconciliation before retry. Its synchronous overload
+is a literal wait on the same scoped state machine, with no helper task, replay, or alternate protocol engine.
 Object Storage records no external HTTP/QUIC pin at this boundary; the generated DB solve likewise marks every
 HTTP/QUIC lock entry unpinned.
 
