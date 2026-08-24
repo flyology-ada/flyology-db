@@ -301,7 +301,11 @@ suffix attached to another checkpoint still fails closed.
 This first execution-path witness is synchronous because its authenticated selected-run reads still use the
 backend-neutral blocking storage port. It creates no helper task and selects no event-loop blocking contract. A
 future caller-composable form must drive those range/whole reads through owner-stack Object Storage operations before
-publication; this unit does not simulate that surface or publish a public trigger.
+publication; this unit does not simulate that surface or publish a public trigger. The planner now isolates the
+effect-free authority snapshot from selected-run loading and from effect-free successor construction. Both sides of
+that seam own exact persisted extents, and successor construction revalidates every populated SST against its
+authenticated manifest descriptor. The blocking wrapper remains behaviorally unchanged, while a later owner-driven
+loader can populate the same plan without reimplementing merge admission, suffix transfer, or activation authority.
 
 `LSMPartialCompactionEquivalence.tla` now models the same abstract execution order: merge the selected consecutive
 runs, transfer one finite suffix batch and its identity authority unchanged, reconstruct the successor run view, and

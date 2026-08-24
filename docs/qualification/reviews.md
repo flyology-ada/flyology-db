@@ -1,5 +1,32 @@
 # Review record
 
+## Accepted adjacent-merge selected-run planning seam
+
+- Parent: complete PutObject and ListObjectsV2 dependency qualification commit `370a243`.
+- Scope and authority: split the private adjacent-merge planner around its selected-run I/O without changing the
+  synchronous execution path. The caller still supplies every older, newer, output, manifest, and transition
+  identity; this unit adds no public API, trigger, level, fanout, schedule, retry, timeout, task, allocation ceiling,
+  or garbage-collection policy.
+- Ownership and validation: the first effect-free phase freezes the exact current HEAD generation, checkpoint
+  manifest, and persisted family/run/identity extents. The loader-owned checkpoint plan is then consumed by one
+  effect-free completion phase, which revalidates every populated SST against its authenticated database, family,
+  and run descriptor before invoking the established adjacent-merge successor kernel. Every failure releases the
+  complete source and candidate plans and publishes no object. The existing blocking wrapper remains the sole caller
+  in this unit; the seam permits a later owner-driven Object Storage reader to populate the same exact plan without
+  duplicating merge, suffix-history, or activation logic.
+- Verification: `alr -n build` succeeds. `./tests/scripts/test.sh` passes repository provenance at exact Object
+  Storage `a632cc4b0bd4687e02b09cff7923ab4f9fccbfcf`, local engine, authenticated client-backed
+  create/commit/Flush/compaction/reopen, filesystem crash/cacheless recovery, all 32 comparative tests, and pinned
+  TidesDB 4/4. `./scripts/prove.sh` proves 1,090/1,090 selected checks with its maintained warning-strict gate; the
+  exact pre/post host process audits are clean.
+- Findings cycle: architecture and implementation review covers snapshot coupling, exact descriptor binding,
+  ownership consumption on every return and exception, suffix-history transfer, allocation classification,
+  publication ordering, constants, public surface, and unnecessary duplication. The first compile found and fixed
+  one mechanical phase-local generation reference. The explicit findings sweep then identified and fixed one P2:
+  completion originally validated only the two selected SSTs indirectly through the merge kernel, which would let a
+  future injected loader supply an invalid retained SST. Rebuild, deterministic rerun, proof, and final re-review
+  find no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted complete PutObject and ListObjectsV2 dependency qualification
 
 - Parent: suffix-preserving adjacent-merge activation commit `71c0000`.

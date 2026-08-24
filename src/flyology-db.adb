@@ -7464,55 +7464,30 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
    end Read_Checkpoint_SSTs;
 
-   procedure Build_Adjacent_Merge_Plan
+   procedure Prepare_Adjacent_Merge_Source
      (State          : not null Engine_State_Access;
       Older_Run_ID   : Identifier;
       Newer_Run_ID   : Identifier;
       Output_Run_ID  : Identifier;
       Manifest_ID    : Identifier;
       Transition_ID  : Identifier;
-      Deadline       : Ada.Real_Time.Time;
-      Token          : access Flyology.Cancellation.Token;
-      Plan           : out Checkpoint_Plan;
+      Base           : out Manifests.Manifest;
+      Head           : out Head_Snapshot;
+      Current        : out Checkpoint_Plan;
       Result         : out Outcome_Code;
       Allow_Fenced   : Boolean := False)
    is
-      Base           : Manifests.Manifest;
-      Head           : Head_Snapshot;
       Generation     : Generation_Value;
       Uncertain      : Boolean;
       Fenced         : Boolean;
       Identity_Total : Natural;
       Prior          : constant LSM_Runtime.Checkpoint_Manifest_Access := State.Checkpoint_Manifest;
-      Current        : Checkpoint_Plan;
-      Older_Index    : Natural := 0;
-      Newer_Index    : Natural := 0;
-      Family_Index   : Natural := 0;
-      Merged         : LSM_Runtime.SST_Access := null;
-      Successor      : LSM_Runtime.Checkpoint_Manifest_Access := null;
       Allocation     : LSM_Runtime.Allocation_Status;
-      Merge_Result   : LSM_Runtime.Merge_Status;
-
-      procedure Clone_SST
-        (Source : LSM_Runtime.SST;
-         Target : out LSM_Runtime.SST_Access;
-         Status : out Outcome_Code)
-      is
-         Clone_Status : LSM_Runtime.Allocation_Status;
-      begin
-         Target := null;
-         Allocation_Faults.Check (Recovery_SST_Image_Allocation);
-         LSM_Runtime.Create_SST
-           (Source.Entry_Total, Source.Payload_Byte_Total, Target, Clone_Status);
-         if Clone_Status = LSM_Runtime.Allocated then
-            Target.all := Source;
-            Status := Success;
-         else
-            Status := Capacity_Exceeded;
-         end if;
-      end Clone_SST;
    begin
-      Plan := (others => <>);
+      --  This phase is effect-free. It freezes the exact current manifest,
+      --  HEAD, and generation before any selected-run I/O so a blocking or
+      --  owner-driven loader can populate the same plan without duplicating
+      --  admission or successor policy.
       Current := (others => <>);
       if Is_Zero (Older_Run_ID)
         or else Is_Zero (Newer_Run_ID)
@@ -7618,12 +7593,88 @@ package body Flyology.DB is
       Current.Manifest.Runs := Prior.Runs;
       Current.Manifest.Identities := Prior.Identities;
       Current.Expected_Generation := Generation;
-
-      Read_Checkpoint_SSTs (State.Storage.all, Deadline, Token, Current, Result);
-      if Result /= Success then
+      Result := Success;
+   exception
+      when Storage_Error =>
          Release_Checkpoint_Plan (Current);
+         Result := Capacity_Exceeded;
+      when others =>
+         Release_Checkpoint_Plan (Current);
+         raise;
+   end Prepare_Adjacent_Merge_Source;
+
+   procedure Complete_Adjacent_Merge_Plan
+     (State          : not null Engine_State_Access;
+      Older_Run_ID   : Identifier;
+      Newer_Run_ID   : Identifier;
+      Output_Run_ID  : Identifier;
+      Base           : Manifests.Manifest;
+      Head           : Head_Snapshot;
+      Current        : in out Checkpoint_Plan;
+      Plan           : out Checkpoint_Plan;
+      Result         : out Outcome_Code)
+   is
+      Older_Index  : Natural := 0;
+      Newer_Index  : Natural := 0;
+      Family_Index : Natural := 0;
+      Merged       : LSM_Runtime.SST_Access := null;
+      Successor    : LSM_Runtime.Checkpoint_Manifest_Access := null;
+      Merge_Result : LSM_Runtime.Merge_Status;
+
+      procedure Clone_SST
+        (Source : LSM_Runtime.SST;
+         Target : out LSM_Runtime.SST_Access;
+         Status : out Outcome_Code)
+      is
+         Clone_Status : LSM_Runtime.Allocation_Status;
+      begin
+         Target := null;
+         Allocation_Faults.Check (Recovery_SST_Image_Allocation);
+         LSM_Runtime.Create_SST
+           (Source.Entry_Total, Source.Payload_Byte_Total, Target, Clone_Status);
+         if Clone_Status = LSM_Runtime.Allocated then
+            Target.all := Source;
+            Status := Success;
+         else
+            Status := Capacity_Exceeded;
+         end if;
+      end Clone_SST;
+   begin
+      --  Current is consumed on every return. The completion phase trusts no
+      --  loader-specific state: every retained SST must still match its exact
+      --  authenticated descriptor before the merge successor is constructed.
+      Plan := (others => <>);
+      if Current.Manifest = null
+        or else Current.Recovered_SSTs = null
+        or else Current.Manifest.Run_Total /= Current.Recovered_SSTs'Length
+      then
+         Release_Checkpoint_Plan (Current);
+         Result := Invalid_State;
          return;
       end if;
+      for Family_Index in Current.Manifest.Families'Range loop
+         declare
+            Family : LSM_Runtime.Family_LSM_State renames
+              Current.Manifest.Families (Family_Index);
+         begin
+            if Family.Run_Total > 0 then
+               for Run_Index in Family.First_Run .. Family.First_Run + Family.Run_Total - 1 loop
+                  if Current.Recovered_SSTs (Run_Index) = null
+                    or else
+                      not LSM_Runtime.Descriptor_Matches
+                        (Current.Recovered_SSTs (Run_Index).all,
+                         Current.Manifest.Base.Database_ID,
+                         Current.Manifest.Base.Families (Family_Index).ID,
+                         Current.Manifest.Runs (Run_Index))
+                  then
+                     Release_Checkpoint_Plan (Current);
+                     Result := Corrupt;
+                     return;
+                  end if;
+               end loop;
+            end if;
+         end;
+      end loop;
       for Index in Current.Manifest.Runs'Range loop
          if To_Identifier (Current.Manifest.Runs (Index).Run_ID) = Older_Run_ID then
             Older_Index := Index;
@@ -7672,7 +7723,7 @@ package body Flyology.DB is
       Successor := null;
       Plan.SSTs (Manifests.Family_Slot (Family_Index)) := Merged;
       Merged := null;
-      Plan.Expected_Generation := Generation;
+      Plan.Expected_Generation := Current.Expected_Generation;
 
       --  Local activation must be rebuilt from exactly the successor's runs,
       --  not the live coordinator view: the latter may also include a
@@ -7720,7 +7771,9 @@ package body Flyology.DB is
          if Result = Success
            and then
              (Plan.History_Count = 0
-              or else not Valid_History_Snapshot (Plan.History, Plan.History_Count, Head, Prior.all))
+              or else
+                not Valid_History_Snapshot
+                  (Plan.History, Plan.History_Count, Head, Current.Manifest.all))
          then
             Result := Corrupt;
          end if;
@@ -7741,6 +7794,61 @@ package body Flyology.DB is
       when others =>
          LSM_Runtime.Release (Merged);
          LSM_Runtime.Release (Successor);
+         Release_Checkpoint_Plan (Current);
+         Release_Checkpoint_Plan (Plan);
+         raise;
+   end Complete_Adjacent_Merge_Plan;
+
+   procedure Build_Adjacent_Merge_Plan
+     (State          : not null Engine_State_Access;
+      Older_Run_ID   : Identifier;
+      Newer_Run_ID   : Identifier;
+      Output_Run_ID  : Identifier;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Deadline       : Ada.Real_Time.Time;
+      Token          : access Flyology.Cancellation.Token;
+      Plan           : out Checkpoint_Plan;
+      Result         : out Outcome_Code;
+      Allow_Fenced   : Boolean := False)
+   is
+      Base    : Manifests.Manifest;
+      Head    : Head_Snapshot;
+      Current : Checkpoint_Plan;
+   begin
+      Plan := (others => <>);
+      Prepare_Adjacent_Merge_Source
+        (State,
+         Older_Run_ID,
+         Newer_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Base,
+         Head,
+         Current,
+         Result,
+         Allow_Fenced);
+      if Result /= Success then
+         return;
+      end if;
+      Read_Checkpoint_SSTs (State.Storage.all, Deadline, Token, Current, Result);
+      if Result /= Success then
+         Release_Checkpoint_Plan (Current);
+         return;
+      end if;
+      Complete_Adjacent_Merge_Plan
+        (State,
+         Older_Run_ID,
+         Newer_Run_ID,
+         Output_Run_ID,
+         Base,
+         Head,
+         Current,
+         Plan,
+         Result);
+   exception
+      when others =>
          Release_Checkpoint_Plan (Current);
          Release_Checkpoint_Plan (Plan);
          raise;
