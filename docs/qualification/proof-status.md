@@ -233,6 +233,16 @@ refinement theorem to the operational Ada implementation is claimed.
   capacities, provider behavior, progress, compaction, and refinement remain outside this proof. The operational Ada
   planner/recovery path is qualified separately by deterministic multi-run, tombstone, old-run, independent-capacity,
   certainty, cacheless-reopen, allocation-failure, and backend tests.
+- The L0-compaction model exhausts 15 distinct states at depth 10 with nonzero semantic-action coverage. Starting
+  from the qualified two-run authority, it checks definite output-capacity rejection before effects, complete
+  compacted-run and successor-manifest confirmation, exact-generation publication, accepted-but-lost response and
+  read-only resolution, removal of predecessor runs from current authority while retaining their immutable bytes,
+  missing-output fail-closed recovery, crash, and exact recovery from only the compacted run. Its validated ten-action
+  witness fixes the accepted-lost recovery path, and a deliberately early HEAD action must violate safety. The
+  arbitrary-set, unbounded-cycle kernel proves 26/26 strict TLAPS obligations for stored/confirmed ordering,
+  confirmed current authority, fresh/current/retired separation, exact checkpoint/suffix authority, recovery, and
+  disposable local state. It does not prove concrete merge, snapshot retention sufficiency, physical reclamation,
+  codecs, capacity arithmetic, provider behavior, progress, a public trigger, operational Ada, or refinement.
 - The snapshot-isolation write/write model exhausts 336 states at depth 10. It checks fixed Begin sequences,
   per-written-key post-snapshot rejection, disjoint concurrent commits, checkpoint advancement of the retained exact
   history boundary, and conservative rejection below that boundary. Three independently validated witnesses cover

@@ -19,7 +19,9 @@ suffix. Live activation replaces the coordinator without invalidating family han
 additive caller-owned `Flush_Operation` drives that same checkpoint
 protocol directly through a bounded completion set, moving one caller-sized unique-buffer token until typed `Finish`;
 it creates no helper task and preserves the synchronous receipt and certainty mapping. Remote-provider qualification,
-compaction, run pruning, and dynamic family changes remain separate review units. Transactions now
+operational compaction, run pruning, and dynamic family changes remain separate review units. A formal compaction
+boundary now freezes complete confirmed-output replacement while retaining superseded immutable objects; it adds no
+automatic trigger or physical-GC policy. Transactions now
 capture a Begin-time sequence
 and reject exact written keys changed by later committed history. Fixed-snapshot point reads are operational;
 explicit serializable transactions retain and validate exact successful and absent point reads plus caller-observed

@@ -400,6 +400,61 @@ grep -q 'Invariant WitnessPending is violated.' \
   >"$temporary_root/tlaps-l0-accumulation.log" 2>&1
 grep -q 'All 24 obligations proved.' "$temporary_root/tlaps-l0-accumulation.log"
 
+#  Zero-versus-one compacted-output capacity is finite qualification geometry,
+#  not a product default. Physical deletion is absent: superseded runs remain
+#  stored history after the successor manifest depublicizes them.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-l0-compaction-states" \
+  -config L0Compaction.cfg L0Compaction \
+  >"$temporary_root/tlc-l0-compaction.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-l0-compaction.log"
+! grep -q '^Warning:' "$temporary_root/tlc-l0-compaction.log"
+grep -q '15 distinct states found' "$temporary_root/tlc-l0-compaction.log"
+grep -q 'The depth of the complete state graph search is 10.' \
+  "$temporary_root/tlc-l0-compaction.log"
+for action in RejectOutputCapacity BeginCompaction StoreOutput ConfirmOutput \
+  StoreManifest ConfirmManifest PublishAs ResolvePublication Crash HideOutput \
+  RejectRecovery Recover
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-l0-compaction.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-l0-compaction-probe-states" \
+  -config L0CompactionPartialProbe.cfg L0CompactionPartialProbe \
+  >"$temporary_root/tlc-l0-compaction-probe.log" 2>&1
+l0_compaction_probe_status=$?
+set -e
+test "$l0_compaction_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-l0-compaction-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-l0-compaction-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-l0-compaction-witness-states" \
+  -config L0CompactionRecoveryWitness.cfg \
+  -dumpTrace json "$temporary_root/l0-compaction-recovery.json" \
+  L0CompactionRecoveryWitness \
+  >"$temporary_root/tlc-l0-compaction-witness.log" 2>&1
+l0_compaction_witness_status=$?
+set -e
+test "$l0_compaction_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-l0-compaction-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-l0-compaction-witness.log"
+"$model_root/validate_l0_compaction_witness.py" \
+  "$temporary_root/l0-compaction-recovery.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-l0-compaction-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/L0CompactionSafetyProof.tla" \
+  >"$temporary_root/tlaps-l0-compaction.log" 2>&1
+grep -q 'All 26 obligations proved.' "$temporary_root/tlaps-l0-compaction.log"
+
 #  Qualification pins for the reviewed two-transaction/two-key model graph.
 #  They detect accidental state-space narrowing; changing the model requires a
 #  fresh graph review and an intentional update of these expected results.
@@ -629,6 +684,10 @@ printf '%s\n' "  Additive L0 TLC 49 distinct states, depth 17"
 printf '%s\n' "  Additive L0 TLAPS 24/24 obligations"
 printf '%s\n' "  Additive L0 tombstone/lost-response recovery witness validated"
 printf '%s\n' "  Negative additive-L0 early-HEAD probe detected"
+printf '%s\n' "  L0 compaction TLC 15 distinct states, depth 10"
+printf '%s\n' "  L0 compaction TLAPS 26/26 obligations"
+printf '%s\n' "  L0 compaction lost-response recovery witness validated"
+printf '%s\n' "  Negative L0-compaction early-HEAD probe detected"
 printf '%s\n' "  Snapshot isolation TLC 336 distinct states, depth 10"
 printf '%s\n' "  Snapshot isolation TLAPS 6/6 obligations"
 printf '%s\n' "  Snapshot conflict/disjoint/checkpoint witnesses validated"

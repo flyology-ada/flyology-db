@@ -231,6 +231,22 @@ it from fresh TLC JSON, compares it byte-for-byte, and validates it with the nor
 Milestone 2 adds the actual replay runner; until then the witness is executable contract input, not implementation
 evidence.
 
+`L0Compaction.tla` starts from that exact two-run accumulated authority and freezes a complete replacement algorithm.
+An admitted operation captures the complete live view and identity authority, stores and confirms one compacted run
+and a successor manifest, and only then conditionally changes HEAD from the captured generation. The successor names
+only the compacted run; the two superseded runs remain confirmed immutable stored history rather than current
+authority. Zero-versus-one output capacity covers definite pre-effect rejection but is finite qualification geometry,
+not a product default. Missing compacted output after a crash fails recovery closed.
+`L0CompactionPartialProbe.tla` publishes HEAD immediately after planning and must violate safety.
+`L0CompactionRecoveryWitness.tla` plus `validate_l0_compaction_witness.py` checks the exact admitted, accepted-lost,
+read-only resolution, crash, and compacted-run-only recovery path.
+
+`L0CompactionSafetyProof.tla` generalizes complete replacement to arbitrary nonempty fresh output sets and any number
+of cycles. It proves stored-before-confirmed ordering, confirmed current authority, separation of fresh/current/
+retired run sets, exact checkpoint/suffix authority, exact recovery, and disposable local state. It intentionally
+retains retired objects and proves no physical garbage collection, concrete merge, snapshot-retention horizon,
+format, capacity arithmetic, provider behavior, liveness, or refinement to Ada.
+
 ## Reproduction
 
 Install the pinned tools under ignored `.deps/tla` as recorded in
@@ -249,6 +265,8 @@ TLAPS obligations. The successive-checkpoint lane adds 37 distinct states at dep
 recovery witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS
 obligations. The additive-L0 lane adds 49 distinct states at depth 17, one validated tombstone/lost-response recovery
 witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS obligations.
+The L0-compaction lane adds 15 distinct states at depth 10, one validated lost-response recovery witness, one required
+early-HEAD negative probe, full semantic-action coverage, and 26 of 26 strict TLAPS obligations.
 The snapshot-isolation lane
 adds 336 distinct states at depth 10, three independently validated
 witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. The

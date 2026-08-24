@@ -1,5 +1,28 @@
 # Review record
 
+## Accepted formal L0-compaction candidate
+
+- Parent: operational additive-L0 commit `236fd1c`.
+- Scope and compatibility: freeze complete replacement of an accumulated current run set without changing Ada,
+  public declarations, persisted formats, automatic scheduling, or physical reclamation. The successor manifest
+  names only fresh complete compacted output; superseded current runs remain confirmed immutable stored history.
+- Authority and certainty: compaction captures exact visible and admitted-identity authority at the current replay
+  boundary. Output and manifest confirmation precede the exact-generation HEAD transition. Definite output-capacity
+  rejection has no effects; an accepted lost response remains unknown until read-only resolution. Missing compacted
+  output fails recovery closed. The finite zero-versus-one capacity is branch geometry, not a product default.
+- Verification: focused TLC exhausts 15 states at depth 10 with nonzero action coverage. The early-HEAD probe violates
+  safety, and the machine-validated ten-action witness selects admission, complete output/manifest confirmation,
+  accepted-lost publication, resolution, crash, and exact recovery from only the compacted run. Strict TLAPS proves
+  all 26 obligations for arbitrary fresh output sets and unbounded cycles. The combined model gate preserves every
+  earlier graph, witness, probe, and proof.
+- Findings cycle: the first proof found that freshness cannot be stated as disjointness from all stored runs after an
+  output has itself been stored. It is now retained as separation from current and retired authority, while the Begin
+  guard establishes initial disjointness from storage. A second proof pass confirmed that this stronger stable
+  relation makes retired/current separation inductive across publication. Repeated authority, certainty, capacity,
+  retention, recovery, constants, model, witness, documentation, and unnecessary-surface review finds no remaining
+  P0, P1, P2, or P3 issue. Public API spelling, automatic policy, snapshot/replica retention, physical GC, concrete
+  merge, and Ada refinement remain explicit later units.
+
 ## Accepted operational additive-L0 accumulation candidate
 
 - Parent: formal additive-L0 freeze commit `06d47e4`.

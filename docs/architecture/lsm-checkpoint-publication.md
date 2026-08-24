@@ -240,9 +240,32 @@ confirmed-before-HEAD ordering, exact checkpoint/suffix partitioning after every
 disposable local state. Manifest-chain arithmetic, concrete bytes, sorting, provider reconciliation, persisted
 capacity arithmetic, and a refinement relation to Ada remain outside this kernel.
 
+## Frozen L0 compaction boundary
+
+Compaction is a complete-authority replacement, not an in-place rewrite and not physical garbage collection. It
+captures one quiescent committed checkpoint view and its exact admitted-identity authority, emits a fresh nonempty
+set of complete immutable outputs, and builds a successor manifest that names only those outputs at the unchanged
+replay boundary. Every output and the immutable manifest must be stored and confirmed before the exact-generation
+conditional HEAD transition. A definite capacity or allocation failure before provider admission publishes nothing.
+
+Once HEAD conclusively names the successor, prior current runs are no longer recovery or visibility authority. They
+remain immutable stored history; this decision does not authorize their deletion, set an age threshold, or claim that
+no active snapshot or replica can still require them. Physical reclamation needs its own reachability and retention
+decision. A lost accepted HEAD response remains `Outcome_Unknown` until read-only reconciliation identifies the exact
+attempted transition or a conclusive successor. No retry, replacement identity, automatic trigger, helper task, or
+new public capacity/default follows from the compaction algorithm.
+
+Cacheless recovery from the compacted successor validates only its named outputs and exact manifest authority; it
+does not reread depublicized predecessors to reconstruct current state. A missing, malformed, corrupt, misbound, or
+unconfirmed compacted output fails closed and installs no local state. The formal finite model exercises definite
+output-capacity rejection, accepted-lost publication, depublication with retained old bytes, missing-output rejection,
+crash, and exact recovery. The unbounded TLAPS kernel proves the corresponding abstract replacement invariants. No
+TLA+-to-Ada refinement is claimed, and the public trigger/API plus operational implementation remain separate units.
+
 ## Non-goals
 
-This design does not implement automatic flushing, compaction, run pruning, garbage collection, remote-provider
+This design does not implement automatic flushing, operational compaction, run pruning, garbage collection,
+remote-provider
 matrix qualification, or an LSM performance claim. Its operational scope is manifest-v3 root creation, initial
 whole-state runs, additive suffix-delta runs, certainty-preserving synchronous and composable checkpoint
 publication/reconciliation, and header-first cacheless recovery of every current run plus the later batch suffix.
