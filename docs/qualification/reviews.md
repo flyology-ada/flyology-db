@@ -1,5 +1,26 @@
 # Review record
 
+## Accepted additive Object Storage composable-surface qualification
+
+- Parent: operational scan-range normalization commit `b8c2cda`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage clone from `ab88c9117194a062ec208ee6d1503606ffd96307`
+  to the explicitly qualified local-only boundary `7550e45be97a0f5a1012ec81962a8bdff22decc2`. The author checkout remains
+  read-only coordination state, the root filesystem path pin remains unchanged, and no DB declaration, format,
+  allocation limit, retry, task, or publication policy changes in this unit.
+- Surface and certainty: the dependency adds caller-owned scoped Delete and CreateMultipartUpload operations to its
+  existing conditional Put, generation-bound whole/range Get, and Head state machines. Existing DB checkpoint calls
+  continue using the same conditional-Put and whole-Get paths. No mutation result is inferred from an exception:
+  absent definite pre-admission certainty remains `Outcome_Unknown`, read-only reconciliation is generation-bound,
+  and no automatic retry or retained borrowed input is introduced.
+- Verification: the root build and maintained deterministic suite compile the complete DB/Object Storage/XML/HTTP/
+  QUIC closure and exercise local engine, authenticated client, filesystem crash/recovery, the 32-case comparative
+  adapter suite, and pinned TidesDB upstream 4/4. Repository checks bind the campaign to the exact clean clone above.
+  The warning-strict DB proof gate recompiles the dependency closure and proves all unchanged 1,088 selected checks;
+  this unit does not substitute or claim upstream proof as DB evidence.
+- Findings cycle: dependency provenance, API compatibility, certainty, ownership, indexed transport resolution,
+  author-checkout isolation, constants, tests, documentation, and unnecessary-surface review finds no remaining P0,
+  P1, P2, or P3 issue. Historical review entries retain the exact dependency used by their original campaigns.
+
 ## Accepted operational transaction-owned scan-range normalization
 
 - Parent: formal normalization boundary `8d94972`.
