@@ -10191,6 +10191,135 @@ package body Flyology.DB is
       end if;
    end Resolve;
 
+   function Head_Pair_Less (Left, Right : Head_Snapshot) return Boolean
+   is (Left.Transition_Number < Right.Transition_Number
+       or else
+         (Left.Transition_Number = Right.Transition_Number and then Left.Epoch < Right.Epoch));
+
+   procedure Refresh_Test_Replica
+     (Item    : in out Database;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null;
+      Result  : out Outcome_Code)
+   is
+      --  One caller-selected monotonic deadline covers capture, complete
+      --  recovery, allocation, and installation. This private witness adds no
+      --  polling cadence, retry budget, or public refresh timeout default.
+      Deadline           : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State              : Engine_State_Access;
+      New_State          : Engine_State_Access := null;
+      Storage            : access Storage_Context;
+      Current_Head       : Head_Snapshot;
+      Observed_Head      : Head_Snapshot;
+      Current_Generation : Generation_Value;
+      Observed_Generation : Generation_Value;
+      Uncertain          : Boolean;
+      Fenced             : Boolean;
+      Manifest           : Manifests.Manifest;
+      Root               : Manifests.Manifest;
+      LSM_Authority      : Engine_LSM_Authority;
+      Checkpoint         : Checkpoint_Plan;
+      History            : Batch_History_Access := null;
+      History_Count      : Natural := 0;
+      Stamp              : Engine_Incarnation;
+      Guard              : Resolve_Guard;
+      pragma Unreferenced (Guard);
+   begin
+      Item.Life.Begin_Resolve (State, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      State.Gate.Drain_Queued_For_Resolution;
+      Item.Life.Await_Quiescent;
+      State.Gate.Snapshot (Current_Head, Current_Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+         return;
+      elsif Fenced then
+         --  Refresh is read-only catch-up, never implicit writer promotion.
+         Result := Stale_Writer;
+         return;
+      end if;
+      Storage := State.Storage;
+      Read_Recovery
+        (Storage.all,
+         Current_Head.Database_ID,
+         Deadline,
+         Token,
+         Observed_Head,
+         Observed_Generation,
+         Manifest,
+         Root,
+         LSM_Authority,
+         Checkpoint,
+         History,
+         History_Count,
+         Result);
+      if Result /= Success then
+         return;
+      elsif Observed_Head.Database_ID /= Current_Head.Database_ID then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Result := Corrupt;
+         return;
+      elsif Observed_Head.Transition_Number = Current_Head.Transition_Number
+        and then Observed_Head.Epoch = Current_Head.Epoch
+      then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         if Same_Head (Observed_Head, Current_Head) then
+            Item.Life.Cancel_Resolve;
+            Guard.Active := False;
+            Result := Success;
+         else
+            Result := Corrupt;
+         end if;
+         return;
+      elsif not Head_Pair_Less (Current_Head, Observed_Head) then
+         --  A stale provider observation cannot roll the local high-water pair
+         --  back. Its fully validated but older graph is simply discarded.
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Item.Life.Cancel_Resolve;
+         Guard.Active := False;
+         Result := Success;
+         return;
+      end if;
+
+      Incarnation_Source.Allocate (Stamp, Result);
+      if Result /= Success then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         return;
+      end if;
+      Allocate_Engine
+        (Item.Life'Unchecked_Access,
+         Storage,
+         Observed_Head,
+         Observed_Generation,
+         Manifest,
+         LSM_Authority,
+         Checkpoint,
+         Stamp,
+         History,
+         History_Count,
+         New_State,
+         Result);
+      if Result /= Success then
+         return;
+      end if;
+      State.Gate.Request_Close;
+      State.Gate.Join;
+      Free_Worker (State.Worker);
+      Release_State_Images (State);
+      Free_State (State);
+      Item.Life.Finish_Resolve (New_State, Observed_Head.Highest);
+      Guard.Active := False;
+      Result := Success;
+   end Refresh_Test_Replica;
+
    function Receipt_Outcome (Item : Commit_Receipt) return Outcome_Code
    is (Item.Current_Outcome);
 

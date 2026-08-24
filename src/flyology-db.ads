@@ -1168,6 +1168,11 @@ private
       Transition_ID : Identifier;
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code);
+   procedure Refresh_Test_Replica
+     (Item    : in out Database;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null;
+      Result  : out Outcome_Code);
    procedure Start_Test_Compaction
      (Operation      : in out Flush_Operation;
       Runs           : Checkpoint_Run_Identity_Array;

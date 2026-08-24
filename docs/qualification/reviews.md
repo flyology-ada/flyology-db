@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted private monotonic replica-refresh candidate
+
+- Parent: private composable L0-replacement commit `68f89d8`.
+- Scope and compatibility: add one private, synchronous, caller-triggered refresh over the existing lifecycle and
+  cacheless recovery path. It adds no public declaration, replica registration, polling task/cadence, lease, retry,
+  promotion policy, persisted field, format change, cache budget, or provider behavior.
+- Authority and concurrency: refresh drains queued work and active lifecycle leases before capturing the installed
+  HEAD transition ordinal/writer epoch. It validates one complete immutable recovery graph, installs only a strictly
+  newer lexicographic pair, treats the exact same HEAD as a no-op, and discards older observations. Allocation occurs
+  before the old worker is joined; definite allocation failure reopens the unchanged engine. A fenced handle returns
+  `Stale_Writer`, so refresh cannot act as implicit writer promotion.
+- Bounds and constants: every recovery/engine allocation retains existing authenticated database and per-family
+  limits with checked arithmetic and lazy ownership. The test's two keys/values and following identities separate
+  lag, catch-up, local-loss, and fencing roles only. No cache capacity or refresh timeout/default is invented; the
+  operation receives its sole monotonic deadline from the private caller.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository/provenance checks, deterministic
+  memory/files cases, authenticated client and filesystem crash/recovery, all 32 comparative cases, and pinned
+  TidesDB 4/4. Focused memory/files witnesses cover lagging absence, first catch-up, exact same-HEAD no-op, allocation
+  failure with the newer key still absent, retry to the exact newer values, close/reopen local loss, stale-write
+  fencing, and refusal to refresh the fenced handle. The combined TLA gate preserves the 1,460-state/11-obligation
+  refresh proof and both stale-writer and rollback negative probes; GNATprove preserves 1,084/1,084 selected checks.
+- Findings cycle: the first compile found a testing literal/type name collision and warning-strict redundant
+  annotations; both were narrowed without semantic change. The first findings sweep found a P2 witness gap: sequence
+  checks alone did not prove failed refresh kept newer bytes absent. The strengthened test reads that absence and
+  also performs complete local-loss reopen. The repeated authority, monotonicity, fencing, concurrency, ownership,
+  allocation, constants, tests, proof, documentation, and unnecessary-surface sweep finds no remaining P0, P1, P2,
+  or P3 issue.
+
 ## Accepted private composable L0-replacement candidate
 
 - Parent: formal replica-refresh and fencing commit `75a1319`.

@@ -393,6 +393,15 @@ package body Flyology.DB.Testing is
       Publish_Test_Compaction (Item, Runs, Manifest_ID, Transition_ID, Receipt, Result);
    end Publish_Compaction;
 
+   procedure Refresh_Replica
+     (Item    : in out Database;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null;
+      Result  : out Outcome_Code) is
+   begin
+      Refresh_Test_Replica (Item, Timeout, Token, Result);
+   end Refresh_Replica;
+
    function Receipt_Replaces_Current_Runs (Item : Flush_Receipt) return Boolean
    is (Item.Replaces_Current_Runs);
 

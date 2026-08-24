@@ -13,7 +13,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Private sync/composable replacement operational and deletion safety proved; public API/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
-| 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Refresh/fencing safety boundary proved; operational replica and promotion policy pending |
+| 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Private one-shot refresh operational; public/composable replica and promotion policy pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
 
 The current implementation unit is intentionally narrower than full Milestone 2 acceptance. It activates the
@@ -85,6 +85,12 @@ pins, lagging-replica pins, required predecessor reachability, and unresolved pu
 immutable identities. A listed object becomes deletable only after an explicit age decision and a live protection
 recheck; deleted identities are never reused. Concrete age horizons, provider timestamp trust, deletion certainty,
 batching, scheduling, and an operational collector remain pending Milestone 6 decisions.
+
+The private replica spine can now refresh one open read-only-use handle synchronously. It drains the existing
+lifecycle, validates a complete cacheless recovery graph, and installs only a strictly newer transition-ordinal/
+writer-epoch pair. Same/older observations and safe allocation failure retain the prior engine; a fenced writer is
+not implicitly promoted. Public and composable refresh declarations, polling, leases, replica registration and
+retention pins, and explicit promotion remain pending Milestone 8 decisions.
 
 ## Formal state-machine lane
 
