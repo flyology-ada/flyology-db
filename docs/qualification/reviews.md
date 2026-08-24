@@ -1,5 +1,28 @@
 # Review record
 
+## Accepted multipart-completion Object Storage qualification
+
+- Parent: client-bound synchronous Flush convergence commit `5b30cdd`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage clone from
+  `7550e45be97a0f5a1012ec81962a8bdff22decc2` to the explicitly qualified local-only boundary
+  `aeb10422ba8caafc7b3eda3eceaa9619fddbd005`. The dirty author checkout remains read-only coordination state, the root
+  filesystem path pin remains unchanged, and no DB declaration, format, allocation limit, retry, task, or publication
+  policy changes in this unit.
+- Surface and certainty: the dependency adds caller-owned scoped UploadPart preparation and CompleteMultipartUpload
+  to its existing conditional Put, generation-bound whole/range Get, Head, Delete, and CreateMultipartUpload state
+  machines. The synchronous multipart-completion form is a literal wait over the same operation. Exact serialized XML
+  is owned and non-rewindable; there is no replay, helper task, or retained borrow. Only validated success is definite.
+  A complete rejection, embedded HTTP-200 error, or post-admission failure remains completion-outcome unknown and
+  requires destination plus exact-upload read-only reconciliation before any retry or abort.
+- Verification: the DB root build and maintained deterministic suite compile the complete DB/Object Storage/XML/HTTP/
+  QUIC closure and exercise local engine, authenticated client, filesystem crash/recovery, the 32-case comparative
+  adapter suite, and pinned TidesDB 4/4. Repository checks bind the campaign to the exact clean clone above. The
+  warning-strict DB proof gate recompiles the dependency closure and proves all unchanged 1,088 selected checks; this
+  unit does not substitute or claim upstream proof as DB evidence.
+- Findings cycle: dependency provenance, API compatibility, certainty, owned-body lifetime, indexed transport
+  resolution, author-checkout isolation, constants, tests, documentation, and unnecessary-surface review finds no
+  remaining P0, P1, P2, or P3 issue. Historical review entries retain the exact dependency used by their campaigns.
+
 ## Accepted client-bound synchronous Flush convergence candidate
 
 - Parent: additive Object Storage composable-surface qualification commit `945b481`.

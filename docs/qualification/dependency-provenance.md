@@ -5,8 +5,8 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `7550e45be97a0f5a1012ec81962a8bdff22decc2`
-- Commit subject: `Problem: multipart initiation cannot compose with caller-owned work`
+- Commit: `aeb10422ba8caafc7b3eda3eceaa9619fddbd005`
+- Commit subject: `Problem: multipart completion cannot compose without replay risk`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
@@ -25,11 +25,14 @@ deliberately after the Flyology runtime preparer and this repository's gates qua
 
 The dependency includes the reviewed backend-neutral conditional publication contract, synchronous conditional Put
 and whole Get operations, caller-owned `Client.Scoped` conditional Put plus generation-bound whole/range Get, Head,
-Delete, and CreateMultipartUpload operations, retained SQLite generations across ordinary and multipart publication,
-and generation-aware object mutation/read coverage. The buffer-owned synchronous calls are waits over those same
-scoped state machines. Flyology.DB composes conditional Put and whole Get directly for its additive
-`Flush_Operation`, preserving the synchronous receipt and certainty mapping. Object Storage records no external
-HTTP/QUIC pin at this boundary; the generated DB solve likewise marks every HTTP/QUIC lock entry unpinned.
+Delete, CreateMultipartUpload, UploadPart preparation, and CompleteMultipartUpload operations, retained SQLite
+generations across ordinary and multipart publication, and generation-aware object mutation/read coverage. The
+buffer-owned synchronous calls are waits over those same scoped state machines. Multipart completion owns its exact
+serialized XML and classifies every complete rejection or post-admission failure as unknown until destination and
+exact-upload read-only reconciliation; it neither replays nor retains borrowed input. Flyology.DB composes
+conditional Put and whole Get directly for its additive `Flush_Operation`, preserving the synchronous receipt and
+certainty mapping. Object Storage records no external HTTP/QUIC pin at this boundary; the generated DB solve likewise
+marks every HTTP/QUIC lock entry unpinned.
 
 The dependency's retained proof report at its qualified final base proves 936/936 checks: 180 flow and 756 prover,
 with zero warnings, unproved or justified checks, or `Assume` statements. Flyology.DB reruns its own repository,
