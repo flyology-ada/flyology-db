@@ -77,6 +77,14 @@ statements; maximum successful proof effort is 6,840 steps. The root builder, dy
 storage publication, recovery I/O, protected tasking, and fault injection remain executable-test boundaries rather
 than SPARK-proved implementations.
 
+The cacheless first-checkpoint recovery candidate reran the same authoritative forced selected-unit gate after its
+root private declarations changed. FSF GNATprove 16.1.0 proves 1,078/1,078 checks: 93 initialization, 522 run-time,
+91 assertion, 300 functional-contract, and 72 termination checks; 164 are discharged by flow and 914 by provers.
+There are zero reported warnings, unproved or justified checks, or `pragma Assume`, and the maximum successful proof
+effort is 6,840 steps. This preserves the established deterministic format/model proof boundary. Header/range I/O,
+dynamic operational decode, protected installation, Ada tasking, and provider behavior remain trusted integration
+boundaries covered by the memory/files recovery and corruption campaigns plus the checkpoint TLC/TLAPS model.
+
 The final warning-strict forced five-unit gate on the amended, rebased candidate proves 639/639 checks: 65
 initialization checks, 309 runtime checks, 54 assertions, 161 functional contracts, and 50 termination checks; 114
 are discharged by flow analysis and 525 by provers. It reports zero warnings, unproved or justified checks, or

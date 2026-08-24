@@ -345,7 +345,12 @@ private
       Root_Manifest_Retention_Allocation,
       Checkpoint_Reference_Allocation,
       Checkpoint_SST_Allocation,
-      Checkpoint_Manifest_Allocation);
+      Checkpoint_Manifest_Allocation,
+      Recovery_Manifest_Header_Allocation,
+      Recovery_Manifest_Image_Allocation,
+      Recovery_SST_Header_Allocation,
+      Recovery_SST_Image_Allocation,
+      Recovery_Checkpoint_Image_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code);
@@ -466,6 +471,8 @@ private
    type Storage_Fault_Point is
      (Before_Batch_Put,
       After_Batch_Put,
+      Before_Run_Put,
+      After_Run_Put,
       Before_Manifest_Put,
       After_Manifest_Put,
       Before_Head_Put,
@@ -481,9 +488,14 @@ private
       procedure Arm (Point : Storage_Fault_Point; Mode : Storage_Fault_Mode; Count : Positive);
       procedure Clear;
       procedure Consume (Point : Storage_Fault_Point; Mode : out Storage_Fault_Mode);
-      procedure Record_Put (Is_Head, Is_Manifest : Boolean);
+      procedure Record_Put (Is_Head, Is_Manifest, Is_Run : Boolean);
       procedure Publication_Counts
         (Batch_Total : out Natural; Manifest_Total : out Natural; Head_Total : out Natural);
+      procedure Publication_Counts
+        (Batch_Total    : out Natural;
+         Run_Total      : out Natural;
+         Manifest_Total : out Natural;
+         Head_Total     : out Natural);
       procedure Set_Get_Paused (Value : Boolean);
       procedure Arrive_Get;
       entry Await_Get;
@@ -493,6 +505,7 @@ private
       Fault_Counts  : Storage_Fault_Count := [others => 0];
       Fault_Modes   : Storage_Fault_Modes := [others => No_Fault];
       Batch_Puts    : Natural := 0;
+      Run_Puts      : Natural := 0;
       Manifest_Puts : Natural := 0;
       Head_Puts     : Natural := 0;
       Get_Paused    : Boolean := False;
@@ -579,6 +592,13 @@ private
      (Item : in out Storage_Context; Manifest_ID : Identifier; Result : out Outcome_Code);
    procedure Remove_Test_Manifest
      (Item : in out Storage_Context; Manifest_ID : Identifier; Result : out Outcome_Code);
+   procedure Corrupt_Test_Run (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code);
+   procedure Remove_Test_Run (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code);
+   procedure Rewrite_Test_Run_Family
+     (Item      : in out Storage_Context;
+      Run_ID    : Identifier;
+      Family_ID : Column_Family_ID;
+      Result    : out Outcome_Code);
    procedure Rewrite_Test_Manifest
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;
@@ -644,6 +664,12 @@ private
       Identity_Total  : out Natural;
       Replay_Boundary : out Sequence_Number;
       Result          : out Outcome_Code);
+   procedure Publish_Test_First_Checkpoint
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Result        : out Outcome_Code);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB;

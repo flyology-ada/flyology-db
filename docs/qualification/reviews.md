@@ -1,5 +1,35 @@
 # Review record
 
+## Accepted cacheless first-checkpoint recovery candidate
+
+- Parent: caller-owned checkpoint identity commit `53e8405`.
+- Scope: header-first, generation-bound recovery of one complete nonempty manifest-v2 checkpoint; exact dynamically
+  allocated SST decode under persisted database/family authority; installation of live values, last-write sequences,
+  and the checkpoint identity ledger; and replay of only the strictly later batch suffix. A private synchronous
+  success-path publisher creates deterministic fixtures and fences its stale local engine. This unit adds no public
+  Flush, publication receipt, ambiguous-write reconciliation, multiple-checkpoint support, or composable overload.
+- Constant authority: manifest/SST header ranges are the frozen 220-byte/96-byte format widths; whole-object and
+  engine allocations derive from authenticated object lengths and persisted limits. The run namespace is a frozen
+  object-key compatibility choice. Negative-fixture identity domains and mutation offsets are documented adjacent to
+  their declarations and do not become database defaults. No global key/value ceiling is introduced.
+- Verification: `./tests/scripts/test.sh` passes root/test builds, repository/provenance checks, deterministic Ada,
+  filesystem subprocess crash/recovery, 32 comparative cases, pinned TidesDB 4/4, and all adapter fixtures against
+  Object Storage `386865021321bf95b133efbaab4d8e77086cac0b`. Memory and files backends recover exact checkpoint state,
+  identity nonreuse, and a later suffix; missing, checksum-corrupt, and checksum-valid wrong-family runs fail closed.
+  Five injected recovery allocation sites return `Capacity_Exceeded` without partial engine installation. The TLA+
+  gate remains green at 112,031/286/819 commit/manifest/checkpoint states and 23/12/43 TLAPS obligations, including
+  committed/rejected/recovery witnesses and all negative checkpoint probes. Warning-strict forced FSF GNATprove
+  16.1.0 proves the selected deterministic boundary at 1,078/1,078 checks (164 flow, 914 prover), zero warnings,
+  unproved/justified checks, or `pragma Assume`, maximum 6,840 steps; operational recovery I/O and tasking remain the
+  stated executable-test boundary.
+- Findings cycle: the first sweep fixed exact-range validation for backend reads and prevented an exact attempted
+  HEAD with a missing named receipt batch from reactivating empty state. The second sweep added deterministic
+  allocation-failure coverage and separate run-publication accounting, then re-ran executable, TLA+/TLAPS, and SPARK
+  gates. The final implementation sweep found and fixed one P1 planner defect: a database whose persisted manifest
+  history admits only the root could otherwise publish an unreopenable first-checkpoint successor. Admission now
+  rejects that plan before any run, manifest, or HEAD publication, with a zero-publication regression. The final
+  follow-up sweep finds no remaining P0, P1, P2, or P3 issue in this recovery boundary.
+
 ## Accepted caller-owned checkpoint identity candidate
 
 - Parent: exact whole-checkpoint plan commit `f5c0355`.

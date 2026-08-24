@@ -25,10 +25,12 @@ qualification and dynamic append-only family changes remain prerequisites for ac
 owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication
 models remain abstract assurance lanes rather than a claimed refinement proof.
 
-The first-LSM work now includes exact/proven manifest-v2 and SST-v1 formats, dynamic operational codecs, and
-manifest-v2 root creation with explicit database/per-family LSM authority. New roots contain no runs or checkpoint
-identity partition, so the engine remains log-only. Nonempty Flush publication, SST recovery/lookup, scans,
-compaction, and provider qualification remain later focused units; Milestone 4 therefore remains Pending.
+The first-LSM work now includes exact/proven manifest-v2 and SST-v1 formats, dynamic operational codecs, manifest-v2
+root creation, and cacheless recovery of one complete nonempty first checkpoint plus its strictly later batch suffix.
+Recovery restores live values, last-write sequences, and the exact never-reused checkpoint identity ledger from
+persisted authority. The only current nonempty publisher is private deterministic test infrastructure: public Flush
+certainty/reconciliation, multiple checkpoints, scans, compaction, and provider qualification remain later focused
+units, so Milestone 4 remains Pending.
 
 ## Formal state-machine lane
 

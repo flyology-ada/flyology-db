@@ -4,20 +4,25 @@ package body Flyology.DB.Testing is
    begin
       Set_Test_Allocation_Fault
         (case Point is
-           when Transaction_Arena       => Transaction_Arena_Allocation,
-           when Transaction_Payload     => Transaction_Payload_Allocation,
-           when Batch_Descriptors       => Batch_Descriptor_Allocation,
-           when Storage_Sink            => Storage_Sink_Allocation,
-           when Recovery_History        => Recovery_History_Allocation,
-           when Engine_State            => Engine_State_Allocation,
-           when Identity_Tables         => Identity_Table_Allocation,
-           when Projection_Scratch      => Projection_Scratch_Allocation,
-           when Root_Checkpoint_State   => Root_Checkpoint_State_Allocation,
-           when Root_Checkpoint_Image   => Root_Checkpoint_Image_Allocation,
-           when Root_Manifest_Retention => Root_Manifest_Retention_Allocation,
-           when Checkpoint_References   => Checkpoint_Reference_Allocation,
-           when Checkpoint_SST          => Checkpoint_SST_Allocation,
-           when Checkpoint_Manifest     => Checkpoint_Manifest_Allocation);
+           when Transaction_Arena         => Transaction_Arena_Allocation,
+           when Transaction_Payload       => Transaction_Payload_Allocation,
+           when Batch_Descriptors         => Batch_Descriptor_Allocation,
+           when Storage_Sink              => Storage_Sink_Allocation,
+           when Recovery_History          => Recovery_History_Allocation,
+           when Engine_State              => Engine_State_Allocation,
+           when Identity_Tables           => Identity_Table_Allocation,
+           when Projection_Scratch        => Projection_Scratch_Allocation,
+           when Root_Checkpoint_State     => Root_Checkpoint_State_Allocation,
+           when Root_Checkpoint_Image     => Root_Checkpoint_Image_Allocation,
+           when Root_Manifest_Retention   => Root_Manifest_Retention_Allocation,
+           when Checkpoint_References     => Checkpoint_Reference_Allocation,
+           when Checkpoint_SST            => Checkpoint_SST_Allocation,
+           when Checkpoint_Manifest       => Checkpoint_Manifest_Allocation,
+           when Recovery_Manifest_Header  => Recovery_Manifest_Header_Allocation,
+           when Recovery_Manifest_Image   => Recovery_Manifest_Image_Allocation,
+           when Recovery_SST_Header       => Recovery_SST_Header_Allocation,
+           when Recovery_SST_Image        => Recovery_SST_Image_Allocation,
+           when Recovery_Checkpoint_Image => Recovery_Checkpoint_Image_Allocation);
    end Fail_Next_Allocation;
 
    procedure Decode_Runtime_Image
@@ -63,6 +68,16 @@ package body Flyology.DB.Testing is
       Head_Puts     : out Natural) is
    begin
       Item.Test_Control.Publication_Counts (Batch_Puts, Manifest_Puts, Head_Puts);
+   end Publication_Counts;
+
+   procedure Publication_Counts
+     (Item          : in out Storage_Context;
+      Batch_Puts    : out Natural;
+      Run_Puts      : out Natural;
+      Manifest_Puts : out Natural;
+      Head_Puts     : out Natural) is
+   begin
+      Item.Test_Control.Publication_Counts (Batch_Puts, Run_Puts, Manifest_Puts, Head_Puts);
    end Publication_Counts;
 
    function Attempted_Transition_Number (Item : Commit_Receipt) return Interfaces.Unsigned_64
@@ -162,6 +177,25 @@ package body Flyology.DB.Testing is
    begin
       Remove_Test_Manifest (Item, Manifest_ID, Result);
    end Remove_Manifest;
+
+   procedure Corrupt_Run (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code) is
+   begin
+      Corrupt_Test_Run (Item, Run_ID, Result);
+   end Corrupt_Run;
+
+   procedure Remove_Run (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code) is
+   begin
+      Remove_Test_Run (Item, Run_ID, Result);
+   end Remove_Run;
+
+   procedure Rewrite_Run_Family
+     (Item      : in out Storage_Context;
+      Run_ID    : Identifier;
+      Family_ID : Column_Family_ID;
+      Result    : out Outcome_Code) is
+   begin
+      Rewrite_Test_Run_Family (Item, Run_ID, Family_ID, Result);
+   end Rewrite_Run_Family;
 
    procedure Rewrite_Manifest
      (Item                 : in out Storage_Context;
@@ -298,6 +332,16 @@ package body Flyology.DB.Testing is
       Build_Test_First_Checkpoint
         (Item, Runs, Manifest_ID, Transition_ID, Run_Total, Identity_Total, Replay_Boundary, Result);
    end Build_First_Checkpoint;
+
+   procedure Publish_First_Checkpoint
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Result        : out Outcome_Code) is
+   begin
+      Publish_Test_First_Checkpoint (Item, Runs, Manifest_ID, Transition_ID, Result);
+   end Publish_First_Checkpoint;
 
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier
    is (Structural_ID (Tag, Number));

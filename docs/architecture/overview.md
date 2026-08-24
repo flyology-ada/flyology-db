@@ -21,7 +21,8 @@ transition identity; continuing unavailability remains unknown.
 - Per-family logical/MVCC state, memtables, immutable runs, configuration, and later compaction.
 - Read-only replicas advance monotonically by observing valid head transitions.
 
-The executable slice remains log-only: recovery follows `HEAD.Latest_Batch` and the predecessor-batch ID in each
+The executable mutation surface remains log-only, but recovery accepts either that log-only form or one complete
+nonempty first checkpoint. Log-only recovery follows `HEAD.Latest_Batch` and the predecessor-batch ID in each
 immutable commit object, then rebuilds logical state in sequence order without local state or listing. HEAD version 2
 names an immutable root column-family manifest before any batch is decoded. New Create operations encode that root as
 manifest version 2 with an empty checkpoint partition and explicit database-wide run/identity plus per-family
@@ -33,8 +34,9 @@ complete manifest chain before the batch chain and installs neither partial regi
 silently upgrades an existing manifest-v1 database.
 
 The staged first-checkpoint protocol is specified separately in
-[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v2 root creation and empty-checkpoint
-recovery are operational; nonempty SST publication and recovery remain the next focused unit.
+[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v2 root creation and cacheless nonempty
+checkpoint recovery are operational. The private deterministic publisher exists only to build recovery fixtures;
+the certainty-preserving public Flush surface remains the next focused publication unit.
 
 ## Transaction semantics
 
@@ -71,10 +73,12 @@ the synchronous call; it does not clone it. Recovery sinks own exact response im
 offsets/views. Outcome-unknown receipts retain a shared exact image until conclusive byte-for-byte reconciliation.
 Later composable overloads may move `Unique_Buffer` tokens while reusing this semantic core.
 
-Recovery allocates descriptor history from the persisted history limit and allocates each reached image lazily.
-Engine state, identity ledgers, and final-state projection scratch are sized from persisted database limits before
-protected publication. Checked arithmetic and `Storage_Error` handling leave Open closed and protected state
-unchanged on allocation failure. The small SPARK batch codec remains a separate reference instance.
+Recovery admits manifest and SST headers before allocating their exact authenticated whole-object lengths, binds the
+second read to the first read's opaque generation, and allocates replay history only for batches after the checkpoint
+boundary. Engine state, checkpoint/run images, identity ledgers, and final-state projection scratch are sized from
+persisted database and family limits before protected publication. Checked arithmetic and `Storage_Error` handling
+leave Open closed and protected state unchanged on allocation failure. The small SPARK batch codec remains a separate
+reference instance.
 
 `Get`, `Put`, and `Delete` take the owning `Database` so each call acquires the same lifecycle lease used by commit
 admission. They reject fenced or uncertain engine state before observing or changing transaction-local data.

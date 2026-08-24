@@ -2,10 +2,11 @@
 
 This document freezes the semantic checkpoint-publication decision. The format layer defines exact manifest-v2 and
 SST-v1 bytes, a private SPARK reference decoder, and a byte-identical dynamically sized operational codec. The codec
-is the allocation and validation boundary. New Create operations now publish an empty manifest-v2 root carrying the
-explicit LSM policy, while the engine remains log-only: no SST, nonzero replay boundary, or checkpoint publication is
-live yet. The internal checkpoint planner now assembles an exact complete successor and its family SSTs but cannot
-publish an object. Existing manifest-v1 databases remain readable for log-only operation.
+is the allocation and validation boundary. New Create operations publish an empty manifest-v2 root carrying the
+explicit LSM policy. Cacheless Open now admits a complete nonempty first checkpoint, reconstructs its exact state and
+identity partition, and replays only later batches. The internal checkpoint planner assembles an exact successor and
+its family SSTs. A private synchronous publisher creates deterministic recovery fixtures, but no public Flush or
+publication receipt is live yet. Existing manifest-v1 databases remain readable for log-only operation.
 
 ## Staged compatibility decision
 
@@ -13,9 +14,10 @@ A checkpoint uses column-family manifest object version 2 and immutable SST obje
 version 1 remains readable as a log-only registry and limit authority, but it cannot name runs or a replay boundary.
 There is no in-place rewrite and no implicit migration. New databases start with a manifest-v2 root whose replay
 boundary, run set, and identity ledger are empty; Create persists every database and family LSM limit supplied by the
-caller. The later Flush upgrade writes complete immutable SST runs and a successor manifest-v2 object before one
-exact conditional HEAD transition. Exact wire widths, offsets, checksums, goldens, corruption fixtures, decoder
-proofs, and dynamic admission are already active without making that publication path live.
+caller. The later public Flush upgrade writes complete immutable SST runs and a successor manifest-v2 object before
+one exact conditional HEAD transition. Exact wire widths, offsets, checksums, goldens, corruption fixtures, decoder
+proofs, dynamic admission, and the cacheless reader are active without claiming the private fixture publisher as a
+production operation.
 
 Create, Open, create reconciliation, and ambiguous-commit resolution retain the authenticated manifest-v2 policy
 in live engine state. Legacy v1 activation retains an explicit no-LSM sentinel and never synthesizes replacement
@@ -140,7 +142,8 @@ TLC or future gates.
 
 ## Non-goals
 
-This unit does not implement object I/O or Ada checkpoint publication, automatic flushing, compaction, run pruning, garbage
-collection, scans, MVCC, snapshots, remote-provider qualification, S3, asynchronous/composable I/O, or an LSM
-performance claim. The operational scope is limited to manifest-v2 root creation, empty-checkpoint recovery, and an
-unpublished exact whole-checkpoint planner with caller-owned object identities.
+This unit does not implement a public checkpoint publication API or receipt, ambiguous-publication reconciliation,
+automatic flushing, multiple checkpoints, compaction, run pruning, garbage collection, scans, MVCC, snapshots,
+remote-provider qualification, S3, asynchronous/composable I/O, or an LSM performance claim. The operational scope
+is manifest-v2 root creation, exact whole-checkpoint planning, a private success-path fixture publisher, and
+header-first cacheless recovery of one nonempty first checkpoint plus its later batch suffix.

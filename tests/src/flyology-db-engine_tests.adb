@@ -1342,7 +1342,9 @@ package body Flyology.DB.Engine_Tests is
       Checkpoint_Manifest_ID                     : constant Identifier := ID (225);
       Checkpoint_Transition_ID                   : constant Identifier := ID (226);
 
-      procedure Expect_Live_LSM_Authority (Target : in out Database; Context_Text : String) is
+      procedure Expect_Live_LSM_Authority
+        (Target : in out Database; Expected_Replay : Sequence_Number; Context_Text : String)
+      is
          Replay, Memtable_Bytes                                    : Interfaces.Unsigned_64;
          Total_Runs, Identity_Total, Memtable_Entries, Family_Runs : Interfaces.Unsigned_32;
          Inspect                                                   : Outcome_Code;
@@ -1358,7 +1360,7 @@ package body Flyology.DB.Engine_Tests is
             Family_Runs,
             Inspect);
          if Inspect /= Success
-           or else Replay /= 0
+           or else Replay /= Interfaces.Unsigned_64 (Expected_Replay)
            or else Total_Runs /= Limits.Maximum_Total_L0_Runs
            or else Identity_Total /= Limits.Maximum_Checkpoint_Identities
            or else Memtable_Bytes /= 5
@@ -1409,7 +1411,7 @@ package body Flyology.DB.Engine_Tests is
          Receipt => Create_Info,
          Result  => Result);
       Expect (Result, Success, "multi-family manifest create failed");
-      Expect_Live_LSM_Authority (Item, "create activation");
+      Expect_Live_LSM_Authority (Item, 0, "create activation");
       declare
          --  Family 2's fixture authority is exactly one maximum 2+3-byte
          --  entry and one run, as derived by Configure_Test_Family above.
@@ -1618,7 +1620,56 @@ package body Flyology.DB.Engine_Tests is
                 & Natural'Image (Checkpoint_Identities)
                 & Sequence_Number'Image (Checkpoint_Replay);
          end if;
+         declare
+            Before_Runs, After_Runs : Natural;
+         begin
+            Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+            Testing.Publish_First_Checkpoint
+              (Item, Checkpoint_Run_Map, Checkpoint_Manifest_ID, Checkpoint_Transition_ID, Result);
+            Expect (Result, Success, "first checkpoint publication failed");
+            Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+            if After_Batches /= Before_Batches
+              or else After_Runs /= Before_Runs + 2
+              or else After_Manifests /= Before_Manifests + 1
+              or else After_Heads /= Before_Heads + 1
+            then
+               raise Program_Error with "first checkpoint publication order/count changed";
+            end if;
+         end;
       end;
+
+      Stale_Family := Family_By_ID;
+      Close (Item, Result);
+      Expect (Result, Success, "checkpointed database close failed");
+      declare
+         --  These five sites cover the exact header, whole-object, and
+         --  engine-owned payload allocations introduced by checkpoint
+         --  recovery. Each must fail before any partial engine installation.
+         Recovery_Allocation_Points :
+           constant array (Positive range 1 .. 5) of Testing.Allocation_Fault_Point :=
+             [Testing.Recovery_Manifest_Header,
+              Testing.Recovery_Manifest_Image,
+              Testing.Recovery_SST_Header,
+              Testing.Recovery_SST_Image,
+              Testing.Recovery_Checkpoint_Image];
+      begin
+         for Point of Recovery_Allocation_Points loop
+            Testing.Fail_Next_Allocation (Point);
+            Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+            Expect
+              (Result, Capacity_Exceeded, "checkpoint recovery allocation failure was not typed capacity");
+         end loop;
+      end;
+      Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "cacheless checkpoint reopen failed");
+      Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "checkpoint reopen");
+      Expect_Live_Entry_Sequence (Item, "checkpoint reopen");
+      Begin_Transaction (Item, TX_ID (203), Txn, Result);
+      Expect (Result, Conflict, "checkpoint identity ledger forgot an admitted transaction");
+      Open_Column_Family (Item, 2, Family_By_ID, Result);
+      Expect (Result, Success, "checkpoint reopen family lookup failed");
+      Open_Column_Family (Item, 7, Family_Seven, Result);
+      Expect (Result, Success, "checkpoint reopen second-family lookup failed");
 
       Begin_Transaction (Item, TX_ID (204), Txn, Result);
       Expect (Result, Success, "replacement transaction begin failed");
@@ -1632,11 +1683,10 @@ package body Flyology.DB.Engine_Tests is
       Expected_Live_Sequence := Receipt_Sequence (Receipt);
       Expect_Live_Entry_Sequence (Item, "replacement commit");
 
-      Stale_Family := Family_By_ID;
       Close (Item, Result);
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "family-handle database reopen failed");
-      Expect_Live_LSM_Authority (Item, "cacheless reopen");
+      Expect_Live_LSM_Authority (Item, Expected_Live_Sequence - 1, "suffix replay reopen");
       Expect_Live_Entry_Sequence (Item, "cacheless reopen");
       Begin_Transaction (Item, TX_ID (205), Txn, Result);
       Get (Item, Txn, Stale_Family, To_Key ([16#00#, 16#FF#]), Data, Result);
@@ -1773,6 +1823,178 @@ package body Flyology.DB.Engine_Tests is
       Close (Over_Item, Result);
       Expect (Result, Success, "dynamic descriptor database close failed");
    end Test_Manifest_And_Family_API;
+
+   procedure Test_Checkpoint_Recovery_Failures (Backend : not null access Backends.Backend'Class) is
+      --  Four disjoint deterministic fixture domains separate manifest-capacity,
+      --  missing, checksum-corrupt, and descriptor-mismatch object graphs.
+      --  Within each domain, +1 is the root transition, +2 the transaction,
+      --  +10 .. +17 the family run map, and +20/+21 the checkpoint manifest/
+      --  transition. These values are test identity authority only and never
+      --  library defaults.
+      Manifest_Capacity_Base : constant Natural := 23_900;
+      Missing_Run_Base       : constant Natural := 24_000;
+      Corrupt_Run_Base       : constant Natural := 24_100;
+      Wrong_Descriptor_Base  : constant Natural := 24_200;
+
+      procedure Prepare
+        (Context       : aliased in out Storage_Context;
+         Item          : in out Database;
+         Prefix        : String;
+         Identity_Base : Natural;
+         Database_ID   : Database_Identifier;
+         Run_ID        : Identifier)
+      is
+         Txn     : Transaction;
+         Receipt : Commit_Receipt;
+         Result  : Outcome_Code;
+         Runs    : constant Checkpoint_Run_Identity_Array :=
+           [Configure_Checkpoint_Run (1, Run_ID),
+            Configure_Checkpoint_Run (2, Numbered_ID (Identity_Base + 11)),
+            Configure_Checkpoint_Run (3, Numbered_ID (Identity_Base + 12)),
+            Configure_Checkpoint_Run (4, Numbered_ID (Identity_Base + 13)),
+            Configure_Checkpoint_Run (5, Numbered_ID (Identity_Base + 14)),
+            Configure_Checkpoint_Run (6, Numbered_ID (Identity_Base + 15)),
+            Configure_Checkpoint_Run (7, Numbered_ID (Identity_Base + 16)),
+            Configure_Checkpoint_Run (8, Numbered_ID (Identity_Base + 17))];
+      begin
+         Bind_Context (Context, Backend, Prefix);
+         Create_DB (Item, Context'Access, Database_ID, Numbered_ID (Identity_Base + 1), Result);
+         Expect (Result, Success, Prefix & " create failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 2), Txn, Result);
+         Expect (Result, Success, Prefix & " transaction begin failed");
+         Put (Item, Txn, 1, To_Key ([1]), To_Value ([2]), Result);
+         Expect (Result, Success, Prefix & " mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, Prefix & " commit failed");
+         Testing.Publish_First_Checkpoint
+           (Item, Runs, Numbered_ID (Identity_Base + 20), Numbered_ID (Identity_Base + 21), Result);
+         Expect (Result, Success, Prefix & " checkpoint publication failed");
+         Close (Item, Result);
+         Expect (Result, Success, Prefix & " checkpoint close failed");
+      end Prepare;
+
+      procedure Expect_Corrupt_Open
+        (Context      : aliased in out Storage_Context;
+         Item         : in out Database;
+         Database_ID  : Database_Identifier;
+         Context_Text : String)
+      is
+         Result : Outcome_Code;
+      begin
+         Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Corrupt, Context_Text);
+      end Expect_Corrupt_Open;
+   begin
+      declare
+         Context                                        : aliased Storage_Context;
+         Item                                           : Database;
+         Txn                                            : Transaction;
+         Receipt                                        : Commit_Receipt;
+         Create_Info                                    : Create_Receipt;
+         Result                                         : Outcome_Code;
+         Run_Total                                      : Natural;
+         Identity_Total                                 : Natural;
+         Replay                                         : Sequence_Number;
+         Before_Batches, Before_Manifests, Before_Heads : Natural;
+         After_Batches, After_Manifests, After_Heads    : Natural;
+         --  One persisted manifest slot admits the root but cannot admit the
+         --  derived root-plus-successor checkpoint chain.
+         Limits                                         : constant Database_Limits :=
+           (Default_Limits with delta Maximum_Manifest_History => 1);
+         Runs                                           : constant Checkpoint_Run_Identity_Array :=
+           [Configure_Checkpoint_Run (1, Numbered_ID (Manifest_Capacity_Base + 10)),
+            Configure_Checkpoint_Run (2, Numbered_ID (Manifest_Capacity_Base + 11)),
+            Configure_Checkpoint_Run (3, Numbered_ID (Manifest_Capacity_Base + 12)),
+            Configure_Checkpoint_Run (4, Numbered_ID (Manifest_Capacity_Base + 13)),
+            Configure_Checkpoint_Run (5, Numbered_ID (Manifest_Capacity_Base + 14)),
+            Configure_Checkpoint_Run (6, Numbered_ID (Manifest_Capacity_Base + 15)),
+            Configure_Checkpoint_Run (7, Numbered_ID (Manifest_Capacity_Base + 16)),
+            Configure_Checkpoint_Run (8, Numbered_ID (Manifest_Capacity_Base + 17))];
+      begin
+         Bind_Context (Context, Backend, "checkpoint-manifest-capacity");
+         Create
+           (Item,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Manifest_Capacity_Base)),
+            Manifest_ID_For (Numbered_ID (Manifest_Capacity_Base + 1)),
+            Numbered_ID (Manifest_Capacity_Base + 1),
+            Limits,
+            Default_Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "one-slot manifest database create failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Manifest_Capacity_Base + 2), Txn, Result);
+         Expect (Result, Success, "one-slot manifest transaction begin failed");
+         Put (Item, Txn, 1, To_Key ([1]), To_Value ([2]), Result);
+         Expect (Result, Success, "one-slot manifest mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "one-slot manifest commit failed");
+         Testing.Publication_Counts (Context, Before_Batches, Before_Manifests, Before_Heads);
+         Testing.Build_First_Checkpoint
+           (Item,
+            Runs,
+            Numbered_ID (Manifest_Capacity_Base + 20),
+            Numbered_ID (Manifest_Capacity_Base + 21),
+            Run_Total,
+            Identity_Total,
+            Replay,
+            Result);
+         Expect (Result, Capacity_Exceeded, "one-slot manifest checkpoint plan was admitted");
+         Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Manifests /= Before_Manifests
+           or else After_Heads /= Before_Heads
+         then
+            raise Program_Error with "one-slot manifest rejection published an object";
+         end if;
+         Close (Item, Result);
+      end;
+
+      declare
+         Context     : aliased Storage_Context;
+         Source      : Database;
+         Probe       : Database;
+         Database_ID : constant Database_Identifier := Database_Identifier (Numbered_ID (Missing_Run_Base));
+         Run_ID      : constant Identifier := Numbered_ID (Missing_Run_Base + 10);
+         Result      : Outcome_Code;
+      begin
+         Prepare (Context, Source, "checkpoint-missing-run", Missing_Run_Base, Database_ID, Run_ID);
+         Testing.Remove_Run (Context, Run_ID, Result);
+         Expect (Result, Success, "checkpoint run removal failed");
+         Expect_Corrupt_Open (Context, Probe, Database_ID, "missing checkpoint run was accepted");
+      end;
+
+      declare
+         Context     : aliased Storage_Context;
+         Source      : Database;
+         Probe       : Database;
+         Database_ID : constant Database_Identifier := Database_Identifier (Numbered_ID (Corrupt_Run_Base));
+         Run_ID      : constant Identifier := Numbered_ID (Corrupt_Run_Base + 10);
+         Result      : Outcome_Code;
+      begin
+         Prepare (Context, Source, "checkpoint-corrupt-run", Corrupt_Run_Base, Database_ID, Run_ID);
+         Testing.Corrupt_Run (Context, Run_ID, Result);
+         Expect (Result, Success, "checkpoint run corruption failed");
+         Expect_Corrupt_Open (Context, Probe, Database_ID, "corrupt checkpoint run was accepted");
+      end;
+
+      declare
+         Context     : aliased Storage_Context;
+         Source      : Database;
+         Probe       : Database;
+         Database_ID : constant Database_Identifier :=
+           Database_Identifier (Numbered_ID (Wrong_Descriptor_Base));
+         Run_ID      : constant Identifier := Numbered_ID (Wrong_Descriptor_Base + 10);
+         Result      : Outcome_Code;
+      begin
+         Prepare (Context, Source, "checkpoint-wrong-descriptor", Wrong_Descriptor_Base, Database_ID, Run_ID);
+         Testing.Rewrite_Run_Family (Context, Run_ID, 2, Result);
+         Expect (Result, Success, "checkpoint run descriptor rewrite failed");
+         Expect_Corrupt_Open
+           (Context, Probe, Database_ID, "checksum-valid wrong-family checkpoint run was accepted");
+      end;
+   end Test_Checkpoint_Recovery_Failures;
 
    procedure Test_Create_Publication (Backend : not null access Backends.Backend'Class) is
       Context : aliased Storage_Context;
@@ -4217,6 +4439,7 @@ package body Flyology.DB.Engine_Tests is
          Test_Dynamic_Mutation_Descriptors (Store'Access, "memory-dynamic-mutations", 13);
          Test_Allocation_Failures (Store'Access);
          Test_Manifest_And_Family_API (Store'Access);
+         Test_Checkpoint_Recovery_Failures (Store'Access);
          Test_Create_Publication (Store'Access);
          Test_Lower_Live_Budgets (Store'Access);
          Test_Recovery_Format_Edges (Store'Access);
@@ -4254,6 +4477,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Runtime_Sized_Value (Store'Access, "files-runtime-sized", 21);
             Test_Large_Production_Profile (Store'Access, "files-large-profile", 22);
             Test_Dynamic_Mutation_Descriptors (Store'Access, "files-dynamic-mutations", 23);
+            Test_Checkpoint_Recovery_Failures (Store'Access);
             Test_Faults (Store'Access, "files-faults", 140);
          end;
          Ada.Directories.Delete_Tree (Root);

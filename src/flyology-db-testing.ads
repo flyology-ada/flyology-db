@@ -16,7 +16,12 @@ private package Flyology.DB.Testing is
       Root_Manifest_Retention,
       Checkpoint_References,
       Checkpoint_SST,
-      Checkpoint_Manifest);
+      Checkpoint_Manifest,
+      Recovery_Manifest_Header,
+      Recovery_Manifest_Image,
+      Recovery_SST_Header,
+      Recovery_SST_Image,
+      Recovery_Checkpoint_Image);
 
    procedure Fail_Next_Allocation (Point : Allocation_Fault_Point);
    procedure Decode_Runtime_Image
@@ -44,6 +49,12 @@ private package Flyology.DB.Testing is
    procedure Publication_Counts
      (Item          : in out Storage_Context;
       Batch_Puts    : out Natural;
+      Manifest_Puts : out Natural;
+      Head_Puts     : out Natural);
+   procedure Publication_Counts
+     (Item          : in out Storage_Context;
+      Batch_Puts    : out Natural;
+      Run_Puts      : out Natural;
       Manifest_Puts : out Natural;
       Head_Puts     : out Natural);
 
@@ -85,6 +96,13 @@ private package Flyology.DB.Testing is
      (Item : in out Storage_Context; Manifest_ID : Identifier; Result : out Outcome_Code);
    procedure Remove_Manifest
      (Item : in out Storage_Context; Manifest_ID : Identifier; Result : out Outcome_Code);
+   procedure Corrupt_Run (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code);
+   procedure Remove_Run (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code);
+   procedure Rewrite_Run_Family
+     (Item      : in out Storage_Context;
+      Run_ID    : Identifier;
+      Family_ID : Column_Family_ID;
+      Result    : out Outcome_Code);
    procedure Rewrite_Manifest
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;
@@ -155,6 +173,12 @@ private package Flyology.DB.Testing is
       Identity_Total  : out Natural;
       Replay_Boundary : out Sequence_Number;
       Result          : out Outcome_Code);
+   procedure Publish_First_Checkpoint
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Result        : out Outcome_Code);
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB.Testing;
