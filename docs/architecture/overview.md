@@ -46,8 +46,9 @@ The checkpoint protocol is specified separately in
 [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v3 root creation, public synchronous Flush
 and caller-composable Flush with self-contained certainty receipts, exact same-identity reconciliation, live
 coordinator replacement, additive multi-run L0 publication, and cacheless all-run recovery are operational.
-The private complete-replacement compaction planner/publisher is operational; its public trigger, automatic policy,
-snapshot/replica retention horizon, run pruning, and physical garbage collection are not.
+The private complete-replacement compaction planner/publisher is operational through both synchronous and
+test-qualified caller-composable drivers; its public trigger, automatic policy, snapshot/replica retention horizon,
+run pruning, and physical garbage collection are not.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,
@@ -114,8 +115,10 @@ conditional Put and whole/range Get calls are literal waits over Object Storage 
 unique-buffer token per body operation, one absolute DB deadline, no helper task, and no automatic retry. A range
 whose generation is not yet known first performs HeadObject and then binds the range read to that exact ETag. The
 DB-level `Flush_Operation` now composes conditional Put and whole-Get children directly in the caller's bounded
-completion set. Its typed `Finish` restores the exact moved token into any vacant same-pool handle; an abandoned
-operation drains nested transport work before releasing that token. CPU-heavy sorting, compression, and merging will
+completion set. Its private replacement constructor selects complete current-run replacement without changing the
+public additive `Start_Flush`; both modes share exact ownership, deadline, certainty, and reconciliation behavior.
+Typed `Finish` restores the exact moved token into any vacant same-pool handle; an abandoned operation drains nested
+transport work before releasing that token. CPU-heavy sorting, compression, and merging will
 use bounded native Ada tasks or an explicitly isolated process with detached owned input. The engine will not create
 detached C threads.
 

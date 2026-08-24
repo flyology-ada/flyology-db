@@ -1,5 +1,34 @@
 # Review record
 
+## Accepted private composable L0-replacement candidate
+
+- Parent: formal replica-refresh and fencing commit `75a1319`.
+- Scope and compatibility: route the already-operational complete current-run replacement algorithm through the
+  existing caller-owned `Flush_Operation` behind the parent package's private test surface. Public `Start_Flush`
+  remains additive; no public declaration, default, trigger, schedule, task, persisted field, retention rule, or
+  physical deletion authority is added.
+- Ownership and certainty: one body-local constructor contains the shared start transaction. Validation, lifecycle
+  and completion-slot admission precede the exact token move; initiating exceptions roll back the slot and ownership.
+  Both modes use the same Object Storage children, absolute deadline, typed `Finish`, receipt projection, and
+  same-identity whole-Get reconciliation. The driver retains only private Boolean algorithm mode, adjacent-commented
+  as nonpersisted and nonpolicy.
+- Bounds and constants: the authenticated fixture's three manifest-history slots are exactly root, additive
+  checkpoint, and replacement checkpoint. IDs 9/10/11 distinguish the replacement run/manifest/transition, and the
+  existing one-token/four-slot geometry is unchanged. These are test witnesses, not library defaults; production
+  allocations remain lazy and checked against persisted database and per-family limits.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository/provenance checks, deterministic
+  memory/files cases, authenticated additive Flush plus replacement and cacheless reopen, filesystem crash/recovery,
+  all 32 comparative cases, and pinned TidesDB 4/4. The replacement witness loses the run response after provider
+  entry, reconciles exact bytes without retry, restores the exact tagged token, reports replacement authority, and
+  reopens with the committed bytes. Warning-strict GNATprove proves 1,084/1,084 selected-unit checks; the combined
+  TLA gate preserves the 15-state/26-obligation compaction proof and all earlier formal lanes.
+- Findings cycle: the first executable pass exposed the fixture's two-entry manifest history as insufficient for a
+  root plus two checkpoints; the test now authorizes exactly three. The API sweep added the same ownership contract
+  to the private constructor as public `Start_Flush`. A formatter fallback touched unrelated whitespace after the
+  maintained project-mode formatter rejected global preprocessor symbols; the complete accidental delta was removed
+  before verification. The repeated API, certainty, crash safety, concurrency, ownership, constants, tests, proof,
+  documentation, and unnecessary-surface sweep finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted formal replica-refresh and fencing candidate
 
 - Parent: immutable-object retention commit `c24ea4c`.

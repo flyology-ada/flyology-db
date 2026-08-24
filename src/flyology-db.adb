@@ -2093,6 +2093,10 @@ package body Flyology.DB is
       Phase               : Flush_Driver_Phase := Flush_Idle;
       Precheck_Result     : Outcome_Code := Success;
       Checkpoint_Admitted : Boolean := False;
+      --  Private constructor-selected algorithm mode. False is additive Flush;
+      --  True is complete current-run replacement. This is neither persisted
+      --  nor a public trigger, automatic policy, capacity, or default.
+      Replace_Current_Runs : Boolean := False;
    end record;
 
    procedure Free_Flush_Driver_State is new
@@ -10880,7 +10884,8 @@ package body Flyology.DB is
          State.Manifest_ID,
          State.Transition_ID,
          State.Plan,
-         Result);
+         Result,
+         Replace_Current_Runs => State.Replace_Current_Runs);
       if Result /= Success then
          Complete_Composable_Flush (Item, Result);
          return;
@@ -10892,7 +10897,8 @@ package body Flyology.DB is
          State.Manifest_ID,
          State.Transition_ID,
          Item.Final_Receipt,
-         Result);
+         Result,
+         Replace_Current_Runs => State.Replace_Current_Runs);
       if Result /= Success then
          Complete_Composable_Flush (Item, Result);
          return;
@@ -11046,13 +11052,14 @@ package body Flyology.DB is
          end if;
    end Request_Cancellation;
 
-   procedure Start_Flush
-     (Operation      : in out Flush_Operation;
-      Runs           : Checkpoint_Run_Identity_Array;
-      Manifest_ID    : Identifier;
-      Transition_ID  : Identifier;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
-      Timeout        : Duration)
+   procedure Start_Composable_Checkpoint
+     (Operation            : in out Flush_Operation;
+      Runs                 : Checkpoint_Run_Identity_Array;
+      Manifest_ID          : Identifier;
+      Transition_ID        : Identifier;
+      Payload_Buffer       : in out Flyology.Buffers.Unique_Buffer;
+      Timeout              : Duration;
+      Replace_Current_Runs : Boolean)
    is
       Result     : Outcome_Code;
       Moved      : Boolean := False;
@@ -11094,6 +11101,7 @@ package body Flyology.DB is
       if Operation.Driver_State /= null then
          Operation.Driver_State.Manifest_ID := Manifest_ID;
          Operation.Driver_State.Transition_ID := Transition_ID;
+         Operation.Driver_State.Replace_Current_Runs := Replace_Current_Runs;
          if Runs'Length = 0
            or else Runs'Length > Maximum_Initial_Column_Families
            or else Is_Zero (Manifest_ID)
@@ -11164,7 +11172,33 @@ package body Flyology.DB is
             Flyology.Operations.Drivers.Rollback_Start (Operation);
          end if;
          raise;
+   end Start_Composable_Checkpoint;
+
+   procedure Start_Flush
+     (Operation      : in out Flush_Operation;
+      Runs           : Checkpoint_Run_Identity_Array;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration) is
+   begin
+      Start_Composable_Checkpoint
+        (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
+         Replace_Current_Runs => False);
    end Start_Flush;
+
+   procedure Start_Test_Compaction
+     (Operation      : in out Flush_Operation;
+      Runs           : Checkpoint_Run_Identity_Array;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration) is
+   begin
+      Start_Composable_Checkpoint
+        (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
+         Replace_Current_Runs => True);
+   end Start_Test_Compaction;
 
    procedure Finish
      (Operation      : in out Flush_Operation;

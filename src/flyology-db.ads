@@ -1168,6 +1168,18 @@ private
       Transition_ID : Identifier;
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code);
+   procedure Start_Test_Compaction
+     (Operation      : in out Flush_Operation;
+      Runs           : Checkpoint_Run_Identity_Array;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB;

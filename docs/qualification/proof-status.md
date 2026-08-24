@@ -176,6 +176,14 @@ files, capacity, certainty, tombstone, unchanged-old-run, cacheless-reopen, cras
 those boundaries. The additive 49-state TLC and 24/24 TLAPS campaign remains the abstract publication proof; no
 refinement theorem to the operational Ada implementation is claimed.
 
+The private composable L0-replacement candidate preserves the same warning-strict 1,084/1,084 selected-unit result.
+The production mode selection, owner-stack driver, dynamic planning, provider calls, and exact token restoration
+remain executable integration boundaries rather than SPARK-proved code. The authenticated client probe drives a
+lost accepted run response through read-only same-identity reconciliation, verifies the exact replacement receipt
+and moved-token restoration, and reopens from only the replacement manifest's current runs. The L0 compaction
+15-state TLC and 26/26 TLAPS campaign remains the abstract complete-replacement proof; no refinement theorem to the
+operational Ada implementation is claimed.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

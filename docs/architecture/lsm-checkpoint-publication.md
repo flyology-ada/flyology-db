@@ -260,7 +260,10 @@ The operational replacement planner runs under the existing exclusive checkpoint
 live state rather than the post-boundary delta, allocates exact run and manifest extents from persisted database and
 per-family limits, rejects any current immutable run identity, and prepares the complete activation base before the
 first provider call. The shared checkpoint publisher then stores and confirms each output and the successor manifest
-before the conditional HEAD transition. Its private receipt mode is retained solely so `Objects_Unknown`
+before the conditional HEAD transition. A private test-qualified constructor also selects this mode in the existing
+caller-owned `Flush_Operation`; public `Start_Flush` continues to select additive mode. Both modes share the same
+completion-set owner stack, exact moved token, typed `Finish`, absolute deadline, publication certainty, and
+same-identity whole-Get reconciliation. Its private receipt mode is retained solely so `Objects_Unknown`
 reconciliation rebuilds the identical replacement bytes and identities; it is not persisted policy.
 
 Cacheless recovery from the compacted successor validates only its named outputs and exact manifest authority; it
@@ -268,7 +271,7 @@ does not reread depublicized predecessors to reconstruct current state. A missin
 unconfirmed compacted output fails closed and installs no local state. The formal finite model exercises definite
 output-capacity rejection, accepted-lost publication, depublication with retained old bytes, missing-output rejection,
 crash, and exact recovery. The unbounded TLAPS kernel proves the corresponding abstract replacement invariants. No
-TLA+-to-Ada refinement is claimed. The public synchronous/composable trigger remains a separate API unit.
+TLA+-to-Ada refinement is claimed. Naming and exposing a public compaction trigger remains a separate API unit.
 
 ## Frozen immutable-object retention boundary
 

@@ -114,11 +114,12 @@ procedure Flyology.DB.Client_Probe is
    Bucket_Result          : Buckets.Create_Outcome;
 
    --  The one-family remote fixture deliberately exercises unequal 20-byte
-   --  key and 400-byte value authority. The remaining persisted limits admit
-   --  exactly this small create/commit/reopen corpus and are not API defaults.
+   --  key and 400-byte value authority. Three manifest-history slots admit
+   --  exactly root, additive checkpoint, and replacement checkpoint in this
+   --  small create/commit/reopen corpus; these are not API defaults.
    Limits                   : constant Database_Limits :=
      (Maximum_Column_Families           => 1,
-      Maximum_Manifest_History          => 2,
+      Maximum_Manifest_History          => 3,
       Maximum_Batch_History             => 4,
       Maximum_Transactions_Per_Batch    => 1,
       Maximum_Mutations_Per_Transaction => 4,
@@ -143,9 +144,9 @@ procedure Flyology.DB.Client_Probe is
          Maximum_L0_Runs      => 1)];
    --  Stable one-byte fixture identities assign 1 to the database, 2/3 to the
    --  root manifest/transition, 4 to the committed transaction, 5 to the
-   --  read-only probe, and 6/7/8 to the run/checkpoint/HEAD transition. They
-   --  isolate object roles in this fresh bucket and are not ID-generation
-   --  policy or persisted tags.
+   --  read-only probe, 6/7/8 to the additive run/checkpoint/HEAD transition,
+   --  and 9/10/11 to its complete replacement. They isolate object roles in
+   --  this fresh bucket and are not ID-generation policy or persisted tags.
    Probe_Database_ID        : constant Database_Identifier := Database_Identifier (Numbered_ID (1));
    Root_Manifest_ID         : constant Identifier := Numbered_ID (2);
    Root_Transition_ID       : constant Identifier := Numbered_ID (3);
@@ -154,11 +155,16 @@ procedure Flyology.DB.Client_Probe is
    Checkpoint_Run_ID        : constant Identifier := Numbered_ID (6);
    Checkpoint_Manifest_ID   : constant Identifier := Numbered_ID (7);
    Checkpoint_Transition_ID : constant Identifier := Numbered_ID (8);
+   Compaction_Run_ID        : constant Identifier := Numbered_ID (9);
+   Compaction_Manifest_ID   : constant Identifier := Numbered_ID (10);
+   Compaction_Transition_ID : constant Identifier := Numbered_ID (11);
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag          : constant Interfaces.Unsigned_64 := 16#F105#;
    Checkpoint_Runs          : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Checkpoint_Run_ID)];
+   Compaction_Runs          : constant Checkpoint_Run_Identity_Array :=
+     [Configure_Checkpoint_Run (1, Compaction_Run_ID)];
    Key_Data                 : constant Byte_Array := Bytes ("client-key");
    Value_Data               : constant Byte_Array := Bytes ("client-value");
    --  One visible DB parent, one Object Storage child, its HTTP exchange, and
@@ -474,7 +480,40 @@ begin
    then
       raise Program_Error with "client-backed Flush receipt lost exact authority";
    end if;
-   Flyology.Buffers.Release (Restored_Buffer);
+
+   --  The private replacement constructor selects only the already-frozen
+   --  complete-run algorithm. It reuses the public operation owner stack,
+   --  exact token move, typed Finish, certainty mapping, and one deadline;
+   --  it grants no public trigger or automatic compaction policy. Losing the
+   --  run response after entry requires exact same-identity whole-Get
+   --  reconciliation before the original operation can continue.
+   Context.Test_Control.Arm (After_Run_Put, Unknown_After_Entry, 1);
+   Start_Test_Compaction
+     (Flush_Work,
+      Compaction_Runs,
+      Compaction_Manifest_ID,
+      Compaction_Transition_ID,
+      Restored_Buffer,
+      Test_Operation_Timeout);
+   if Flyology.Buffers.Has_Buffer (Restored_Buffer) then
+      raise Program_Error with "composable compaction did not move its exact token";
+   end if;
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Flush_Info, Result, Flush_Buffer);
+   Expect (Result, Success, "client-backed composable compaction failed");
+   if Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "composable compaction Finish did not restore its exact token";
+   end if;
+   if not Flush_Info.Replaces_Current_Runs
+     or else Flush_Receipt_Manifest_ID (Flush_Info) /= Compaction_Manifest_ID
+     or else Flush_Receipt_Transition_ID (Flush_Info) /= Compaction_Transition_ID
+   then
+      raise Program_Error with "client-backed compaction receipt lost replacement authority";
+   end if;
+   Flyology.Buffers.Release (Flush_Buffer);
    Close (Created, Close_Result);
    Expect (Close_Result, Success, "client-backed close failed");
 
@@ -493,7 +532,7 @@ begin
    Expect (Result, Success, "client-backed reader rollback failed");
    Close (Reopened, Close_Result);
    Expect (Close_Result, Success, "reopened client-backed close failed");
-   Ada.Text_IO.Put_Line ("Flyology.DB client-backed create/commit/Flush/reopen passed");
+   Ada.Text_IO.Put_Line ("Flyology.DB client-backed create/commit/Flush/compaction/reopen passed");
 exception
    when others =>
       Close (Created, Close_Result);

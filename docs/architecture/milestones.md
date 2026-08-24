@@ -9,9 +9,9 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
-| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and private replacement spine operational; public compaction pending |
+| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and private sync/composable replacement operational; public compaction pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
-| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Private replacement operational and deletion-safety boundary proved; public API and collector policy pending |
+| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Private sync/composable replacement operational and deletion safety proved; public API/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
 | 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Refresh/fencing safety boundary proved; operational replica and promotion policy pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
@@ -75,9 +75,10 @@ values, last-write sequences, and the exact never-reused checkpoint identity led
 The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token through the same certainty contract
 without a helper task. A private operational path now builds one complete live-state run per nonempty family,
 publishes a successor manifest naming only those fresh runs, and reconciles unknown immutable-object responses by
-rebuilding the exact replacement plan. The public synchronous/composable compaction surface, streaming/physical
-scans, run pruning, retention/GC policy, and provider qualification remain later focused units, so Milestone 4
-remains incomplete.
+rebuilding the exact replacement plan. A private test-qualified constructor drives that same algorithm through the
+caller-owned composable operation and typed token-restoring `Finish`. The public compaction surface,
+streaming/physical scans, run pruning, retention/GC policy, and provider qualification remain later focused units, so
+Milestone 4 remains incomplete.
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
 pins, lagging-replica pins, required predecessor reachability, and unresolved publication attempts each retain exact
