@@ -99,6 +99,13 @@ Rows are returned in unsigned-byte lexicographic key order through a limited con
 combined key/value bytes are bounded by persisted database live-state limits; individual keys and values remain
 bounded by the selected family. A failed call neither replaces an earlier result nor retains a partial predicate.
 
+The frozen successor algorithm normalizes those transaction-owned predicates by column family before enforcing the
+persisted count. Same-family half-open ranges that overlap or touch at one endpoint become one exact union; a bridge
+coalesces every connected component. Cross-family ranges never merge. A merge remains admissible at capacity, while
+only a new disjoint component can exceed the count. Capacity and allocation failure publish no partial replacement.
+The dedicated TLC/TLAPS lane qualifies this decision; the current Ada list still retains exact distinct predicates
+until the following operational unit implements the same atomic replacement.
+
 Transactions carry caller-visible idempotency identities. A singleton transaction uses that exact identity as its
 immutable batch ID. An explicit group carries a separate caller-stable group ID; group and transaction IDs share one
 never-reused batch-ID namespace, including failed admitted attempts and recovered history. A receipt separates

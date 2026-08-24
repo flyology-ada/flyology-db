@@ -310,8 +310,17 @@ permitting an empty fresh-output set. No refinement theorem to the operational A
   no-invalid-commit monitor. Its unbounded
   action-preservation kernel proves 10/10 strict TLAPS obligations for state/sequence soundness and guarded commit
   safety over arbitrary nonempty transaction/key/range sets. Finite cardinality/backpressure remains in the exhaustive
-  TLC lane; retained-history sufficiency remains in the separate snapshot model. Range normalization, persisted
-  sizing, allocation, public API shape, progress, and refinement to Ada are not proved.
+  TLC lane; retained-history sufficiency remains in the separate snapshot model. This lane does not prove range
+  normalization, persisted sizing, allocation, public API shape, progress, or refinement to Ada; the dedicated lane
+  below now owns the normalization rule.
+- The scan-range-normalization model exhausts 3,419 states at depth 4. It checks same-family overlap and endpoint
+  contact, transitive bridge coalescing, cross-family separation, full-capacity merging, disjoint-component
+  backpressure, and allocation rollback. Its validated eight-state witness covers every critical branch, while an
+  incomplete bridge merge must violate pairwise normalization. The arbitrary-universe action kernel proves 19/19
+  strict TLAPS obligations for exact logical coverage, normalized retained authority, capacity preservation, and
+  atomic rejection. The TLAPS kernel assumes a pure normalizer and an abstract range-count function; TLC checks the
+  concrete finite endpoint algorithm. Byte storage, list ownership, allocation implementation, concurrency,
+  progress, and refinement to Ada remain outside this formal boundary.
 
 The TLAPS kernel is a batch-atomic abstraction assigning every batch an arbitrary nonempty transaction set, with
 pairwise-disjoint ownership between batches. It proves publication-epoch monotonicity, acknowledged whole-batch

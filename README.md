@@ -45,7 +45,9 @@ explicit serializable transactions retain and validate exact successful and abse
 half-open scan predicates. `Observe_Range` records conflict authority without reading rows. The bounded synchronous
 `Scan` materializes a complete selected-family interval at the transaction's fixed snapshot in unsigned-byte key
 order; persisted live-entry/live-byte limits bound its owned result, and Serializable success retains the same
-predicate only after complete materialization.
+predicate only after complete materialization. A dedicated formal lane now freezes same-family half-open range
+normalization and atomic capacity/allocation rollback; the current runtime retains exact distinct predicates until
+the paired implementation unit lands.
 
 ## Durability rule
 

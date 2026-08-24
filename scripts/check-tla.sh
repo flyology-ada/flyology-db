@@ -893,6 +893,62 @@ done
 #  reviewed 10-obligation total; this count changes only with the proof kernel.
 grep -q 'All 10 obligations proved.' "$temporary_root/tlaps-serializable.log"
 
+#  Two families and four key positions are finite qualification geometry. The
+#  pinned graph covers disjoint ranges, endpoint contact, transitive bridges,
+#  capacity rollback, allocation rollback, and cross-family separation.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-range-normalization-states" \
+  -config RangeNormalization.cfg RangeNormalization \
+  >"$temporary_root/tlc-range-normalization.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-range-normalization.log"
+! grep -q '^Warning:' "$temporary_root/tlc-range-normalization.log"
+grep -q '3419 distinct states found' "$temporary_root/tlc-range-normalization.log"
+grep -q 'The depth of the complete state graph search is 4.' \
+  "$temporary_root/tlc-range-normalization.log"
+for action in RecordRange RejectCapacity RejectAllocation
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-range-normalization.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-range-normalization-probe-states" \
+  -config RangeNormalizationProbe.cfg RangeNormalizationProbe \
+  >"$temporary_root/tlc-range-normalization-probe.log" 2>&1
+range_normalization_probe_status=$?
+set -e
+test "$range_normalization_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-range-normalization-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-range-normalization-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-range-normalization-witness-states" \
+  -config RangeNormalizationWitness.cfg \
+  -dumpTrace json "$temporary_root/range-normalization-witness.json" \
+  RangeNormalizationWitness \
+  >"$temporary_root/tlc-range-normalization-witness.log" 2>&1
+range_normalization_witness_status=$?
+set -e
+test "$range_normalization_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-range-normalization-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-range-normalization-witness.log"
+"$model_root/validate_range_normalization_witness.py" \
+  "$temporary_root/range-normalization-witness.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-range-normalization-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/RangeNormalizationSafetyProof.tla" \
+  >"$temporary_root/tlaps-range-normalization.log" 2>&1
+#  The structured initialization, successful-action, rejection-action, and
+#  quiescence proofs establish the reviewed 19-obligation total.
+grep -q 'All 19 obligations proved.' "$temporary_root/tlaps-range-normalization.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -949,3 +1005,7 @@ printf '%s\n' "  Serializable validation TLC 44244 distinct states, depth 13"
 printf '%s\n' "  Serializable validation TLAPS 10/10 obligations"
 printf '%s\n' "  Serializable point/range/snapshot/own witnesses validated"
 printf '%s\n' "  Negative unsafe serializable commit probe detected"
+printf '%s\n' "  Range normalization TLC 3419 distinct states, depth 4"
+printf '%s\n' "  Range normalization TLAPS 19/19 obligations"
+printf '%s\n' "  Bridge/cross-family/capacity/allocation witness validated"
+printf '%s\n' "  Negative incomplete-bridge normalization probe detected"

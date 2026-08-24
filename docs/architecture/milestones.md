@@ -97,6 +97,11 @@ concrete delete/put execution witness, rejects a replacement that omits one live
 value reconstruction and later-delta equations with TLAPS. This strengthens the private replacement spine without
 choosing a public trigger, automatic schedule, run-level policy, or storage budget.
 
+The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
+separation, and atomic capacity/allocation rollback before changing the runtime list. Its finite model exhausts 3,419
+states and the arbitrary-universe kernel proves 19 TLAPS obligations. Production still retains exact distinct
+predicates until the paired Ada unit lands, so this formal boundary alone does not complete transaction execution.
+
 ## Formal state-machine lane
 
 TLA+ models single- and bounded pooled-transaction publication, ambiguous outcomes, fencing, cache loss, and recovery

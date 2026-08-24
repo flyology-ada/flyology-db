@@ -210,7 +210,32 @@ initialization and every modeled action. It proves type/sequence soundness and t
 record an invalid commit. The kernel deliberately excludes finite-cardinality inequalities because TLAPS's recursive
 `FiniteSets.Cardinality` definition is outside this focused SMT proof. TLC checks those capacity invariants and both
 backpressure actions exhaustively. Neither lane proves retained-history sufficiency, range normalization, byte-key
-ordering, persisted sizing, allocation, the public Ada contract, progress, or refinement to production code.
+ordering, persisted sizing, allocation, the public Ada contract, progress, or refinement to production code. The
+separate range-normalization lane below now owns the previously excluded normalization rule.
+
+## Scan-range normalization lane
+
+`RangeNormalization.tla` freezes the transaction-owned normalization algorithm independently from the serializable
+conflict model. Ranges are half-open. Same-family predicates coalesce when they overlap or when one upper endpoint
+equals the other's lower endpoint; a bridge coalesces every connected component in one atomic replacement.
+Equal-byte predicates in different families remain distinct. An admissible merge is allowed while the retained set
+is already at capacity because it does not add a normalized component. Only a disjoint component that would exceed
+the persisted count is rejected. Modeled allocation rejection and capacity rejection preserve both the exact
+retained set and its logical covered-key union.
+
+The finite geometry uses two families, four key positions, and capacity two solely to expose separated components,
+transitive bridging, family separation, full-capacity merging, and a third-component rejection. TLC exhausts 3,419
+states at depth 4 with nonzero coverage for successful recording and both rejection actions. The checked eight-state
+witness records two separated ranges, bridges them, retains the same byte interval independently in another family,
+rejects a third component, extends the first family while full, and rejects an allocation without effects. The
+negative probe merges only one side of a bridge and must violate pairwise normalization.
+
+`RangeNormalizationSafetyProof.tla` is an unbounded action-preservation kernel over arbitrary range and qualified-key
+universes. TLAPS proves 19 obligations showing that publication of a pure normalized result preserves exact coverage,
+normalization, and capacity, while capacity and allocation rejection are atomic. Its abstract `RangeCount` avoids
+attributing recursive finite-cardinality reasoning to the SMT proof. The pure-normalizer contract is an explicit
+proof boundary: concrete endpoint ordering is checked by TLC, not derived by TLAPS. Neither lane proves byte storage,
+allocation implementation, list ownership, concurrency, progress, or refinement to production Ada.
 
 ## Witness projection
 

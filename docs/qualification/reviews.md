@@ -1,5 +1,29 @@
 # Review record
 
+## Accepted transaction-owned scan-range-normalization boundary
+
+- Parent: canonical empty-output L0-compaction commit `c8003b5`.
+- Scope and compatibility: add one independent TLA+/TLAPS lane that freezes normalization before modifying the
+  private transaction-owned range list. It changes no Ada declaration or behavior, persisted byte, dependency,
+  public default, count, endpoint bound, or allocation policy. The current runtime therefore remains exact-distinct
+  until the paired operational unit lands.
+- Authority and semantics: same-family half-open ranges coalesce when overlapping or touching; a bridge atomically
+  merges every connected component. Cross-family ranges remain distinct. A merge is admissible at the persisted
+  count ceiling, while a new disjoint component can produce typed backpressure. Capacity and modeled allocation
+  failure preserve the exact retained set and covered-key union. Two families, four key positions, and count two are
+  finite qualification geometry only; no product value is selected.
+- Verification: focused TLC exhausts 3,419 states at depth 4 with nonzero coverage for success, capacity rejection,
+  and allocation rejection. The negative probe performs an incomplete bridge merge and violates `Safety`. The
+  independently parsed eight-state witness covers two separated ranges, transitive bridging, cross-family
+  retention, disjoint-component backpressure, a merge while full, and allocation rollback. TLAPS proves 19/19
+  strict obligations over arbitrary range and qualified-key universes under the explicit pure-normalizer contract.
+  The authoritative combined TLA+/TLAPS gate passes with the new lane enabled.
+- Findings cycle: the first proof attempt exposed that recursive finite-set cardinality was outside the SMT kernel;
+  it was replaced with an explicitly abstract count while concrete cardinality remains exhaustively checked by TLC.
+  The review also made the runtime-not-yet-landed boundary explicit and retained exact rejection state in the
+  witness validator. The repeated semantics, capacity, atomicity, constants, witness, negative-probe, script,
+  documentation, and unnecessary-surface sweep finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted LSM compaction read-equivalence boundary
 
 - Parent: private monotonic replica-refresh commit `84b04f7`.
