@@ -1,5 +1,37 @@
 # Review record
 
+## Accepted effect-free partial-merge successor candidate
+
+- Parent: bounded composable ListMultipartUploads dependency qualification commit `257a530`.
+- Scope and semantics: add one private effect-free builder that combines the already admitted adjacent SST pair and
+  an exact caller-prepared checkpoint successor base. It returns the merged immutable SST candidate and a complete
+  successor manifest candidate, replacing only those two descriptors. It performs no object write, HEAD read,
+  conditional publication, task creation, retry, trigger selection, or public API change.
+- Persisted authority: the checkpoint predecessor rule moves unchanged from the operational recovery body into the
+  selected `Manifest_Formats` package. Recovery and construction now require the same database, limits, exact family
+  registry, predecessor identity, next revision, and reachable transition ordinal/epoch geometry. The builder copies
+  every replay boundary, runtime limit, identity-ledger item, family rule, and retained run, and shifts later flat
+  family slices by exactly one.
+- Bounds and ownership: the existing manifest-aware merger rejects all input, adjacency, and output-identity errors
+  before allocation. The successor allocation derives lazily from the current persisted family, run, and identity
+  totals. Typed allocation failure releases the merged candidate and returns both outputs vacant; unexpected failure
+  releases every candidate before propagation. Inputs remain borrowed only for the call.
+- Constants and policy: no compaction trigger, fanout, level, capacity, timeout, retry, output identity generator,
+  publication rule, or visible declaration is selected. Consequential test identities, extents, and two-family slice
+  geometry are classified beside the fixture; production allocation continues to derive from persisted database and
+  per-family limits.
+- Verification: `./tests/scripts/test.sh` passes the warning-strict root/tests/server build, local model and engine,
+  authenticated client, filesystem crash/recovery, all 32 comparative cases, pinned TidesDB 4/4, and repository
+  provenance against Object Storage `82780e41632703df5efaa73356d3b2b53a598702`. The focused corpus verifies exact
+  successor fields, invalid predecessor rejection before publication, merged-SST and successor-manifest round trips,
+  and a retained second-family descriptor whose flat slice shifts from three to two. `./scripts/prove.sh` proves
+  1,090/1,090 checks (166 flow, 924 prover), with zero warnings, unproved/justified checks, or `pragma Assume`; clean
+  executable-name audits bracket the campaign.
+- Findings cycle: architecture review identified a P2 coverage gap in a one-family-only corpus, so the accepted test
+  includes a retained second family. Implementation review found a P2 one-past cursor update after consuming a final
+  source entry or pair; cursor advancement now occurs only when entries remain. Rebuild, full deterministic rerun,
+  proof, constants/ownership/compatibility review, and final re-review find no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted bounded composable ListMultipartUploads dependency qualification
 
 - Parent: manifest-admitted partial SST merge commit `b912f3d`.

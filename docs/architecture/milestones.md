@@ -109,8 +109,10 @@ remain separate Milestone 4 and 6 work. The private runtime now supplies the nar
 snapshot-safe merge iteration kernel: two validated ordered nonoverlapping SSTs become one fresh-identity SST while
 every version and tombstone remains. Exact output extents are checked sums of the inputs. The manifest-aware entry
 point requires the two exact SST descriptors to be adjacent in one authenticated family and rejects an output identity
-already named by that manifest. Binding the captured manifest to current HEAD authority and publishing its atomic
-descriptor replacement remain separate work.
+already named by that manifest. An effect-free builder now validates the exact next checkpoint base and produces the
+corresponding successor by replacing only that pair while preserving all other persisted authority. Binding the
+captured manifest to current HEAD, storing both immutable objects, and conditionally publishing that successor remain
+separate work.
 
 The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
 separation, and atomic capacity/allocation rollback. Its finite model exhausts 3,419 states and the arbitrary-universe

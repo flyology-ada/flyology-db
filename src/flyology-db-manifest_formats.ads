@@ -163,6 +163,12 @@ is
    --  Whether Current is one append-only registry successor of Previous.
    function Valid_Predecessor (Current, Previous : Manifest) return Boolean;
 
+   --  Whether Current is one checkpoint successor of Previous with the exact
+   --  same family registry. Transition reachability and revision arithmetic
+   --  are shared with append-only successors; only family-count evolution
+   --  differs. This is persisted chain policy, not compaction policy.
+   function Valid_Checkpoint_Predecessor (Current, Previous : Manifest) return Boolean;
+
    --  Whether Candidate has a reachable manifest-bearing HEAD-v2 shape.
    function Manifest_Head_Structurally_Valid (Candidate : Head_Policy.Head_State) return Boolean;
 

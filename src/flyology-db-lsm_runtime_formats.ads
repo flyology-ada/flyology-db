@@ -219,6 +219,20 @@ private package Flyology.DB.LSM_Runtime_Formats is
       Value         : out SST_Access;
       Status        : out Merge_Status);
 
+   --  Build one exact checkpoint successor and merged SST without effects.
+   --  Successor_Base must be the next persisted checkpoint base after Current;
+   --  every limit, family rule, replay boundary, and identity remains exact.
+   --  Only the admitted adjacent descriptors become one fresh descriptor.
+   procedure Build_Adjacent_Merge_Successor
+     (Current        : Checkpoint_Manifest;
+      Successor_Base : Manifests.Manifest;
+      Older          : SST;
+      Newer          : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Merged         : out SST_Access;
+      Successor      : out Checkpoint_Manifest_Access;
+      Status         : out Merge_Status);
+
    function Descriptor_Matches
      (Value             : SST;
       Expected_Database : Head_Policy.Identifier;

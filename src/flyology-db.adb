@@ -48,8 +48,6 @@ package body Flyology.DB is
    use type Client_Scoped.Whole_Get_Result_Kind;
    use type Flyology.DB.Formats.Decode_Status;
    use type Heads.Identifier;
-   use type Manifests.Column_Family_Configuration;
-   use type Manifests.Database_Limits;
    use type Manifests.Decode_Status;
    use type Manifests.Encode_Status;
    use type Manifests.Family_Name_Bytes;
@@ -7086,46 +7084,6 @@ package body Flyology.DB is
          raise;
    end Read_Leading_Manifest;
 
-   function Valid_Checkpoint_Base_Predecessor
-     (Current, Previous : Manifests.Manifest) return Boolean is
-   begin
-      if not Manifests.Structurally_Valid (Current)
-        or else not Manifests.Structurally_Valid (Previous)
-        or else Manifests.Is_Root (Current)
-        or else Current.Database_ID /= Previous.Database_ID
-        or else Current.Previous_Manifest_ID /= Previous.Manifest_ID
-        or else Current.Limits /= Previous.Limits
-        or else Current.Family_Total /= Previous.Family_Total
-        or else Previous.Registry_Revision = Interfaces.Unsigned_64'Last
-        or else Current.Registry_Revision /= Previous.Registry_Revision + 1
-        or else Current.Writer_Epoch < Previous.Writer_Epoch
-        or else Current.Expected_Transition_Number < Previous.Publication_Transition_Number
-      then
-         return False;
-      end if;
-      for Index in Manifests.Family_Slot range 1 .. Previous.Family_Total loop
-         if Current.Families (Index) /= Previous.Families (Index) then
-            return False;
-         end if;
-      end loop;
-      declare
-         --  Exact transition reachability uses the same persisted ordinal and
-         --  epoch formula as append-only registry successors. Gap zero binds
-         --  the same transition; gap one requires the immediate next identity.
-         --  These are structural cases, not configurable retry/history policy.
-         Ordinal_Gap : constant Interfaces.Unsigned_64 :=
-           Current.Expected_Transition_Number - Previous.Publication_Transition_Number;
-         Epoch_Gap   : constant Interfaces.Unsigned_64 := Current.Writer_Epoch - Previous.Writer_Epoch;
-      begin
-         return
-           Epoch_Gap <= Ordinal_Gap
-           and then (if Ordinal_Gap = 0
-                     then Current.Expected_Transition_ID = Previous.Publication_Transition_ID
-                     elsif Ordinal_Gap = 1
-                     then Current.Expected_Transition_ID /= Previous.Publication_Transition_ID);
-      end;
-   end Valid_Checkpoint_Base_Predecessor;
-
    procedure Read_Checkpoint_SSTs
      (Storage  : in out Storage_Context;
       Deadline : Ada.Real_Time.Time;
@@ -7462,7 +7420,7 @@ package body Flyology.DB is
             elsif Manifest_Count > 1
               and then (if Checkpoint_Manifests (Manifest_Count - 1)
                         then
-                          not Valid_Checkpoint_Base_Predecessor
+                          not Manifests.Valid_Checkpoint_Predecessor
                                 (Manifests_Seen (Manifest_Count - 1), Manifests_Seen (Manifest_Count))
                         else
                           not Manifests.Valid_Predecessor

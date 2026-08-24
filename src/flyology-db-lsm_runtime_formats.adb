@@ -1358,6 +1358,130 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Status := Merge_Invalid_Input;
    end Merge_Manifest_Adjacent_SSTs;
 
+   procedure Build_Adjacent_Merge_Successor
+     (Current        : Checkpoint_Manifest;
+      Successor_Base : Manifests.Manifest;
+      Older          : SST;
+      Newer          : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Merged          : out SST_Access;
+      Successor       : out Checkpoint_Manifest_Access;
+      Status          : out Merge_Status)
+   is
+      Candidate    : Checkpoint_Manifest_Access := null;
+      Allocation   : Allocation_Status;
+      Output_Index : Natural := 0;
+      Replaced     : Boolean := False;
+   begin
+      Merged := null;
+      Successor := null;
+      if not Structurally_Valid (Current)
+        or else not Manifests.Valid_Checkpoint_Predecessor (Successor_Base, Current.Base)
+      then
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      Merge_Manifest_Adjacent_SSTs
+        (Current, Older, Newer, Output_Run_ID, Merged, Status);
+      if Status /= Merge_Completed then
+         return;
+      end if;
+
+      Create_Checkpoint_Manifest
+        (Current.Family_Total,
+         Current.Run_Total - 1,
+         Current.Identity_Total,
+         Candidate,
+         Allocation);
+      if Allocation /= Allocated then
+         Release (Merged);
+         Status :=
+           (if Allocation = Allocation_Failed
+            then Merge_Allocation_Failed
+            else Merge_Length_Overflow);
+         return;
+      end if;
+      Candidate.Base := Successor_Base;
+      Candidate.Replay_Boundary := Current.Replay_Boundary;
+      Candidate.Maximum_Total_L0_Runs := Current.Maximum_Total_L0_Runs;
+      Candidate.Maximum_Checkpoint_Identities := Current.Maximum_Checkpoint_Identities;
+      Candidate.Maximum_Point_Reads_Per_Transaction :=
+        Current.Maximum_Point_Reads_Per_Transaction;
+      Candidate.Maximum_Scan_Ranges_Per_Transaction :=
+        Current.Maximum_Scan_Ranges_Per_Transaction;
+      Candidate.Identities := Current.Identities;
+
+      for Family_Index in Current.Families'Range loop
+         declare
+            Source           : Family_LSM_State renames Current.Families (Family_Index);
+            Target           : Family_LSM_State renames Candidate.Families (Family_Index);
+            Source_Index     : Natural := Source.First_Run;
+            Source_Remaining : Natural := Source.Run_Total;
+            Selected         : constant Boolean :=
+              Current.Base.Families (Family_Index).ID = Older.Family_ID;
+         begin
+            Target := Source;
+            Target.First_Run := (if Source.Run_Total = 0 then 0 else Output_Index + 1);
+            if Selected then
+               Target.Run_Total := Source.Run_Total - 1;
+            end if;
+            while Source_Remaining > 0 loop
+               if Selected
+                 and then not Replaced
+                 and then Source_Remaining >= 2
+                 and then Descriptor_Matches
+                            (Older,
+                             Current.Base.Database_ID,
+                             Older.Family_ID,
+                             Current.Runs (Source_Index))
+                 and then Descriptor_Matches
+                            (Newer,
+                             Current.Base.Database_ID,
+                             Newer.Family_ID,
+                             Current.Runs (Source_Index + 1))
+               then
+                  Output_Index := Output_Index + 1;
+                  Candidate.Runs (Output_Index) :=
+                    (Run_ID                => Merged.Run_ID,
+                     Lowest_Sequence       => Merged.Lowest_Sequence,
+                     Highest_Sequence      => Merged.Highest_Sequence,
+                     Entry_Total           => Interfaces.Unsigned_32 (Merged.Entry_Total),
+                     Logical_Payload_Bytes => Merged.Logical_Payload_Bytes);
+                  Source_Remaining := Source_Remaining - 2;
+                  if Source_Remaining > 0 then
+                     Source_Index := Source_Index + 2;
+                  end if;
+                  Replaced := True;
+               else
+                  Output_Index := Output_Index + 1;
+                  Candidate.Runs (Output_Index) := Current.Runs (Source_Index);
+                  Source_Remaining := Source_Remaining - 1;
+                  if Source_Remaining > 0 then
+                     Source_Index := Source_Index + 1;
+                  end if;
+               end if;
+            end loop;
+         end;
+      end loop;
+      if not Replaced
+        or else Output_Index /= Candidate.Run_Total
+        or else not Structurally_Valid (Candidate.all)
+      then
+         Release (Candidate);
+         Release (Merged);
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      Successor := Candidate;
+      Status := Merge_Completed;
+   exception
+      when others =>
+         Release (Candidate);
+         Release (Merged);
+         Successor := null;
+         raise;
+   end Build_Adjacent_Merge_Successor;
+
    procedure Encode_SST (Value : SST; Image : out Image_Access; Status : out Encode_Status) is
       Entry_Bytes : Interfaces.Unsigned_64;
       Total       : Interfaces.Unsigned_64;

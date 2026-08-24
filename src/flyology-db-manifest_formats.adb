@@ -345,6 +345,44 @@ is
       end;
    end Valid_Predecessor;
 
+   function Valid_Checkpoint_Predecessor (Current, Previous : Manifest) return Boolean is
+   begin
+      if not Structurally_Valid (Current)
+        or else not Structurally_Valid (Previous)
+        or else Is_Root (Current)
+        or else Current.Database_ID /= Previous.Database_ID
+        or else Current.Previous_Manifest_ID /= Previous.Manifest_ID
+        or else Current.Limits /= Previous.Limits
+        or else Current.Family_Total /= Previous.Family_Total
+        or else Previous.Registry_Revision = Interfaces.Unsigned_64'Last
+        or else Current.Registry_Revision /= Previous.Registry_Revision + 1
+        or else Current.Writer_Epoch < Previous.Writer_Epoch
+        or else Current.Expected_Transition_Number < Previous.Publication_Transition_Number
+      then
+         return False;
+      end if;
+      for Index in Family_Slot range 1 .. Previous.Family_Total loop
+         if Current.Families (Index) /= Previous.Families (Index) then
+            return False;
+         end if;
+      end loop;
+      declare
+         --  Persisted transition ordinals and epochs derive the exact
+         --  reachability gaps. Zero binds the same transition; one requires
+         --  the immediate next identity. Neither value is a retry threshold.
+         Ordinal_Gap : constant Interfaces.Unsigned_64 :=
+           Current.Expected_Transition_Number - Previous.Publication_Transition_Number;
+         Epoch_Gap   : constant Interfaces.Unsigned_64 := Current.Writer_Epoch - Previous.Writer_Epoch;
+      begin
+         return
+           Epoch_Gap <= Ordinal_Gap
+           and then (if Ordinal_Gap = 0
+                     then Current.Expected_Transition_ID = Previous.Publication_Transition_ID
+                     elsif Ordinal_Gap = 1
+                     then Current.Expected_Transition_ID /= Previous.Publication_Transition_ID);
+      end;
+   end Valid_Checkpoint_Predecessor;
+
    function Manifest_Head_Structurally_Valid (Candidate : Head_Policy.Head_State) return Boolean is
    begin
       return Candidate.Version = Manifest_Head_Format and then Head_Policy.Structurally_Valid_V2 (Candidate);

@@ -33,12 +33,15 @@ package body Flyology.DB.LSM_Format_Tests is
    use type LSM.Decode_Status;
    use type LSM.Encode_Status;
    use type LSM.SST;
+   use type Manifests.Manifest;
    use type Runtime.Allocation_Status;
+   use type Runtime.Checkpoint_Manifest;
    use type Runtime.Decode_Status;
    use type Runtime.Encode_Status;
    use type Runtime.Checkpoint_Manifest_Access;
    use type Runtime.Image_Access;
    use type Runtime.Merge_Status;
+   use type Runtime.Run_Descriptor;
    use type Runtime.SST;
    use type Runtime.SST_Access;
 
@@ -965,20 +968,31 @@ package body Flyology.DB.LSM_Format_Tests is
    end Test_Runtime_Persisted_Limits;
 
    procedure Test_Runtime_Partial_Merge is
-      Older         : Runtime.SST_Access;
-      Newer         : Runtime.SST_Access;
-      Merged        : Runtime.SST_Access;
-      Decoded       : Runtime.SST_Access;
-      Rejected      : Runtime.SST_Access;
-      Image         : Runtime.Image_Access;
-      Manifest      : Runtime.Checkpoint_Manifest_Access;
-      Nonadjacent   : Runtime.Checkpoint_Manifest_Access;
-      Allocation    : Runtime.Allocation_Status;
-      Merge_Result  : Runtime.Merge_Status;
-      Encode_Result : Runtime.Encode_Status;
-      Decode_Result : Runtime.Decode_Status;
-      Older_Cursor  : Positive := 1;
-      Newer_Cursor  : Positive := 1;
+      Older               : Runtime.SST_Access;
+      Newer               : Runtime.SST_Access;
+      Merged              : Runtime.SST_Access;
+      Decoded             : Runtime.SST_Access;
+      Rejected            : Runtime.SST_Access;
+      Multi_Merged        : Runtime.SST_Access;
+      Image               : Runtime.Image_Access;
+      Successor_Image     : Runtime.Image_Access;
+      Manifest            : Runtime.Checkpoint_Manifest_Access;
+      Successor           : Runtime.Checkpoint_Manifest_Access;
+      Successor_Read      : Runtime.Checkpoint_Manifest_Access;
+      Rejected_Successor  : Runtime.Checkpoint_Manifest_Access;
+      Nonadjacent         : Runtime.Checkpoint_Manifest_Access;
+      Multi_Manifest      : Runtime.Checkpoint_Manifest_Access;
+      Multi_Successor     : Runtime.Checkpoint_Manifest_Access;
+      Allocation          : Runtime.Allocation_Status;
+      Merge_Result        : Runtime.Merge_Status;
+      Encode_Result       : Runtime.Encode_Status;
+      Decode_Result       : Runtime.Decode_Status;
+      Older_Cursor        : Positive := 1;
+      Newer_Cursor        : Positive := 1;
+      Successor_Base      : Manifests.Manifest := Base_Manifest;
+      Invalid_Base        : Manifests.Manifest;
+      Multi_Base          : Manifests.Manifest := Base_Manifest;
+      Multi_Successor_Base : Manifests.Manifest;
 
       procedure Fill_Entry
         (Table     : not null Runtime.SST_Access;
@@ -1092,11 +1106,24 @@ package body Flyology.DB.LSM_Format_Tests is
          Entry_Total           => Interfaces.Unsigned_32 (Newer.Entry_Total),
          Logical_Payload_Bytes => Newer.Logical_Payload_Bytes);
 
-      Runtime.Merge_Manifest_Adjacent_SSTs
-        (Manifest.all, Older.all, Newer.all, ID (11), Merged, Merge_Result);
+      --  The successor base is derived from the exact persisted predecessor:
+      --  the manifest and publication identities are fixture values, while
+      --  the predecessor binding, transition ordinal, and registry revision
+      --  are the normative immediate-checkpoint formula.
+      Successor_Base.Manifest_ID := ID (14);
+      Successor_Base.Previous_Manifest_ID := Manifest.Base.Manifest_ID;
+      Successor_Base.Expected_Transition_ID := Manifest.Base.Publication_Transition_ID;
+      Successor_Base.Expected_Transition_Number := Manifest.Base.Publication_Transition_Number;
+      Successor_Base.Publication_Transition_ID := ID (15);
+      Successor_Base.Publication_Transition_Number := Manifest.Base.Publication_Transition_Number + 1;
+      Successor_Base.Registry_Revision := Manifest.Base.Registry_Revision + 1;
+      Runtime.Build_Adjacent_Merge_Successor
+        (Manifest.all, Successor_Base, Older.all, Newer.all, ID (11), Merged, Successor, Merge_Result);
       if Merge_Result /= Runtime.Merge_Completed
         or else Merged = null
+        or else Successor = null
         or else not Runtime.Structurally_Valid (Merged.all)
+        or else not Runtime.Structurally_Valid (Successor.all)
         or else Merged.Entry_Total /= 8
         or else Merged.Payload_Byte_Total /= 13
         or else Merged.Lowest_Sequence /= 1
@@ -1104,6 +1131,24 @@ package body Flyology.DB.LSM_Format_Tests is
         or else Merged.Run_ID /= ID (11)
       then
          raise Program_Error with "partial SST merge did not produce the exact combined run";
+      end if;
+      if Successor.Base /= Successor_Base
+        or else Successor.Replay_Boundary /= Manifest.Replay_Boundary
+        or else Successor.Maximum_Total_L0_Runs /= Manifest.Maximum_Total_L0_Runs
+        or else Successor.Maximum_Checkpoint_Identities /= Manifest.Maximum_Checkpoint_Identities
+        or else Successor.Maximum_Point_Reads_Per_Transaction /= Manifest.Maximum_Point_Reads_Per_Transaction
+        or else Successor.Maximum_Scan_Ranges_Per_Transaction /= Manifest.Maximum_Scan_Ranges_Per_Transaction
+        or else Successor.Identity_Total /= Manifest.Identity_Total
+        or else Successor.Run_Total /= 1
+        or else Successor.Families (1).First_Run /= 1
+        or else Successor.Families (1).Run_Total /= 1
+        or else Successor.Runs (1).Run_ID /= Merged.Run_ID
+        or else Successor.Runs (1).Lowest_Sequence /= Merged.Lowest_Sequence
+        or else Successor.Runs (1).Highest_Sequence /= Merged.Highest_Sequence
+        or else Successor.Runs (1).Entry_Total /= Interfaces.Unsigned_32 (Merged.Entry_Total)
+        or else Successor.Runs (1).Logical_Payload_Bytes /= Merged.Logical_Payload_Bytes
+      then
+         raise Program_Error with "partial SST merge changed successor checkpoint authority";
       end if;
       Expect_Entry (1, 5, Runtime.LSM.Delete_Operation, 'a', False, ' ');
       Expect_Entry (2, 2, Runtime.LSM.Put_Operation, 'a', True, 'x');
@@ -1130,6 +1175,33 @@ package body Flyology.DB.LSM_Format_Tests is
       end;
       if Decode_Result /= Runtime.Decoded or else Decoded.all /= Merged.all then
          raise Program_Error with "partial SST merge output did not round-trip";
+      end if;
+
+      Runtime.Encode_Checkpoint_Manifest (Successor.all, Successor_Image, Encode_Result);
+      if Encode_Result /= Runtime.Encoded then
+         raise Program_Error with "partial-merge successor manifest did not encode";
+      end if;
+      Runtime.Decode_Checkpoint_Manifest (Successor_Image.all, ID (1), Successor_Read, Decode_Result);
+      if Decode_Result /= Runtime.Decoded or else Successor_Read.all /= Successor.all then
+         raise Program_Error with "partial-merge successor manifest did not round-trip";
+      end if;
+
+      Invalid_Base := Successor_Base;
+      Invalid_Base.Previous_Manifest_ID := ID (99);
+      Runtime.Build_Adjacent_Merge_Successor
+        (Manifest.all,
+         Invalid_Base,
+         Older.all,
+         Newer.all,
+         ID (13),
+         Rejected,
+         Rejected_Successor,
+         Merge_Result);
+      if Merge_Result /= Runtime.Merge_Invalid_Input
+        or else Rejected /= null
+        or else Rejected_Successor /= null
+      then
+         raise Program_Error with "partial SST merge accepted an unrelated successor base";
       end if;
 
       Runtime.Merge_Manifest_Adjacent_SSTs
@@ -1192,9 +1264,72 @@ package body Flyology.DB.LSM_Format_Tests is
          raise Program_Error with "partial SST merge reused a retained run identity";
       end if;
 
+      --  Two exact family slices exercise the flat run-table rewrite. The
+      --  second family and its retained descriptor are fixture geometry; the
+      --  expected First_Run shift follows solely from replacing two entries
+      --  in the preceding family with one.
+      Multi_Base.Family_Total := 2;
+      Multi_Base.Families (2).ID := 2;
+      Multi_Base.Families (2).Max_Key_Bytes := 8;
+      Multi_Base.Families (2).Max_Value_Bytes := 8;
+      Multi_Base.Families (2).Name_Length := 2;
+      Multi_Base.Families (2).Name (1 .. 2) := [Character'Pos ('c'), Character'Pos ('g')];
+      Runtime.Create_Checkpoint_Manifest (2, 3, 0, Multi_Manifest, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "multi-family partial-merge manifest allocation failed";
+      end if;
+      Multi_Manifest.Base := Multi_Base;
+      Multi_Manifest.Replay_Boundary := 6;
+      Multi_Manifest.Maximum_Total_L0_Runs := 3;
+      Multi_Manifest.Maximum_Checkpoint_Identities := 1;
+      Multi_Manifest.Maximum_Point_Reads_Per_Transaction := 1;
+      Multi_Manifest.Maximum_Scan_Ranges_Per_Transaction := 1;
+      Multi_Manifest.Families (1) := Manifest.Families (1);
+      Multi_Manifest.Families (2) :=
+        (Memtable_Max_Bytes   => 1,
+         Memtable_Max_Entries => 1,
+         Maximum_L0_Runs      => 1,
+         First_Run            => 3,
+         Run_Total            => 1);
+      Multi_Manifest.Runs (1) := Manifest.Runs (1);
+      Multi_Manifest.Runs (2) := Manifest.Runs (2);
+      Multi_Manifest.Runs (3) := Nonadjacent.Runs (3);
+      Multi_Successor_Base := Successor_Base;
+      Multi_Successor_Base.Family_Total := Multi_Base.Family_Total;
+      Multi_Successor_Base.Families := Multi_Base.Families;
+      Runtime.Build_Adjacent_Merge_Successor
+        (Multi_Manifest.all,
+         Multi_Successor_Base,
+         Older.all,
+         Newer.all,
+         ID (13),
+         Multi_Merged,
+         Multi_Successor,
+         Merge_Result);
+      if Merge_Result /= Runtime.Merge_Completed
+        or else Multi_Merged = null
+        or else Multi_Successor = null
+        or else not Runtime.Structurally_Valid (Multi_Successor.all)
+        or else Multi_Successor.Run_Total /= 2
+        or else Multi_Successor.Families (1).First_Run /= 1
+        or else Multi_Successor.Families (1).Run_Total /= 1
+        or else Multi_Successor.Families (2).First_Run /= 2
+        or else Multi_Successor.Families (2).Run_Total /= 1
+        or else Multi_Successor.Runs (1).Run_ID /= ID (13)
+        or else Multi_Successor.Runs (2) /= Multi_Manifest.Runs (3)
+      then
+         raise Program_Error with "partial SST merge changed a retained family slice";
+      end if;
+
       Runtime.Release (Image);
+      Runtime.Release (Successor_Image);
       Runtime.Release (Decoded);
+      Runtime.Release (Successor_Read);
       Runtime.Release (Merged);
+      Runtime.Release (Successor);
+      Runtime.Release (Multi_Merged);
+      Runtime.Release (Multi_Successor);
+      Runtime.Release (Multi_Manifest);
       Runtime.Release (Nonadjacent);
       Runtime.Release (Manifest);
       Runtime.Release (Newer);
@@ -1202,9 +1337,16 @@ package body Flyology.DB.LSM_Format_Tests is
    exception
       when others =>
          Runtime.Release (Image);
+         Runtime.Release (Successor_Image);
          Runtime.Release (Decoded);
+         Runtime.Release (Successor_Read);
          Runtime.Release (Rejected);
+         Runtime.Release (Rejected_Successor);
          Runtime.Release (Merged);
+         Runtime.Release (Successor);
+         Runtime.Release (Multi_Merged);
+         Runtime.Release (Multi_Successor);
+         Runtime.Release (Multi_Manifest);
          Runtime.Release (Nonadjacent);
          Runtime.Release (Manifest);
          Runtime.Release (Newer);

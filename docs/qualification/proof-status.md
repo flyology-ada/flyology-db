@@ -222,6 +222,16 @@ structurally valid manifest family before allocation, rejects reversed and nonad
 identity collision with either selected or retained runs. Current-HEAD generation binding and publication remain
 outside this refinement.
 
+The effect-free partial-merge successor candidate increases the warning-strict selected-unit result to 1,090/1,090:
+94 initialization, 526 run-time, 91 assertion, 306 functional-contract, and 73 termination checks. Flow analysis
+discharges 166 and provers discharge 924, with maximum successful effort 6,890 steps. Every selected unit reports
+zero warnings, unproved or justified checks, and zero `pragma Assume`. The newly selected checkpoint-predecessor
+predicate proves its transition arithmetic and termination; recovery and successor construction now share that one
+persisted-chain rule. The dynamically allocated runtime builder remains an executable boundary. Deterministic tests
+cover exact adjacent replacement, retained fields, shifted later-family run slices, invalid successor authority,
+merged-SST round trip, and successor-manifest round trip. Current-HEAD binding, immutable object I/O, conditional
+publication, progress, policy selection, and refinement from the TLA+ partial-merge model remain outside this unit.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

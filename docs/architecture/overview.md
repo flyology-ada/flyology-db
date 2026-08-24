@@ -59,9 +59,11 @@ with strictly ordered nonoverlapping sequence ranges and a fresh output identity
 while retaining every version and tombstone, allocates only the exact summed entry/payload extents with checked
 arithmetic, and publishes no partial output on typed failure. Because no history is pruned, this kernel chooses no
 snapshot-retention horizon. Its manifest-aware entry point admits the pair only when both SSTs exactly match adjacent
-descriptors in one authenticated family, and it rejects an output identity already named by that manifest. Current
-HEAD-generation binding, immutable publication, atomic descriptor replacement, trigger/fanout/level policy, and the
-public compaction surface remain later units.
+descriptors in one authenticated family, and it rejects an output identity already named by that manifest. Its
+effect-free successor builder requires the exact next checkpoint base, replaces only that pair, shifts later family
+slices exactly, and preserves every persisted replay, identity, limit, family, and retained-run field. Current
+HEAD-generation binding, immutable object writes, conditional successor publication, trigger/fanout/level policy,
+and the public compaction surface remain later units.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,
