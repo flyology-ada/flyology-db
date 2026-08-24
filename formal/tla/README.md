@@ -124,6 +124,21 @@ recovery path; `validate_successive_checkpoint_witness.py` checks its exact acti
 cycles. It proves ordering, exact checkpoint/suffix partitioning, exact recovery, and local-cache disposability. It
 does not prove format bytes, manifest-depth arithmetic, provider behavior, capacities, or refinement to Ada.
 
+`L0Accumulation.tla` freezes the next additive algorithm without claiming that its Ada implementation has landed.
+The first run contains one value; the later delta run contains a tombstone for that key and a Put for a second key.
+The successor manifest retains the first descriptor and appends the second under independent persisted family/global
+run ceilings. Recovery applies their non-overlapping sequence ranges oldest to newest, so the newer tombstone masks
+the old value. The model also covers definite pre-effect capacity rejection and accepted-lost HEAD resolution.
+`L0AccumulationPartialProbe.tla` publishes the successor before its new run and manifest are confirmed and must fail.
+`L0AccumulationRecoveryWitness.tla` plus `validate_l0_accumulation_witness.py` checks the exact lost-response,
+resolution, crash, tombstone, retained-run, and recovery path.
+
+`L0AccumulationSafetyProof.tla` generalizes additive publication to arbitrary transaction, identity, manifest, and
+run sets over any number of cycles. It proves that current run authority names only confirmed immutable bytes, each
+publication appends its prepared run without rewriting earlier stored runs, checkpoint/suffix authority remains
+exact, and cacheless recovery restores it. Concrete key/value merge, run ordering, bounds, formats, liveness, and
+refinement to Ada remain outside the unbounded kernel.
+
 ## Snapshot-isolation validation lane
 
 `SnapshotIsolation.tla` freezes the first production write/write validation rule over two transactions and two keys.
@@ -232,7 +247,9 @@ strict TLAPS obligations. The first-checkpoint lane adds 819 distinct states at 
 validated witnesses, four required integrated negative probes, full normal-action coverage, and 43 of 43 strict
 TLAPS obligations. The successive-checkpoint lane adds 37 distinct states at depth 17, one validated lost-response
 recovery witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS
-obligations. The snapshot-isolation lane
+obligations. The additive-L0 lane adds 49 distinct states at depth 17, one validated tombstone/lost-response recovery
+witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS obligations.
+The snapshot-isolation lane
 adds 336 distinct states at depth 10, three independently validated
 witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. The
 fixed-snapshot read lane adds 7,530 states at depth 14, three validated witnesses, one negative probe, and 7 of 7

@@ -343,6 +343,63 @@ grep -q 'Invariant WitnessPending is violated.' \
   >"$temporary_root/tlaps-successive-checkpoint.log" 2>&1
 grep -q 'All 24 obligations proved.' "$temporary_root/tlaps-successive-checkpoint.log"
 
+#  One-versus-two family/global run limits are finite qualification geometry
+#  for persisted backpressure, not product defaults. The pinned graph detects
+#  accidental narrowing of tombstone, append, or uncertainty coverage.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-l0-accumulation-states" \
+  -config L0Accumulation.cfg L0Accumulation \
+  >"$temporary_root/tlc-l0-accumulation.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-l0-accumulation.log"
+! grep -q '^Warning:' "$temporary_root/tlc-l0-accumulation.log"
+grep -q '49 distinct states found' "$temporary_root/tlc-l0-accumulation.log"
+grep -q 'The depth of the complete state graph search is 17.' \
+  "$temporary_root/tlc-l0-accumulation.log"
+for action in CommitPrefix BeginFirst StoreFirstRun ConfirmFirstRun \
+  StoreFirstManifest ConfirmFirstManifest PublishFirst CommitSuffix \
+  RejectSecondRunCapacity BeginSecond StoreSecondRun ConfirmSecondRun \
+  StoreSecondManifest ConfirmSecondManifest PublishSecondAs ResolveSecond \
+  Crash Recover
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-l0-accumulation.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-l0-accumulation-probe-states" \
+  -config L0AccumulationPartialProbe.cfg L0AccumulationPartialProbe \
+  >"$temporary_root/tlc-l0-accumulation-probe.log" 2>&1
+l0_accumulation_probe_status=$?
+set -e
+test "$l0_accumulation_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-l0-accumulation-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-l0-accumulation-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-l0-accumulation-witness-states" \
+  -config L0AccumulationRecoveryWitness.cfg \
+  -dumpTrace json "$temporary_root/l0-accumulation-recovery.json" \
+  L0AccumulationRecoveryWitness \
+  >"$temporary_root/tlc-l0-accumulation-witness.log" 2>&1
+l0_accumulation_witness_status=$?
+set -e
+test "$l0_accumulation_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-l0-accumulation-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-l0-accumulation-witness.log"
+"$model_root/validate_l0_accumulation_witness.py" \
+  "$temporary_root/l0-accumulation-recovery.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-l0-accumulation-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/L0AccumulationSafetyProof.tla" \
+  >"$temporary_root/tlaps-l0-accumulation.log" 2>&1
+grep -q 'All 24 obligations proved.' "$temporary_root/tlaps-l0-accumulation.log"
+
 #  Qualification pins for the reviewed two-transaction/two-key model graph.
 #  They detect accidental state-space narrowing; changing the model requires a
 #  fresh graph review and an intentional update of these expected results.
@@ -568,6 +625,10 @@ printf '%s\n' "  Successive checkpoint TLC 37 distinct states, depth 17"
 printf '%s\n' "  Successive checkpoint TLAPS 24/24 obligations"
 printf '%s\n' "  Successive checkpoint lost-response recovery witness validated"
 printf '%s\n' "  Negative successive-checkpoint early-HEAD probe detected"
+printf '%s\n' "  Additive L0 TLC 49 distinct states, depth 17"
+printf '%s\n' "  Additive L0 TLAPS 24/24 obligations"
+printf '%s\n' "  Additive L0 tombstone/lost-response recovery witness validated"
+printf '%s\n' "  Negative additive-L0 early-HEAD probe detected"
 printf '%s\n' "  Snapshot isolation TLC 336 distinct states, depth 10"
 printf '%s\n' "  Snapshot isolation TLAPS 6/6 obligations"
 printf '%s\n' "  Snapshot conflict/disjoint/checkpoint witnesses validated"

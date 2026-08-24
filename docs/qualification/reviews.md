@@ -1,5 +1,32 @@
 # Review record
 
+## Accepted formal additive-L0 accumulation candidate
+
+- Parent: successive whole-state checkpoint commit `3f19103`.
+- Scope and compatibility: freeze the next algorithm without changing Ada runtime behavior or public declarations.
+  A new per-family suffix run appends to the existing oldest-to-newest descriptor set; it never rewrites an immutable
+  run. The delta retains its newest exact-key Put or tombstone, advances the replay boundary, and preserves exact
+  identity authority. Empty families consume no mapped identity; an empty suffix may publish a manifest-only
+  successor, preserving the established Flush completion contract. Multi-run Ada activation/recovery and compaction
+  remain separate units, so this change makes no operational or full-LSM claim.
+- Authority and certainty: independent family and aggregate run admission derives solely from persisted
+  `Maximum_L0_Runs` and `Maximum_Total_L0_Runs`; the model's one-versus-two values are finite branch geometry, not
+  defaults. Every new run and manifest must be stored and confirmed before the conditional HEAD transition. A lost
+  accepted response remains unknown until read-only resolution. There is no retry, replacement identity, helper task,
+  transport rule, new format field, or new resource ceiling.
+- Verification: focused TLC exhausts 49 states at depth 17 with nonzero semantic-action coverage. Its negative early
+  HEAD action violates safety. A machine-validated 18-action witness selects admitted two-run accumulation, explicit
+  tombstone masking, accepted-lost response, resolution, crash, and exact recovery while retaining both immutable
+  runs and the predecessor manifest. Strict TLAPS proves all 24 obligations in the arbitrary-set, unbounded-cycle
+  kernel. The combined repository model gate preserves every earlier pinned graph, witness, negative probe, and proof.
+- Findings cycle: the architecture sweep kept suffix tombstones explicit and retained oldest-to-newest disjoint
+  sequence ordering rather than treating absence or provider listing as authority. It also preserved successful empty
+  Flush semantics through a manifest-only successor instead of inventing an automatic-flush threshold or a new
+  public operation. The formal sweep separated concrete tombstone merge (finite TLC) from abstract append and
+  publication safety (unbounded TLAPS) and states that no refinement to Ada is proved. Repeated compatibility,
+  certainty, capacity, constants, storage, model, witness, and documentation review finds no remaining P0, P1, P2,
+  or P3 issue.
+
 ## Accepted successive whole-state checkpoint candidate
 
 - Parent: bounded fixed-snapshot scan commit `eb96a96`.

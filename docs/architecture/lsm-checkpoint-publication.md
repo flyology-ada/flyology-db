@@ -159,6 +159,36 @@ activation, cacheless recovery, and history backpressure using the existing form
 will later preserve multiple current run descriptors and tombstones and will use the already persisted per-family and
 database run limits.
 
+## Frozen additive L0 algorithm
+
+The next operational unit is now frozen before implementation. A Flush snapshots only the committed batch suffix
+strictly after the current replay boundary. For each family with suffix mutations it emits one canonical immutable
+run whose sequence range is strictly newer than that family's last current run. Within the suffix, only the newest
+mutation for an exact key is required after the replay boundary advances; a Delete remains an explicit tombstone and
+is never converted to absence in the run. A family without suffix mutations consumes no run object or mapped run ID.
+
+The successor manifest preserves every current run descriptor in its existing oldest-to-newest order and appends the
+new descriptor for each affected family. It advances the global replay boundary to the captured committed sequence
+and retains the exact admitted identity ledger through that boundary. Admission requires each affected family run
+count plus one to fit its persisted `Maximum_L0_Runs`, and the resulting aggregate to fit persisted
+`Maximum_Total_L0_Runs`; checked failure is definite `Capacity_Exceeded` before any new run or manifest object.
+
+Recovery validates every descriptor and object, then applies family runs oldest to newest. A newer Put replaces an
+older value; a newer tombstone removes it and continues to mask all older runs. Sequence ranges must remain strictly
+non-overlapping and increasing, so reconstruction never depends on provider listing or incidental object order.
+Missing, malformed, misbound, overlapping, or reordered runs fail closed. Later batches are replayed only after the
+manifest boundary. Compaction may eventually replace this current run set but is not part of additive L0 publication.
+
+The public Flush signatures, caller-supplied one-ID-per-family map, receipt ownership, absolute deadline, and
+publication certainty do not change. A family uses its mapped ID only when it has a suffix delta, matching the
+existing empty-family convention. An empty suffix may publish a successor manifest with the same run set and no run
+objects; this preserves established Flush completion semantics without inventing an automatic-flush threshold.
+
+`L0Accumulation.tla` checks the concrete two-run tombstone merge, independent persisted capacity rejection, lost
+accepted HEAD response, and exact recovery. `L0AccumulationSafetyProof.tla` proves the arbitrary-set, unbounded-cycle
+publication kernel. These models freeze the algorithm; operational Ada support remains a separate implementation and
+qualification unit, and no refinement theorem is claimed.
+
 The current manifest's `Registry_Revision` is also its exact one-based immutable predecessor-chain depth: roots are
 revision one and every successor increments once under predecessor validation. A new checkpoint requires
 `Registry_Revision < Maximum_Manifest_History`; equality is definite `Capacity_Exceeded` before any immutable object

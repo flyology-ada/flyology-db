@@ -215,6 +215,15 @@ successive-checkpoint TLC/TLAPS lane qualify those executable boundaries. No ref
   checkpoint authority, recovery, and disposable local state. Concrete codecs, sorting, allocation, provider
   behavior, progress, garbage collection, multi-run levels, compaction, and refinement to Ada remain outside this
   proof.
+- The additive-L0 model exhausts 49 distinct states at depth 17 with nonzero semantic-action coverage. It checks
+  independent persisted family/global run backpressure before effects, preservation and append of the first run,
+  explicit newer tombstone masking, a second-key Put, accepted-but-lost HEAD response, read-only resolution, crash,
+  and exact recovery. Its checked 18-action witness validates both retained immutable runs, exact successor linkage,
+  the tombstoned key's absence, the second value, and identity authority. A deliberately early HEAD probe must
+  violate safety. Its arbitrary-set, unbounded-cycle kernel proves 24/24 strict TLAPS obligations for
+  stored/confirmed ordering, current confirmed-run authority, append-only publication, exact checkpoint/suffix
+  partitioning, recovery, and disposable local state. Concrete sequence ordering, key/value merge, codecs,
+  capacities, provider behavior, progress, compaction, operational Ada, and refinement remain outside this proof.
 - The snapshot-isolation write/write model exhausts 336 states at depth 10. It checks fixed Begin sequences,
   per-written-key post-snapshot rejection, disjoint concurrent commits, checkpoint advancement of the retained exact
   history boundary, and conservative rejection below that boundary. Three independently validated witnesses cover
