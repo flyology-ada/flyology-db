@@ -1,5 +1,23 @@
 # Review record
 
+## Accepted indexed HTTP/QUIC dependency handoff
+
+- Parent: private operational L0-compaction spine commit `12e6600`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage clone from `e8362f7` to the explicitly
+  qualified no-pin boundary `ab88c9117194a062ec208ee6d1503606ffd96307`. The dirty author checkout remains
+  read-only coordination state and its newer unqualified commits are not build inputs. The root filesystem path pin
+  remains unchanged and no source or public DB declaration changes.
+- Solve: the refreshed Object Storage manifest requires exact indexed `flyology_http=0.1.3-dev`; Alire resolves HTTP
+  and QUIC unpinned at source commit `a65f24f473bd771356a4fcb355fc10f961202534`. The generated ignored lock contains
+  no pinned HTTP/QUIC entry. This replaces the provisional PR-head closure without selecting a floating source.
+- Verification: the root build and maintained deterministic suite compile the complete DB/Object Storage/XML/HTTP/
+  QUIC closure and exercise local engine, authenticated client, filesystem crash/recovery, the 32-case comparative
+  adapter suite, and pinned TidesDB upstream 4/4. The DB proof and repository gates are rerun against the exact clean
+  clone rather than treating upstream qualification as a substitute.
+- Findings cycle: dependency, API compatibility, certainty, ownership, transport pinning, generated solve, author-
+  checkout isolation, historical evidence, and unnecessary-surface review finds no P0, P1, or P2 issue. Historical
+  review entries retain the dependency SHA used by their original campaigns; only current-campaign provenance moves.
+
 ## Accepted private operational L0-compaction spine
 
 - Parent: formal L0-compaction freeze commit `2b47dcc`.
