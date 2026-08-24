@@ -21,10 +21,12 @@ accepted manifest-v1 encoding through operational HEAD version 2 for provider-ne
 Create requires an explicit root manifest identity, transition identity, database limits, and initial family table;
 Open resolves handles by stable ID or exact name and validates manifest authority before replaying batches. HEAD-v1
 images remain inspection-only and return `Unsupported_Format` operationally. The authenticated client binding now
-exercises create, commit, composable checkpoint Flush, and cacheless reopen through Object Storage scoped
-operations. Remote-provider matrix qualification and dynamic append-only family changes remain prerequisites for
-accepting Milestone 2. The accepted owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication
-models remain abstract assurance lanes rather than a claimed refinement proof.
+exercises create, commit, synchronous and composable checkpoint Flush, composable replacement, and cacheless reopen
+through Object Storage scoped operations. Client-bound synchronous Flush is now an owner-driven wait over the same
+DB operation; memory/files retain the backend-neutral synchronous fallback. Remote-provider matrix qualification and
+dynamic append-only family changes remain prerequisites for accepting Milestone 2. The accepted owned-runtime
+closure is `c909c572`; the pooled TLA+ and manifest-publication models remain abstract assurance lanes rather than a
+claimed refinement proof.
 
 Milestone 3 now has a formal-first and operational write/write validation boundary. A transaction captures the global
 sequence at Begin and must prove every written key unchanged since that snapshot from retained exact history.

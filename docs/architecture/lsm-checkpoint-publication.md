@@ -69,9 +69,12 @@ keys. The manifest and runs are immutable; provider generations remain opaque va
 
 ## Publication state machine
 
-Both public forms serialize `Flush` against the existing bounded native Ada coordinator. The synchronous procedure
-waits directly; the additive `Flush_Operation` is an owner-stack state machine driven by the caller's completion set.
-There is no automatic flush task, task per run, detached helper, callback thread, or compaction task in this stage.
+Both public forms serialize `Flush` against the existing bounded native Ada coordinator. The additive
+`Flush_Operation` is an owner-stack state machine driven by the caller's completion set. Client-bound synchronous
+`Flush` creates its temporary set and buffer pool lazily, atomically promotes its existing lifecycle lease into that
+same operation, and waits as the owner. Memory/files retain the backend-neutral synchronous publisher until those
+backends expose caller-driven children. There is no automatic flush task, task per run, detached helper, callback
+thread, or compaction task in this stage.
 Once admitted, either form follows one absolute deadline and retains a self-contained receipt with the stable run
 and manifest IDs, exact expected HEAD generation/transition, attempted transition identity, replay boundary, and
 phase.
@@ -91,7 +94,9 @@ complete plan and verifies that every run, manifest, and HEAD image fits that bl
 `Capacity_Exceeded` result with no publication. The current nested provider stack needs four reusable completion-set
 slots while one Flush mutation is active: the visible DB parent, Object Storage conditional Put, HTTP exchange, and
 one transport child. Slot exhaustion before a child request is typed capacity/backpressure, never publication
-uncertainty.
+uncertainty. The client-bound synchronous wrapper derives its one scratch-block size with checked arithmetic from
+persisted live-entry, live-byte, total-run, identity, and immutable family-name authority plus frozen format framing.
+It allocates that one-token pool only for the call. Failure before lifecycle promotion is definite capacity failure.
 
 Before storage admission, the lifecycle enters an exclusive checkpoint mode and waits for every already-admitted
 database call to finish. The builder reads actual per-family entry and payload totals, checks them against that

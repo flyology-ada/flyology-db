@@ -16,9 +16,10 @@ database limits. Public synchronous `Flush` publishes and reconciles a complete 
 canonical suffix-delta run for each affected family while retaining every current run oldest-to-newest. Tombstones
 remain explicit, and cacheless recovery merges all named runs before replaying only the latest checkpoint's later log
 suffix. Live activation replaces the coordinator without invalidating family handles or active transactions. An
-additive caller-owned `Flush_Operation` drives that same checkpoint
-protocol directly through a bounded completion set, moving one caller-sized unique-buffer token until typed `Finish`;
-it creates no helper task and preserves the synchronous receipt and certainty mapping. The private operational
+additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a bounded completion
+set, moving one caller-sized unique-buffer token until typed `Finish`. Client-bound synchronous `Flush` is a literal
+owner-driven wait over that operation; memory/files retain the backend-neutral synchronous publisher. Neither path
+creates a helper task, and both preserve the same receipt and certainty mapping. The private operational
 compaction spine now drives both a synchronous publisher and a test-qualified caller-composable replacement through
 the same owner stack, receipt, and certainty machinery. It builds complete live-state runs and publishes a successor
 manifest naming only those fresh outputs. It retains superseded immutable objects and adds no public trigger,

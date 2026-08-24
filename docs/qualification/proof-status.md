@@ -164,6 +164,16 @@ protected lifecycle ownership remain executable-test boundaries. Deterministic m
 bridging, same-byte cross-family separation, merges at full persisted capacity, node/lower/upper allocation rollback,
 open-bound expansion, and post-Begin conflict preservation. No refinement theorem is claimed.
 
+The client-bound synchronous-Flush convergence candidate preserves that 1,088/1,088 selected-unit result on the
+final implementation tree: 94 initialization, 525 run-time, 91 assertion, 306 functional-contract, and 72
+termination checks; flow analysis discharges 165 and provers discharge 923, with maximum successful effort 6,890
+steps. Every selected unit reports zero warnings, unproved or justified checks, and zero `pragma Assume`. The new
+atomic lifecycle-lease promotion, temporary completion set and buffer pool, owner-driven wait, exception certainty
+mapping, and nested Object Storage/HTTP operations remain outside the selected SPARK units. The authenticated client
+probe qualifies those integration boundaries through definite pre-run failure, accepted-but-lost immutable-object
+reconciliation, successful local activation, exact composable token reuse, replacement, and cacheless reopen. No
+refinement theorem is claimed.
+
 The bounded fixed-snapshot scan candidate preserves that same 1,084/1,084 warning-strict result and does not widen
 the selected SPARK units. The proved reference model and serializable TLA+/TLAPS lane continue to establish the
 fixed-snapshot lookup and half-open predicate rules. Production source discovery, immutable-image borrowing, owned

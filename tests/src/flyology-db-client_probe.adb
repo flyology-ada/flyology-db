@@ -409,29 +409,20 @@ begin
    --  transfer must retain this exact caller metadata tag through Finish.
    Flyology.Buffers.Set_Tag (Flush_Buffer, Flush_Token_Tag);
 
-   --  A provider rejection before the first run request is definitely outside
-   --  publication. Typed Finish restores the token and permits an explicit
+   --  The synchronous client form is a literal owner-driven wait over the
+   --  same Flush_Operation used below. A provider rejection before the first
+   --  run request is definitely outside publication and permits an explicit
    --  caller retry with the same immutable identities.
    Context.Test_Control.Arm (Before_Run_Put, Definite_Failure, 1);
-   Start_Flush
-     (Flush_Work,
+   Flush
+     (Created,
       Checkpoint_Runs,
       Checkpoint_Manifest_ID,
       Checkpoint_Transition_ID,
-      Flush_Buffer,
-      Test_Operation_Timeout);
-   if Flyology.Buffers.Has_Buffer (Flush_Buffer) then
-      raise Program_Error with "composable Flush did not move its exact token";
-   end if;
-   Flyology.Operations.Wait_All (Composable_Set);
-   Finish (Flush_Work, Flush_Info, Result, Restored_Buffer);
-   Expect (Result, Storage_Failure, "pre-run composable Flush failure was ambiguous");
-   if Flyology.Buffers.Has_Buffer (Flush_Buffer)
-     or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
-     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
-   then
-      raise Program_Error with "pre-run composable Flush did not restore its exact token";
-   end if;
+      Test_Operation_Timeout,
+      Receipt => Flush_Info,
+      Result  => Result);
+   Expect (Result, Storage_Failure, "pre-run synchronous Flush failure was ambiguous");
 
    --  The second attempt publishes/reconciles the immutable run and manifest,
    --  then fails definitely before HEAD admission. Reusing the exact IDs is
@@ -442,37 +433,38 @@ begin
       Checkpoint_Runs,
       Checkpoint_Manifest_ID,
       Checkpoint_Transition_ID,
-      Restored_Buffer,
-      Test_Operation_Timeout);
-   Flyology.Operations.Wait_All (Composable_Set);
-   Finish (Flush_Work, Flush_Info, Result, Flush_Buffer);
-   Expect (Result, Storage_Failure, "pre-HEAD composable Flush failure was ambiguous");
-   if Flyology.Buffers.Has_Buffer (Restored_Buffer)
-     or else not Flyology.Buffers.Has_Buffer (Flush_Buffer)
-     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
-   then
-      raise Program_Error with "pre-HEAD composable Flush did not restore its exact token";
-   end if;
-
-   --  Lose the next run response after provider entry. The operation must not
-   --  replay under another identity: it performs one exact whole-Get, accepts
-   --  only identical bytes, and continues the original checkpoint attempt.
-   Context.Test_Control.Arm (After_Run_Put, Unknown_After_Entry, 1);
-   Start_Flush
-     (Flush_Work,
-      Checkpoint_Runs,
-      Checkpoint_Manifest_ID,
-      Checkpoint_Transition_ID,
       Flush_Buffer,
       Test_Operation_Timeout);
    Flyology.Operations.Wait_All (Composable_Set);
    Finish (Flush_Work, Flush_Info, Result, Restored_Buffer);
-   Expect (Result, Success, "client-backed composable Flush failed");
+   Expect (Result, Storage_Failure, "pre-HEAD composable Flush failure was ambiguous");
    if Flyology.Buffers.Has_Buffer (Flush_Buffer)
      or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
      or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
    then
-      raise Program_Error with "composable Flush Finish did not restore its exact token to a vacant handle";
+      raise Program_Error with "pre-HEAD composable Flush did not restore its exact token";
+   end if;
+
+   --  Lose the next run response after provider entry. The synchronous owner
+   --  must not replay under another identity: its Flush_Operation performs one
+   --  exact whole-Get, accepts only identical bytes, and continues the original
+   --  checkpoint attempt. Its private token does not disturb the tagged token
+   --  restored by the caller-composable failure above.
+   Context.Test_Control.Arm (After_Run_Put, Unknown_After_Entry, 1);
+   Flush
+     (Created,
+      Checkpoint_Runs,
+      Checkpoint_Manifest_ID,
+      Checkpoint_Transition_ID,
+      Test_Operation_Timeout,
+      Receipt => Flush_Info,
+      Result  => Result);
+   Expect (Result, Success, "client-backed synchronous Flush failed");
+   if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "synchronous Flush disturbed the caller-composable token";
    end if;
    if Flush_Receipt_Manifest_ID (Flush_Info) /= Checkpoint_Manifest_ID
      or else Flush_Receipt_Transition_ID (Flush_Info) /= Checkpoint_Transition_ID

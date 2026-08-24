@@ -1010,6 +1010,11 @@ private
       procedure Begin_Composable_Checkpoint
         (State  : out Engine_State_Access;
          Result : out Outcome_Code);
+      --  @exclude
+      procedure Promote_Composable_Checkpoint
+        (Expected : not null Engine_State_Access;
+         State    : out Engine_State_Access;
+         Result   : out Outcome_Code);
       procedure Checkpoint_Wait_Source
         (Descriptor : out Interfaces.C.int;
          Ready_Now  : out Boolean);

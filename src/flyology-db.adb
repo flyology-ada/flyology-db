@@ -5394,6 +5394,43 @@ package body Flyology.DB is
          Result := Success;
       end Begin_Composable_Checkpoint;
 
+      procedure Promote_Composable_Checkpoint
+        (Expected : not null Engine_State_Access;
+         State    : out Engine_State_Access;
+         Result   : out Outcome_Code)
+      is
+      begin
+         State := null;
+         if Active_Calls = 0 then
+            raise Program_Error with "database lifecycle lease promotion underflow";
+         elsif Mode /= Opened or else Current /= Expected then
+            --  A concurrent close/resolve/checkpoint already owns the mode.
+            --  Consume this exact lease so its waiter can observe quiescence.
+            Active_Calls := Active_Calls - 1;
+            if Active_Calls = 0
+              and then Mode = Checkpointing
+              and then Flyology.Wake_Sources.Descriptor (Quiescence_Wake) >= 0
+              and then not Quiescence_Signalled
+            then
+               Flyology.Wake_Sources.Signal (Quiescence_Wake);
+               Quiescence_Signalled := True;
+            end if;
+            Result := Invalid_State;
+            return;
+         end if;
+         if Active_Calls > 1 then
+            --  The caller's lease is atomically exchanged for checkpoint
+            --  ownership. Remaining calls need the same persistent wake used
+            --  by ordinary composable admission.
+            Flyology.Wake_Sources.Ensure (Quiescence_Wake);
+         end if;
+         Active_Calls := Active_Calls - 1;
+         Quiescence_Signalled := False;
+         Mode := Checkpointing;
+         State := Current;
+         Result := Success;
+      end Promote_Composable_Checkpoint;
+
       procedure Checkpoint_Wait_Source
         (Descriptor : out Interfaces.C.int;
          Ready_Now  : out Boolean)
@@ -5529,6 +5566,32 @@ package body Flyology.DB is
          Lease.Life := Item.Life'Unchecked_Access;
       end if;
    end Acquire;
+
+   procedure Promote_Composable_Checkpoint
+     (Lease  : in out Lifecycle_Lease;
+      State  : out Engine_State_Access;
+      Result : out Outcome_Code)
+   is
+   begin
+      if Lease.Life = null or else Lease.State = null then
+         raise Program_Error with "composable checkpoint requires one database lifecycle lease";
+      end if;
+      Lease.Life.Promote_Composable_Checkpoint (Lease.State, State, Result);
+      --  Every normal return consumed the lease, whether promotion won or a
+      --  concurrent lifecycle transition won. An exception leaves it owned so
+      --  controlled finalization performs the ordinary release.
+      Lease.Life := null;
+      Lease.State := null;
+   end Promote_Composable_Checkpoint;
+
+   procedure Release (Lease : in out Lifecycle_Lease) is
+   begin
+      if Lease.Life /= null then
+         Lease.Life.Release;
+         Lease.Life := null;
+         Lease.State := null;
+      end if;
+   end Release;
 
    type Activation_Guard is new Ada.Finalization.Limited_Controlled with record
       Life   : Database_Lifecycle_Access := null;
@@ -11410,7 +11473,8 @@ package body Flyology.DB is
       Transition_ID        : Identifier;
       Payload_Buffer       : in out Flyology.Buffers.Unique_Buffer;
       Timeout              : Duration;
-      Replace_Current_Runs : Boolean)
+      Replace_Current_Runs : Boolean;
+      Lease                : access Lifecycle_Lease := null)
    is
       Result     : Outcome_Code;
       Moved      : Boolean := False;
@@ -11427,6 +11491,13 @@ package body Flyology.DB is
         or else Operation.Read_Child /= null
       then
          raise Program_Error with "Flush operation retains unconsumed ownership";
+      elsif Lease /= null
+        and then
+          (Lease.Life /= Operation.Item.Life'Unchecked_Access
+           or else Lease.State = null
+           or else Lease.State.Storage /= Operation.Storage)
+      then
+         raise Program_Error with "Flush operation does not match the promoted lifecycle lease";
       end if;
 
       Operation.Deadline := Deadline_After (Timeout);
@@ -11486,7 +11557,11 @@ package body Flyology.DB is
       Flyology.Operations.Drivers.Start (Operation);
       Started := True;
       if Operation.Driver_State /= null and then Operation.Driver_State.Precheck_Result = Success then
-         Operation.Item.Life.Begin_Composable_Checkpoint (Operation.Driver_State.Engine, Result);
+         if Lease = null then
+            Operation.Item.Life.Begin_Composable_Checkpoint (Operation.Driver_State.Engine, Result);
+         else
+            Promote_Composable_Checkpoint (Lease.all, Operation.Driver_State.Engine, Result);
+         end if;
          if Result = Success and then Operation.Driver_State.Engine.Storage /= Operation.Storage then
             Operation.Item.Life.Cancel_Checkpoint;
             raise Program_Error with "Flush operation storage does not own the open database";
@@ -11950,6 +12025,121 @@ package body Flyology.DB is
          Receipt.Current_Outcome := Result;
    end Publish_Checkpoint;
 
+   procedure Synchronous_Flush_Buffer_Capacity
+     (State   : not null Engine_State_Access;
+      Maximum : out Natural;
+      Result  : out Outcome_Code)
+   is
+      Base           : Manifests.Manifest;
+      Identity_Total : Natural;
+      SST_Bound      : Interfaces.Unsigned_64 :=
+        Interfaces.Unsigned_64
+          (LSM_Runtime.LSM.SST_Header_Length + LSM_Runtime.LSM.Object_Trailer_Length);
+      Manifest_Bound : Interfaces.Unsigned_64 :=
+        Interfaces.Unsigned_64
+          (LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length + LSM_Runtime.LSM.Object_Trailer_Length);
+
+      function Add
+        (Total  : in out Interfaces.Unsigned_64;
+         Amount : Interfaces.Unsigned_64) return Boolean
+      is
+      begin
+         if Amount > Interfaces.Unsigned_64'Last - Total then
+            return False;
+         end if;
+         Total := Total + Amount;
+         return True;
+      end Add;
+
+      function Add_Product
+        (Total : in out Interfaces.Unsigned_64;
+         Count : Interfaces.Unsigned_64;
+         Width : Interfaces.Unsigned_64) return Boolean
+      is
+         Product : Interfaces.Unsigned_64;
+      begin
+         if Count > 0 and then Width > Interfaces.Unsigned_64'Last / Count then
+            return False;
+         end if;
+         Product := Count * Width;
+         return Add (Total, Product);
+      end Add_Product;
+   begin
+      Maximum := 0;
+      if not State.LSM_Authority.Enabled then
+         Result := Invalid_State;
+         return;
+      elsif State.LSM_Authority.Maximum_Point_Reads_Per_Transaction = 0
+        or else State.LSM_Authority.Maximum_Scan_Ranges_Per_Transaction = 0
+      then
+         Result := Unsupported_Format;
+         return;
+      end if;
+      State.Gate.Checkpoint_Metadata (Base, Identity_Total, Result);
+      if Result /= Success then
+         return;
+      elsif Interfaces.Unsigned_64 (Identity_Total)
+        > Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Checkpoint_Identities)
+      then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      --  The one synchronous scratch block is allocated only for this call.
+      --  Its safe SST extent derives from persisted live-entry/live-byte
+      --  authority plus frozen SST-v1 framing, never a library byte ceiling.
+      if not Add_Product
+               (SST_Bound,
+                Interfaces.Unsigned_64 (Base.Limits.Maximum_Live_Entries),
+                Interfaces.Unsigned_64 (LSM_Runtime.LSM.SST_Entry_Header_Length))
+        or else not Add (SST_Bound, Base.Limits.Maximum_Live_State_Bytes)
+      then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      --  The manifest extent uses immutable registry names, persisted total
+      --  run/identity ceilings, and frozen manifest-v3 field widths. It stays
+      --  safe while already-admitted commits drain before checkpoint capture.
+      for Index in Manifests.Family_Slot range 1 .. Base.Family_Total loop
+         if not Add
+                  (Manifest_Bound,
+                   Interfaces.Unsigned_64
+                     (LSM_Runtime.LSM.Checkpoint_Family_Header_Length
+                      + Base.Families (Index).Name_Length))
+         then
+            Result := Capacity_Exceeded;
+            return;
+         end if;
+      end loop;
+      if not Add_Product
+               (Manifest_Bound,
+                Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Total_L0_Runs),
+                Interfaces.Unsigned_64 (LSM_Runtime.LSM.Run_Descriptor_Length))
+        or else not Add_Product
+                      (Manifest_Bound,
+                       Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Checkpoint_Identities),
+                       Interfaces.Unsigned_64 (Heads.Identifier_Length))
+      then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      declare
+         Bound : constant Interfaces.Unsigned_64 :=
+           Interfaces.Unsigned_64'Max
+             (Interfaces.Unsigned_64 (Formats.Head_Image_Length),
+              Interfaces.Unsigned_64'Max (SST_Bound, Manifest_Bound));
+      begin
+         if Bound = 0 or else Bound > Interfaces.Unsigned_64 (Natural'Last) then
+            Result := Capacity_Exceeded;
+         else
+            Maximum := Natural (Bound);
+            Result := Success;
+         end if;
+      end;
+   end Synchronous_Flush_Buffer_Capacity;
+
    procedure Flush
      (Item          : in out Database;
       Runs          : Checkpoint_Run_Identity_Array;
@@ -11958,8 +12148,141 @@ package body Flyology.DB is
       Timeout       : Duration;
       Token         : access Flyology.Cancellation.Token := null;
       Receipt       : out Flush_Receipt;
-      Result        : out Outcome_Code) is
+      Result        : out Outcome_Code)
+   is
+      --  One DB parent, one Object Storage child, one HTTP exchange, and one
+      --  transport child are the exact client Flush owner stack. This private
+      --  derived capacity is not a DB queue, connection, or caller default.
+      Synchronous_Set_Capacity : constant := 4;
+      Lease                    : aliased Lifecycle_Lease;
+      Storage                  : access Storage_Context;
+      Maximum                  : Natural := 0;
    begin
+      Receipt := (others => <>);
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Storage := Lease.State.Storage;
+      if Storage.HTTP_Client = null then
+         --  Backend-neutral memory/files operation remains synchronous until
+         --  those backends expose a caller-driven child. The client path below
+         --  is a literal wait over the public composable DB state machine.
+         null;
+      elsif Storage.Client_Identity = null then
+         Result := Invalid_State;
+         Receipt.Current_Outcome := Result;
+         return;
+      else
+         Synchronous_Flush_Buffer_Capacity (Lease.State, Maximum, Result);
+         if Result /= Success then
+            Receipt.Current_Outcome := Result;
+            return;
+         end if;
+         declare
+            Body_Entered : Boolean := False;
+
+            procedure Drive_Client_Flush is
+               Set : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+               --  Exactly one moved payload token exists in this serial wait.
+               --  Capacity one is ownership geometry, not persisted DB policy.
+               Pool : aliased Flyology.Buffers.Pool
+                 (Block_Size => Positive (Maximum), Capacity => 1);
+               Payload_Buffer : Flyology.Buffers.Unique_Buffer (Pool'Access);
+               Operation      : Flush_Operation
+                 (Set'Access,
+                  Item'Unchecked_Access,
+                  Storage,
+                  Storage.HTTP_Client,
+                  Pool'Access,
+                  Token);
+               Started        : Boolean := False;
+            begin
+               Body_Entered := True;
+               Flyology.Buffers.Acquire (Payload_Buffer);
+               Start_Composable_Checkpoint
+                 (Operation,
+                  Runs,
+                  Manifest_ID,
+                  Transition_ID,
+                  Payload_Buffer,
+                  Timeout,
+                  Replace_Current_Runs => False,
+                  Lease                => Lease'Access);
+               Started := True;
+               Flyology.Operations.Wait_All (Set);
+               Finish (Operation, Receipt, Result, Payload_Buffer);
+            exception
+               when Storage_Error =>
+                  Receipt := (if Started then Operation.Final_Receipt else (others => <>));
+                  Result :=
+                    (if not Started or else Receipt.Phase = No_Flush_Publication
+                     then Capacity_Exceeded
+                     elsif Receipt.Phase in Objects_Unknown | Flush_Head_Unknown
+                     then Outcome_Unknown
+                     elsif Receipt.Phase = Flush_Head_Confirmed
+                     then Local_Activation_Failed
+                     else Storage_Failure);
+                  Receipt.Current_Outcome := Result;
+               when others =>
+                  if not Started then
+                     Result := Storage_Failure;
+                     Receipt := (others => <>);
+                  else
+                     Receipt := Operation.Final_Receipt;
+                     Result :=
+                       (if Operation.Has_Final_Result
+                        then Operation.Final_Result
+                        elsif Receipt.Phase in Objects_Unknown | Flush_Head_Unknown
+                        then Outcome_Unknown
+                        elsif Receipt.Phase = Flush_Head_Confirmed
+                        then Local_Activation_Failed
+                        else Storage_Failure);
+                  end if;
+                  Receipt.Current_Outcome := Result;
+            end Drive_Client_Flush;
+         begin
+            --  A failure while elaborating the temporary completion set or
+            --  pool occurs before Drive_Client_Flush can reserve a slot or
+            --  enter checkpoint mode, so it is definite capacity failure.
+            begin
+               Drive_Client_Flush;
+            exception
+               when Storage_Error =>
+                  if not Body_Entered then
+                     Receipt := (others => <>);
+                     Result := Capacity_Exceeded;
+                  else
+                     Result :=
+                       (if Receipt.Phase in Objects_Unknown | Flush_Head_Unknown
+                        then Outcome_Unknown
+                        elsif Receipt.Phase = Flush_Head_Confirmed
+                        then Local_Activation_Failed
+                        else Result);
+                  end if;
+               when others =>
+                  if not Body_Entered then
+                     Receipt := (others => <>);
+                     Result := Storage_Failure;
+                  else
+                     Result :=
+                       (if Receipt.Phase in Objects_Unknown | Flush_Head_Unknown
+                        then Outcome_Unknown
+                        elsif Receipt.Phase = Flush_Head_Confirmed
+                        then Local_Activation_Failed
+                        else Result);
+                  end if;
+            end;
+            if Result /= Success then
+               Receipt.Current_Outcome := Result;
+            end if;
+         end;
+         return;
+      end if;
+      --  End the read lease before the backend-neutral publisher takes the
+      --  exclusive checkpoint lifecycle mode.
+      Release (Lease);
       Publish_Checkpoint
         (Item,
          Runs,

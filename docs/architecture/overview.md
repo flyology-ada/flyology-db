@@ -128,8 +128,10 @@ conditional Put and whole/range Get calls are literal waits over Object Storage 
 unique-buffer token per body operation, one absolute DB deadline, no helper task, and no automatic retry. A range
 whose generation is not yet known first performs HeadObject and then binds the range read to that exact ETag. The
 DB-level `Flush_Operation` now composes conditional Put and whole-Get children directly in the caller's bounded
-completion set. Its private replacement constructor selects complete current-run replacement without changing the
-public additive `Start_Flush`; both modes share exact ownership, deadline, certainty, and reconciliation behavior.
+completion set. Client-bound synchronous `Flush` lazily derives one buffer extent from persisted limits, atomically
+promotes its lifecycle lease, and waits over that same operation; memory/files retain the backend-neutral synchronous
+publisher. The private replacement constructor selects complete current-run replacement without changing the public
+additive `Start_Flush`; both modes share exact ownership, deadline, certainty, and reconciliation behavior.
 Typed `Finish` restores the exact moved token into any vacant same-pool handle; an abandoned operation drains nested
 transport work before releasing that token. CPU-heavy sorting, compression, and merging will
 use bounded native Ada tasks or an explicitly isolated process with detached owned input. The engine will not create

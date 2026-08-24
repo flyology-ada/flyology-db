@@ -1,5 +1,43 @@
 # Review record
 
+## Accepted client-bound synchronous Flush convergence candidate
+
+- Parent: additive Object Storage composable-surface qualification commit `945b481`.
+- Scope and compatibility: change no public declaration, parameter mode, default, result, persisted byte, dependency,
+  task, retry, compaction policy, or memory/files behavior. Client-bound synchronous `Flush` now lazily owns a private
+  completion set and buffer token and waits over the existing public additive `Flush_Operation`; backend-neutral
+  memory/files `Flush` retains the existing synchronous publisher.
+- Lifecycle and ownership: synchronous entry first holds an ordinary database lifecycle lease while it reads persisted
+  sizing authority. After all operation validation and visible-slot reservation, one protected action atomically
+  exchanges that exact lease for exclusive checkpoint ownership. A concurrent close, resolve, or checkpoint consumes
+  the lease and returns `Invalid_State`; no gap can expose a dangling storage context. Start rollback restores the
+  lifecycle, slot, and exact moved token. Typed `Finish` remains the sole normal token-restoration authority, and scope
+  abandonment drains nested Object Storage/HTTP work before the private token returns to its pool. No helper task or
+  retained caller handle is added.
+- Bounds and certainty: the private four-slot completion set derives from the exact DB/Object Storage/HTTP/transport
+  owner stack. Its one-token scratch pool is allocated only for the synchronous call. Checked U64 arithmetic derives
+  the block extent from persisted live-entry, live-byte, total-run, identity, and immutable family-name authority plus
+  frozen SST-v1, manifest-v3, and HEAD framing; there is no new public or private byte ceiling. Declarative allocation
+  failure is definite `Capacity_Exceeded`. Any later exception is classified at the retained receipt phase, so a
+  post-entry mutation is never mislabeled pre-admission and unknown publication remains `Outcome_Unknown`.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository/provenance checks, deterministic
+  memory/files cases, authenticated client operations, subprocess crash/reopen, all 32 comparative cases, and pinned
+  TidesDB 4/4. The client probe covers synchronous definite pre-run failure, successful synchronous accepted-but-lost
+  run reconciliation and local activation, composable definite pre-HEAD failure with exact tagged-token restoration,
+  and later composable replacement/reopen. Warning-strict GNATprove proves 1,088/1,088 selected checks (165 flow, 923
+  prover; maximum 6,890 steps), with zero warnings, unproved/justified checks, or `pragma Assume`; the operational
+  lifecycle and provider stack remain executable-test boundaries rather than SPARK-proved code. The unchanged
+  combined TLC/TLAPS gate passes every maintained publication, LSM, compaction, cache, retention, replica, isolation,
+  and range-normalization lane plus its checked witnesses and deliberate negative probes; this unit adds no lifecycle
+  refinement claim.
+- Findings cycle: the first ownership sweep found a P1 self-deadlock when the fallback retained its own read lease
+  while requesting exclusive checkpoint mode; explicit release before the unchanged backend-neutral publisher fixed
+  it. The next sweep found a P1 declarative allocation escape and a P2 missing successful synchronous-client witness;
+  an already-elaborated call boundary and stronger probe fixed both. The final certainty sweep found a P1 late-cleanup
+  misclassification risk; body-entry tracking now distinguishes definite allocation from post-entry receipt phases.
+  Repeated API, lifecycle, ownership, certainty, allocation, constants, tests, proof, documentation, and
+  unnecessary-surface review finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted additive Object Storage composable-surface qualification
 
 - Parent: operational scan-range normalization commit `b8c2cda`.
