@@ -145,6 +145,14 @@ that review does not expand the selected-unit proof boundary.
   publication, disjoint checkpoint/later authority, no replay overlap, exact recovery, and disposable local cache.
   It does not prove concrete run construction, sorting, corruption, capacity arithmetic, reconciliation, codecs, or
   refinement to Ada.
+- The snapshot-isolation write/write model exhausts 336 states at depth 10. It checks fixed Begin sequences,
+  per-written-key post-snapshot rejection, disjoint concurrent commits, checkpoint advancement of the retained exact
+  history boundary, and conservative rejection below that boundary. Three independently validated witnesses cover
+  same-key conflict, disjoint success, and checkpoint-stale rejection. A negative unsafe-commit action must violate
+  the no-invalid-commit monitor. Its unbounded inductive kernel proves 6/6 strict TLAPS obligations for initialization
+  and action-by-action preservation of state/sequence bounds and the invalid-commit monitor. It does not prove
+  retention sufficiency, reads, serializable predicates, grouped commits, byte-key equality, progress, or refinement
+  to Ada.
 
 The TLAPS kernel is a batch-atomic abstraction assigning every batch an arbitrary nonempty transaction set, with
 pairwise-disjoint ownership between batches. It proves publication-epoch monotonicity, acknowledged whole-batch

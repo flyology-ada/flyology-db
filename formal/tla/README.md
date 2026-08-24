@@ -110,6 +110,31 @@ decoders. Current manifest v1 remains the only operational log-engine format; th
 checkpoint publication, recovery, or the dynamically allocated production decoder live, and no refinement theorem
 connects these reference bytes to this TLA+ model.
 
+## Snapshot-isolation validation lane
+
+`SnapshotIsolation.tla` freezes the first production write/write validation rule over two transactions and two keys.
+Each transaction captures the global sequence once at `Begin`. Commit succeeds only when every key in its buffered
+write set has a last-write sequence no later than that fixed snapshot and the snapshot is not older than the retained
+exact-history boundary. A checkpoint may advance that boundary while transactions remain active. An older transaction
+is then rejected conservatively, even for a disjoint key, because a compacted tombstone may no longer be available to
+prove the absence of a post-snapshot write. This is deliberate safety backpressure, not a global transaction lock.
+
+TLC exhausts the finite state graph and checks type/sequence authority plus the explicit no-invalid-commit monitor.
+`SnapshotIsolationUnsafeCommitProbe.tla` adds the forbidden transition that commits despite failed validation and must
+violate that monitor. Three witness modules ask TLC for useful paths, and
+`validate_snapshot_isolation_witnesses.py` independently checks their exact actions and final authority:
+
+- two same-snapshot writers of the same key produce one commit and one conflict;
+- two same-snapshot writers of disjoint keys both commit; and
+- a transaction older than a checkpoint boundary is conservatively rejected although its key is disjoint.
+
+`SnapshotIsolationSafetyProof.tla` is the corresponding unbounded inductive kernel over arbitrary nonempty transaction
+and key sets. TLAPS proves initialization and preservation by Begin, buffering, valid commit, conflict rejection, and
+checkpoint. It proves only that the state types and sequence bounds remain sound and that the modeled valid-commit
+action never records an invalid commit. It does not prove retention sufficiency, reads, serializable predicates,
+grouped commits, byte-key equality, progress, or refinement to Ada. The witness traces are checked design examples,
+not proof or executable-refinement evidence.
+
 ## Witness projection
 
 `CommitPublicationWitness.tla` adds a deliberate invariant violation that asks TLC for one useful path. The
@@ -143,5 +168,6 @@ gate must report 112,031 distinct states at depth 14, record a successful `Prepa
 strict TLAPS must prove 23 of 23 obligations. The manifest lane adds 286 distinct states at depth 10 and 12 of 12
 strict TLAPS obligations. The first-checkpoint lane adds 819 distinct states at depth 19, three independently
 validated witnesses, four required integrated negative probes, full normal-action coverage, and 43 of 43 strict
-TLAPS obligations. Larger state spaces belong to qualification campaigns and must not replace this fast per-change
-gate.
+TLAPS obligations. The snapshot-isolation lane adds 336 distinct states at depth 10, three independently validated
+witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. Larger
+state spaces belong to qualification campaigns and must not replace this fast per-change gate.

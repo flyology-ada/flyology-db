@@ -1,5 +1,26 @@
 # Review record
 
+## Accepted formal snapshot write-validation candidate
+
+- Parent: caller-composable first-checkpoint commit `ce462a8`.
+- Scope: freeze the first snapshot-isolation write/write rule before production implementation. A transaction captures
+  the global sequence at Begin, validates every written key against later exact write authority, and rejects
+  conservatively when its snapshot predates the retained checkpoint-history boundary. This unit adds no Ada runtime
+  behavior, read-version retention, serializable predicate tracking, grouped-commit rule, persisted format, or public
+  API.
+- Constant authority: the two-transaction/two-key TLC dimensions are finite qualification geometry, not product
+  limits. The pinned 336-state/depth-10 graph is a reviewed gate against accidental model narrowing; it can change
+  only with a fresh graph review. Sequence zero is the model's canonical initial authority, not a persisted default.
+- Verification: `./scripts/check-tla.sh` preserves the existing 112,031/286/819-state commit, manifest, and checkpoint
+  lanes and their 23/12/43 TLAPS obligations. The new lane exhausts 336 states at depth 10 with nonzero coverage for
+  every normal action, validates exact same-key conflict, disjoint-success, and checkpoint-stale traces, rejects the
+  deliberately unsafe commit probe, and proves 6/6 strict TLAPS obligations. `./scripts/check-repository.sh`, Python
+  bytecode compilation for the validator, and `git diff --check` pass.
+- Findings cycle: the initial sweep strengthened type safety with snapshot/last-write sequence bounds and added the
+  disjoint-success witness so the conservative checkpoint rule cannot be mistaken for global serialization. The
+  follow-up sweep confirms the model states its exclusions, the validator checks semantic authority rather than
+  accepting any invariant trace, and no P0, P1, P2, or P3 finding remains in this formal-only boundary.
+
 ## Accepted authenticated synchronous client binding candidate
 
 - Parent: Object Storage provenance update `1a6f98c`.

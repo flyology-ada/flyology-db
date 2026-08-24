@@ -286,6 +286,73 @@ done
   >"$temporary_root/tlaps-checkpoint.log" 2>&1
 grep -q 'All 43 obligations proved.' "$temporary_root/tlaps-checkpoint.log"
 
+#  Qualification pins for the reviewed two-transaction/two-key model graph.
+#  They detect accidental state-space narrowing; changing the model requires a
+#  fresh graph review and an intentional update of these expected results.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-snapshot-isolation-states" \
+  -config SnapshotIsolation.cfg SnapshotIsolation \
+  >"$temporary_root/tlc-snapshot-isolation.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-snapshot-isolation.log"
+! grep -q '^Warning:' "$temporary_root/tlc-snapshot-isolation.log"
+grep -q '336 distinct states found' "$temporary_root/tlc-snapshot-isolation.log"
+grep -q 'The depth of the complete state graph search is 10.' \
+  "$temporary_root/tlc-snapshot-isolation.log"
+for action in Begin BufferWrite Commit RejectConflict Checkpoint
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-snapshot-isolation.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-snapshot-isolation-probe-states" \
+  -config SnapshotIsolationUnsafeCommitProbe.cfg SnapshotIsolationUnsafeCommitProbe \
+  >"$temporary_root/tlc-snapshot-isolation-probe.log" 2>&1
+snapshot_probe_status=$?
+set -e
+test "$snapshot_probe_status" -eq 12
+grep -q 'Invariant NoInvalidCommit is violated.' \
+  "$temporary_root/tlc-snapshot-isolation-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-snapshot-isolation-probe.log"
+
+for snapshot_witness in conflict disjoint checkpoint
+do
+  case "$snapshot_witness" in
+    conflict)
+      snapshot_witness_module=SnapshotIsolationWitness
+      ;;
+    disjoint)
+      snapshot_witness_module=SnapshotIsolationDisjointWitness
+      ;;
+    checkpoint)
+      snapshot_witness_module=SnapshotIsolationCheckpointWitness
+      ;;
+  esac
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-snapshot-$snapshot_witness-states" \
+    -config "$snapshot_witness_module.cfg" \
+    -dumpTrace json "$temporary_root/snapshot-$snapshot_witness.json" \
+    "$snapshot_witness_module" \
+    >"$temporary_root/tlc-snapshot-$snapshot_witness.log" 2>&1
+  snapshot_witness_status=$?
+  set -e
+  test "$snapshot_witness_status" -eq 12
+  grep -q 'Invariant WitnessPending is violated.' \
+    "$temporary_root/tlc-snapshot-$snapshot_witness.log"
+  ! grep -q '^Warning:' "$temporary_root/tlc-snapshot-$snapshot_witness.log"
+  "$model_root/validate_snapshot_isolation_witnesses.py" \
+    "$snapshot_witness" "$temporary_root/snapshot-$snapshot_witness.json"
+done
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-snapshot-isolation-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/SnapshotIsolationSafetyProof.tla" \
+  >"$temporary_root/tlaps-snapshot-isolation.log" 2>&1
+grep -q 'All 6 obligations proved.' "$temporary_root/tlaps-snapshot-isolation.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -301,3 +368,7 @@ printf '%s\n' "  Checkpoint TLC 819 distinct states, depth 19"
 printf '%s\n' "  Checkpoint TLAPS 43/43 obligations"
 printf '%s\n' "  Checkpoint committed/rejected/recovery witnesses validated"
 printf '%s\n' "  Negative checkpoint stale/partial/family/ledger probes detected"
+printf '%s\n' "  Snapshot isolation TLC 336 distinct states, depth 10"
+printf '%s\n' "  Snapshot isolation TLAPS 6/6 obligations"
+printf '%s\n' "  Snapshot conflict/disjoint/checkpoint witnesses validated"
+printf '%s\n' "  Negative unsafe snapshot commit probe detected"
