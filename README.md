@@ -65,6 +65,11 @@ The compiled `AGENTS.md` is committed so Codex can use the repository without a 
 both clients' native skill trees are generated locally from the same locked package graph. Repository-specific
 rules remain in `agent-packages/repository`; general Ada and workflow resources come from the shared profile.
 
+APM 0.28.0 compilation must run before materializing `.deps`, or while that ignored directory is temporarily outside
+the workspace. The Object Storage clone contains its own repository instruction package, and this APM release scans
+that nested package despite `.gitignore`; compiling with the clone present can select the wrong root guide. Always
+require `git diff --exit-code -- AGENTS.md apm.lock.yaml` after compilation so scope contamination fails visibly.
+
 The root package follows the shared profile's `main` update channel, while `apm.lock.yaml` pins the exact reviewed
 commit used by normal and frozen installs. Upgrade that lock deliberately, never as part of validation CI:
 
