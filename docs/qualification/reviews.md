@@ -1,5 +1,43 @@
 # Review record
 
+## Accepted complete PutObject and ListObjectsV2 dependency qualification
+
+- Parent: suffix-preserving adjacent-merge activation commit `71c0000`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage build clone from
+  `4d6925e2138f18fca2d24d0f63ed0f0319bdbad9` to exact authoritative local main
+  `a632cc4b0bd4687e02b09cff7923ab4f9fccbfcf`. The author checkout remains read-only coordination state, the root
+  filesystem path pin is unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration, format,
+  allocation limit, task, retry, compaction policy, or publication protocol changes.
+- Complete PutObject ownership and certainty: the dependency adds `Scoped.Put_Object`, reusable
+  `Start_Put_Object`, typed `Finish`, and a buffer-owned synchronous overload that literally waits on that operation.
+  Validation and signing complete before the acquired payload token moves; any vacant same-pool handle can receive
+  the exact moved token at `Finish`, and no original caller-handle pointer is retained. The prepared request binds
+  requested checksum and RequestCharged response fields. No path retries, creates a helper task, or retains borrowed
+  input; every possibly admitted exchange failure retains conservative publication certainty for caller-driven
+  generation-bound reconciliation.
+- ListObjectsV2 ownership and result: `Scoped.List_Objects_V2`, reusable `Start_List_Objects_V2`, typed `Finish`, and
+  the synchronous typed `Objects.List_Page` overload share one owner-driven state machine. It owns prepared request
+  facts and XML-limit-bounded response bytes, retains no request borrow, and preserves either a complete modeled page
+  or typed HTTP terminal/admission diagnostics. Successful pages bind bucket, prefix, delimiter, maximum,
+  continuation/start cursor, encoding, Requester Pays admission, and singleton response headers to the exact request.
+  Separate pages remain independent snapshots; DB selects no listing, pagination, discovery, or retry policy here.
+- Constants and compatibility: all public region, addressing, cancellation, and timeout defaults are the established
+  synchronous values. Response capacity derives from the existing S3 XML parser limit and the synchronous
+  completion-set extent derives from the operation/HTTP/transport topology. This qualification adds no DB constant,
+  public default, persisted value, or resource ceiling.
+- Verification: `./tests/scripts/test.sh` rebuilds the complete DB/Object Storage/XML/HTTP/QUIC closure at exact
+  `a632cc4`, passes repository provenance, local engine, authenticated client, memory/files crash and cacheless
+  recovery, all 32 comparative tests, and pinned TidesDB 4/4. `./scripts/prove.sh` proves 1,090/1,090 selected DB
+  checks (166 flow, 924 prover), with zero selected-unit warnings, unproved/justified checks, or `pragma Assume`; exact
+  pre/post host audits are clean. Upstream's reported 41/41 plus 126 crash cases, 18/18 repeated provider lanes,
+  GNATdoc, and 936/936 proof are corroborating dependency evidence, not substitutes for the DB campaign.
+- Findings cycle: API, limited ownership, validation/move/rollback ordering, terminal drain/finalization, request and
+  response binding, publication certainty, listing scope, dependency provenance, constants, and unnecessary-surface
+  review found one P2 documentation ambiguity: inherited `Finish` prose could imply that the original caller handle
+  was retained. Object Storage corrected both PutObject and UploadPart to state that any vacant same-pool handle
+  receives the exact moved token. Rebuild, deterministic rerun, warning-strict proof rerun, and final re-review find
+  no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted suffix-preserving adjacent-merge activation
 
 - Parent: composable DeleteObjects dependency qualification commit `917bcc1`.
