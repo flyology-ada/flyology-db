@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted authenticated synchronous client binding candidate
+
+- Parent: Object Storage provenance update `1a6f98c`.
+- Scope: bind one storage context to caller-owned HTTP and signing state, copy all wire-policy selections explicitly,
+  and route conditional immutable Put plus bounded whole/range Get through the buffer-owned Object Storage wrappers.
+  Those wrappers are literal waits over `Client.Scoped`, so the engine gains authenticated I/O without a helper task,
+  retry path, or second certainty implementation. Reads preserve opaque ETag generations; an initially unbound range
+  performs HeadObject and then uses that exact generation. This unit adds no DB-level composable operation and makes
+  no remote-provider qualification claim.
+- Constant authority: request/response buffer capacities are one-token operation geometry, while their block sizes
+  derive lazily from an encoded immutable image or an authenticated/persisted read bound. Region, addressing, content
+  type, owner, requester-pays, and checksum choices are required caller inputs. The empty provider version selector is
+  derived from the DB's ETag-only persisted generation model. Loopback credentials, ports, timeouts, readiness budget,
+  family limits, and object namespace in the black-box gate are documented fixtures, not product defaults.
+- Verification: `./tests/scripts/test.sh` passes root/test/server builds, repository/provenance checks, deterministic
+  engine and format suites, authenticated memory-server bucket/create/commit/close/cacheless-reopen byte recovery,
+  filesystem subprocess crash/recovery, 32 comparative cases, pinned TidesDB 4/4, and all adapter fixtures against
+  Object Storage `cad6f37d8e3370b13e4462720858c7ac7ec7e311` with its HTTP/QUIC PR #33 pin
+  `98c0e26f7665df4fecc299abd96ca5827590f0f8`. The unchanged TLA+/TLC/TLAPS gate remains green at
+  112,031/286/819 commit/manifest/checkpoint states and 23/12/43 obligations, all witnesses, and all negative probes.
+  Warning-strict forced FSF GNATprove 16.1.0 proves the unchanged six-unit deterministic boundary at 1,078/1,078
+  checks (164 flow, 914 prover), zero warnings, unproved/justified checks, or `pragma Assume`, maximum 6,840 steps.
+- Findings cycle: the first sweep moved publication-attempt accounting after client-side allocation and hashing,
+  made command-line validation precede probe argument access, and documented the ETag/current-version authority. The
+  proof sweep repaired the typed HTTP/Object Storage compilation closure with a proof-only project and generation-only
+  Alire setup while retaining the exact selected DB units. The final ownership/certainty/bounds/documentation sweep
+  finds no remaining P0, P1, P2, or P3 issue in this binding boundary.
+
 ## Accepted cacheless first-checkpoint recovery candidate
 
 - Parent: caller-owned checkpoint identity commit `53e8405`.

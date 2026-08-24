@@ -10,6 +10,73 @@ cd "$project_root"
 cd "$project_root/tests"
 "$alr" build
 ./bin/flyology-db-tests
+
+# The local authenticated client gate uses one ephemeral Flyology memory
+# server. Fixed credentials, a ten-second readiness window (200 * 50 ms), and
+# one fresh process-scoped bucket are test-corpus choices, not DB defaults or
+# retry policy.
+client_server_dir="$project_root/.deps/flyology-object-storage/server"
+client_server_root=$(mktemp -d "${TMPDIR:-/tmp}/flyology-db-client-server.XXXXXX")
+client_server_log="$client_server_root/server.log"
+client_access_key=FLYOLOGYDBCLIENT
+client_secret_key=flyology-db-client-test-secret
+client_server_pid=""
+cleanup_client_server() {
+  if [ -n "$client_server_pid" ] && kill -0 "$client_server_pid" >/dev/null 2>&1; then
+    kill -TERM "$client_server_pid" >/dev/null 2>&1 || true
+    wait "$client_server_pid" >/dev/null 2>&1 || true
+  fi
+  case "$client_server_root" in
+    "${TMPDIR:-/tmp}"/flyology-db-client-server.*) rm -rf "$client_server_root" ;;
+    *) printf '%s\n' "refusing unexpected client-server cleanup path" >&2 ;;
+  esac
+}
+trap cleanup_client_server EXIT HUP INT TERM
+(cd "$client_server_dir" && "$alr" build)
+env \
+  FLYOLOGY_OBJECT_STORAGE_BACKEND=memory \
+  FLYOLOGY_ADMIN_CREDENTIALS_FILE="$client_server_root/admin.credentials" \
+  FLYOLOGY_ADMIN_ASSET_ROOT="$client_server_dir/assets" \
+  FLYOLOGY_S3_PORT=0 \
+  FLYOLOGY_ADMIN_PORT=0 \
+  AWS_ACCESS_KEY_ID="$client_access_key" \
+  AWS_SECRET_ACCESS_KEY="$client_secret_key" \
+  AWS_REGION=us-east-1 \
+  "$client_server_dir/bin/flyology_object_storage_server" >"$client_server_log" 2>&1 &
+client_server_pid=$!
+client_port=""
+for client_attempt in $(seq 1 200)
+do
+  client_port=$(sed -n \
+    's/^READY s3 http:\/\/[^:]*:\([0-9][0-9]*\) backend=memory$/\1/p' \
+    "$client_server_log" | tail -1)
+  if [ -n "$client_port" ]; then
+    break
+  fi
+  if ! kill -0 "$client_server_pid" >/dev/null 2>&1; then
+    cat "$client_server_log" >&2
+    printf '%s\n' "client test server exited before readiness" >&2
+    exit 1
+  fi
+  if [ "$client_attempt" -eq 200 ]; then
+    cat "$client_server_log" >&2
+    printf '%s\n' "client test server did not become ready" >&2
+    exit 1
+  fi
+  sleep 0.05
+done
+client_bucket="flyology-db-client-$$"
+./bin/flyology-db-client-probe \
+  "http://127.0.0.1:$client_port" \
+  "$client_bucket" \
+  "$client_access_key" \
+  "$client_secret_key"
+kill -TERM "$client_server_pid"
+wait "$client_server_pid"
+client_server_pid=""
+cleanup_client_server
+trap - EXIT HUP INT TERM
+
 crash_root=$(mktemp -d "${TMPDIR:-/tmp}/flyology-db-group-crash.XXXXXX")
 manifest_orphan_root=$(mktemp -d "${TMPDIR:-/tmp}/flyology-db-manifest-orphan.XXXXXX")
 manifest_head_root=$(mktemp -d "${TMPDIR:-/tmp}/flyology-db-manifest-head.XXXXXX")

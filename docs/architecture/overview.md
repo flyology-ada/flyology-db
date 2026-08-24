@@ -61,17 +61,23 @@ task with bounded count and byte admission and generation-stamped completion slo
 transaction. `Commit` is an uncoupled singleton. `Commit_Group` intentionally gives at most eight transactions one
 absolute deadline, immutable batch, and HEAD transition. Queue cancellation and timeout apply before atomic
 admission. Once publication starts, every admitted caller waits for terminal classification under that same absolute
-storage deadline. Future sustained remote I/O will compose bounded Flyology scoped operations, completion sets,
-channels, and unique buffers over this same semantic core. CPU-heavy sorting, compression, and merging will use
-bounded native Ada tasks or an explicitly isolated process with detached owned input. The engine will not create
-detached C threads.
+storage deadline. The current authenticated client binding is the first composable-core step: its synchronous
+conditional Put and whole/range Get calls are literal waits over Object Storage scoped state machines, with one moved
+unique-buffer token per body operation, one absolute DB deadline, no helper task, and no automatic retry. A range
+whose generation is not yet known first performs HeadObject and then binds the range read to that exact ETag. Later
+DB-level composable operations will let callers drive bounded completion sets over this same semantic core. CPU-heavy
+sorting, compression, and merging will use bounded native Ada tasks or an explicitly isolated process with detached
+owned input. The engine will not create detached C threads.
 
 The synchronous runtime does not inline configured maximum values or allocate a theoretical maximum-history image
 product. A caller's borrowed bytes are copied once into a transaction-owned arena, atomically moved into a coordinator
 slot, and encoded into one exact reference-counted immutable batch image. The provider source borrows that image for
-the synchronous call; it does not clone it. Recovery sinks own exact response images, and live state stores image
-offsets/views. Outcome-unknown receipts retain a shared exact image until conclusive byte-for-byte reconciliation.
-Later composable overloads may move `Unique_Buffer` tokens while reusing this semantic core.
+the backend-neutral synchronous call; it does not clone it. The authenticated client adapter lazily allocates an
+exact request buffer from the encoded image length and an exact response buffer from the authenticated or persisted
+read bound. It copies into and out of those transient tokens while the engine keeps the same certainty and recovery
+semantics. Recovery sinks own exact response images, and live state stores image offsets/views. Outcome-unknown
+receipts retain a shared exact image until conclusive byte-for-byte reconciliation. Later DB-level composable
+overloads may move caller-owned `Unique_Buffer` tokens while reusing this semantic core.
 
 Recovery admits manifest and SST headers before allocating their exact authenticated whole-object lengths, binds the
 second read to the first read's opaque generation, and allocates replay history only for batches after the checkpoint

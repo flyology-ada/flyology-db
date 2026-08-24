@@ -9,10 +9,13 @@ with Flyology.DB.Formats;
 with Flyology.DB.LSM_Formats;
 with Flyology.DB.Object_Storage;
 with Flyology.DB.Testing;
+with Flyology.HTTP;
+with Flyology.HTTP.Client;
 with Flyology.Object_Storage;
 with Flyology.Object_Storage.Backends;
 with Flyology.Object_Storage.Backends.Files;
 with Flyology.Object_Storage.Backends.Memory;
+with Flyology.Object_Storage.Client.Low_Level;
 
 package body Flyology.DB.Engine_Tests is
 
@@ -22,10 +25,13 @@ package body Flyology.DB.Engine_Tests is
    package LSM renames Flyology.DB.LSM_Formats;
    package Root_DB renames Flyology.DB;
    package Testing renames Flyology.DB.Testing;
+   package HTTP renames Flyology.HTTP;
+   package HTTP_Client renames Flyology.HTTP.Client;
    package OS renames Flyology.Object_Storage;
    package Backends renames Flyology.Object_Storage.Backends;
    package Files renames Flyology.Object_Storage.Backends.Files;
    package Memory renames Flyology.Object_Storage.Backends.Memory;
+   package Client_Low_Level renames Flyology.Object_Storage.Client.Low_Level;
 
    use type Byte;
    use type Ada.Real_Time.Time;
@@ -4431,6 +4437,47 @@ package body Flyology.DB.Engine_Tests is
             end;
             if not Raised then
                raise Program_Error with "982-byte manifest-key prefix was accepted";
+            end if;
+         end;
+         declare
+            Context  : Storage_Context;
+            --  This binding-only fixture starts no request. One client slot
+            --  is therefore sufficient test geometry, not DB capacity.
+            Client   : aliased HTTP_Client.Client (Capacity => 1);
+            Origin   : constant HTTP.Origin := HTTP.Parse_Origin ("http://127.0.0.1:1");
+            --  Fixed non-secret fixture credentials exercise retained limited
+            --  ownership only; their spelling is not authentication policy.
+            Identity : aliased Client_Low_Level.Credentials :=
+              Client_Low_Level.Make_Credentials ("FLYOLOGYDBCLIENT", "binding-secret");
+            --  Loopback origin, us-east-1, path addressing, binary media, no
+            --  optional owner/request-payer headers, and disabled transport
+            --  checksum are binding-only fixture choices, never DB defaults.
+            Result   : Outcome_Code;
+            Raised   : Boolean := False;
+         begin
+            Binding.Bind_Client
+              (Context,
+               Client'Access,
+               Origin,
+               Identity'Access,
+               Bucket,
+               "client-binding",
+               "us-east-1",
+               Client_Low_Level.Path_Style,
+               "application/octet-stream",
+               "",
+               "",
+               False);
+            Testing.Remove_Run (Context, ID (1), Result);
+            Expect (Result, Invalid_State, "backend-only test hook accepted a client context");
+            begin
+               Binding.Bind (Context, Store'Access, Bucket, "client-rebind");
+            exception
+               when Program_Error =>
+                  Raised := True;
+            end;
+            if not Raised then
+               raise Program_Error with "client-bound storage context was rebound";
             end if;
          end;
          Test_CRUD_And_Recovery (Store'Access, "memory-basic", 10);

@@ -13,8 +13,10 @@ This repository is under active development. The current acceptance state and re
 The pending operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v2 roots with explicit
 LSM limits, stable column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/
 database limits. Cacheless recovery now admits a complete nonempty first checkpoint and replays only its later log
-suffix. A public certainty-preserving Flush operation, authenticated remote binding, and dynamic family changes remain
-separate review units; the current checkpoint publisher is private test infrastructure only.
+suffix. An authenticated client binding routes synchronous conditional writes and bounded reads through the same
+Object Storage scoped state machines used by composable callers. Remote-provider qualification, a public
+certainty-preserving Flush operation, a DB-level composable API, and dynamic family changes remain separate review
+units; the current checkpoint publisher is private test infrastructure only.
 
 ## Durability rule
 

@@ -144,6 +144,6 @@ TLC or future gates.
 
 This unit does not implement a public checkpoint publication API or receipt, ambiguous-publication reconciliation,
 automatic flushing, multiple checkpoints, compaction, run pruning, garbage collection, scans, MVCC, snapshots,
-remote-provider qualification, S3, asynchronous/composable I/O, or an LSM performance claim. The operational scope
-is manifest-v2 root creation, exact whole-checkpoint planning, a private success-path fixture publisher, and
-header-first cacheless recovery of one nonempty first checkpoint plus its later batch suffix.
+remote-provider matrix qualification, a public DB-level composable checkpoint operation, or an LSM performance
+claim. The operational scope is manifest-v2 root creation, exact whole-checkpoint planning, a private success-path
+fixture publisher, and header-first cacheless recovery of one nonempty first checkpoint plus its later batch suffix.

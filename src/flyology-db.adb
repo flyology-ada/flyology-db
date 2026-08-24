@@ -1,17 +1,26 @@
+with Ada.Calendar;
+with Ada.Calendar.Formatting;
 with Ada.Real_Time;
 with Ada.Streams;
 with Ada.Unchecked_Deallocation;
+with Flyology.Buffers;
 with Flyology.DB.Batch_Formats;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
 with Flyology.DB.LSM_Runtime_Formats;
 with Flyology.DB.Manifest_Formats;
 with Flyology.Object_Storage;
+with Flyology.Object_Storage.Client.Objects;
+with Flyology.Object_Storage.Client.Scoped;
+with Flyology.Object_Storage.S3.SigV4;
 
 package body Flyology.DB is
 
    package OS renames Flyology.Object_Storage;
    package Backends renames Flyology.Object_Storage.Backends;
+   package Client_Low_Level renames Flyology.Object_Storage.Client.Low_Level;
+   package Client_Objects renames Flyology.Object_Storage.Client.Objects;
+   package Client_Scoped renames Flyology.Object_Storage.Client.Scoped;
    package Batches renames Flyology.DB.Batch_Formats;
    package Heads renames Flyology.DB.Head_Policy;
    package LSM_Runtime renames Flyology.DB.LSM_Runtime_Formats;
@@ -27,6 +36,16 @@ package body Flyology.DB is
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
    use type Formats.Byte_Array;
+   use type Client_Low_Level.Get_Object_Head_Outcome_Kind;
+   use type Client_Low_Level.Head_Bucket_Outcome_Kind;
+   use type Client_Low_Level.Head_Object_Outcome_Kind;
+   use type Client_Low_Level.Put_Object_Outcome_Kind;
+   use type Client_Scoped.Conditional_Put_Result_Kind;
+   use type Client_Scoped.Failure_Reason;
+   use type Client_Scoped.Head_Result_Kind;
+   use type Client_Scoped.Publication_Disposition;
+   use type Client_Scoped.Range_Get_Result_Kind;
+   use type Client_Scoped.Whole_Get_Result_Kind;
    use type Flyology.DB.Formats.Decode_Status;
    use type Heads.Identifier;
    use type Manifests.Column_Family_Configuration;
@@ -530,6 +549,9 @@ package body Flyology.DB is
    function Generation_String (Item : Generation_Value) return String
    is (if Item.Length = 0 then "" else Item.Data (1 .. Item.Length));
 
+   function Storage_Bound (Storage : Storage_Context) return Boolean
+   is (Storage.Backend /= null or else Storage.HTTP_Client /= null);
+
    function Full_Key (Storage : Storage_Context; Suffix : String) return String
    is (UStrings.To_String (Storage.Prefix) & "/" & Suffix);
 
@@ -855,6 +877,54 @@ package body Flyology.DB is
 
    package body Storage_Port is
 
+      function Remaining (Deadline : Ada.Real_Time.Time) return Duration is
+         Now : constant Ada.Real_Time.Time := Ada.Real_Time.Clock;
+      begin
+         if Deadline <= Now then
+            return 0.0;
+         end if;
+         return Ada.Real_Time.To_Duration (Deadline - Now);
+      exception
+         when Constraint_Error =>
+            return Duration'Last;
+      end Remaining;
+
+      function Signing_Timestamp return String is
+         Image : constant String :=
+           Ada.Calendar.Formatting.Image (Ada.Calendar.Clock, Include_Time_Fraction => False, Time_Zone => 0);
+      begin
+         --  AWS SigV4 fixes the basic UTC form YYYYMMDDTHHMMSSZ. These
+         --  projections select that wire representation from Ada's extended
+         --  calendar image; they are protocol compatibility, not DB policy.
+         return
+           Image (Image'First .. Image'First + 3)
+           & Image (Image'First + 5 .. Image'First + 6)
+           & Image (Image'First + 8 .. Image'First + 9)
+           & "T"
+           & Image (Image'First + 11 .. Image'First + 12)
+           & Image (Image'First + 14 .. Image'First + 15)
+           & Image (Image'First + 17 .. Image'First + 18)
+           & "Z";
+      end Signing_Timestamp;
+
+      function Quoted_Generation (Item : Generation_Value) return String
+      is ('"' & Generation_String (Item) & '"');
+
+      procedure Set_Quoted_Generation (Target : out Generation_Value; Value : String; Valid : out Boolean) is
+      begin
+         Valid :=
+           Value'Length >= 2
+           and then Value (Value'First) = '"'
+           and then Value (Value'Last) = '"'
+           and then Value'Length - 2 <= Maximum_Generation_Bytes;
+         if Valid then
+            Set_Generation (Target, Value (Value'First + 1 .. Value'Last - 1));
+            Valid := Target.Length > 0;
+         else
+            Target := (others => <>);
+         end if;
+      end Set_Quoted_Generation;
+
       procedure Bucket_Available
         (Storage  : in out Storage_Context;
          Deadline : Ada.Real_Time.Time;
@@ -863,7 +933,7 @@ package body Flyology.DB is
       is
          Status : OS.Status;
       begin
-         if Storage.Backend = null then
+         if not Storage_Bound (Storage) then
             Result := Invalid_State;
             return;
          elsif Token /= null and then Token.Requested then
@@ -873,21 +943,51 @@ package body Flyology.DB is
             Result := Timed_Out;
             return;
          end if;
-         Storage.Backend.Head_Bucket
-           (Bucket   => UStrings.To_String (Storage.Bucket),
-            Token    => Token,
-            Deadline => Deadline,
-            Result   => Status);
-         case Status is
-            when OS.Success                         =>
-               Result := Success;
+         if Storage.HTTP_Client /= null then
+            declare
+               Parameters : Client_Low_Level.Head_Bucket_Parameters;
+            begin
+               Parameters.Expected_Bucket_Owner := Storage.Expected_Bucket_Owner;
+               declare
+                  Prepared : constant Client_Low_Level.Prepared_Request :=
+                    Client_Low_Level.Prepare_Head_Bucket
+                      (Storage.Client_Origin,
+                       Storage.Client_Style,
+                       UStrings.To_String (Storage.Bucket),
+                       Parameters,
+                       Storage.Client_Identity.all,
+                       UStrings.To_String (Storage.Client_Region),
+                       Signing_Timestamp);
+                  Outcome  : constant Client_Low_Level.Head_Bucket_Outcome :=
+                    Client_Low_Level.Execute_Head_Bucket
+                      (Storage.HTTP_Client.all, Prepared, Remaining (Deadline), Token);
+               begin
+                  if Outcome.Kind = Client_Low_Level.Bucket_Found then
+                     Result := Success;
+                  elsif Outcome.Status = 404 then
+                     Result := Not_Found;
+                  else
+                     Result := Storage_Failure;
+                  end if;
+               end;
+            end;
+         else
+            Storage.Backend.Head_Bucket
+              (Bucket   => UStrings.To_String (Storage.Bucket),
+               Token    => Token,
+               Deadline => Deadline,
+               Result   => Status);
+            case Status is
+               when OS.Success                         =>
+                  Result := Success;
 
-            when OS.Not_Found | OS.Bucket_Not_Found =>
-               Result := Not_Found;
+               when OS.Not_Found | OS.Bucket_Not_Found =>
+                  Result := Not_Found;
 
-            when others                             =>
-               Result := Storage_Failure;
-         end case;
+               when others                             =>
+                  Result := Storage_Failure;
+            end case;
+         end if;
       exception
          when Flyology.Cancellation.Operation_Cancelled =>
             Result := Cancelled;
@@ -898,6 +998,240 @@ package body Flyology.DB is
                Result := Storage_Failure;
             end if;
       end Bucket_Available;
+
+      procedure Classify_Read_Failure (Failure : Client_Scoped.Failure_Reason; Result : out Read_Outcome) is
+      begin
+         case Failure is
+            when Client_Scoped.Cancelled          =>
+               Result := Read_Cancelled;
+
+            when Client_Scoped.Timed_Out          =>
+               Result := Read_Timed_Out;
+
+            when Client_Scoped.Response_Too_Large =>
+               Result := Read_Capacity_Exceeded;
+
+            when others                           =>
+               Result := Read_Failed;
+         end case;
+      end Classify_Read_Failure;
+
+      procedure Get_Selected_Client
+        (Storage             : in out Storage_Context;
+         Key                 : String;
+         Requested           : OS.Byte_Range;
+         Expected_Generation : Generation_Value;
+         Deadline            : Ada.Real_Time.Time;
+         Token               : access Flyology.Cancellation.Token;
+         Data                : out Flyology.Bytes.Unbounded_Bytes;
+         Object_Length       : out Natural;
+         Generation          : out Generation_Value;
+         Result              : out Read_Outcome;
+         Maximum_Length      : Natural)
+      is
+         Generation_Tag     : UStrings.Unbounded_String;
+         --  DB durability binds reads to opaque ETag generations. An empty
+         --  provider version selects that ETag from the current object;
+         --  persisting provider version IDs would change the recovery format
+         --  and compatibility contract.
+         Current_Version_ID : constant String := "";
+
+         procedure Copy_Result (Source : Flyology.Buffers.Unique_Buffer) is
+            procedure Append (Bytes : Ada.Streams.Stream_Element_Array) is
+            begin
+               Flyology.Bytes.Reserve_Capacity (Data, Bytes'Length);
+               Flyology.Bytes.Append (Data, Bytes);
+               Image_Accounting.Record_Sink_Bytes (Bytes'Length);
+            end Append;
+         begin
+            Flyology.Buffers.With_Readable_Data (Source, Append'Access);
+         end Copy_Result;
+
+         procedure Map_Response (Response : Client_Low_Level.Get_Object_Head_Outcome; Valid : out Boolean) is
+         begin
+            Valid := False;
+            if Response.Kind = Client_Low_Level.Object_Opened then
+               Set_Quoted_Generation (Generation, UStrings.To_String (Response.Result.Entity_Tag), Valid);
+            elsif Response.Status = 404 then
+               Result := Object_Missing;
+            elsif Response.Status = 412 then
+               Result := Read_Precondition_Failed;
+            else
+               Result := Read_Failed;
+            end if;
+         end Map_Response;
+      begin
+         Flyology.Bytes.Clear (Data);
+         Object_Length := 0;
+         Generation := (others => <>);
+         if Maximum_Length = 0 then
+            Result := Read_Capacity_Exceeded;
+            return;
+         end if;
+         if Requested.Kind /= OS.Whole_Range and then Expected_Generation.Length = 0 then
+            declare
+               Parameters : Client_Low_Level.Head_Object_Parameters := (others => <>);
+            begin
+               Parameters.Expected_Bucket_Owner := Storage.Expected_Bucket_Owner;
+               Parameters.Request_Payer := Storage.Client_Request_Payer;
+               Parameters.Checksum_Mode := Storage.Client_Checksum_Mode;
+               declare
+                  Head : constant Client_Scoped.Head_Result :=
+                    Client_Objects.Head_Object
+                      (Storage.HTTP_Client.all,
+                       Storage.Client_Origin,
+                       UStrings.To_String (Storage.Bucket),
+                       Key,
+                       Parameters,
+                       Storage.Client_Identity.all,
+                       UStrings.To_String (Storage.Client_Region),
+                       Storage.Client_Style,
+                       Remaining (Deadline),
+                       Token);
+               begin
+                  if Head.Kind = Client_Scoped.Head_Exchange_Failed then
+                     Classify_Read_Failure (Head.Failure, Result);
+                     return;
+                  elsif Head.Response.Kind = Client_Low_Level.Head_Object_Rejected then
+                     Result :=
+                       (if Head.Response.Status = 404
+                        then Object_Missing
+                        elsif Head.Response.Status = 412
+                        then Read_Precondition_Failed
+                        else Read_Failed);
+                     return;
+                  end if;
+                  declare
+                     Head_Generation : Generation_Value;
+                     Valid           : Boolean;
+                  begin
+                     Set_Quoted_Generation
+                       (Head_Generation, UStrings.To_String (Head.Response.Result.Entity_Tag), Valid);
+                     if not Valid then
+                        Result := Read_Corrupt;
+                        return;
+                     end if;
+                     Generation_Tag := UStrings.To_Unbounded_String (Quoted_Generation (Head_Generation));
+                  end;
+               end;
+            end;
+         elsif Expected_Generation.Length > 0 then
+            Generation_Tag := UStrings.To_Unbounded_String (Quoted_Generation (Expected_Generation));
+         end if;
+
+         declare
+            --  One exact destination token is the entire retained-body
+            --  requirement of a synchronous wait over the scoped Get child.
+            --  Its block derives from the authenticated/caller-selected DB
+            --  read bound; capacity one is operation geometry, not DB policy.
+            Pool        :
+              aliased Flyology.Buffers.Pool (Block_Size => Positive (Maximum_Length), Capacity => 1);
+            Destination : aliased Flyology.Buffers.Unique_Buffer (Pool'Access);
+            Valid       : Boolean;
+         begin
+            Flyology.Buffers.Acquire (Destination);
+            if Requested.Kind = OS.Whole_Range then
+               declare
+                  Outcome : constant Client_Scoped.Whole_Get_Result :=
+                    Client_Objects.Get_Whole
+                      (Storage.HTTP_Client.all,
+                       Storage.Client_Origin,
+                       UStrings.To_String (Storage.Bucket),
+                       Key,
+                       Destination,
+                       Storage.Client_Identity.all,
+                       UStrings.To_String (Generation_Tag),
+                       Current_Version_ID,
+                       UStrings.To_String (Storage.Client_Region),
+                       Storage.Client_Style,
+                       UStrings.To_String (Storage.Expected_Bucket_Owner),
+                       UStrings.To_String (Storage.Client_Request_Payer),
+                       Storage.Client_Checksum_Mode,
+                       Remaining (Deadline),
+                       Token);
+               begin
+                  if Outcome.Kind = Client_Scoped.Whole_Get_Exchange_Failed then
+                     Classify_Read_Failure (Outcome.Failure, Result);
+                     return;
+                  end if;
+                  Map_Response (Outcome.Response, Valid);
+                  if not Valid then
+                     if Outcome.Response.Kind = Client_Low_Level.Object_Opened then
+                        Result := Read_Corrupt;
+                     end if;
+                     return;
+                  elsif Outcome.Response.Status /= 200
+                    or else not Outcome.Response.Result.Content_Length.Is_Set
+                    or else Outcome.Response.Result.Content_Length.Value > OS.Byte_Count (Natural'Last)
+                    or else Natural (Outcome.Response.Result.Content_Length.Value)
+                            /= Flyology.Buffers.Length (Destination)
+                  then
+                     Result := Read_Corrupt;
+                     return;
+                  end if;
+                  Object_Length := Natural (Outcome.Response.Result.Content_Length.Value);
+               end;
+            else
+               declare
+                  Outcome : constant Client_Scoped.Range_Get_Result :=
+                    Client_Objects.Get_Range
+                      (Storage.HTTP_Client.all,
+                       Storage.Client_Origin,
+                       UStrings.To_String (Storage.Bucket),
+                       Key,
+                       Requested,
+                       Destination,
+                       Storage.Client_Identity.all,
+                       UStrings.To_String (Generation_Tag),
+                       Current_Version_ID,
+                       UStrings.To_String (Storage.Client_Region),
+                       Storage.Client_Style,
+                       UStrings.To_String (Storage.Expected_Bucket_Owner),
+                       UStrings.To_String (Storage.Client_Request_Payer),
+                       Storage.Client_Checksum_Mode,
+                       Remaining (Deadline),
+                       Token);
+               begin
+                  if Outcome.Kind = Client_Scoped.Range_Get_Exchange_Failed then
+                     Classify_Read_Failure (Outcome.Failure, Result);
+                     return;
+                  end if;
+                  Map_Response (Outcome.Response, Valid);
+                  if not Valid then
+                     if Outcome.Response.Kind = Client_Low_Level.Object_Opened then
+                        Result := Read_Corrupt;
+                     end if;
+                     return;
+                  elsif Outcome.Response.Status /= 206
+                    or else not Outcome.Has_Resolved_Range
+                    or else Outcome.Resolved.Total_Length > OS.Byte_Count (Natural'Last)
+                    or else Outcome.Resolved.Last < Outcome.Resolved.First
+                    or else Outcome.Resolved.Last - Outcome.Resolved.First + 1
+                            /= OS.Byte_Count (Flyology.Buffers.Length (Destination))
+                  then
+                     Result := Read_Corrupt;
+                     return;
+                  end if;
+                  Object_Length := Natural (Outcome.Resolved.Total_Length);
+               end;
+            end if;
+            Copy_Result (Destination);
+            Result := Object_Read;
+         end;
+      exception
+         when Flyology.Cancellation.Operation_Cancelled =>
+            Result := Read_Cancelled;
+         when Storage_Error =>
+            Flyology.Bytes.Clear (Data);
+            Result := Read_Capacity_Exceeded;
+         when others =>
+            Flyology.Bytes.Clear (Data);
+            if Deadline <= Ada.Real_Time.Clock then
+               Result := Read_Timed_Out;
+            else
+               Result := Read_Failed;
+            end if;
+      end Get_Selected_Client;
 
       procedure Get_Selected
         (Storage             : in out Storage_Context;
@@ -956,6 +1290,24 @@ package body Flyology.DB is
             return;
          elsif Deadline <= Ada.Real_Time.Clock then
             Result := Read_Timed_Out;
+            return;
+         end if;
+         if Storage.HTTP_Client /= null then
+            Get_Selected_Client
+              (Storage,
+               Key,
+               Requested,
+               Expected_Generation,
+               Deadline,
+               Token,
+               Data,
+               Object_Length,
+               Generation,
+               Result,
+               Maximum_Length);
+            return;
+         elsif Storage.Backend = null then
+            Result := Read_Failed;
             return;
          end if;
          if Expected_Generation.Length > 0 then
@@ -1068,6 +1420,146 @@ package body Flyology.DB is
          end if;
       end Get_Whole;
 
+      procedure Put_Common_Client
+        (Storage      : in out Storage_Context;
+         Key          : String;
+         Image        : not null Shared_Image_Access;
+         Conditions   : OS.Write_Conditions;
+         Before_Point : Storage_Fault_Point;
+         Deadline     : Ada.Real_Time.Time;
+         Token        : access Flyology.Cancellation.Token;
+         Generation   : out Generation_Value;
+         Result       : out Put_Outcome;
+         Entered      : out Boolean)
+      is
+         Length : constant Natural := Flyology.Bytes.Length (Image.Data);
+      begin
+         Generation := (others => <>);
+         Entered := False;
+         if Length = 0 then
+            Result := Put_Definite_Failure;
+            return;
+         end if;
+         declare
+            --  The request body owns one exact token for the duration of the
+            --  synchronous wait. Its block is the already-encoded immutable
+            --  object length; capacity one is derived operation geometry.
+            Pool           : aliased Flyology.Buffers.Pool (Block_Size => Positive (Length), Capacity => 1);
+            Payload_Buffer : Flyology.Buffers.Unique_Buffer (Pool'Access);
+            Payload_Text   : String (1 .. Length);
+
+            procedure Fill (Data : in out Ada.Streams.Stream_Element_Array; Written : in out Natural) is
+            begin
+               for Offset in Natural range 0 .. Length - 1 loop
+                  declare
+                     Value : constant Ada.Streams.Stream_Element :=
+                       Flyology.Bytes.Element (Image.Data, Offset + 1);
+                  begin
+                     Data (Data'First + Ada.Streams.Stream_Element_Offset (Offset)) := Value;
+                     Payload_Text (Offset + 1) := Character'Val (Value);
+                  end;
+               end loop;
+               Written := Length;
+            end Fill;
+         begin
+            Flyology.Buffers.Acquire (Payload_Buffer);
+            Flyology.Buffers.With_Writable_Data (Payload_Buffer, Fill'Access);
+            declare
+               Payload_SHA256 : constant String := Flyology.Object_Storage.S3.SigV4.SHA256_Hex (Payload_Text);
+               Outcome        : Client_Scoped.Conditional_Put_Result;
+            begin
+               --  Test accounting starts only after all local validation,
+               --  allocation, and hashing have succeeded, immediately before
+               --  the mutation call can acquire admission.
+               Storage.Test_Control.Record_Put
+                 (Is_Head     => Before_Point = Before_Head_Put,
+                  Is_Manifest => Before_Point = Before_Manifest_Put,
+                  Is_Run      => Before_Point = Before_Run_Put);
+               Entered := True;
+               if UStrings.To_String (Conditions.If_None_Match) = "*" then
+                  Outcome :=
+                    Client_Objects.Put_If_Absent
+                      (Storage.HTTP_Client.all,
+                       Storage.Client_Origin,
+                       UStrings.To_String (Storage.Bucket),
+                       Key,
+                       Payload_Buffer,
+                       Payload_SHA256,
+                       Storage.Client_Identity.all,
+                       UStrings.To_String (Storage.Client_Region),
+                       Storage.Client_Style,
+                       UStrings.To_String (Storage.Client_Content_Type),
+                       UStrings.To_String (Storage.Expected_Bucket_Owner),
+                       Remaining (Deadline),
+                       Token);
+               else
+                  Outcome :=
+                    Client_Objects.Put_If_Matches
+                      (Storage.HTTP_Client.all,
+                       Storage.Client_Origin,
+                       UStrings.To_String (Storage.Bucket),
+                       Key,
+                       UStrings.To_String (Conditions.If_Match),
+                       Payload_Buffer,
+                       Payload_SHA256,
+                       Storage.Client_Identity.all,
+                       UStrings.To_String (Storage.Client_Region),
+                       Storage.Client_Style,
+                       UStrings.To_String (Storage.Client_Content_Type),
+                       UStrings.To_String (Storage.Expected_Bucket_Owner),
+                       Remaining (Deadline),
+                       Token);
+               end if;
+               case Outcome.Disposition is
+                  when Client_Scoped.Published                    =>
+                     if Outcome.Kind /= Client_Scoped.Put_Response_Available
+                       or else Outcome.Response.Kind /= Client_Low_Level.Object_Put
+                     then
+                        Result := Put_Outcome_Unknown;
+                     else
+                        declare
+                           Valid : Boolean;
+                        begin
+                           Set_Quoted_Generation
+                             (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+                           Result := (if Valid then Object_Published else Put_Outcome_Unknown);
+                        end;
+                     end if;
+
+                  when Client_Scoped.Precondition_Failed          =>
+                     Result := Put_Precondition_Failed;
+
+                  when Client_Scoped.Cancelled_Before_Publication =>
+                     Result := Put_Cancelled;
+
+                  when Client_Scoped.Definitely_Not_Published     =>
+                     Result :=
+                       (if Outcome.Failure = Client_Scoped.Cancelled
+                        then Put_Cancelled
+                        elsif Outcome.Failure = Client_Scoped.Timed_Out
+                        then Put_Timed_Out
+                        else Put_Definite_Failure);
+
+                  when Client_Scoped.Outcome_Unknown              =>
+                     Result := Put_Outcome_Unknown;
+               end case;
+            end;
+         end;
+      exception
+         when Storage_Error =>
+            Result := (if Entered then Put_Outcome_Unknown else Put_Definite_Failure);
+         when others =>
+            if Entered then
+               Result := Put_Outcome_Unknown;
+            elsif Token /= null and then Token.Requested then
+               Result := Put_Cancelled;
+            elsif Deadline <= Ada.Real_Time.Clock then
+               Result := Put_Timed_Out;
+            else
+               Result := Put_Definite_Failure;
+            end if;
+      end Put_Common_Client;
+
       procedure Put_Common
         (Storage      : in out Storage_Context;
          Key          : String;
@@ -1106,11 +1598,27 @@ package body Flyology.DB is
          Borrowed.References.Retain;
          Held := True;
          Source.Image := Borrowed;
-         Entered := True;
+         if Storage.HTTP_Client /= null then
+            Put_Common_Client
+              (Storage, Key, Image, Conditions, Before_Point, Deadline, Token, Generation, Result, Entered);
+            Release_Image (Borrowed);
+            Held := False;
+            Consume_Fault (Storage, After_Point, Fault);
+            if Fault /= No_Fault then
+               Result := Put_Outcome_Unknown;
+            end if;
+            return;
+         elsif Storage.Backend = null then
+            Release_Image (Borrowed);
+            Held := False;
+            Result := Put_Definite_Failure;
+            return;
+         end if;
          Storage.Test_Control.Record_Put
            (Is_Head     => Before_Point = Before_Head_Put,
             Is_Manifest => Before_Point = Before_Manifest_Put,
             Is_Run      => Before_Point = Before_Run_Put);
+         Entered := True;
          Storage.Backend.Put_Object
            (Bucket     => UStrings.To_String (Storage.Bucket),
             Key        => Key,
@@ -6228,7 +6736,7 @@ package body Flyology.DB is
          return;
       elsif Encode_Result /= LSM_Runtime.Encoded
         or else Manifest_Image = null
-        or else Storage.Backend = null
+        or else not Storage_Bound (Storage.all)
         or else not OS.Valid_Object_Key (Manifest_Key (Storage.all, Manifest_ID))
         or else not OS.Valid_Object_Key (Full_Key (Storage.all, Head_Key_Suffix))
       then
@@ -6448,7 +6956,7 @@ package body Flyology.DB is
         or else Is_Zero (Receipt.Manifest_ID)
         or else Manifest_Length = 0
         or else Manifest_Length > Manifest_Data'Length
-        or else Storage.Backend = null
+        or else not Storage_Bound (Storage.all)
       then
          Result := Invalid_State;
          Receipt.Current_Outcome := Result;
@@ -6681,7 +7189,7 @@ package body Flyology.DB is
       Guard         : Activation_Guard;
       pragma Unreferenced (Guard);
    begin
-      if Storage.Backend = null or else Is_Zero (Database_ID) then
+      if not Storage_Bound (Storage.all) or else Is_Zero (Database_ID) then
          Result := Invalid_State;
          return;
       end if;
@@ -7691,6 +8199,10 @@ package body Flyology.DB is
    is
       Status : OS.Status;
    begin
+      if Item.Backend = null then
+         Result := Invalid_State;
+         return;
+      end if;
       Item.Backend.Delete_Object
         (UStrings.To_String (Item.Bucket),
          Manifest_Key (Item, Manifest_ID),
@@ -7779,6 +8291,10 @@ package body Flyology.DB is
    is
       Status : OS.Status;
    begin
+      if Item.Backend = null then
+         Result := Invalid_State;
+         return;
+      end if;
       Item.Backend.Delete_Object
         (UStrings.To_String (Item.Bucket), Run_Key (Item, Run_ID), null, Ada.Real_Time.Time_Last, Status);
       Result := (if Status = OS.Success then Success else Storage_Failure);

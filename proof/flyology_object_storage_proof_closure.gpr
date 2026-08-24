@@ -1,0 +1,15 @@
+with "flyology_http.gpr";
+with "xmlada_input.gpr";
+with "xmlada_sax.gpr";
+
+--  Compilation-only Object Storage closure for the DB proof project. The
+--  production project imports an XmlAda aggregate through generated config,
+--  which a nonaggregate GNATprove project cannot import. This project exposes
+--  the same handwritten sources and exact dependencies without selecting any
+--  Object Storage unit for proof.
+project Flyology_Object_Storage_Proof_Closure is
+   for Languages use ("Ada");
+   for Source_Dirs use ("../.deps/flyology-object-storage/src");
+   for Object_Dir use "obj/object_storage_closure";
+   for Create_Missing_Dirs use "True";
+end Flyology_Object_Storage_Proof_Closure;

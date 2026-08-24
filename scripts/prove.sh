@@ -12,6 +12,10 @@ cleanup_log()
 trap cleanup_log EXIT HUP INT TERM
 
 cd "$project_root/proof"
+# Materialize generated dependency configuration without compiling the broad
+# HTTP/Object Storage closure. GNATprove then analyzes only the explicit -u DB
+# units below.
+"$alr" build --stop-after=generation
 if ! "$alr" gnatprove -P flyology_db_proof.gpr --mode=all --level=1 -j0 \
   --output=oneline --output-header --report=all --warnings=error -f -u \
   flyology-db-head_policy.adb flyology-db-formats.adb flyology-db-batch_formats.adb \

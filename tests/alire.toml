@@ -8,7 +8,7 @@ maintainers-logins = ["yrashk"]
 licenses = "MIT OR Apache-2.0"
 tags = ["ada", "database", "test"]
 project-files = ["flyology_db_tests.gpr"]
-executables = ["flyology-db-tests"]
+executables = ["flyology-db-tests", "flyology-db-client-probe"]
 
 [[depends-on]]
 flyology_db = "*"

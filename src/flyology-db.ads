@@ -3,7 +3,10 @@ with Flyology.Cancellation;
 with Flyology.Bytes;
 private with Ada.Finalization;
 private with Ada.Strings.Unbounded;
+private with Flyology.HTTP;
+private with Flyology.HTTP.Client;
 private with Flyology.Object_Storage.Backends;
+private with Flyology.Object_Storage.Client.Low_Level;
 
 --  Experimental object-native transactional key-value database.
 
@@ -513,10 +516,23 @@ private
    end Storage_Test_Control;
 
    type Storage_Context is limited record
-      Backend      : access Flyology.Object_Storage.Backends.Backend'Class := null;
-      Bucket       : Ada.Strings.Unbounded.Unbounded_String;
-      Prefix       : Ada.Strings.Unbounded.Unbounded_String;
-      Test_Control : Storage_Test_Control;
+      Backend               : access Flyology.Object_Storage.Backends.Backend'Class := null;
+      HTTP_Client           : access Flyology.HTTP.Client.Client := null;
+      Client_Origin         : Flyology.HTTP.Origin;
+      Client_Identity       : access Flyology.Object_Storage.Client.Low_Level.Credentials := null;
+      Bucket                : Ada.Strings.Unbounded.Unbounded_String;
+      Prefix                : Ada.Strings.Unbounded.Unbounded_String;
+      Client_Region         : Ada.Strings.Unbounded.Unbounded_String;
+      Client_Content_Type   : Ada.Strings.Unbounded.Unbounded_String;
+      Expected_Bucket_Owner : Ada.Strings.Unbounded.Unbounded_String;
+      Client_Request_Payer  : Ada.Strings.Unbounded.Unbounded_String;
+      Client_Checksum_Mode  : Boolean := False;
+      --  Vacant-state initializer only: Bind_Client always overwrites Style
+      --  before HTTP_Client makes this context usable, so Path_Style is not a
+      --  DB request default or caller policy.
+      Client_Style          : Flyology.Object_Storage.Client.Low_Level.Addressing_Style :=
+        Flyology.Object_Storage.Client.Low_Level.Path_Style;
+      Test_Control          : Storage_Test_Control;
    end record;
 
    type Engine_State (<>);

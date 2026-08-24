@@ -1,11 +1,12 @@
 with "flyology.gpr";
+with "flyology_object_storage_proof_closure.gpr";
 project Flyology_Db_Proof is
    for Languages use ("Ada");
-   --  The selected deterministic DB units need the HTTP-independent Object
-   --  Storage interfaces named by the root package's private representation.
-   --  Do not import the complete Object Storage build project here: its
-   --  client/server closure and XmlAda aggregate are outside this proof.
-   for Source_Dirs use (".", "../src", "../.deps/flyology-object-storage/src");
+   --  The selected deterministic DB units do not prove HTTP or Object Storage,
+   --  but the root package's private representation now names their typed
+   --  client state. Import the proof-only compilation closure while -u
+   --  continues to select only the deterministic DB proof units.
+   for Source_Dirs use (".", "../src");
    for Source_Files use
      ("flyology-db-lsm_format_proof.ads",
       "flyology-db.ads",
@@ -20,10 +21,7 @@ project Flyology_Db_Proof is
       "flyology-db-reference_model.ads",
       "flyology-db-reference_model.adb",
       "flyology-db-lsm_formats.ads",
-      "flyology-db-lsm_formats.adb",
-      "flyology-object_storage.ads",
-      "flyology-object_storage-backends.ads",
-      "flyology-object_storage-tags.ads");
+      "flyology-db-lsm_formats.adb");
    for Object_Dir use "obj";
    for Create_Missing_Dirs use "True";
 
