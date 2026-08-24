@@ -3,7 +3,7 @@ with Flyology.DB.Head_Policy;
 with Flyology.DB.Manifest_Formats;
 with Interfaces;
 
---  Defines exact checkpoint-manifest-v2 and SST-v1 wire formats.
+--  Defines exact checkpoint-manifest-v3 and SST-v1 wire formats.
 
 private package Flyology.DB.LSM_Formats
   with SPARK_Mode => On
@@ -13,16 +13,20 @@ is
    package Head_Policy renames Flyology.DB.Head_Policy;
    package Manifests renames Flyology.DB.Manifest_Formats;
 
-   --  Version 2 is the accepted first-LSM checkpoint-manifest protocol. It
-   --  leaves the version-1 log-only manifest encoding unchanged and readable.
-   Checkpoint_Manifest_Format_Version : constant Interfaces.Unsigned_16 := 2;
+   --  Version 3 extends the accepted v2 checkpoint manifest with persisted
+   --  serializable point/range counts. Version 2 remains readable; version 1
+   --  remains owned by Manifest_Formats.
+   Previous_Checkpoint_Manifest_Format_Version : constant Interfaces.Unsigned_16 := 2;
+   Checkpoint_Manifest_Format_Version          : constant Interfaces.Unsigned_16 := 3;
 
-   --  Persisted-format formulas: header 220 = v1 196 + 8 + 4 + 4 + 4 + 4;
+   --  Persisted-format formulas: v2 header 220 = v1 196 + 8 + 4 + 4 + 4 + 4;
+   --  v3 header 228 appends two U32 serializable-observation count limits;
    --  family 52 = v1 28 + 8 + 4 + 4 + 4 + 4; run 48 = 16 + 8 + 8 + 4 +
-   --  4 + 8. Changing any term is manifest-v2 wire-incompatible.
-   Checkpoint_Manifest_Header_Length : constant := 220;
-   Checkpoint_Family_Header_Length   : constant := 52;
-   Run_Descriptor_Length             : constant := 48;
+   --  4 + 8. Changing any term requires a new manifest version.
+   Previous_Checkpoint_Manifest_Header_Length : constant := 220;
+   Checkpoint_Manifest_Header_Length          : constant := 228;
+   Checkpoint_Family_Header_Length            : constant := 52;
+   Run_Descriptor_Length                      : constant := 48;
 
    --  The accepted new SST kind begins at its own version 1. Kind 4 is the
    --  next unused stable code after HEAD=1, batch=2, and manifest=3.
@@ -79,6 +83,8 @@ is
         Flyology.DB.LSM_Formats.Checkpoint_Manifest_Format_Version;
       Checkpoint_Manifest_Header_Length  : constant :=
         Flyology.DB.LSM_Formats.Checkpoint_Manifest_Header_Length;
+      Previous_Checkpoint_Manifest_Header_Length : constant :=
+        Flyology.DB.LSM_Formats.Previous_Checkpoint_Manifest_Header_Length;
       Checkpoint_Family_Header_Length    : constant :=
         Flyology.DB.LSM_Formats.Checkpoint_Family_Header_Length;
       Run_Descriptor_Length              : constant := Flyology.DB.LSM_Formats.Run_Descriptor_Length;
@@ -133,6 +139,8 @@ is
          --  library-selected fallback or convenience default.
          Maximum_Total_L0_Runs         : Interfaces.Unsigned_32 := 0;
          Maximum_Checkpoint_Identities : Interfaces.Unsigned_32 := 0;
+         Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32 := 0;
+         Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32 := 0;
          Identity_Total                : Identity_Count := 0;
          Family_LSM                    : Family_LSM_Array := [others => <>];
          Identities                    : Identity_Array := [others => Head_Policy.Zero_Identifier];
@@ -261,14 +269,14 @@ is
       function Checkpoint_Manifest_Encoded_Length (Value : Checkpoint_Manifest) return Natural
       with Pre => Structurally_Valid (Value);
 
-      --  Encode one complete immutable manifest version 2.
+      --  Encode one complete immutable manifest version 3.
       procedure Encode_Checkpoint_Manifest
         (Value  : Checkpoint_Manifest;
          Image  : out Checkpoint_Manifest_Image;
          Length : out Natural;
          Status : out Encode_Status);
 
-      --  Decode one exact manifest-v2 extent after envelope and checksum
+      --  Decode one exact manifest-v3 extent after envelope and checksum
       --  validation. Generic and reader bounds classify as Limit_Exceeded.
       procedure Decode_Checkpoint_Manifest
         (Image             : Formats.Byte_Array;

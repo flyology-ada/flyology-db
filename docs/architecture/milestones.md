@@ -33,8 +33,9 @@ negative evidence. Atomic groups validate each member against external committed
 deterministic intra-group ordering. Fixed-snapshot point reads are operational: own Put/Delete wins, retained exact
 history selects the newest committed version no later than Begin, and an exact lazily allocated checkpoint base
 preserves compacted values after suffix replacement. The serializable point/range conflict and independent
-backpressure rules are now frozen in a separate TLC/TLAPS lane, but their Ada API, persisted bounds, scan
-normalization, and runtime tracking are not yet implemented, so Milestone 3 remains Pending.
+backpressure rules are now frozen in a separate TLC/TLAPS lane. Manifest v3 persists caller-selected independent
+point/range counts, while the Ada API, scan normalization, and runtime tracking remain unimplemented, so Milestone 3
+remains Pending.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
@@ -45,11 +46,11 @@ The formal serializable rule retains successful and absent point reads plus norm
 serializable mode. A commit rejects when a post-Begin committed write intersects its writes, retained points, or
 retained ranges. Independent point/range capacity rejection is safety backpressure: reaching a bound never drops an
 observation. The finite one-slot model values are qualification geometry rather than product defaults; production
-capacities remain caller- or persisted-authority decisions.
+capacities are persisted caller-authority decisions in manifest v3, with no library default.
 
-The first-LSM work now includes exact/proven manifest-v2 and SST-v1 formats, dynamic operational codecs, manifest-v2
-root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator replacement, and
-cacheless recovery of one complete nonempty checkpoint plus its strictly later batch suffix. Recovery restores live
+The first-LSM work now includes current manifest-v3, readable manifest-v2, and SST-v1 formats, dynamic operational
+codecs, manifest-v3 root creation, public synchronous first-checkpoint Flush/receipt reconciliation, live coordinator
+replacement, and cacheless recovery of one complete nonempty checkpoint plus its strictly later batch suffix. Recovery restores live
 values, last-write sequences, and the exact never-reused checkpoint identity ledger from persisted authority.
 The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token through the same certainty contract
 without a helper task. Multiple checkpoints, scans, compaction, and provider qualification remain later focused

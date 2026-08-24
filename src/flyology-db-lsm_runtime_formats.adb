@@ -17,7 +17,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
        (Interfaces.Unsigned_64 (Natural'Last) > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last),
         "LSM runtime builders require Natural to fit the frozen U32 fields");
 
-   --  Manifest v2 intentionally retains the frozen FLYCFM01 kind magic so
+   --  Manifest v2/v3 intentionally retains the frozen FLYCFM01 kind magic so
    --  its independent version field selects the compatible layout.
    Manifest_Magic : constant Formats.Byte_Array (0 .. 7) :=
      [Character'Pos ('F'),
@@ -264,18 +264,42 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Maximum_Length   : Interfaces.Unsigned_64;
       Minimum_Length   : Interfaces.Unsigned_64;
       Term             : Interfaces.Unsigned_64;
+      Version          : Interfaces.Unsigned_16;
+      Selected_Header  : Natural;
+      Maximum_Points   : Interfaces.Unsigned_32 := 0;
+      Maximum_Ranges   : Interfaces.Unsigned_32 := 0;
    begin
       Admission := Empty_Checkpoint_Header_Admission;
-      if Header'Length /= LSM.Checkpoint_Manifest_Header_Length then
+      Fixed := [others => 0];
+      if Header'Length < LSM.Previous_Checkpoint_Manifest_Header_Length
+        or else Header'Length > LSM.Checkpoint_Manifest_Header_Length
+      then
          Status := Invalid_Length;
          return;
       end if;
-      Fixed := Header;
+      for Offset in Natural range 0 .. Header'Length - 1 loop
+         Fixed (Offset) := Byte_At (Header, Offset);
+      end loop;
+      Version := Read_U16 (Fixed, 8);
+      if Version = LSM.Previous_Checkpoint_Manifest_Format_Version then
+         Selected_Header := LSM.Previous_Checkpoint_Manifest_Header_Length;
+      elsif Version = LSM.Checkpoint_Manifest_Format_Version then
+         Selected_Header := LSM.Checkpoint_Manifest_Header_Length;
+      else
+         Status := Unsupported_Version;
+         return;
+      end if;
+      --  Callers either supply the exact versioned header or the current-width
+      --  recovery probe needed to discover a v2 prefix. No intermediate
+      --  extent is format authority.
+      if Header'Length /= Selected_Header
+        and then Header'Length /= LSM.Checkpoint_Manifest_Header_Length
+      then
+         Status := Invalid_Length;
+         return;
+      end if;
       if Fixed (0 .. 7) /= Manifest_Magic then
          Status := Invalid_Magic;
-         return;
-      elsif Read_U16 (Fixed, 8) /= LSM.Checkpoint_Manifest_Format_Version then
-         Status := Unsupported_Version;
          return;
       elsif Fixed (10) /= Manifests.Manifest_Object_Kind then
          Status := Invalid_Object_Kind;
@@ -286,16 +310,18 @@ package body Flyology.DB.LSM_Runtime_Formats is
       elsif Read_Identifier (Fixed, 12) /= Expected_Database then
          Status := Wrong_Database;
          return;
-      elsif Read_U32 (Fixed, 28) /= Interfaces.Unsigned_32 (LSM.Checkpoint_Manifest_Header_Length) then
+      elsif Read_U32 (Fixed, 28) /= Interfaces.Unsigned_32 (Selected_Header) then
          Status := Invalid_Length;
          return;
-      elsif Read_U32 (Fixed, 40) /= Header_Checksum (Fixed, LSM.Checkpoint_Manifest_Header_Length) then
+      elsif Read_U32 (Fixed, 40)
+        /= Header_Checksum (Fixed (0 .. Selected_Header - 1), Selected_Header)
+      then
          Status := Header_Checksum_Failed;
          return;
       end if;
 
       if Object_Length
-        < Interfaces.Unsigned_64 (LSM.Checkpoint_Manifest_Header_Length + LSM.Object_Trailer_Length)
+        < Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length)
         or else Object_Length > Interfaces.Unsigned_64 (Natural'Last)
       then
          Status := Limit_Exceeded;
@@ -304,7 +330,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Payload_Length := Read_U64 (Fixed, 32);
       if Payload_Length
         /= Object_Length
-           - Interfaces.Unsigned_64 (LSM.Checkpoint_Manifest_Header_Length + LSM.Object_Trailer_Length)
+           - Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length)
       then
          Status := Invalid_Length;
          return;
@@ -326,6 +352,14 @@ package body Flyology.DB.LSM_Runtime_Formats is
       elsif Read_U32 (Fixed, 216) /= 0 then
          Status := Invalid_Manifest_State;
          return;
+      end if;
+      if Version = LSM.Checkpoint_Manifest_Format_Version then
+         Maximum_Points := Read_U32 (Fixed, 220);
+         Maximum_Ranges := Read_U32 (Fixed, 224);
+         if Maximum_Points = 0 or else Maximum_Ranges = 0 then
+            Status := Invalid_Manifest_State;
+            return;
+         end if;
       end if;
 
       --  Upper extent derives only from authenticated format fields: each
@@ -349,7 +383,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
          return;
       end if;
       Maximum_Length :=
-        Interfaces.Unsigned_64 (LSM.Checkpoint_Manifest_Header_Length + LSM.Object_Trailer_Length);
+        Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length);
       if not Add_U64 (Maximum_Length, Family_Bytes, Maximum_Length)
         or else not Add_U64 (Maximum_Length, Run_Bytes, Maximum_Length)
         or else not Add_U64 (Maximum_Length, Identity_Bytes, Maximum_Length)
@@ -367,7 +401,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
          return;
       end if;
       Minimum_Length :=
-        Interfaces.Unsigned_64 (LSM.Checkpoint_Manifest_Header_Length + LSM.Object_Trailer_Length);
+        Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length);
       if not Add_U64 (Minimum_Length, Term, Minimum_Length)
         or else not Add_U64 (Minimum_Length, Identity_Bytes, Minimum_Length)
         or else Object_Length < Minimum_Length
@@ -379,10 +413,14 @@ package body Flyology.DB.LSM_Runtime_Formats is
 
       Admission :=
         (Object_Length                 => Natural (Object_Length),
+         Format_Version                => Version,
+         Header_Length                 => Selected_Header,
          Family_Total                  => Natural (Family_Wire),
          Identity_Total                => Natural (Identity_Wire),
          Maximum_Total_L0_Runs         => Maximum_Runs,
          Maximum_Checkpoint_Identities => Maximum_Identity,
+         Maximum_Point_Reads_Per_Transaction => Maximum_Points,
+         Maximum_Scan_Ranges_Per_Transaction => Maximum_Ranges,
          Maximum_Object_Length         => Maximum_Length);
       Status := Decoded;
    end Inspect_Checkpoint_Manifest_Header;
@@ -428,7 +466,8 @@ package body Flyology.DB.LSM_Runtime_Formats is
          32,
          Interfaces.Unsigned_64 (Length - LSM.Checkpoint_Manifest_Header_Length - LSM.Object_Trailer_Length));
       --  Manifest-v2 preserves v1 identity/limit offsets 44..188 and adds the
-      --  replay/run/identity authority at 196..216.
+      --  replay/run/identity authority at 196..216. Version 3 appends persisted
+      --  serializable point/range count authority at 220/224.
       Put_Identifier (Image, 44, Value.Base.Manifest_ID);
       Put_Identifier (Image, 60, Value.Base.Previous_Manifest_ID);
       Put_Identifier (Image, 76, Value.Base.Expected_Transition_ID);
@@ -453,6 +492,8 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Put_U32 (Image, 208, Value.Maximum_Checkpoint_Identities);
       Put_U32 (Image, 212, Interfaces.Unsigned_32 (Value.Identity_Total));
       Put_U32 (Image, 216, 0);
+      Put_U32 (Image, 220, Value.Maximum_Point_Reads_Per_Transaction);
+      Put_U32 (Image, 224, Value.Maximum_Scan_Ranges_Per_Transaction);
    end Write_Manifest_Base_Header;
 
    function Structurally_Valid (Value : Checkpoint_Manifest) return Boolean is
@@ -462,6 +503,8 @@ package body Flyology.DB.LSM_Runtime_Formats is
         or else Natural (Value.Base.Family_Total) /= Value.Family_Total
         or else Value.Maximum_Total_L0_Runs = 0
         or else Value.Maximum_Checkpoint_Identities = 0
+        or else (Value.Maximum_Point_Reads_Per_Transaction = 0)
+                  /= (Value.Maximum_Scan_Ranges_Per_Transaction = 0)
         or else Interfaces.Unsigned_64 (Value.Run_Total)
                 > Interfaces.Unsigned_64 (Value.Maximum_Total_L0_Runs)
         or else Interfaces.Unsigned_64 (Value.Identity_Total)
@@ -570,7 +613,10 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Cursor : Natural := LSM.Checkpoint_Manifest_Header_Length;
    begin
       Image := null;
-      if not Structurally_Valid (Value) then
+      if not Structurally_Valid (Value)
+        or else Value.Maximum_Point_Reads_Per_Transaction = 0
+        or else Value.Maximum_Scan_Ranges_Per_Transaction = 0
+      then
          Status := Invalid_Value;
          return;
       elsif not Checkpoint_Encoded_Length (Value, Length) then
@@ -651,20 +697,27 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Candidate      : Checkpoint_Manifest_Access := null;
       Base           : Manifests.Manifest;
       Allocation     : Allocation_Status;
-      Cursor         : Natural := LSM.Checkpoint_Manifest_Header_Length;
+      Cursor         : Natural := 0;
       Payload_End    : Natural;
       Total_Runs     : Natural := 0;
       Replay         : Interfaces.Unsigned_64;
       Family_Run_Max : Interfaces.Unsigned_32;
       Previous_ID    : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Header_Probe_Length : Natural;
    begin
       Value := null;
-      if Image'Length < LSM.Checkpoint_Manifest_Header_Length + LSM.Object_Trailer_Length then
+      if Image'Length
+        < LSM.Previous_Checkpoint_Manifest_Header_Length + LSM.Object_Trailer_Length
+      then
          Status := Invalid_Length;
          return;
       end if;
+      Header_Probe_Length :=
+        (if Image'Length >= LSM.Checkpoint_Manifest_Header_Length
+         then LSM.Checkpoint_Manifest_Header_Length
+         else LSM.Previous_Checkpoint_Manifest_Header_Length);
       Inspect_Checkpoint_Manifest_Header
-        (Image (Image'First .. Image'First + LSM.Checkpoint_Manifest_Header_Length - 1),
+        (Image (Image'First .. Image'First + Header_Probe_Length - 1),
          Expected_Database,
          Interfaces.Unsigned_64 (Image'Length),
          Admission,
@@ -682,6 +735,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
 
       Read_Manifest_Base_Header (Image, Base);
       Replay := Read_U64 (Image, 196);
+      Cursor := Admission.Header_Length;
       for Family_Index in Positive range 1 .. Admission.Family_Total loop
          declare
             Config     : Manifests.Column_Family_Configuration := (others => <>);
@@ -817,8 +871,12 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Candidate.Replay_Boundary := Replay;
       Candidate.Maximum_Total_L0_Runs := Admission.Maximum_Total_L0_Runs;
       Candidate.Maximum_Checkpoint_Identities := Admission.Maximum_Checkpoint_Identities;
+      Candidate.Maximum_Point_Reads_Per_Transaction :=
+        Admission.Maximum_Point_Reads_Per_Transaction;
+      Candidate.Maximum_Scan_Ranges_Per_Transaction :=
+        Admission.Maximum_Scan_Ranges_Per_Transaction;
 
-      Cursor := LSM.Checkpoint_Manifest_Header_Length;
+      Cursor := Admission.Header_Length;
       declare
          Next_Run : Natural := 1;
       begin

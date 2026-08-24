@@ -1,9 +1,10 @@
 # First LSM checkpoint publication design
 
-This document freezes the semantic checkpoint-publication decision. The format layer defines exact manifest-v2 and
-SST-v1 bytes, a private SPARK reference decoder, and a byte-identical dynamically sized operational codec. The codec
-is the allocation and validation boundary. New Create operations publish an empty manifest-v2 root carrying the
-explicit LSM policy. Cacheless Open now admits a complete nonempty first checkpoint, reconstructs its exact state and
+This document freezes the semantic checkpoint-publication decision. The format layer defines current manifest-v3,
+readable predecessor manifest-v2, and exact SST-v1 bytes, plus a private SPARK reference decoder and a byte-identical
+dynamically sized operational codec. The codec is the allocation and validation boundary. New Create operations
+publish an empty manifest-v3 root carrying the explicit LSM policy. Cacheless Open now admits a complete nonempty
+first checkpoint, reconstructs its exact state and
 identity partition, and replays only later batches. The internal checkpoint planner assembles an exact successor and
 its family SSTs. Public synchronous `Flush`, caller-composable `Flush_Operation`, and `Resolve_Flush` publish and
 reconcile that first checkpoint through the same self-contained receipt and certainty rules. Existing manifest-v1
@@ -11,16 +12,17 @@ databases remain readable for log-only operation.
 
 ## Staged compatibility decision
 
-A checkpoint uses column-family manifest object version 2 and immutable SST object kind 4. Manifest
-version 1 remains readable as a log-only registry and limit authority, but it cannot name runs or a replay boundary.
-There is no in-place rewrite and no implicit migration. New databases start with a manifest-v2 root whose replay
+A current checkpoint uses column-family manifest object version 3 and immutable SST object kind 4. Manifest version
+1 remains readable as a log-only registry and limit authority, but it cannot name runs or a replay boundary. Manifest
+version 2 remains readable for snapshot operation but carries no serializable point/range count authority. There is
+no in-place rewrite and no implicit migration. New databases start with a manifest-v3 root whose replay
 boundary, run set, and identity ledger are empty; Create persists every database and family LSM limit supplied by the
-caller. Public Flush writes complete immutable SST runs and a successor manifest-v2 object before one exact
+caller. Public Flush writes complete immutable SST runs and a successor manifest-v3 object before one exact
 conditional HEAD transition. Exact wire widths, offsets, checksums, goldens, corruption fixtures, decoder proofs,
 dynamic admission, and the cacheless reader apply to the same production state machine used by deterministic test
 fixtures.
 
-Create, Open, create reconciliation, and ambiguous-commit resolution retain the authenticated manifest-v2 policy
+Create, Open, create reconciliation, and ambiguous-commit resolution retain the authenticated manifest-v2/v3 policy
 in live engine state. Legacy v1 activation retains an explicit no-LSM sentinel and never synthesizes replacement
 policy. This is the authority used by the staged Flush path; public handles are not a second source.
 
@@ -29,14 +31,16 @@ changes that sequence to the replacing transaction's sequence, and cacheless bat
 The later SST snapshot consumes this retained authority; it never infers a sequence from traversal order, current
 HEAD, or the flush operation.
 
-Manifest v2 preserves the complete immutable family registry and every existing database and family limit. It adds,
+Manifest v2 introduced the complete immutable family registry and LSM policy. Current manifest v3 preserves that
+layout and adds independent database-wide serializable point/range counts. The LSM extension includes,
 at minimum, for each family:
 
 - `Memtable_Max_Bytes`, a nonzero logical byte budget;
 - `Memtable_Max_Entries`, a nonzero entry budget; and
 - `Maximum_L0_Runs`, a nonzero bound on named level-zero runs.
 
-Database-wide limits independently bound the total number of named L0 runs and the exact admitted-identity ledger.
+Database-wide limits independently bound the total number of named L0 runs, the exact admitted-identity ledger, and
+the point/range observations retained by a serializable transaction.
 The per-family and aggregate bounds are distinct: every proposed family run set must fit its family limit, their sum
 must fit the database run limit, and the exact checkpoint identity ledger must fit the database identity limit.
 Per-family key/value limits remain the authority for individual allocation and mutation admission. No global default
@@ -50,7 +54,7 @@ run. Every run carries a caller- or operation-stable nonzero identity. The manif
 transition identity are likewise stable for the operation; reconciliation never invents replacement identities.
 The exact offsets, widths, canonical ordering, and corruption rules are normative in `persisted-formats.md`.
 
-Manifest version 2 records:
+Current manifest version 3 records:
 
 - its immutable predecessor and complete unchanged registry and limits;
 - the exact family-to-L0-run mapping, appending new run IDs without rewriting an existing run;
@@ -101,7 +105,7 @@ for an empty family, and one exact successor-manifest allocation. It retains the
 identity observed with the committed HEAD snapshot, advances the manifest ordinal and registry revision exactly once,
 uses the committed highest sequence as its replay boundary, and copies the complete never-reused admission ledger.
 The ledger is sorted by identifier bytes before structural validation. Family, aggregate-run, and exact-identity
-limits come only from the authenticated manifest-v2 policy. Any validation or allocation failure releases the whole
+limits come only from the authenticated manifest-v3 policy. Any validation or allocation failure releases the whole
 plan and leaves batch, manifest, and HEAD publication counts unchanged.
 
 The caller supplies an exact family-to-run identity map with one entry for every persisted family. Input order is not
@@ -173,6 +177,6 @@ TLC or future gates.
 
 This unit does not implement automatic flushing, multiple checkpoints, compaction, run pruning, garbage collection,
 scans, MVCC, snapshots, remote-provider matrix qualification, or an LSM performance claim. The operational scope is
-manifest-v2 root creation, exact whole-checkpoint planning, certainty-preserving synchronous and composable
+manifest-v3 root creation, exact whole-checkpoint planning, certainty-preserving synchronous and composable
 first-checkpoint publication/reconciliation, and header-first cacheless recovery of one nonempty first checkpoint
 plus its later batch suffix.

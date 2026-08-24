@@ -4,7 +4,7 @@ with Flyology.DB.LSM_Formats;
 with Flyology.DB.Manifest_Formats;
 with Interfaces;
 
---  Provides the operational checkpoint-manifest-v2 and SST-v1 codec. Unlike
+--  Provides the operational checkpoint-manifest-v2/v3 and SST-v1 codec. Unlike
 --  the bounded proof oracle, retained arrays are sized exactly from validated
 --  persisted state and no library-selected key, value, run, or ledger ceiling
 --  is introduced.
@@ -49,10 +49,14 @@ private package Flyology.DB.LSM_Runtime_Formats is
    --  database run ceiling, actual identity count, and frozen field widths.
    type Checkpoint_Header_Admission is record
       Object_Length                 : Natural := 0;
+      Format_Version                : Interfaces.Unsigned_16 := 0;
+      Header_Length                 : Natural := 0;
       Family_Total                  : Natural := 0;
       Identity_Total                : Natural := 0;
       Maximum_Total_L0_Runs         : Interfaces.Unsigned_32 := 0;
       Maximum_Checkpoint_Identities : Interfaces.Unsigned_32 := 0;
+      Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32 := 0;
+      Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32 := 0;
       Maximum_Object_Length         : Interfaces.Unsigned_64 := 0;
    end record;
 
@@ -94,6 +98,8 @@ private package Flyology.DB.LSM_Runtime_Formats is
       Replay_Boundary               : Interfaces.Unsigned_64 := 0;
       Maximum_Total_L0_Runs         : Interfaces.Unsigned_32 := 0;
       Maximum_Checkpoint_Identities : Interfaces.Unsigned_32 := 0;
+      Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32 := 0;
+      Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32 := 0;
       Families                      : Family_LSM_Array (1 .. Family_Total);
       Runs                          : Run_Array (1 .. Run_Total);
       Identities                    : Identity_Array (1 .. Identity_Total);
@@ -114,7 +120,7 @@ private package Flyology.DB.LSM_Runtime_Formats is
 
    function Structurally_Valid (Value : Checkpoint_Manifest) return Boolean;
 
-   --  Encode/decode exact immutable manifest-v2 objects. Decode performs a
+   --  Encode current immutable manifest-v3 objects and decode v2/v3. Decode performs a
    --  nonallocating structural pass first and publishes Value only after the
    --  exact allocation has been populated and revalidated.
    procedure Encode_Checkpoint_Manifest

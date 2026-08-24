@@ -56,7 +56,10 @@ procedure Flyology.DB.Files_Crash_Probe is
       --  One first-L0 run per family and the exact history reservation
       --  capacity are persisted crash-fixture choices, not DB defaults.
       Maximum_Total_L0_Runs             => 2,
-      Maximum_Checkpoint_Identities     => 576);
+      Maximum_Checkpoint_Identities     => 576,
+      --  Maintained serializable crash-fixture counts, not DB defaults.
+      Maximum_Point_Reads_Per_Transaction => 8,
+      Maximum_Scan_Ranges_Per_Transaction => 4);
    Families : constant Flyology.DB.Column_Family_Configuration_Array :=
      [Flyology.DB.Configure_Column_Family (1, [1], 64, 256, 320, 1, 1),
       Flyology.DB.Configure_Column_Family (2, [2], 64, 256, 320, 1, 1)];

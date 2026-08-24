@@ -26,6 +26,7 @@ package body Flyology.DB.LSM_Format_Tests is
    use type Formats.Byte;
    use type Formats.Byte_Array;
    use type Head.Identifier;
+   use type Interfaces.Unsigned_16;
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
    use type LSM.Checkpoint_Manifest;
@@ -41,14 +42,21 @@ package body Flyology.DB.LSM_Format_Tests is
 
    --  Exact extents derived independently by generate_lsm_goldens.py from the
    --  frozen field tables and fixture values; they are not product limits.
-   Manifest_Length : constant := 358;
-   SST_Length      : constant := 164;
+   Previous_Manifest_Length : constant := 358;
+   Manifest_Length          : constant := 366;
+   SST_Length               : constant := 164;
 
    --  Each equality restates the normative field-width formula rather than an
    --  independent expected size. A failure is a wire-table/golden drift event.
    pragma
      Compile_Time_Error
-       (LSM.Checkpoint_Manifest_Header_Length /= Manifests.Manifest_Header_Length + 8 + 4 + 4 + 4 + 4,
+       (LSM.Previous_Checkpoint_Manifest_Header_Length
+        /= Manifests.Manifest_Header_Length + 8 + 4 + 4 + 4 + 4,
+        "previous checkpoint manifest header arithmetic changed");
+   pragma
+     Compile_Time_Error
+       (LSM.Checkpoint_Manifest_Header_Length
+        /= LSM.Previous_Checkpoint_Manifest_Header_Length + 4 + 4,
         "checkpoint manifest header arithmetic changed");
    pragma
      Compile_Time_Error
@@ -101,6 +109,21 @@ package body Flyology.DB.LSM_Format_Tests is
    --  from the normative field tables. Any byte change requires an explicit
    --  format decision and coordinated generator/decoder fixture update.
    Manifest_Golden : constant Formats.Byte_Array (0 .. Manifest_Length - 1) :=
+     Hex
+       ("464C5943464D30310003030000000000000000000000000000000001000000E40000000000000086BE69EDC3"
+        & "0000000000000000000000000000000700000000000000000000000000000003000000000000000000000000"
+        & "0000000400000000000000020000000000000000000000000000000800000000000000030000000000000001"
+        & "0000000000000002000000010000004000000040000000400000000800000040000000400000010000000000"
+        & "0020000000000000010000000000000004000000000000000000000200000002000000040000000200000000"
+        & "0000000800000004000000010000000000000000000000080000000000000008000200000000000000001000"
+        & "0000001000000002000000010000000063660000000000000000000000000000000900000000000000010000"
+        & "000000000002000000030000000000000000000000040000000000000000000000000000000A000000000000"
+        & "0000000000000000000B451EAAFD");
+
+   --  Exact manifest-v2 compatibility image. Runtime decoding must retain it
+   --  without inventing v3 serializable limits; the bounded reference codec
+   --  intentionally accepts only the current format.
+   Previous_Manifest_Golden : constant Formats.Byte_Array (0 .. Previous_Manifest_Length - 1) :=
      Hex
        ("464C5943464D30310002030000000000000000000000000000000001000000DC000000000000008686644133"
         & "0000000000000000000000000000000700000000000000000000000000000003000000000000000000000000"
@@ -168,6 +191,9 @@ package body Flyology.DB.LSM_Format_Tests is
       Result.Replay_Boundary := 2;
       Result.Maximum_Total_L0_Runs := 2;
       Result.Maximum_Checkpoint_Identities := 4;
+      --  Maintained serializable reference geometry persisted by manifest v3.
+      Result.Maximum_Point_Reads_Per_Transaction := 8;
+      Result.Maximum_Scan_Ranges_Per_Transaction := 4;
       Result.Identity_Total := 2;
       Result.Identities (1) := ID (10);
       Result.Identities (2) := ID (11);
@@ -367,10 +393,10 @@ package body Flyology.DB.LSM_Format_Tests is
    end Test_Goldens_And_Extents;
 
    procedure Test_Manifest_Rejection is
-      --  Corruption offsets below directly probe the normative v2 table:
+      --  Corruption offsets below directly probe the normative v3 table:
       --  common version/kind/flags/database/header/CRC at 9/10/11/27/28/40;
-      --  v2 limits/state at 156/196/204/208/216; family state at 248/260;
-      --  run high sequence 298; and identity frames 322/338.
+      --  inherited limits/state at 156/196/204/208/216, new limits at 220/224,
+      --  family state at 256/268, run high sequence 306, and ledger 330/346.
       Corrupt : LSM.Checkpoint_Manifest_Image := [others => 0];
       --  Derived from Manifest_Golden: one run, two identities, and 134 exact
       --  payload bytes. One-less variants below prove each cap independently.
@@ -384,7 +410,7 @@ package body Flyology.DB.LSM_Format_Tests is
       Expect_Manifest
         (Corrupt (0 .. Manifest_Length - 1), Exact, LSM.Invalid_Magic, "manifest magic corruption");
       Corrupt (0 .. Manifest_Length - 1) := Manifest_Golden;
-      Corrupt (9) := 3;
+      Corrupt (9) := 4;
       Repair_Checksums (Corrupt (0 .. Manifest_Length - 1), LSM.Checkpoint_Manifest_Header_Length);
       Expect_Manifest
         (Corrupt (0 .. Manifest_Length - 1), Exact, LSM.Unsupported_Version, "manifest version corruption");
@@ -452,22 +478,32 @@ package body Flyology.DB.LSM_Format_Tests is
       Expect_Manifest
         (Corrupt (0 .. Manifest_Length - 1), Exact, LSM.Invalid_Manifest_State, "zero identity limit");
       Corrupt (0 .. Manifest_Length - 1) := Manifest_Golden;
-      Put_U64 (Corrupt, 248, 0);
+      Put_U32 (Corrupt, 220, 0);
+      Repair_Checksums (Corrupt (0 .. Manifest_Length - 1), LSM.Checkpoint_Manifest_Header_Length);
+      Expect_Manifest
+        (Corrupt (0 .. Manifest_Length - 1), Exact, LSM.Invalid_Manifest_State, "zero point-read limit");
+      Corrupt (0 .. Manifest_Length - 1) := Manifest_Golden;
+      Put_U32 (Corrupt, 224, 0);
+      Repair_Checksums (Corrupt (0 .. Manifest_Length - 1), LSM.Checkpoint_Manifest_Header_Length);
+      Expect_Manifest
+        (Corrupt (0 .. Manifest_Length - 1), Exact, LSM.Invalid_Manifest_State, "zero scan-range limit");
+      Corrupt (0 .. Manifest_Length - 1) := Manifest_Golden;
+      Put_U64 (Corrupt, 256, 0);
       Repair_Checksums (Corrupt (0 .. Manifest_Length - 1), LSM.Checkpoint_Manifest_Header_Length);
       Expect_Manifest
         (Corrupt (0 .. Manifest_Length - 1), Exact, LSM.Invalid_Manifest_State, "zero memtable byte limit");
       Corrupt (0 .. Manifest_Length - 1) := Manifest_Golden;
-      Put_U32 (Corrupt, 260, 0);
+      Put_U32 (Corrupt, 268, 0);
       Repair_Checksums (Corrupt (0 .. Manifest_Length - 1), LSM.Checkpoint_Manifest_Header_Length);
       Expect_Manifest
         (Corrupt (0 .. Manifest_Length - 1), Exact, LSM.Invalid_Manifest_State, "zero family run limit");
       Corrupt (0 .. Manifest_Length - 1) := Manifest_Golden;
-      Put_U64 (Corrupt, 298, 3);
+      Put_U64 (Corrupt, 306, 3);
       Repair_Checksums (Corrupt (0 .. Manifest_Length - 1), LSM.Checkpoint_Manifest_Header_Length);
       Expect_Manifest
         (Corrupt (0 .. Manifest_Length - 1), Exact, LSM.Invalid_Manifest_State, "run beyond boundary");
       Corrupt (0 .. Manifest_Length - 1) := Manifest_Golden;
-      Corrupt (338 .. 353) := Corrupt (322 .. 337);
+      Corrupt (346 .. 361) := Corrupt (330 .. 345);
       Repair_Checksums (Corrupt (0 .. Manifest_Length - 1), LSM.Checkpoint_Manifest_Header_Length);
       Expect_Manifest
         (Corrupt (0 .. Manifest_Length - 1), Exact, LSM.Invalid_Manifest_State, "duplicate identity");
@@ -614,6 +650,8 @@ package body Flyology.DB.LSM_Format_Tests is
       Manifest_Value.Replay_Boundary := 2;
       Manifest_Value.Maximum_Total_L0_Runs := 2;
       Manifest_Value.Maximum_Checkpoint_Identities := 4;
+      Manifest_Value.Maximum_Point_Reads_Per_Transaction := 8;
+      Manifest_Value.Maximum_Scan_Ranges_Per_Transaction := 4;
       Manifest_Value.Families (1) :=
         (Memtable_Max_Bytes   => 4 * 1_024,
          Memtable_Max_Entries => 16,
@@ -636,17 +674,58 @@ package body Flyology.DB.LSM_Format_Tests is
       --  two admitted runs + two actual identities. It is not a product cap.
       if Decode_Status /= Runtime.Decoded
         or else Manifest_Head.Object_Length /= Manifest_Length
-        or else Manifest_Head.Maximum_Object_Length /= 224 + 307 + 96 + 32
+        or else Manifest_Head.Format_Version /= Runtime.LSM.Checkpoint_Manifest_Format_Version
+        or else Manifest_Head.Header_Length /= Runtime.LSM.Checkpoint_Manifest_Header_Length
+        or else Manifest_Head.Maximum_Point_Reads_Per_Transaction /= 8
+        or else Manifest_Head.Maximum_Scan_Ranges_Per_Transaction /= 4
+        or else Manifest_Head.Maximum_Object_Length /= 232 + 307 + 96 + 32
       then
          raise Program_Error with "runtime manifest header admission mismatch";
+      end if;
+      Runtime.Inspect_Checkpoint_Manifest_Header
+        (Previous_Manifest_Golden (0 .. Runtime.LSM.Previous_Checkpoint_Manifest_Header_Length - 1),
+         ID (1),
+         Previous_Manifest_Golden'Length,
+         Manifest_Head,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Manifest_Head.Format_Version
+                /= Runtime.LSM.Previous_Checkpoint_Manifest_Format_Version
+        or else Manifest_Head.Header_Length
+                /= Runtime.LSM.Previous_Checkpoint_Manifest_Header_Length
+        or else Manifest_Head.Maximum_Point_Reads_Per_Transaction /= 0
+        or else Manifest_Head.Maximum_Scan_Ranges_Per_Transaction /= 0
+      then
+         raise Program_Error with "runtime manifest-v2 exact header admission changed";
+      end if;
+      Runtime.Inspect_Checkpoint_Manifest_Header
+        (Previous_Manifest_Golden (0 .. Runtime.LSM.Previous_Checkpoint_Manifest_Header_Length + 3),
+         ID (1),
+         Previous_Manifest_Golden'Length,
+         Manifest_Head,
+         Decode_Status);
+      if Decode_Status /= Runtime.Invalid_Length then
+         raise Program_Error with "runtime manifest accepted an intermediate header extent";
       end if;
       Runtime.Decode_Checkpoint_Manifest (Manifest_Golden, ID (1), Manifest_Read, Decode_Status);
       if Decode_Status /= Runtime.Decoded
         or else not Runtime.Structurally_Valid (Manifest_Read.all)
         or else Manifest_Read.Run_Total /= 1
         or else Manifest_Read.Identity_Total /= 2
+        or else Manifest_Read.Maximum_Point_Reads_Per_Transaction /= 8
+        or else Manifest_Read.Maximum_Scan_Ranges_Per_Transaction /= 4
       then
          raise Program_Error with "runtime manifest golden did not round-trip";
+      end if;
+
+      Runtime.Release (Manifest_Read);
+      Runtime.Decode_Checkpoint_Manifest (Previous_Manifest_Golden, ID (1), Manifest_Read, Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else not Runtime.Structurally_Valid (Manifest_Read.all)
+        or else Manifest_Read.Maximum_Point_Reads_Per_Transaction /= 0
+        or else Manifest_Read.Maximum_Scan_Ranges_Per_Transaction /= 0
+      then
+         raise Program_Error with "runtime manifest-v2 backward read changed";
       end if;
 
       Runtime.Create_SST (3, 4, Table_Value, Allocation);
@@ -834,6 +913,9 @@ package body Flyology.DB.LSM_Format_Tests is
       Manifest.Replay_Boundary := 3;
       Manifest.Maximum_Total_L0_Runs := 3;
       Manifest.Maximum_Checkpoint_Identities := 5;
+      --  Persisted caller authority also sizes later serializable observations.
+      Manifest.Maximum_Point_Reads_Per_Transaction := 8;
+      Manifest.Maximum_Scan_Ranges_Per_Transaction := 4;
       Manifest.Families (1) :=
         (Memtable_Max_Bytes   => 4 * 1_024,
          Memtable_Max_Entries => 16,
@@ -881,9 +963,9 @@ package body Flyology.DB.LSM_Format_Tests is
    end Test_Runtime_Persisted_Limits;
 
    procedure Test_Runtime_Rejection is
-      --  Corruption positions reuse the frozen manifest-v2 table: identity
-      --  count 212, family run count 264, run high sequence 298, and ledger
-      --  identities 322/338. They are compatibility offsets, not test policy.
+      --  Corruption positions use the frozen manifest-v3 table: identity count
+      --  212, family run count 272, run high sequence 306, and ledger
+      --  identities 330/346. They are compatibility offsets, not test policy.
       Corrupt_Manifest : Formats.Byte_Array (Manifest_Golden'Range) := Manifest_Golden;
       Corrupt_SST      : Formats.Byte_Array (SST_Golden'Range) := SST_Golden;
       Manifest_Value   : Runtime.Checkpoint_Manifest_Access;
@@ -904,7 +986,7 @@ package body Flyology.DB.LSM_Format_Tests is
          raise Program_Error with "runtime SST builder allocated an unencodable extent";
       end if;
 
-      Corrupt_Manifest (300) := Corrupt_Manifest (300) xor 1;
+      Corrupt_Manifest (308) := Corrupt_Manifest (308) xor 1;
       Runtime.Decode_Checkpoint_Manifest (Corrupt_Manifest, ID (1), Manifest_Value, Decode_Status);
       if Decode_Status /= Runtime.Object_Checksum_Failed or else Manifest_Value /= null then
          raise Program_Error with "runtime manifest corruption published partial state";
@@ -919,7 +1001,7 @@ package body Flyology.DB.LSM_Format_Tests is
       end if;
 
       Corrupt_Manifest := Manifest_Golden;
-      Put_U32 (Corrupt_Manifest, 264, 3);
+      Put_U32 (Corrupt_Manifest, 272, 3);
       Repair_Checksums (Corrupt_Manifest, Runtime.LSM.Checkpoint_Manifest_Header_Length);
       Runtime.Decode_Checkpoint_Manifest (Corrupt_Manifest, ID (1), Manifest_Value, Decode_Status);
       if Decode_Status /= Runtime.Invalid_Manifest_State or else Manifest_Value /= null then
@@ -927,7 +1009,7 @@ package body Flyology.DB.LSM_Format_Tests is
       end if;
 
       Corrupt_Manifest := Manifest_Golden;
-      Put_U64 (Corrupt_Manifest, 298, 3);
+      Put_U64 (Corrupt_Manifest, 306, 3);
       Repair_Checksums (Corrupt_Manifest, Runtime.LSM.Checkpoint_Manifest_Header_Length);
       Runtime.Decode_Checkpoint_Manifest (Corrupt_Manifest, ID (1), Manifest_Value, Decode_Status);
       if Decode_Status /= Runtime.Invalid_Manifest_State or else Manifest_Value /= null then
@@ -935,7 +1017,7 @@ package body Flyology.DB.LSM_Format_Tests is
       end if;
 
       Corrupt_Manifest := Manifest_Golden;
-      Corrupt_Manifest (338 .. 353) := Corrupt_Manifest (322 .. 337);
+      Corrupt_Manifest (346 .. 361) := Corrupt_Manifest (330 .. 345);
       Repair_Checksums (Corrupt_Manifest, Runtime.LSM.Checkpoint_Manifest_Header_Length);
       Runtime.Decode_Checkpoint_Manifest (Corrupt_Manifest, ID (1), Manifest_Value, Decode_Status);
       if Decode_Status /= Runtime.Invalid_Identity or else Manifest_Value /= null then

@@ -1,5 +1,34 @@
 # Review record
 
+## Accepted manifest-v3 serializable-limit candidate
+
+- Parent: formal serializable-validation commit `06741c7`.
+- Scope: persist caller-selected independent point-read and scan-range counts in current manifest version 3, retain
+  the exact manifest-v2 bytes as a backward-read contract, and carry the authenticated limits through Create, Open,
+  create reconciliation, first-checkpoint planning, and live engine authority. This unit does not add a public
+  isolation or scan API, allocate transaction observations, implement range normalization, or claim that runtime
+  serializable validation has landed.
+- Compatibility and authority: v3 extends the authenticated header from 220 to 228 bytes with U32 fields at offsets
+  220 and 224. Both are required nonzero for new Create and have no library default. Point keys and scan endpoints
+  continue to use the selected column family's persisted maximum key length; the database fields bound counts only.
+  Operational decode retains exact v2 objects with zero/zero as an explicit absence of serializable authority.
+  Snapshot operation remains readable; serializable Begin and Flush must reject v2 as unsupported rather than invent
+  limits or perform an implicit migration. All consequential wire values and fixture capacities retain adjacent
+  source authority comments.
+- Verification: the independent generator exactly reproduces the retained 358-byte v2 golden, current 366-byte v3
+  golden, and 164-byte SST golden. `./tests/scripts/test.sh` passes repository/provenance checks, deterministic
+  format/policy/model and memory/files engine tests, authenticated client-backed create/commit/Flush/reopen,
+  filesystem crash/recovery, 32 comparative cases, pinned TidesDB 4/4, and all adapter fixtures against clean Object
+  Storage `e8362f72e5edf4cc8eb16e31d1fdbfba74db384b`. The warning-strict FSF GNATprove 16.1.0 gate proves
+  1,084/1,084 selected-unit checks (164 flow, 920 prover; maximum 6,890 steps) with zero warnings,
+  unproved/justified checks, or `pragma Assume`.
+- Findings cycle: the first sweep rejected arbitrary intermediate header probe lengths and found that v2 Flush could
+  fall through to a v3 encoder without persisted point/range authority. The amendment admits only exact versioned
+  headers plus the deliberate current-width v2 recovery probe, adds exact/intermediate header tests, and returns
+  `Unsupported_Format` before v2 checkpoint planning. A constants audit distinguished persisted wire fields and
+  caller-selected limits from derived widths, neutral legacy zeroes, and documented fixture geometry. Follow-up
+  review finds no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted formal serializable-validation candidate
 
 - Parent: operational fixed-snapshot point-read commit `7460bdb`.

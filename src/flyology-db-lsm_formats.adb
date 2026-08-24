@@ -10,7 +10,7 @@ is
       use type Formats.Byte_Array;
       use type Interfaces.Unsigned_16;
 
-      --  Manifest v2 intentionally retains the frozen FLYCFM01 kind magic so
+      --  Manifest v3 intentionally retains the frozen FLYCFM01 kind magic so
       --  its independent version field selects the compatible layout.
       Manifest_Magic : constant Formats.Byte_Array (0 .. 7) :=
         [Character'Pos ('F'),
@@ -246,6 +246,8 @@ is
          if not Manifests.Structurally_Valid (Value.Base)
            or else Value.Maximum_Total_L0_Runs = 0
            or else Value.Maximum_Checkpoint_Identities = 0
+           or else Value.Maximum_Point_Reads_Per_Transaction = 0
+           or else Value.Maximum_Scan_Ranges_Per_Transaction = 0
            or else Interfaces.Unsigned_64 (Value.Identity_Total)
                    > Interfaces.Unsigned_64 (Value.Maximum_Checkpoint_Identities)
          then
@@ -409,9 +411,10 @@ is
            (Image,
             32,
             Interfaces.Unsigned_64 (Length - Checkpoint_Manifest_Header_Length - Object_Trailer_Length));
-         --  Frozen manifest-v2 offsets: identities 44/60/76/100, transition
+         --  Frozen inherited offsets: identities 44/60/76/100, transition
          --  numbers 92/116, epoch 124, registry 132, v1 counts/limits 140..188,
-         --  then replay/run/identity fields 196..216.
+         --  then replay/run/identity fields 196..216. Version 3 appends exact
+         --  point/range count authority at 220/224.
          Put_Identifier (Image, 44, Value.Base.Manifest_ID);
          Put_Identifier (Image, 60, Value.Base.Previous_Manifest_ID);
          Put_Identifier (Image, 76, Value.Base.Expected_Transition_ID);
@@ -436,6 +439,8 @@ is
          Put_U32 (Image, 208, Value.Maximum_Checkpoint_Identities);
          Put_U32 (Image, 212, Interfaces.Unsigned_32 (Value.Identity_Total));
          Put_U32 (Image, 216, 0);
+         Put_U32 (Image, 220, Value.Maximum_Point_Reads_Per_Transaction);
+         Put_U32 (Image, 224, Value.Maximum_Scan_Ranges_Per_Transaction);
          Put_U32 (Image, 40, Manifest_Header_Checksum (Image));
 
          for Family_Index in Manifests.Family_Slot range 1 .. Value.Base.Family_Total loop
@@ -547,7 +552,7 @@ is
          Candidate      : Checkpoint_Manifest := Empty_Checkpoint_Manifest;
          Payload_Length : Interfaces.Unsigned_64;
          Payload_End    : Natural;
-         --  Exact admitted manifest-v2 caller extent after frozen minimum and
+         --  Exact admitted manifest-v3 caller extent after frozen minimum and
          --  generic-representation maximum checks; not policy or a new cap.
          Image_Length   : Natural;
          Cursor         : Natural := Checkpoint_Manifest_Header_Length;
@@ -609,7 +614,8 @@ is
          Family_Wire := Read_U32 (Fixed, 140);
          Identity_Wire := Read_U32 (Fixed, 212);
          --  V2 retains v1 limit offsets 144..188 and adds replay/run/identity
-         --  authority at 196/204/208/212 plus the zero word at 216.
+         --  authority at 196/204/208/212 plus the zero word at 216. V3 adds
+         --  point/range count authority at 220/224.
          if Family_Wire = 0 then
             Status := Invalid_Manifest_State;
             return;
@@ -620,6 +626,9 @@ is
             Status := Limit_Exceeded;
             return;
          elsif Read_U32 (Fixed, 216) /= 0 then
+            Status := Invalid_Manifest_State;
+            return;
+         elsif Read_U32 (Fixed, 220) = 0 or else Read_U32 (Fixed, 224) = 0 then
             Status := Invalid_Manifest_State;
             return;
          elsif Read_U32 (Fixed, 144) > Interfaces.Unsigned_32 (Manifests.Max_Families)
@@ -654,6 +663,8 @@ is
          Candidate.Replay_Boundary := Read_U64 (Fixed, 196);
          Candidate.Maximum_Total_L0_Runs := Read_U32 (Fixed, 204);
          Candidate.Maximum_Checkpoint_Identities := Read_U32 (Fixed, 208);
+         Candidate.Maximum_Point_Reads_Per_Transaction := Read_U32 (Fixed, 220);
+         Candidate.Maximum_Scan_Ranges_Per_Transaction := Read_U32 (Fixed, 224);
          Candidate.Identity_Total := Identity_Count (Identity_Wire);
          Payload_End := Image_Length - Object_Trailer_Length;
 
@@ -667,7 +678,7 @@ is
                Run_Wire  : Interfaces.Unsigned_32;
             begin
                --  Decode the frozen family-relative registry map 0..27 and
-               --  the manifest-v2 LSM extension 28..51.
+               --  the manifest-v2/v3 LSM extension 28..51.
                if Cursor > Payload_End or else Checkpoint_Family_Header_Length > Payload_End - Cursor then
                   Status := Invalid_Family;
                   return;

@@ -35,8 +35,8 @@ Current selected packages:
   initialization, length/UTF-8 arithmetic, decoder success/failure postconditions, and publication/predecessor
   predicate arithmetic;
 - `Flyology.DB.LSM_Formats.Reference`, instantiated with deliberately small representation-only proof capacities,
-  covering exact checkpoint-manifest-v2 and SST-v1 length arithmetic, structural validation, fail-closed arbitrary-
-  bound decoding, exact cursor and slice bounds, and definite initialization; and
+  covering exact current checkpoint-manifest-v3 and SST-v1 length arithmetic, structural validation, fail-closed
+  arbitrary-bound decoding, exact cursor and slice bounds, and definite initialization; and
 - `Flyology.DB.Reference_Model`, covering absence of runtime checks and definite initialization in bounded MVCC state
   transitions. Executable tests, rather than current functional proof contracts, establish the model's fixed-snapshot,
   conflict, atomic-commit, and rollback examples. Exact duplicate scan predicates are deduplicated; full range-union
@@ -123,6 +123,15 @@ history scan, borrowed-image lifetime, lazy checkpoint-base allocation, and reco
 selected SPARK units and are qualified by executable memory/files, cacheless checkpoint, allocation-fault, and
 authenticated-client tests. The separately accepted `cff2048` TLC/TLAPS model freezes the selection rule; no
 refinement proof is claimed.
+
+The manifest-v3 serializable-limit candidate reruns the authoritative warning-strict gate with the current
+reference codec. FSF GNATprove 16.1.0 proves 1,084/1,084 checks: 93 initialization, 522 run-time, 91 assertion, 306
+functional-contract, and 72 termination checks. Flow analysis discharges 164 and provers discharge 920; maximum
+successful proof effort is 6,890 steps. Every selected unit reports zero warnings, unproved or justified checks, and
+zero `pragma Assume` statements. The preliminary representation-information phase records that the root package spec
+does not generate code and continues with partial representation data; this is not a selected-unit proof warning.
+The dynamic v2/v3 operational decoder, header-first object I/O, runtime allocation, and protected engine state remain
+executable-test boundaries rather than SPARK-proved code.
 
 ## TLA+ state-machine assurance
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the independent checkpoint-manifest-v2 and SST-v1 goldens.
+"""Generate independent checkpoint-manifest-v2/v3 and SST-v1 goldens.
 
 This script deliberately does not import or invoke the Ada codec. The small
 fixture counts and byte strings exercise ordering, tombstones, empty values,
@@ -64,8 +64,14 @@ base_manifest_header = b"".join(
 # Manifest-v2 coverage values: replay through sequence 2, two available run
 # slots, four identity slots, two present identities, and the mandated zero
 # reserved word. These are test/reference capacities, not DB defaults.
-checkpoint_header = base_manifest_header + struct.pack(">Q4I", 2, 2, 4, 2, 0)
-assert len(checkpoint_header) == 220 - 44
+checkpoint_v2_header = base_manifest_header + struct.pack(">Q4I", 2, 2, 4, 2, 0)
+assert len(checkpoint_v2_header) == 220 - 44
+
+# Manifest-v3 appends the maintained serializable reference geometry: eight
+# exact point observations and four normalized scan ranges per transaction.
+# These caller-selected fixture limits are persisted policy, not DB defaults.
+checkpoint_v3_header = checkpoint_v2_header + struct.pack(">2I", 8, 4)
+assert len(checkpoint_v3_header) == 228 - 44
 
 # One family/run frame exercises every persisted v2 field. The 8-byte key/value
 # bounds and 4096/16 memtable values are fixture dimensions only; changing them
@@ -77,10 +83,12 @@ assert len(run_descriptor) == 48
 # Ledger IDs 10/11 are strictly increasing, nonzero fixture authority through
 # replay boundary 2; changing them changes the manifest compatibility image.
 manifest_payload = family_header + b"cf" + run_descriptor + identifier(10) + identifier(11)
-# Persisted manifest-v2 authority retains FLYCFM01 and kind 3 while advancing
-# only its independent version to 2; changing these bytes is incompatible.
-manifest = envelope(b"FLYCFM01", 2, 3, database_id, checkpoint_header, manifest_payload)
-assert len(manifest) == 358
+# Persisted v2 remains the exact backward-read fixture. V3 retains FLYCFM01
+# and kind 3 while adding only the two authenticated U32 limit fields.
+manifest_v2 = envelope(b"FLYCFM01", 2, 3, database_id, checkpoint_v2_header, manifest_payload)
+manifest = envelope(b"FLYCFM01", 3, 3, database_id, checkpoint_v3_header, manifest_payload)
+assert len(manifest_v2) == 358
+assert len(manifest) == 366
 
 # The SST header must exactly match the manifest descriptor: family 1,
 # sequences 1..2, three entries, zero reserved bits, and four logical bytes.
@@ -102,5 +110,6 @@ sst_payload = entry(2, 1, b"a", b"x") + entry(1, 2, b"a") + entry(2, 1, b"b")
 sst = envelope(b"FLYSST01", 1, 4, database_id, sst_header, sst_payload)
 assert len(sst) == 164
 
+print("MANIFEST_V2_HEX=" + manifest_v2.hex().upper())
 print("MANIFEST_HEX=" + manifest.hex().upper())
 print("SST_HEX=" + sst.hex().upper())

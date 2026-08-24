@@ -128,7 +128,10 @@ procedure Flyology.DB.Client_Probe is
       Maximum_Batch_Payload_Bytes       => 2_048,
       Maximum_Live_State_Bytes          => 4_096,
       Maximum_Total_L0_Runs             => 1,
-      Maximum_Checkpoint_Identities     => 8);
+      Maximum_Checkpoint_Identities     => 8,
+      --  Maintained serializable remote-fixture counts, not DB defaults.
+      Maximum_Point_Reads_Per_Transaction => 8,
+      Maximum_Scan_Ranges_Per_Transaction => 4);
    Families                 : constant Column_Family_Configuration_Array :=
      [Configure_Column_Family
         (1,

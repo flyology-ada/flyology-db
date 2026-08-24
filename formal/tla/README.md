@@ -104,11 +104,11 @@ does not prove per-family reconstruction, sorting/completeness/corruption checks
 reconciliation, byte formats, or refinement to a future Ada implementation. Those concrete behaviors remain in the
 exhaustive TLC lane or future format/implementation gates.
 
-The semantic decision in `docs/architecture/lsm-checkpoint-publication.md` now has an exact private reference format:
-immutable manifest version 2 and SST kind 4/version 1 have frozen bytes, goldens, corruption tests, and bounded SPARK
-decoders. Current manifest v1 remains the only operational log-engine format; the format unit does not make
-checkpoint publication, recovery, or the dynamically allocated production decoder live, and no refinement theorem
-connects these reference bytes to this TLA+ model.
+The semantic decision in `docs/architecture/lsm-checkpoint-publication.md` now has exact persisted formats: current
+immutable manifest version 3, readable predecessor version 2, and SST kind 4/version 1 have frozen bytes, goldens,
+corruption tests, and bounded SPARK coverage for the current codec. Operational Create/Flush/recovery use the same
+dynamically allocated format state machine. No refinement theorem connects these bytes to this TLA+ model; its
+historical first-checkpoint witness still names the version-2 shape whose LSM payload v3 preserves unchanged.
 
 ## Snapshot-isolation validation lane
 
@@ -163,10 +163,10 @@ conservative rejection below the retained checkpoint-history boundary.
 
 The finite model uses two transactions, two keys, two ranges, and one retained point/range slot. Those values are
 qualification geometry: one slot admits an observation and the second distinct observation reaches backpressure.
-They are not public defaults, persisted bounds, byte-order policy, or proposed product capacities. A modeled key is
+They are not public defaults, persisted values, byte-order policy, or proposed product capacities. A modeled key is
 an exact (column family, byte key) identity; `R1` contains one identity and `R2` both identities solely to exercise
-same-family point and phantom conflicts. The eventual Ada capacities remain subject to an explicit API and
-persisted-authority decision.
+same-family point and phantom conflicts. Manifest v3 now supplies caller-selected persisted count authority; the Ada
+isolation/range API and runtime allocation remain separate pending decisions.
 
 TLC exhausts 44,244 states at depth 13 and requires nonzero coverage for Begin, write buffering, point/range
 retention, both capacity rejections, valid commit, and conflict rejection. Four validators pin a serializable point

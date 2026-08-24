@@ -258,6 +258,8 @@ package body Flyology.DB.Testing is
       Family_ID              : Column_Family_ID;
       Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
       Maximum_Identities     : out Interfaces.Unsigned_32;
+      Maximum_Point_Reads    : out Interfaces.Unsigned_32;
+      Maximum_Scan_Ranges    : out Interfaces.Unsigned_32;
       Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
       Memtable_Max_Entries   : out Interfaces.Unsigned_32;
       Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
@@ -270,6 +272,8 @@ package body Flyology.DB.Testing is
          Family_ID,
          Maximum_Total_L0_Runs,
          Maximum_Identities,
+         Maximum_Point_Reads,
+         Maximum_Scan_Ranges,
          Memtable_Max_Bytes,
          Memtable_Max_Entries,
          Maximum_Family_L0_Runs,
@@ -282,6 +286,8 @@ package body Flyology.DB.Testing is
       Replay_Boundary        : out Interfaces.Unsigned_64;
       Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
       Maximum_Identities     : out Interfaces.Unsigned_32;
+      Maximum_Point_Reads    : out Interfaces.Unsigned_32;
+      Maximum_Scan_Ranges    : out Interfaces.Unsigned_32;
       Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
       Memtable_Max_Entries   : out Interfaces.Unsigned_32;
       Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
@@ -293,6 +299,8 @@ package body Flyology.DB.Testing is
          Replay_Boundary,
          Maximum_Total_L0_Runs,
          Maximum_Identities,
+         Maximum_Point_Reads,
+         Maximum_Scan_Ranges,
          Memtable_Max_Bytes,
          Memtable_Max_Entries,
          Maximum_Family_L0_Runs,

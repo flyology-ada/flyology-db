@@ -2,15 +2,15 @@
 
 This document is normative for HEAD versions 1 and 2 and the independent version-1 commit-batch and
 column-family-manifest encodings. Each object kind advances its own version constant: the HEAD kind accepts versions
-1 and 2, batch accepts version 1, manifest accepts versions 1 and 2, and SST accepts version 1. All multibyte integers
+1 and 2, batch accepts version 1, manifest accepts versions 1 through 3, and SST accepts version 1. All multibyte integers
 are unsigned big-endian.
 Byte strings are length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is
 persisted.
 
-The first-LSM format unit freezes manifest version 2 and SST version 1 below. Its private generic codec remains the
-bounded reference/proof implementation. A byte-identical operational codec now admits headers before whole-object
-allocation and retains exact dynamically sized run, identity, entry, key, and value extents. This does not make
-checkpoint publication live. See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
+The first-LSM format unit freezes current manifest version 3, readable predecessor version 2, and SST version 1
+below. Its private generic codec remains the bounded reference/proof implementation. A byte-identical operational
+codec admits headers before whole-object allocation and retains exact dynamically sized run, identity, entry, key,
+and value extents. See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
 
 ## Common envelope
 
@@ -268,6 +268,32 @@ identity object, populates it, and revalidates the complete structure before ret
 is `Allocation_Failed`; an address-space-incompatible persisted base is `Runtime_Incompatible`; every failure returns
 a null access value. The persisted theoretical maxima are not eagerly allocated and do not create replacement limits.
 
+### Checkpoint manifest version 3
+
+Manifest version 3 retains the complete version-2 header and payload unchanged, extends the authenticated header to
+228 bytes, and appends two database-wide U32 fields:
+
+| Field | Offset | Bytes |
+| --- | ---: | ---: |
+| maximum point reads per transaction | 220 | 4 |
+| maximum scan ranges per transaction | 224 | 4 |
+
+Both values are nonzero caller-selected persisted authority. They independently bound the exact point observations
+and normalized scan ranges retained by a serializable transaction. They do not bound key or endpoint bytes: the
+selected column family's persisted maximum key length remains that allocation authority. Reaching either count is
+typed backpressure and cannot silently omit an observation or partially publish transaction state.
+
+New Create operations emit version 3. Version 2 remains readable for snapshot operation and reports both new fields
+as zero, which is an explicit absence of serializable tracking authority rather than a fallback. There is no
+in-place upgrade and no library-selected replacement value. A serializable Begin against such a database must reject
+as unsupported until a separately specified immutable migration publishes explicit authority. Flush likewise
+rejects a v2 root as unsupported rather than silently choosing limits while creating a v3 successor.
+
+The operational decoder probes up to the current 228-byte prefix, selects the exact 220- or 228-byte header from the
+authenticated version, and derives whole-object allocation bounds from that selected width and authenticated counts.
+The bounded SPARK reference codec encodes and decodes only current version 3; the operational decoder owns the exact
+version-2 backward-read golden. Every new allocation remains checked, lazy, and unpublished on failure.
+
 ## Immutable SST run
 
 SST version 1 uses magic `FLYSST01` and the next unused stable object-kind code, `4`. Its header is 96 bytes:
@@ -310,9 +336,10 @@ independently generated golden bytes.
 ## Evolution
 
 Batch version 1 remains the transaction-log encoding. Manifest version 1 is the legacy log-only registry encoding and
-remains readable. New databases use manifest version 2 from their root: the root has replay boundary zero, no runs,
-and no checkpoint identities, but persists every explicit LSM allocation limit. A nonempty version-2 manifest is a
-later checkpoint successor and never rewrites or implicitly migrates a reachable version-1 manifest. SST begins at
-version 1 under its independent kind. A future kind-specific format change records whether existing readers reject,
-read, or migrate it. Golden byte fixtures and explicit corruption cases gate each supported version. Migration never
-rewrites a reachable immutable object in place.
+remains readable. Manifest version 2 remains readable as the first-LSM predecessor but has no serializable
+observation authority. New databases use manifest version 3 from their root: the root has replay boundary zero, no
+runs, and no checkpoint identities, while persisting every explicit LSM and serializable-tracking limit. A nonempty
+current manifest is a later checkpoint successor and never rewrites or implicitly migrates a reachable older
+manifest. SST begins at version 1 under its independent kind. A future kind-specific format change records whether
+existing readers reject, read, or migrate it. Golden byte fixtures and explicit corruption cases gate each supported
+version. Migration never rewrites a reachable immutable object in place.

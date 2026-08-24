@@ -321,7 +321,7 @@ package body Flyology.DB is
    --  Commit objects use Shared_Image and the runtime-sized path below.
    type Small_Metadata_Buffer is array (Small_Metadata_Index) of Byte;
 
-   --  Derived maximum empty manifest-v2 root extent: the frozen 220-byte
+   --  Derived maximum empty manifest-v3 root extent: the frozen 228-byte
    --  header, 64 family frames with their maximum 255-byte names, and the
    --  four-byte trailer. It is a compatibility assertion against the existing
    --  small-object transport boundary, not a database allocation default.
@@ -333,7 +333,7 @@ package body Flyology.DB is
    pragma
      Compile_Time_Error
        (Maximum_Empty_Root_Checkpoint_Bytes > Maximum_Small_Metadata_Image_Bytes,
-        "manifest-v2 root exceeds the small-metadata transport boundary");
+        "manifest-v3 root exceeds the small-metadata transport boundary");
 
    --  Frozen common-envelope U16 version field offsets shared by persisted
    --  object formats. Moving either byte is wire-incompatible; naming them
@@ -471,9 +471,11 @@ package body Flyology.DB is
         Maximum_Batch_Payload_Bytes       => Item.Maximum_Batch_Payload_Bytes,
         Maximum_Live_State_Bytes          => Item.Maximum_Live_State_Bytes,
         --  These zeroes mean the manifest-v1 base has no LSM extension; they
-        --  are never substituted for v2 persisted allocation authority.
+        --  are never substituted for v2/v3 persisted allocation authority.
         Maximum_Total_L0_Runs             => 0,
-        Maximum_Checkpoint_Identities     => 0));
+        Maximum_Checkpoint_Identities     => 0,
+        Maximum_Point_Reads_Per_Transaction => 0,
+        Maximum_Scan_Ranges_Per_Transaction => 0));
 
    function Maximum_Runtime_Batch_Length (Limits : Manifests.Database_Limits) return Natural is
       --  Derived exact maximum framing from the persisted transaction/mutation
@@ -2045,6 +2047,8 @@ package body Flyology.DB is
       Replay_Boundary               : Interfaces.Unsigned_64 := 0;
       Maximum_Total_L0_Runs         : Interfaces.Unsigned_32 := 0;
       Maximum_Checkpoint_Identities : Interfaces.Unsigned_32 := 0;
+      Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32 := 0;
+      Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32 := 0;
       Families                      : Family_LSM_Authority_Array := [others => (others => <>)];
    end record;
 
@@ -2059,6 +2063,8 @@ package body Flyology.DB is
          Replay_Boundary               => Value.Replay_Boundary,
          Maximum_Total_L0_Runs         => Value.Maximum_Total_L0_Runs,
          Maximum_Checkpoint_Identities => Value.Maximum_Checkpoint_Identities,
+         Maximum_Point_Reads_Per_Transaction => Value.Maximum_Point_Reads_Per_Transaction,
+         Maximum_Scan_Ranges_Per_Transaction => Value.Maximum_Scan_Ranges_Per_Transaction,
          Families                      => [others => (others => <>)]);
    begin
       for Index in Value.Families'Range loop
@@ -2073,6 +2079,10 @@ package body Flyology.DB is
         or else not Right.Enabled
         or else Left.Maximum_Total_L0_Runs /= Right.Maximum_Total_L0_Runs
         or else Left.Maximum_Checkpoint_Identities /= Right.Maximum_Checkpoint_Identities
+        or else Left.Maximum_Point_Reads_Per_Transaction
+                /= Right.Maximum_Point_Reads_Per_Transaction
+        or else Left.Maximum_Scan_Ranges_Per_Transaction
+                /= Right.Maximum_Scan_Ranges_Per_Transaction
       then
          return False;
       end if;
@@ -4070,6 +4080,14 @@ package body Flyology.DB is
       then
          Result := Invalid_State;
          return;
+      --  A readable v2 manifest has no serializable observation authority and
+      --  cannot be silently upgraded by Flush. Only an explicit future
+      --  migration may select and publish the missing persisted limits.
+      elsif State.LSM_Authority.Maximum_Point_Reads_Per_Transaction = 0
+        or else State.LSM_Authority.Maximum_Scan_Ranges_Per_Transaction = 0
+      then
+         Result := Unsupported_Format;
+         return;
       end if;
       State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
       if Uncertain then
@@ -4189,6 +4207,10 @@ package body Flyology.DB is
       Plan.Manifest.Replay_Boundary := Interfaces.Unsigned_64 (Head.Highest);
       Plan.Manifest.Maximum_Total_L0_Runs := State.LSM_Authority.Maximum_Total_L0_Runs;
       Plan.Manifest.Maximum_Checkpoint_Identities := State.LSM_Authority.Maximum_Checkpoint_Identities;
+      Plan.Manifest.Maximum_Point_Reads_Per_Transaction :=
+        State.LSM_Authority.Maximum_Point_Reads_Per_Transaction;
+      Plan.Manifest.Maximum_Scan_Ranges_Per_Transaction :=
+        State.LSM_Authority.Maximum_Scan_Ranges_Per_Transaction;
 
       for Family_Index in Plan.Manifest.Families'Range loop
          declare
@@ -5692,8 +5714,9 @@ package body Flyology.DB is
             LSM_Runtime.Decode_Checkpoint_Manifest
               (Image, To_Head_ID (Expected_Database), Checkpoint, LSM_Status);
             if LSM_Status = LSM_Runtime.Decoded then
-               --  Until the flush/recovery unit lands, only a v2 root with an
-               --  empty checkpoint partition is operationally activated.
+               --  Create receipt activation accepts only the canonical empty
+               --  current root; nonempty checkpoints enter through cacheless
+               --  recovery and cannot be substituted for retained root bytes.
                if Checkpoint.Replay_Boundary /= 0
                  or else Checkpoint.Run_Total /= 0
                  or else Checkpoint.Identity_Total /= 0
@@ -5787,9 +5810,9 @@ package body Flyology.DB is
       Checkpoint        : out LSM_Runtime.Checkpoint_Manifest_Access;
       Result            : out Outcome_Code)
    is
-      --  The initial range is the frozen manifest-v2 header width. It admits
-      --  exact persisted allocation fields before any whole-object allocation;
-      --  changing it would break the header-first compatibility boundary.
+      --  The initial range is the current manifest-v3 header width. A v2
+      --  header is its exact prefix and remains readable through version
+      --  dispatch before whole-object allocation.
       Header_Length     : constant Natural := LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length;
       Header_Data       : Flyology.Bytes.Unbounded_Bytes;
       Whole_Data        : Flyology.Bytes.Unbounded_Bytes;
@@ -5835,7 +5858,9 @@ package body Flyology.DB is
          Image (Index) := Byte (Flyology.Bytes.Element (Header_Data, Index + 1));
       end loop;
       if Image (Common_Version_High_Offset) = 0
-        and then Image (Common_Version_Low_Offset) = Byte (LSM_Runtime.LSM.Checkpoint_Manifest_Format_Version)
+        and then Image (Common_Version_Low_Offset)
+                 in Byte (LSM_Runtime.LSM.Previous_Checkpoint_Manifest_Format_Version)
+                    | Byte (LSM_Runtime.LSM.Checkpoint_Manifest_Format_Version)
       then
          LSM_Runtime.Inspect_Checkpoint_Manifest_Header
            (Image.all,
@@ -6548,7 +6573,7 @@ package body Flyology.DB is
       Result        : out Outcome_Code)
    is
       --  All allocation dimensions below come directly from the authenticated
-      --  persisted manifest. Seen = history * transactions. A manifest-v2
+      --  persisted manifest. Seen = history * transactions. A manifest-v2/v3
       --  engine reserves its explicit checkpoint-identity ceiling; legacy v1
       --  retains history * (transactions + one batch/group ID). Every formula
       --  uses checked arithmetic before allocation.
@@ -6638,7 +6663,7 @@ package body Flyology.DB is
       Checkpoint_Images := [others => null];
       State.Checkpoint_Base := Checkpoint_Base;
       Checkpoint_Base := null;
-      --  A manifest-v2 checkpoint supplies its authenticated replay boundary;
+      --  A manifest-v2/v3 checkpoint supplies its authenticated replay boundary;
       --  root and legacy manifests have no compacted-history boundary, so zero
       --  preserves their full retained suffix authority.
       State.Gate.Initialize
@@ -6871,7 +6896,11 @@ package body Flyology.DB is
         (Database_ID, Manifest_ID, Initial_Transition_ID, Limits, Initial_Families, Base, Result);
       if Result /= Success then
          return;
-      elsif Limits.Maximum_Total_L0_Runs = 0 or else Limits.Maximum_Checkpoint_Identities = 0 then
+      elsif Limits.Maximum_Total_L0_Runs = 0
+        or else Limits.Maximum_Checkpoint_Identities = 0
+        or else Limits.Maximum_Point_Reads_Per_Transaction = 0
+        or else Limits.Maximum_Scan_Ranges_Per_Transaction = 0
+      then
          Result := Invalid_State;
          return;
       end if;
@@ -6884,6 +6913,8 @@ package body Flyology.DB is
       Value.Base := Base;
       Value.Maximum_Total_L0_Runs := Limits.Maximum_Total_L0_Runs;
       Value.Maximum_Checkpoint_Identities := Limits.Maximum_Checkpoint_Identities;
+      Value.Maximum_Point_Reads_Per_Transaction := Limits.Maximum_Point_Reads_Per_Transaction;
+      Value.Maximum_Scan_Ranges_Per_Transaction := Limits.Maximum_Scan_Ranges_Per_Transaction;
       for Family_Index in Value.Families'Range loop
          declare
             Found : Boolean := False;
@@ -10573,6 +10604,8 @@ package body Flyology.DB is
       Family_ID              : Column_Family_ID;
       Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
       Maximum_Identities     : out Interfaces.Unsigned_32;
+      Maximum_Point_Reads    : out Interfaces.Unsigned_32;
+      Maximum_Scan_Ranges    : out Interfaces.Unsigned_32;
       Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
       Memtable_Max_Entries   : out Interfaces.Unsigned_32;
       Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
@@ -10588,6 +10621,8 @@ package body Flyology.DB is
    begin
       Maximum_Total_L0_Runs := 0;
       Maximum_Identities := 0;
+      Maximum_Point_Reads := 0;
+      Maximum_Scan_Ranges := 0;
       Memtable_Max_Bytes := 0;
       Memtable_Max_Entries := 0;
       Maximum_Family_L0_Runs := 0;
@@ -10620,6 +10655,8 @@ package body Flyology.DB is
       end if;
       Maximum_Total_L0_Runs := Checkpoint.Maximum_Total_L0_Runs;
       Maximum_Identities := Checkpoint.Maximum_Checkpoint_Identities;
+      Maximum_Point_Reads := Checkpoint.Maximum_Point_Reads_Per_Transaction;
+      Maximum_Scan_Ranges := Checkpoint.Maximum_Scan_Ranges_Per_Transaction;
       for Index in Checkpoint.Families'Range loop
          if Checkpoint.Base.Families (Index).ID = Interfaces.Unsigned_32 (Family_ID) then
             Memtable_Max_Bytes := Checkpoint.Families (Index).Memtable_Max_Bytes;
@@ -10646,6 +10683,8 @@ package body Flyology.DB is
       Replay_Boundary        : out Interfaces.Unsigned_64;
       Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
       Maximum_Identities     : out Interfaces.Unsigned_32;
+      Maximum_Point_Reads    : out Interfaces.Unsigned_32;
+      Maximum_Scan_Ranges    : out Interfaces.Unsigned_32;
       Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
       Memtable_Max_Entries   : out Interfaces.Unsigned_32;
       Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
@@ -10656,6 +10695,8 @@ package body Flyology.DB is
       Replay_Boundary := 0;
       Maximum_Total_L0_Runs := 0;
       Maximum_Identities := 0;
+      Maximum_Point_Reads := 0;
+      Maximum_Scan_Ranges := 0;
       Memtable_Max_Bytes := 0;
       Memtable_Max_Entries := 0;
       Maximum_Family_L0_Runs := 0;
@@ -10669,6 +10710,8 @@ package body Flyology.DB is
       Replay_Boundary := Lease.State.LSM_Authority.Replay_Boundary;
       Maximum_Total_L0_Runs := Lease.State.LSM_Authority.Maximum_Total_L0_Runs;
       Maximum_Identities := Lease.State.LSM_Authority.Maximum_Checkpoint_Identities;
+      Maximum_Point_Reads := Lease.State.LSM_Authority.Maximum_Point_Reads_Per_Transaction;
+      Maximum_Scan_Ranges := Lease.State.LSM_Authority.Maximum_Scan_Ranges_Per_Transaction;
       for Family of Lease.State.LSM_Authority.Families loop
          if Family.ID = Interfaces.Unsigned_32 (Family_ID) then
             Memtable_Max_Bytes := Family.State.Memtable_Max_Bytes;
@@ -10856,7 +10899,9 @@ package body Flyology.DB is
          --  Unused by batch decoding; nonzero fixture values keep the public
          --  aggregate explicit without introducing runtime fallback policy.
          Maximum_Total_L0_Runs             => 1,
-         Maximum_Checkpoint_Identities     => 1);
+         Maximum_Checkpoint_Identities     => 1,
+         Maximum_Point_Reads_Per_Transaction => 1,
+         Maximum_Scan_Ranges_Per_Transaction => 1);
    begin
       Flyology.Bytes.Reserve_Capacity (Owned, Data'Length);
       for Value of Data loop

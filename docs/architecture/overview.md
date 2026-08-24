@@ -25,16 +25,18 @@ The executable mutation surface remains log-only, but recovery accepts either th
 nonempty first checkpoint. Log-only recovery follows `HEAD.Latest_Batch` and the predecessor-batch ID in each
 immutable commit object, then rebuilds logical state in sequence order without local state or listing. HEAD version 2
 names an immutable root column-family manifest before any batch is decoded. New Create operations encode that root as
-manifest version 2 with an empty checkpoint partition and explicit database-wide run/identity plus per-family
-memtable/L0 authority. Activation retains that authenticated policy in live engine state rather than reconstructing
-it from handles or defaults. Existing manifest-v1 roots remain readable for log-only operation. Create requires all
-initial identities, limits, and families explicitly and canonicalizes families by numeric ID before effects. Open reads the
-complete manifest chain before the batch chain and installs neither partial registry nor partial state. HEAD version
+manifest version 3 with an empty checkpoint partition and explicit database-wide run, identity, and serializable
+count authority plus per-family memtable/L0 authority. Activation retains that authenticated policy in live engine
+state rather than reconstructing it from handles or defaults. Existing manifest-v1 roots remain readable for
+log-only operation; manifest-v2 roots remain readable for snapshot operation but carry no serializable point/range
+authority. Create requires all initial identities, limits, and families explicitly and canonicalizes families by
+numeric ID before effects. Open reads the complete manifest chain before the batch chain and installs neither partial
+registry nor partial state. HEAD version
 1 remains decodable for inspection but operational Open returns `Unsupported_Format`; no migration or write path
 silently upgrades an existing manifest-v1 database.
 
 The first-checkpoint protocol is specified separately in
-[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v2 root creation, public synchronous Flush
+[`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v3 root creation, public synchronous Flush
 and caller-composable Flush with self-contained certainty receipts, exact same-identity reconciliation, live
 coordinator replacement, and cacheless nonempty checkpoint recovery are operational.
 
@@ -55,8 +57,9 @@ state or incomplete negative evidence. Milestone 3 remains pending on operationa
 The formal serializable rule additionally records successful and absent point reads plus normalized scan ranges and
 rejects a post-snapshot write that intersects either. Point and range tracking have independent explicit capacity
 rejection; an observation is never silently omitted. The initial production validator may conservatively reject
-additional transactions but may not admit write skew or phantoms forbidden by this rule. The Ada isolation/range API,
-normalization representation, and caller- or persisted-authority capacities remain intentionally unfrozen.
+additional transactions but may not admit write skew or phantoms forbidden by this rule. The Ada isolation/range API
+and normalization representation remain intentionally unfrozen. Manifest v3 now freezes persisted independent
+point/range count authority; runtime tracking remains pending.
 
 Transactions carry caller-visible idempotency identities. A singleton transaction uses that exact identity as its
 immutable batch ID. An explicit group carries a separate caller-stable group ID; group and transaction IDs share one

@@ -197,7 +197,9 @@ package body Flyology.DB.Engine_Tests is
    --  Shared engine-test database policy: eight families/group members, the
    --  current 64-entry history/mutation reference dimensions, and byte
    --  budgets large enough for ordinary fixtures. These values define corpus
-   --  coverage only and are always persisted explicitly by Create_DB.
+   --  coverage only and are always persisted explicitly by Create_DB. Eight
+   --  point reads and four scan ranges are the maintained serializable corpus
+   --  geometry, not library defaults.
    Default_Limits : constant Database_Limits :=
      (Maximum_Column_Families           => 8,
       Maximum_Manifest_History          => 64,
@@ -213,7 +215,9 @@ package body Flyology.DB.Engine_Tests is
       --  capacity (64 histories * (8 transaction IDs + one group ID)). These
       --  are persisted corpus choices, not library defaults.
       Maximum_Total_L0_Runs             => 8,
-      Maximum_Checkpoint_Identities     => 576);
+      Maximum_Checkpoint_Identities     => 576,
+      Maximum_Point_Reads_Per_Transaction => 8,
+      Maximum_Scan_Ranges_Per_Transaction => 4);
 
    function Configure_Test_Family
      (ID : Column_Family_ID; Name : Byte_Array; Max_Key, Max_Value : Interfaces.Unsigned_64)
@@ -581,7 +585,11 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Batch_Payload_Bytes       => 2_200_000,
          Maximum_Live_State_Bytes          => 4_400_000,
          Maximum_Total_L0_Runs             => 1,
-         Maximum_Checkpoint_Identities     => 24);
+         Maximum_Checkpoint_Identities     => 24,
+         --  Maintained serializable test geometry; persisted explicitly and
+         --  independent of the large family byte bounds above.
+         Maximum_Point_Reads_Per_Transaction => 8,
+         Maximum_Scan_Ranges_Per_Transaction => 4);
       Families     : constant Column_Family_Configuration_Array :=
         [Configure_Test_Family (17, [16#72#, 16#75#, 16#6E#], 4_096, 1_048_576)];
       Database_ID  : constant Database_Identifier := DB_ID (Tag);
@@ -689,7 +697,10 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Batch_Payload_Bytes       => Exact_Two_Bytes,
          Maximum_Live_State_Bytes          => Exact_Two_Bytes,
          Maximum_Total_L0_Runs             => 2,
-         Maximum_Checkpoint_Identities     => 108);
+         Maximum_Checkpoint_Identities     => 108,
+         --  Maintained serializable stress-fixture counts, not defaults.
+         Maximum_Point_Reads_Per_Transaction => 8,
+         Maximum_Scan_Ranges_Per_Transaction => 4);
       Families        : constant Column_Family_Configuration_Array :=
         [Configure_Test_Family
            (17, [16#6C#, 16#61#], Interfaces.Unsigned_64 (Key_Bytes), Interfaces.Unsigned_64 (Value_Bytes)),
@@ -948,7 +959,10 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Batch_Payload_Bytes       => 514,
          Maximum_Live_State_Bytes          => 514,
          Maximum_Total_L0_Runs             => 1,
-         Maximum_Checkpoint_Identities     => 6);
+         Maximum_Checkpoint_Identities     => 6,
+         --  Maintained serializable descriptor-fixture counts, not defaults.
+         Maximum_Point_Reads_Per_Transaction => 8,
+         Maximum_Scan_Ranges_Per_Transaction => 4);
       Families     : constant Column_Family_Configuration_Array :=
         [Configure_Test_Family (23, [16#64#, 16#79#, 16#6E#], 2, 1)];
       Database_ID  : constant Database_Identifier := DB_ID (Tag);
@@ -1307,7 +1321,10 @@ package body Flyology.DB.Engine_Tests is
          Maximum_Batch_Payload_Bytes       => 32,
          Maximum_Live_State_Bytes          => 24,
          Maximum_Total_L0_Runs             => 2,
-         Maximum_Checkpoint_Identities     => 24);
+         Maximum_Checkpoint_Identities     => 24,
+         --  Maintained serializable API-fixture counts, not defaults.
+         Maximum_Point_Reads_Per_Transaction => 8,
+         Maximum_Scan_Ranges_Per_Transaction => 4);
       Families                                   : constant Column_Family_Configuration_Array :=
         [Configure_Column_Family (7, [16#77#], 8, 8, 48, 3, 1),
          Configure_Test_Family (2, [16#C3#, 16#A9#], 2, 3)];
@@ -1329,6 +1346,10 @@ package body Flyology.DB.Engine_Tests is
         (Limits with delta Maximum_Total_L0_Runs => 0);
       Invalid_Identity_Limits                    : constant Database_Limits :=
         (Limits with delta Maximum_Checkpoint_Identities => 0);
+      Invalid_Point_Read_Limits                  : constant Database_Limits :=
+        (Limits with delta Maximum_Point_Reads_Per_Transaction => 0);
+      Invalid_Scan_Range_Limits                  : constant Database_Limits :=
+        (Limits with delta Maximum_Scan_Ranges_Per_Transaction => 0);
       --  These three injected sites cover every exact allocation introduced
       --  by empty-root construction before storage admission.
       Root_Allocation_Points                     :
@@ -1363,7 +1384,8 @@ package body Flyology.DB.Engine_Tests is
         (Target : in out Database; Expected_Replay : Sequence_Number; Context_Text : String)
       is
          Replay, Memtable_Bytes                                    : Interfaces.Unsigned_64;
-         Total_Runs, Identity_Total, Memtable_Entries, Family_Runs : Interfaces.Unsigned_32;
+         Total_Runs, Identity_Total, Point_Reads, Scan_Ranges      : Interfaces.Unsigned_32;
+         Memtable_Entries, Family_Runs                             : Interfaces.Unsigned_32;
          Inspect                                                   : Outcome_Code;
       begin
          Testing.Live_LSM_Limits
@@ -1372,6 +1394,8 @@ package body Flyology.DB.Engine_Tests is
             Replay,
             Total_Runs,
             Identity_Total,
+            Point_Reads,
+            Scan_Ranges,
             Memtable_Bytes,
             Memtable_Entries,
             Family_Runs,
@@ -1380,6 +1404,8 @@ package body Flyology.DB.Engine_Tests is
            or else Replay /= Interfaces.Unsigned_64 (Expected_Replay)
            or else Total_Runs /= Limits.Maximum_Total_L0_Runs
            or else Identity_Total /= Limits.Maximum_Checkpoint_Identities
+           or else Point_Reads /= Limits.Maximum_Point_Reads_Per_Transaction
+           or else Scan_Ranges /= Limits.Maximum_Scan_Ranges_Per_Transaction
            or else Memtable_Bytes /= 5
            or else Memtable_Entries /= 1
            or else Family_Runs /= 1
@@ -1432,7 +1458,8 @@ package body Flyology.DB.Engine_Tests is
       declare
          --  Family 2's fixture authority is exactly one maximum 2+3-byte
          --  entry and one run, as derived by Configure_Test_Family above.
-         Total_Runs, Identity_Total, Memtable_Entries, Family_Runs : Interfaces.Unsigned_32;
+         Total_Runs, Identity_Total, Point_Reads, Scan_Ranges      : Interfaces.Unsigned_32;
+         Memtable_Entries, Family_Runs                             : Interfaces.Unsigned_32;
          Memtable_Bytes                                            : Interfaces.Unsigned_64;
       begin
          Testing.Root_LSM_Limits
@@ -1442,6 +1469,8 @@ package body Flyology.DB.Engine_Tests is
             2,
             Total_Runs,
             Identity_Total,
+            Point_Reads,
+            Scan_Ranges,
             Memtable_Bytes,
             Memtable_Entries,
             Family_Runs,
@@ -1449,11 +1478,13 @@ package body Flyology.DB.Engine_Tests is
          if Result /= Success
            or else Total_Runs /= Limits.Maximum_Total_L0_Runs
            or else Identity_Total /= Limits.Maximum_Checkpoint_Identities
+           or else Point_Reads /= Limits.Maximum_Point_Reads_Per_Transaction
+           or else Scan_Ranges /= Limits.Maximum_Scan_Ranges_Per_Transaction
            or else Memtable_Bytes /= 5
            or else Memtable_Entries /= 1
            or else Family_Runs /= 1
          then
-            raise Program_Error with "manifest-v2 root did not preserve explicit LSM authority";
+            raise Program_Error with "manifest-v3 root did not preserve explicit LSM authority";
          end if;
       end;
 
@@ -1826,6 +1857,33 @@ package body Flyology.DB.Engine_Tests is
          Receipt => Create_Info,
          Result  => Result);
       Expect (Result, Invalid_State, "zero checkpoint identity authority reached publication");
+      --  IDs 220..225 distinguish the two new invalid-policy attempts from
+      --  every other create witness; they are test identities, not format or
+      --  allocation policy.
+      Create
+        (Invalid_Item,
+         Invalid_Ctx'Access,
+         DB_ID (220),
+         ID (221),
+         ID (222),
+         Invalid_Point_Read_Limits,
+         Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Invalid_State, "zero point-read authority reached publication");
+      Create
+        (Invalid_Item,
+         Invalid_Ctx'Access,
+         DB_ID (223),
+         ID (224),
+         ID (225),
+         Invalid_Scan_Range_Limits,
+         Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Invalid_State, "zero scan-range authority reached publication");
       declare
          After_Batch, After_Manifest, After_Head : Natural;
       begin

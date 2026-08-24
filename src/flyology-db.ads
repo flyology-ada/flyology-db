@@ -70,6 +70,11 @@ package Flyology.DB is
       Maximum_Live_State_Bytes          : Interfaces.Unsigned_64;
       Maximum_Total_L0_Runs             : Interfaces.Unsigned_32;
       Maximum_Checkpoint_Identities     : Interfaces.Unsigned_32;
+      --  Persisted serializable-observation count authority. Exact point keys
+      --  and range endpoints remain bounded by their selected family; these
+      --  database-wide counts add backpressure without a library default.
+      Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32;
+      Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32;
    end record;
 
    type Column_Family_Configuration is private;
@@ -887,6 +892,8 @@ private
       Family_ID              : Column_Family_ID;
       Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
       Maximum_Identities     : out Interfaces.Unsigned_32;
+      Maximum_Point_Reads    : out Interfaces.Unsigned_32;
+      Maximum_Scan_Ranges    : out Interfaces.Unsigned_32;
       Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
       Memtable_Max_Entries   : out Interfaces.Unsigned_32;
       Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
@@ -897,6 +904,8 @@ private
       Replay_Boundary        : out Interfaces.Unsigned_64;
       Maximum_Total_L0_Runs  : out Interfaces.Unsigned_32;
       Maximum_Identities     : out Interfaces.Unsigned_32;
+      Maximum_Point_Reads    : out Interfaces.Unsigned_32;
+      Maximum_Scan_Ranges    : out Interfaces.Unsigned_32;
       Memtable_Max_Bytes     : out Interfaces.Unsigned_64;
       Memtable_Max_Entries   : out Interfaces.Unsigned_32;
       Maximum_Family_L0_Runs : out Interfaces.Unsigned_32;
