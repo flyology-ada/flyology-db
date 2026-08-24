@@ -509,6 +509,61 @@ grep -q 'Invariant WitnessPending is violated.' \
   >"$temporary_root/tlaps-immutable-cache.log" 2>&1
 grep -q 'All 13 obligations proved.' "$temporary_root/tlaps-immutable-cache.log"
 
+#  The exhaustive graph uses two symmetric identities and the exact witness
+#  adds a third orphan identity. These are qualification geometry, not an age
+#  threshold, retention horizon, delete batch size, or provider policy.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-object-retention-states" \
+  -config ObjectRetention.cfg ObjectRetention \
+  >"$temporary_root/tlc-object-retention.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-object-retention.log"
+! grep -q '^Warning:' "$temporary_root/tlc-object-retention.log"
+grep -q '75337 distinct states found' "$temporary_root/tlc-object-retention.log"
+grep -q 'The depth of the complete state graph search is 16.' \
+  "$temporary_root/tlc-object-retention.log"
+for action in Store ListObject MarkOld AcquireSnapshot ReleaseSnapshot \
+  PinReplica ReleaseReplica Advance ReleasePredecessor BeginUnknown \
+  ResolveUnknown DeleteEligible DiscardDiscovery
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-object-retention.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-object-retention-probe-states" \
+  -config ObjectRetentionListingProbe.cfg ObjectRetentionListingProbe \
+  >"$temporary_root/tlc-object-retention-probe.log" 2>&1
+object_retention_probe_status=$?
+set -e
+test "$object_retention_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-object-retention-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-object-retention-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-object-retention-witness-states" \
+  -config ObjectRetentionWitness.cfg \
+  -dumpTrace json "$temporary_root/object-retention-witness.json" \
+  ObjectRetentionWitness \
+  >"$temporary_root/tlc-object-retention-witness.log" 2>&1
+object_retention_witness_status=$?
+set -e
+test "$object_retention_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-object-retention-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-object-retention-witness.log"
+"$model_root/validate_object_retention_witness.py" \
+  "$temporary_root/object-retention-witness.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-object-retention-cache" --cleanfp --nofp \
+  --strict --method smt "$model_root/ObjectRetentionSafetyProof.tla" \
+  >"$temporary_root/tlaps-object-retention.log" 2>&1
+grep -q 'All 15 obligations proved.' "$temporary_root/tlaps-object-retention.log"
+
 #  Qualification pins for the reviewed two-transaction/two-key model graph.
 #  They detect accidental state-space narrowing; changing the model requires a
 #  fresh graph review and an intentional update of these expected results.
@@ -746,6 +801,10 @@ printf '%s\n' "  Immutable cache TLC 623 distinct states, depth 12"
 printf '%s\n' "  Immutable cache TLAPS 13/13 obligations"
 printf '%s\n' "  Cache coalescing/loss/corruption witness validated"
 printf '%s\n' "  Negative stale-generation cache probe detected"
+printf '%s\n' "  Object retention TLC 75337 distinct states, depth 16"
+printf '%s\n' "  Object retention TLAPS 15/15 obligations"
+printf '%s\n' "  Snapshot/replica/predecessor/unknown retention witness validated"
+printf '%s\n' "  Negative listing-only deletion probe detected"
 printf '%s\n' "  Snapshot isolation TLC 336 distinct states, depth 10"
 printf '%s\n' "  Snapshot isolation TLAPS 6/6 obligations"
 printf '%s\n' "  Snapshot conflict/disjoint/checkpoint witnesses validated"

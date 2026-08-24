@@ -265,6 +265,24 @@ obligations over arbitrary entry and reader sets; its fetch set represents at mo
 This lane proves no concrete capacity, allocation behavior, eviction order, disk format, checksum algorithm,
 progress, public API, or refinement to Ada.
 
+## Immutable-object retention lane
+
+`ObjectRetention.tla` freezes physical-deletion safety without selecting a retention policy. Current authority,
+active snapshots, lagging replicas, required predecessors, and unresolved publication attempts each protect exact
+immutable identities. Listing and an explicit age decision nominate candidates, but deletion rechecks the live union
+of protections and deleted identities cannot be reused. The exhaustive graph uses two symmetric identities; the
+exact witness adds a third orphan identity solely to distinguish predecessor reclamation from an unresolved orphan.
+These values are qualification geometry, not an age horizon or delete batch size.
+
+TLC exhausts 75,337 distinct states at depth 16 with nonzero coverage for every semantic action. The listing-only
+negative probe deletes the current reachability set after listing and age marking and must violate `Safety`. The
+independently
+validated 24-state witness covers snapshot, replica, predecessor, and unknown-attempt protection; release and exact
+predecessor deletion; discovery loss/reconstruction; and resolved-orphan deletion while current authority survives.
+`ObjectRetentionSafetyProof.tla` proves 15 action-preservation obligations over arbitrary object sets. It proves no
+graph traversal, clock/source metadata trust, age threshold, replica lease protocol, provider delete certainty,
+batching, progress, public API, or refinement to Ada.
+
 ## Reproduction
 
 Install the pinned tools under ignored `.deps/tla` as recorded in
@@ -287,6 +305,8 @@ The L0-compaction lane adds 15 distinct states at depth 10, one validated lost-r
 early-HEAD negative probe, full semantic-action coverage, and 26 of 26 strict TLAPS obligations.
 The immutable-cache lane adds 623 distinct states at depth 12, one validated coalescing/loss/corruption witness, one
 required stale-generation negative probe, full semantic-action coverage, and 13 of 13 strict TLAPS obligations.
+The immutable-object retention lane adds 75,337 distinct states at depth 16, one validated protection/reclamation
+witness, one required listing-only deletion probe, full semantic-action coverage, and 15 of 15 TLAPS obligations.
 The snapshot-isolation lane
 adds 336 distinct states at depth 10, three independently validated
 witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. The

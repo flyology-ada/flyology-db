@@ -46,6 +46,14 @@ test -f formal/tla/ImmutableCacheWitness.tla
 test -f formal/tla/ImmutableCacheWitness.cfg
 test -f formal/tla/ImmutableCacheSafetyProof.tla
 test -x formal/tla/validate_immutable_cache_witness.py
+test -f formal/tla/ObjectRetention.tla
+test -f formal/tla/ObjectRetention.cfg
+test -f formal/tla/ObjectRetentionListingProbe.tla
+test -f formal/tla/ObjectRetentionListingProbe.cfg
+test -f formal/tla/ObjectRetentionWitness.tla
+test -f formal/tla/ObjectRetentionWitness.cfg
+test -f formal/tla/ObjectRetentionSafetyProof.tla
+test -x formal/tla/validate_object_retention_witness.py
 test -f src/flyology-db-manifest_formats.ads
 test -f src/flyology-db-manifest_formats.adb
 test -f tests/src/flyology-db-manifest_format_tests.adb

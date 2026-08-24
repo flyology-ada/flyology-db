@@ -26,6 +26,10 @@ compaction surface, run pruning, and dynamic family changes remain separate revi
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
 produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.
+The formal retention boundary separately requires both explicit age eligibility and a live reachability recheck
+before immutable-object deletion. Current authority, active snapshots, replica pins, required predecessors, and
+unresolved publication attempts remain protected; provider listing alone grants no deletion authority. No age
+horizon, delete batch policy, or operational collector is selected.
 Transactions now capture a Begin-time sequence
 and reject exact written keys changed by later committed history. Fixed-snapshot point reads are operational;
 explicit serializable transactions retain and validate exact successful and absent point reads plus caller-observed

@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted formal immutable-object retention candidate
+
+- Parent: formal immutable-cache commit `42a78f6`.
+- Scope and compatibility: freeze deletion safety without changing Ada, public declarations, persisted formats, or
+  storage behavior. Current authority, snapshots, replicas, required predecessors, and unresolved publication
+  attempts independently protect exact immutable identities. Listing plus explicit age eligibility only nominate a
+  candidate; deletion rechecks live protection, and deleted identities are never reused.
+- Authority and constants: object storage remains the sole durable authority, while the database's reachability and
+  active leases grant retention authority. The exhaustive two-identity graph and third orphan identity in the exact
+  witness are adjacent-commented qualification geometry. No age duration, clock source, lease timeout, delete batch
+  size, retry, public constant/default, or physical reclamation policy is introduced.
+- Verification: focused TLC exhausts 75,337 distinct states at depth 16 with nonzero coverage for all 13 semantic
+  actions. The listing-only negative probe violates `Safety`; the exact 24-state machine-validated witness covers
+  snapshot/replica/predecessor/unknown protection, release and predecessor deletion, disposable discovery loss,
+  reconstruction, and resolved-orphan deletion. Strict TLAPS proves all 15 arbitrary-set action-preservation
+  obligations. The combined TLA and repository gates preserve all earlier campaigns.
+- Findings cycle: the initial unconstrained three-object inventory was safe but produced 3,209,921 distinct and
+  40,997,304 generated states, too broad for the maintained fast gate. The final exhaustive graph removes only one
+  symmetric identity while the exact witness retains the distinct orphan and TLAPS retains arbitrary-set generality.
+  The first witness pass found a P1 terminal-predicate error expecting discovery evidence to survive an explicit
+  discard; the corrected predicate requires it empty after reconstructed O2 evidence is consumed. The architecture
+  repeat found a second P1 abstraction gap: current authority was one object rather than the complete reachable
+  closure. Both finite and arbitrary-set kernels now protect a nonempty current-object set and atomically transfer
+  that full set to snapshot, replica, and predecessor retention. The repeated authority, race, listing, age,
+  identity reuse, uncertainty, constants, model/proof, documentation, and
+  unnecessary-surface sweep finds no remaining P0, P1, P2, or P3 issue. Concrete traversal, clocks, retention
+  horizons, provider deletion certainty, batching, progress, public API, and Ada refinement remain later units.
+
 ## Accepted formal immutable-cache candidate
 
 - Parent: indexed HTTP/QUIC dependency handoff commit `8eae273`.

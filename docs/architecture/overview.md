@@ -152,3 +152,9 @@ Ordinary recovery reads the exact head and objects it names. It does not depend 
 cache. Decoding fails closed. Compaction publishes complete immutable outputs before a metadata transition and keeps
 all versions required by transactions, snapshots, checkpoints, and replicas. Garbage collection requires an explicit
 reachability and age boundary; a list result alone never proves that an object is unreachable.
+
+The formal retention boundary makes those protections independent and exact: current authority, active snapshots,
+lagging replicas, required predecessors, and unresolved publication attempts each prevent deletion. Listing and an
+explicit age decision only nominate a candidate; deletion must recheck the live union of protections atomically, and
+a deleted identity is never reused. The model freezes safety only. It does not select an age horizon, provider clock,
+delete batching/certainty rule, scheduler, public API, or operational collector.

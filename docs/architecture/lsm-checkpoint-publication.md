@@ -270,6 +270,25 @@ output-capacity rejection, accepted-lost publication, depublication with retaine
 crash, and exact recovery. The unbounded TLAPS kernel proves the corresponding abstract replacement invariants. No
 TLA+-to-Ada refinement is claimed. The public synchronous/composable trigger remains a separate API unit.
 
+## Frozen immutable-object retention boundary
+
+Physical deletion requires two independent authorities: explicit age eligibility and absence from the live protected
+set. The protected set is the exact union of current HEAD reachability, active snapshot pins, lagging-replica pins,
+predecessors still required for recovery or inspection, and every unresolved publication attempt. Listing discovers
+stored identities but does not establish unreachability, age, or permission to delete. A deletion action rechecks the
+live protected set rather than trusting a previously computed candidate list, and a deleted immutable identity is
+never reused by later publication.
+
+`ObjectRetention.tla` exhaustively checks two symmetric identities and uses a third in an exact witness that retains
+an old object through current, snapshot, replica, and predecessor authority; retains new/orphan objects through
+unknown outcomes; discards and reconstructs discovery evidence; and deletes only after all protections release. A
+negative probe deletes the listed, aged current object and must violate safety. `ObjectRetentionSafetyProof.tla`
+proves the action-preservation kernel over arbitrary object sets. The finite identities are qualification geometry.
+
+This boundary does not choose the age horizon, clock/source metadata trust, replica lease protocol, predecessor-chain
+cut, delete batch size, provider deletion-certainty mapping, progress, public API, or Ada synchronization mechanism.
+Those choices require their own authority, crash tests, provider conformance evidence, and operational refinement.
+
 ## Non-goals
 
 This design does not implement automatic flushing or compaction, a public compaction trigger, run pruning, garbage

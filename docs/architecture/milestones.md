@@ -11,7 +11,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and private replacement spine operational; public compaction pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
-| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Private complete-replacement planner/publisher operational; public API and retention/GC pending |
+| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Private replacement operational and deletion-safety boundary proved; public API and collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
 | 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
@@ -78,6 +78,12 @@ publishes a successor manifest naming only those fresh runs, and reconciles unkn
 rebuilding the exact replacement plan. The public synchronous/composable compaction surface, streaming/physical
 scans, run pruning, retention/GC policy, and provider qualification remain later focused units, so Milestone 4
 remains incomplete.
+
+The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
+pins, lagging-replica pins, required predecessor reachability, and unresolved publication attempts each retain exact
+immutable identities. A listed object becomes deletable only after an explicit age decision and a live protection
+recheck; deleted identities are never reused. Concrete age horizons, provider timestamp trust, deletion certainty,
+batching, scheduling, and an operational collector remain pending Milestone 6 decisions.
 
 ## Formal state-machine lane
 
