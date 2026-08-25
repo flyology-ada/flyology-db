@@ -1,29 +1,35 @@
 # Object Storage capability matrix
 
 Exact dependency provenance is recorded separately. A capability is marked qualified only after the same black-box
-contract and fault cases pass for that provider.
+DB contract and certainty cases pass for that provider; upstream conformance is corroborating evidence rather than a
+substitute for the DB gate.
 
-| Capability | Memory | Files | SQLite | S3 client | Flyology.DB use |
+| Capability | Memory | Files | SQLite | Authenticated S3 | Flyology.DB use |
 | --- | --- | --- | --- | --- | --- |
-| Complete immutable put | Qualified upstream | Qualified upstream | Qualified upstream | Present | Commit/SST objects |
-| Put if absent | Atomic protected publication | Atomic filesystem publication gate | Atomic catalog transaction | Strict signed header maps through server | Local adapter exercised; remote pending |
-| Replace expected generation | Atomic opaque-generation match | Atomic opaque-generation match | Atomic opaque-generation match | Strict signed header maps through server | Local adapter exercised; remote pending |
-| Exact metadata/generation | Present through `Object_Information` | Present | Present | Present | Same-response whole reads exercised locally |
-| Generation-bound range read | Present through read conditions | Present | Present | Present | Head/SST reads |
-| Conditional delete | Batch ETag condition only | Batch ETag condition only | Batch ETag condition only | Present | Later GC qualification |
-| Bounded listing | Present | Present | Present | Present | Discovery/GC only |
-| Explicit unknown publication | Synchronous result has no admission certainty | Same | Same | Not exposed as one DB-ready result | Conservatively unknown, then reconcile |
+| Complete immutable put | Implemented upstream | Implemented upstream | Implemented upstream | Buffer-owned scoped Put | Batch, SST, and manifest objects |
+| Put if absent | Atomic protected publication | Atomic filesystem publication gate | Atomic catalog transaction | Typed admission/publication result | Immutable-object creation |
+| Replace expected generation | Atomic opaque-generation match | Atomic opaque-generation match | Atomic catalog transaction | Typed conditional Put result | Exact `meta/HEAD` transition |
+| Exact metadata/generation | Present | Present | Present | Opaque ETag/version retained | Same-response generation authority |
+| Generation-bound whole/range read | Present | Present | Present | Scoped whole/range Get and Head | Reconciliation and selected SST reads |
+| Explicit unknown publication | Conservatively mapped | Conservatively mapped | Conservatively mapped | `Outcome_Unknown` is typed | Same-identity read-only reconciliation |
+| Conditional delete | Batch ETag condition only | Batch ETag condition only | Batch ETag condition only | Typed scoped Delete | Later GC qualification only |
+| Bounded listing | Present | Present | Present | Scoped bounded page operations | Discovery/GC only, never visibility |
 
-Object Storage commit `8e6e435250433c06528ead054cebf613eabbb4ba` supplies backend-neutral `Write_Conditions`, atomic evaluation across
-memory/files/SQLite, strict authenticated S3 header mapping, conformance/fault evidence, and narrow synchronous S3
-conditional-put and same-response whole-get operations. The synchronous client still does not expose request-
-admission certainty, so Flyology.DB must not infer definite nonpublication from exceptions: an inconclusive mutation
-remains `Outcome_Unknown` until a whole read validates the attempted immutable bytes or HEAD transition. Genuine
-composable typed certainty remains dependent on the later Object Storage `Client.Scoped` API.
+The current DB campaign pins the ignored clean Object Storage build clone at
+`ea8c92c84fbd53b3c82e5004d7133c5b47633f3a`. Its buffer-owned synchronous conditional Put and whole/range Get calls
+are literal waits over the same caller-owned `Client.Scoped` operations used by Flyology.DB's additive
+`Flush_Operation`. One moved `Unique_Buffer` token, typed terminal `Finish`, one absolute deadline, and the same
+publication/admission result therefore govern both blocking and composable DB calls. Neither layer creates a helper
+task, retains a borrowed request body, or automatically retries a mutation.
 
-The current DB review unit binds only `Backends.Backend'Class` and tests memory/files. Every conditional-put
-exception and returned `Backend_Unavailable` after entering the call maps to unknown, including files publication
-that may rename before a directory-sync failure. Immutable-batch ambiguity is reconciled byte-for-byte before HEAD;
-it is not exposed as an ambiguous transaction commit. HEAD ambiguity produces the self-contained public receipt and
-blocks later publication until exact-head or reachable-chain reconciliation. This is local-provider qualification,
-not authenticated S3 qualification.
+Flyology.DB never infers definite nonpublication from an exception or incomplete response after a mutation may have
+entered the provider. An inconclusive immutable-object Put remains `Outcome_Unknown` until a generation-bound whole
+read validates the exact attempted bytes. An inconclusive HEAD transition retains its exact transition identity in
+`Flush_Receipt`, fences later publication, and remains unknown until read-only reconciliation observes that transition
+or a conclusive successor. Listing cannot establish either result.
+
+The maintained authenticated DB probe exercises create, commit, synchronous and composable Flush, complete-run
+replacement, caller-selected three-run merge, exact-token restoration, uncertainty reconciliation, close, and
+cacheless reopen. Its Flyology-memory lane is green at the current pin. Repeated RustFS, SeaweedFS, MinIO, Flyology
+files, and Flyology SQLite qualification remains pending the merged/indexed HTTP stale-reused-H1 correction; no DB or
+Object Storage retry/certainty workaround is accepted in its place.

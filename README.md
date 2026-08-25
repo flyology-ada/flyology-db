@@ -97,10 +97,17 @@ The root manifest path-pins it for development while leaving its indexed HTTP de
 ```sh
 alr build
 ./tests/scripts/test.sh
+./tests/scripts/test-s3-matrix.sh
 ./scripts/prove.sh
 ./scripts/check-tla.sh
 ./scripts/check-repository.sh
 ```
+
+The separate S3 matrix requires Docker and runs the authenticated DB probe three times against pinned RustFS,
+SeaweedFS, MinIO, and Flyology memory, files, and SQLite servers. It reuses Object Storage's maintained provider
+lifecycle scripts while DB owns the database-level create, commit, Flush, compaction, and cacheless-reopen oracle.
+The repetition count is qualification geometry and can be changed for focused diagnostics with
+`FLYOLOGY_DB_S3_MATRIX_REPEATS`; it is not a database retry or compatibility policy.
 
 The exact Object Storage commit used by the current campaign is recorded in
 [dependency-provenance.md](docs/qualification/dependency-provenance.md).

@@ -64,6 +64,8 @@ test -f formal/tla/ReplicaRefreshWitness.tla
 test -f formal/tla/ReplicaRefreshWitness.cfg
 test -f formal/tla/ReplicaRefreshSafetyProof.tla
 test -x formal/tla/validate_replica_refresh_witness.py
+test -x tests/scripts/run-db-s3-server-slice.sh
+test -x tests/scripts/test-s3-matrix.sh
 test -f src/flyology-db-manifest_formats.ads
 test -f src/flyology-db-manifest_formats.adb
 test -f tests/src/flyology-db-manifest_format_tests.adb
