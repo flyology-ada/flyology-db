@@ -5,8 +5,8 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `a632cc4b0bd4687e02b09cff7923ab4f9fccbfcf`
-- Commit subject: `Problem: ListObjectsV2 cannot participate in composed discovery`
+- Commit: `ae567d0ab97bd0e970ca869c5190967da6a0f569`
+- Commit subject: `Problem: ListObjectVersions cannot compose retained-generation discovery`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
@@ -58,6 +58,11 @@ supports operation reuse only after typed `Finish`. Successful pages are bound t
 prefix, delimiter, maximum, continuation/start cursor, encoding, and Requester Pays admission. Its synchronous typed
 overload is a literal wait on that same state machine; separate pages remain independent service snapshots, and no
 form retries or creates a helper task.
+Bounded ListObjectVersions applies the same owner-driven contract to retained-generation discovery. It owns its
+prepared request and XML-limit-bounded response, retains no caller borrow, and binds successful pages to the exact
+bucket, prefix, delimiter, maximum, encoding, Requester Pays admission, and paired key/version cursor. URL-encoded
+key markers must be decoded before an explicit later Start; version IDs remain opaque and independent pages are
+separate service snapshots. Its typed synchronous parameter-record overload literally waits on the same operation.
 Object Storage records no external HTTP/QUIC pin at this boundary; the generated DB solve likewise marks every
 HTTP/QUIC lock entry unpinned.
 
