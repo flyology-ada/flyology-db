@@ -22,11 +22,18 @@ Create requires an explicit root manifest identity, transition identity, databas
 Open resolves handles by stable ID or exact name and validates manifest authority before replaying batches. HEAD-v1
 images remain inspection-only and return `Unsupported_Format` operationally. The authenticated client binding now
 exercises create, commit, synchronous and composable checkpoint Flush, composable replacement, and cacheless reopen
-through Object Storage scoped operations. Client-bound synchronous Flush is now an owner-driven wait over the same
-DB operation; memory/files retain the backend-neutral synchronous fallback. Remote-provider matrix qualification and
-dynamic append-only family changes remain prerequisites for accepting Milestone 2. The accepted owned-runtime
-closure is `c909c572`; the pooled TLA+ and manifest-publication models remain abstract assurance lanes rather than a
-claimed refinement proof.
+through provider-owned Object Storage operations in `Client.Objects`. Client-bound synchronous Flush is now an
+owner-driven wait over the same DB operation; memory/files retain the backend-neutral synchronous fallback. The
+limited operation and caller-owned completion set express scoped lifetime; a separate `.Scoped` package would create
+a second vocabulary for the same provider state machine and is intentionally absent. Remote-provider matrix
+qualification and dynamic append-only family changes remain prerequisites for accepting Milestone 2. The accepted
+owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication models remain abstract assurance lanes
+rather than a claimed refinement proof.
+
+The immediate integration target is the [limited end-to-end profile](limited-profile.md). It freezes one coherent
+public workflow before broadening policy: fixed initial families, synchronous transactions, explicit Flush, complete
+process-local state loss, and authoritative reopen. Dynamic families, public compaction policy, replicas, TTL, and
+automatic maintenance remain outside that acceptance claim.
 
 Milestone 3 now has a formal-first and operational write/write validation boundary. A transaction captures the global
 sequence at Begin and must prove every written key unchanged since that snapshot from retained exact history.

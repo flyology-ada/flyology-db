@@ -113,5 +113,6 @@ rm -rf "$flush_head_root"
 trap - EXIT HUP INT TERM
 printf '%s\n' "Flyology.DB files subprocess group, manifest, and Flush crash/recovery passed"
 cd "$project_root"
+./showcases/run-limited-e2e.sh
 ./oracles/adapters/tidesdb/scripts/test.sh
 printf '%s\n' "Flyology.DB deterministic test suite passed"

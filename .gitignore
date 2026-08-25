@@ -13,6 +13,7 @@ build/
 docs/api/
 tests/bin/
 tests/obj/
+showcases/bin/
 tests/**/*-test_data.ads
 tests/**/*-test_data-tests.ads
 proof/obj/

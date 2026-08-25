@@ -9,6 +9,10 @@ test -f alire.toml
 test -f flyology_db.gpr
 test -f src/flyology-db.ads
 test -f docs/qualification/dependency-provenance.md
+test -f docs/architecture/limited-profile.md
+test -f showcases/limited_e2e.gpr
+test -f showcases/src/flyology_db_limited_e2e.adb
+test -x showcases/run-limited-e2e.sh
 test -f oracles/contract/workload.schema.json
 test -x oracles/contract/validate_workload.py
 test -f oracles/contract/canonical-state.md
@@ -72,6 +76,7 @@ test -f tests/src/flyology-db-manifest_format_tests.adb
 grep -q '^name = "flyology_db"$' alire.toml
 grep -q '^gnat = ">=13 & <=16[.]1[.]0"$' alire.toml
 grep -q '^package Flyology.DB is$' src/flyology-db.ads
+grep -q 'Flyology.DB limited end-to-end profile: OK' showcases/src/flyology_db_limited_e2e.adb
 grep -q 'flyology_object_storage = { path=' alire.toml
 dependency_commit=$(git -C .deps/flyology-object-storage rev-parse HEAD)
 grep -q "$dependency_commit" docs/qualification/dependency-provenance.md

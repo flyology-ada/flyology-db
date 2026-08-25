@@ -10,6 +10,9 @@ transaction.
 
 This repository is under active development. The current acceptance state and remaining work are recorded in
 [the milestone plan](docs/architecture/milestones.md). No production qualification or performance claim is made.
+The next usable boundary is the deliberately narrow
+[limited end-to-end profile](docs/architecture/limited-profile.md): one writer, fixed families, synchronous
+transactions and Flush, exact close/local-loss/reopen recovery, and no automatic maintenance or retry policy.
 The current operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v2 roots with explicit
 LSM limits, stable column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/
 database limits. Public synchronous `Flush` publishes and reconciles a complete checkpoint; later calls append one
@@ -96,6 +99,7 @@ The root manifest path-pins it for development while leaving its indexed HTTP de
 
 ```sh
 alr build
+./showcases/run-limited-e2e.sh
 ./tests/scripts/test.sh
 ./tests/scripts/test-s3-matrix.sh
 ./scripts/prove.sh

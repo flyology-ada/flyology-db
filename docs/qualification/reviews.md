@@ -1,9 +1,47 @@
 # Review record
 
+## Accepted limited end-to-end public profile
+
+- Parent: provider-centric Object Storage migration `a81fdea`.
+- Scope and authority: freeze one deliberately narrow usable boundary before expanding the database. The profile has
+  one fenced writer, two caller-declared fixed families with distinct persisted limits, synchronous Snapshot
+  transactions, explicit singleton and atomic-group commits, point reads, ordered bounded scans, Delete, two explicit
+  Flush calls, complete process-local state loss, and authoritative reopen. It selects no dynamic-family, automatic
+  Flush/compaction, replica, TTL, codec, GC, retry, performance, or production policy.
+- Ownership and durability: the maintained executable uses only public `Flyology.DB` and provider-neutral Files APIs.
+  It requests power-loss-durable file publication, closes the first database value, constructs a fresh database
+  value, and recovers solely from the same object-store prefix. The synchronous profile uses the same DB Flush
+  operation and provider-owned Object Storage state machines as composable callers; no helper task, borrowed-body
+  retention, mutation replay, or second certainty implementation is introduced.
+- Constants and allocation: every database/family limit, identity, timeout, backend object ceiling, bucket, and
+  prefix is fixture-owned and adjacent-documented. The two families deliberately have different key/value limits to
+  witness persisted per-family authority. No value becomes a public default or inferred product ceiling; production
+  allocation remains checked, lazy, and derived from authenticated persisted limits.
+- Acceptance oracle: create two families; commit one singleton; atomically co-commit across both families; delete one
+  key; Flush a complete checkpoint; commit and Flush a suffix; verify point and canonical scan results; close; reopen
+  from a fresh database value; and verify exact surviving bytes, deletion, stable family lookup, and highest visible
+  sequence. `tests/scripts/test.sh` invokes this executable, and the repository gate requires its sources and success
+  sentinel.
+- Verification: the formatted executable passes directly and within the complete deterministic suite; root build,
+  repository checks, the 18-lane authenticated provider matrix, GNATdoc, maintained TLC/TLAPS campaign, and the
+  warning-strict 1,090-check DB proof gate are green on the same source/dependency closure. The exact showcase is a
+  power-loss-durable Files oracle; the authenticated matrix is corroborating evidence, not a claim that it ran this
+  identical executable.
+- Findings cycle: the first documentation pass overstated the authenticated provider matrix as the exact same
+  database-level oracle. The claim now distinguishes the complete Files showcase from corroborating authenticated
+  coverage and makes porting this public-only oracle the first expansion. A fidelity sweep found one P1: the first DB,
+  family handles, storage binding, and provider handle remained alive after logical Close, weakening the claimed
+  complete process-local-loss witness. Seed and recovery now run in separate owner scopes with independently opened
+  Files handles and bindings; only the durable root path crosses the boundary. The post-gate sweep also found that a
+  successful showcase left its executable as an untracked repository artifact; the profile now ignores its dedicated
+  binary directory consistently with the maintained test executables. API, ownership, crash recovery, ordering,
+  bounds, constants, packaging, documentation, test integration, and unnecessary-surface re-review finds no remaining
+  actionable P0, P1, or P2 finding.
+
 ## Accepted provider-centric Object Storage migration
 
 - Parent: pre-migration main `487747b31e3f`.
-- Scope and provenance: migrate the DB consumer from the removed parallel `Client.Scoped` tree to the published
+- Scope and provenance: migrate the DB consumer from the removed parallel `Scoped` child under `Client` to published
   provider-owned declarations at Object Storage source `3455cde3158fd589480281beac39bea51305bb5e`, selected by
   exact crate constraint `flyology_object_storage = "=0.1.0-dev"` from Flyology index
   `8e99188eb914e9d67243785f5427b494c041ac38`. The ignored clean build clone is the only path pin; the author checkout
