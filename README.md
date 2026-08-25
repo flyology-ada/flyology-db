@@ -36,7 +36,10 @@ blocking `Compact` drive the complete-view replacement through that same owner s
 machinery. They build one complete live-state run per nonempty family and publish a successor manifest naming only
 those fresh outputs. The caller supplies the exact complete family/output map and stable manifest/transition
 identities; the DB retains superseded immutable objects and selects no automatic trigger, level, fanout, schedule,
-retry, or physical-GC policy. Partial-run publication, run pruning, and broader family evolution remain separate
+retry, or physical-GC policy. Overloaded public `Start_Compaction` and blocking `Compact` forms also accept one exact
+caller-selected adjacent run pair plus fresh output, manifest, and transition identities. They retain every version
+and tombstone, preserve surrounding runs and any later committed suffix, and use the same operation, receipt,
+certainty, and reconciliation machinery. Run selection, pruning, and broader family evolution remain separate
 review units.
 The LSM read-equivalence lane independently checks that a complete live-state replacement emits one Put for each
 live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
@@ -45,13 +48,13 @@ claiming an Ada refinement theorem or selecting compaction policy.
 A separate partial-merge lane places two selected consecutive runs between retained older and newer runs. It proves
 that replacing the selected pair with its newest mutation per key preserves every read, including the essential rule
 that a newest selected tombstone remains present to mask older retained values. It selects no compaction trigger,
-fanout, level sizing, schedule, capacity, or public API. The private operational coalescing kernel takes the more
+fanout, level sizing, schedule, or capacity. The operational coalescing kernel takes the more
 conservative snapshot-safe step: it merges two ordered nonoverlapping SSTs while retaining every version and
 tombstone. Its manifest-aware entry point admits only exact adjacent descriptors and rejects any output identity
 already named by that manifest. An effect-free successor builder also requires the caller-prepared base to be the
 exact next checkpoint transition, replaces only those two descriptors, and retains every family rule, replay
 boundary, identity, limit, and surrounding run. It derives all output extents from validated authority and publishes
-no partial candidate. A private synchronous publication witness now binds the retained manifest to the exact current
+no partial candidate. The public caller-selected operation binds the retained manifest to the exact current
 HEAD generation, authenticates its SSTs with header-first generation-bound reads, and sends the merged SST and
 successor through the existing immutable confirmation, conditional HEAD, activation, and exact-identity resolution
 machinery. The successor publisher also supports a later log suffix: before publication it clones the exact decoded
@@ -59,7 +62,7 @@ batch descriptors and shared immutable-image ownership, rebuilds the activation 
 and replays the suffix into the replacement coordinator. Cacheless recovery accepts the same topology only when the
 validated manifest predecessor chain anchors
 both the latest batch publication and the checkpoint boundary it follows. It still selects no trigger, schedule,
-fanout, level policy, public API, or composable read driver.
+fanout, level policy, or automatic selection rule.
 An additive private three-run kernel now qualifies composition beyond the pair without choosing automatic policy.
 It accepts exactly three caller-selected adjacent descriptors, computes one checked exact output allocation, retains
 every version and tombstone, and builds an effect-free successor that replaces only that slice. The exhaustive TLA+

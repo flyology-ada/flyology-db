@@ -608,6 +608,40 @@ package Flyology.DB is
        and then not Flyology.Operations.Is_Terminal (Operation),
        Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
+   --  Start an exact caller-selected adjacent-run compaction. Older_Run_ID
+   --  and Newer_Run_ID must name adjacent current descriptors in one family;
+   --  Output_Run_ID, Manifest_ID, and Transition_ID are fresh caller-stable
+   --  identities. Every version and tombstone is retained, including through
+   --  a later committed suffix. The operation selects no pair, trigger,
+   --  level, schedule, retry, retention horizon, or deletion policy. Runs are
+   --  authenticated and copied into operation-owned state; no caller ID
+   --  borrow survives return. Normal operation-owner borrows and the moved
+   --  Payload_Buffer remain until Finish or finalization drain.
+   --  @param Operation Fresh or consumed client-bound checkpoint operation
+   --  @param Older_Run_ID Exact older adjacent current-run identity
+   --  @param Newer_Run_ID Exact newer adjacent current-run identity
+   --  @param Output_Run_ID Fresh immutable merged-run identity
+   --  @param Manifest_ID Stable immutable successor-manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Storage binding
+   procedure Start_Compaction
+     (Operation      : in out Flush_Operation;
+      Older_Run_ID   : Identifier;
+      Newer_Run_ID   : Identifier;
+      Output_Run_ID  : Identifier;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
    --  Consume a terminal composable Flush and restore its exact input token.
    --  Payload_Buffer may be any vacant handle from the original pool; no
    --  pointer to the initiating handle is retained. The restored token keeps
@@ -676,6 +710,36 @@ package Flyology.DB is
    procedure Compact
      (Item          : in out Database;
       Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code);
+
+   --  Replace two exact adjacent current runs with one fresh immutable run.
+   --  The caller supplies every selected and publication identity. The merge
+   --  retains every version and tombstone, preserves retained surrounding
+   --  runs and any later committed suffix, confirms the output and successor
+   --  before conditional HEAD, and retains predecessor objects. It selects no
+   --  automatic trigger, level, schedule, retry, pruning, or deletion policy.
+   --  Client-backed execution waits on the adjacent Start_Compaction overload;
+   --  memory/files use the equivalent backend-neutral publisher.
+   --  @param Item Open database whose exact adjacent runs are compacted
+   --  @param Older_Run_ID Exact older adjacent current-run identity
+   --  @param Newer_Run_ID Exact newer adjacent current-run identity
+   --  @param Output_Run_ID Fresh immutable merged-run identity
+   --  @param Manifest_ID Stable immutable successor-manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @param Token Cooperative cancellation token, or null for no token
+   --  @param Receipt Self-contained publication and reconciliation authority
+   --  @param Result Terminal or presently unknown operation outcome
+   procedure Compact
+     (Item          : in out Database;
+      Older_Run_ID  : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
       Timeout       : Duration;

@@ -35,8 +35,8 @@ or a conclusive successor. Listing cannot establish either result.
 
 The maintained authenticated DB probe exercises create, first checkpoint, one direct-composable differently bounded
 family append with lost-HEAD-response resolution through the exact append receipt, one blocking append implemented as
-a wait on that same state machine, cross-family commit and Flush, public composable complete-run replacement, a
-private caller-selected three-run merge, public blocking complete replacement with lost-HEAD-response resolution,
+a wait on that same state machine, cross-family commit and Flush, public composable complete-run replacement, public
+caller-selected adjacent-run replacement, public blocking complete replacement with lost-HEAD-response resolution,
 exact-token restoration, close, and cacheless reopen of all three families.
 The published no-pin Object Storage handoff is qualified across RustFS, SeaweedFS, MinIO, Flyology memory/files, and
 Flyology SQLite. The guarded HTTP stale-reused-H1 safe-read correction is part of the indexed dependency closure; no

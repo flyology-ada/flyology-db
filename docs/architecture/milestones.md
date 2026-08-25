@@ -11,7 +11,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and public complete-view replacement operational; partial compaction and streaming scans pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
-| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete replacement operational and deletion safety proved; automatic/partial/collector policy pending |
+| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete and exact-adjacent replacement operational and deletion safety proved; automatic/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
 | 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Private one-shot refresh operational; public/composable replica and promotion policy pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
@@ -97,8 +97,8 @@ The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token
 without a helper task. Public `Start_Compaction` now builds one complete live-state run per nonempty family, publishes
 a successor manifest naming only those caller-identified fresh runs, and reconciles unknown immutable-object
 responses by rebuilding the exact replacement plan. Blocking `Compact` waits on that operation for client storage
-and drives the equivalent backend-neutral publisher for memory/files. Streaming/physical scans, public partial-run
-compaction, automatic selection, run pruning, and retention/GC policy remain later focused units, so Milestone 4
+and drives the equivalent backend-neutral publisher for memory/files. Streaming/physical scans, automatic selection,
+run pruning, and retention/GC policy remain later focused units, so Milestone 4
 remains incomplete.
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
@@ -122,14 +122,14 @@ The policy-neutral partial-compaction lane now places two selected consecutive r
 runs. Its finite model exhausts every two-key/two-value mutation map, validates an older/selected/newer execution
 witness, and rejects a merger that drops a selected tombstone. Its arbitrary-key/value TLAPS kernel proves that the
 newest selected mutation per key exactly replaces the pair while retained surrounding order remains unchanged.
-Automatic run selection, trigger/fanout/level policy, and a public partial-run compaction surface remain separate
-Milestone 4 and 6 work. The private runtime now supplies the narrower
+Automatic run selection and trigger/fanout/level policy remain separate Milestone 4 and 6 work. The runtime supplies
+the narrower
 snapshot-safe merge iteration kernel: two validated ordered nonoverlapping SSTs become one fresh-identity SST while
 every version and tombstone remains. Exact output extents are checked sums of the inputs. The manifest-aware entry
 point requires the two exact SST descriptors to be adjacent in one authenticated family and rejects an output identity
 already named by that manifest. An effect-free builder now validates the exact next checkpoint base and produces the
-corresponding successor by replacing only that pair while preserving all other persisted authority. The private
-publisher binds that captured manifest to current HEAD, authenticates the named SSTs, stores and confirms the merged
+corresponding successor by replacing only that pair while preserving all other persisted authority. The public
+caller-selected publisher binds that captured manifest to current HEAD, authenticates the named SSTs, stores and confirms the merged
 SST and successor, conditionally advances HEAD, and reconciles an ambiguous object response only by rebuilding the
 same selected pair and identities. Client-backed selected reads run through the caller-owned completion set and the
 synchronous form waits on that operation; backend-neutral memory/files reads remain blocking. Production policy

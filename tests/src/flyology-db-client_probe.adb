@@ -117,7 +117,7 @@ procedure Flyology.DB.Client_Probe is
    --  The remote fixture starts with one family, then appends two independently
    --  bounded families after its first checkpoint. Nine manifest-history slots
    --  admit exactly root, first checkpoint, two registry appends, two complete
-   --  replacements, second and third additive checkpoints, and one merge.
+   --  replacements, second and third additive checkpoints, and one adjacent merge.
    --  These are persisted fixture authority, not API defaults.
    Limits                   : constant Database_Limits :=
      (Maximum_Column_Families           => 3,
@@ -177,7 +177,7 @@ procedure Flyology.DB.Client_Probe is
    --  to the complete replacement, 16 to the later cross-family transaction,
    --  17/18/19/20 to its two runs/checkpoint/transition, 21 to a third
    --  transaction, 22/23/24 to its family-1 run/checkpoint/transition, and
-   --  25/26/27 to the selected three-run merge, and 28/29/30/31 to the final
+   --  25/26/27 to the selected adjacent merge, and 28/29/30/31 to the final
    --  two-run complete replacement and its manifest/transition. IDs 32 through
    --  37 are unused run-map placeholders for unchanged or empty families;
    --  they never name attempted objects. These values isolate fixture roles
@@ -708,10 +708,8 @@ begin
    end if;
 
    --  The next commit writes both families; its family-1 value and a final
-   --  family-1 commit become the second and third selected runs. The private
-   --  exact-three wrapper must drive every selected-run HEAD/range/whole read
-   --  and publication through the same owner-stack Flush operation; no helper
-   --  task or blocking client adapter is involved.
+   --  family-1 commit become newer current runs. Public adjacent compaction
+   --  selects only the first pair and must preserve the retained final run.
    Begin_Transaction (Created, Later_Transaction_ID, Txn, Result);
    Expect (Result, Success, "later client-backed transaction begin failed");
    Put (Created, Txn, Family, Key_Data, Later_Value_Data, Result);
@@ -746,42 +744,51 @@ begin
       Result  => Result);
    Expect (Result, Success, "third client-backed additive Flush failed");
 
-   --  A definite selected-read failure precedes publication, restores all
-   --  operation ownership, and leaves the exact identities reusable. The
-   --  immediate retry is explicit test authority, not an automatic DB retry.
+   --  A definite selected-read failure precedes publication, restores the
+   --  exact token, and leaves every identity reusable. The immediate retry is
+   --  explicit test authority, not an automatic DB retry.
    Context.Test_Control.Arm (Before_Get, Definite_Failure, 1);
-   Publish_Test_Three_Run_Merge
-     (Created,
+   Start_Compaction
+     (Flush_Work,
       Compaction_Run_ID,
       Later_Run_ID,
-      Third_Run_ID,
       Merged_Run_ID,
       Merged_Manifest_ID,
       Merged_Transition_ID,
-      Flush_Info,
-      Result);
-   Expect (Result, Storage_Failure, "pre-read three-run merge failure was ambiguous");
+      Flush_Buffer,
+      Test_Operation_Timeout);
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Flush_Info, Result, Flush_Buffer);
+   Expect (Result, Storage_Failure, "pre-read adjacent merge failure was ambiguous");
+   if not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "pre-read adjacent merge did not restore its exact token";
+   end if;
    --  Losing the output PUT response after possible admission is reconciled
    --  by an exact same-generation whole Get inside the original operation.
    --  The caller does not replay the merge or select a new identity.
    Context.Test_Control.Arm (After_Run_Put, Unknown_After_Entry, 1);
-   Publish_Test_Three_Run_Merge
-     (Created,
+   Start_Compaction
+     (Flush_Work,
       Compaction_Run_ID,
       Later_Run_ID,
-      Third_Run_ID,
       Merged_Run_ID,
       Merged_Manifest_ID,
       Merged_Transition_ID,
-      Flush_Info,
-      Result);
-   Expect (Result, Success, "client-backed owner-driven three-run merge failed");
-   if Flush_Receipt_Run_Total (Flush_Info) /= 1
+      Flush_Buffer,
+      Test_Operation_Timeout);
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Flush_Info, Result, Flush_Buffer);
+   Expect (Result, Success, "client-backed composable adjacent merge failed");
+   if not Flush_Info.Merges_Adjacent_Runs
+     or else Flush_Info.Merges_Three_Runs
+     or else Flush_Receipt_Run_Total (Flush_Info) /= 1
      or else Flush_Receipt_Run (Flush_Info, 1) /= Configure_Checkpoint_Run (1, Merged_Run_ID)
      or else Flush_Receipt_Manifest_ID (Flush_Info) /= Merged_Manifest_ID
      or else Flush_Receipt_Transition_ID (Flush_Info) /= Merged_Transition_ID
    then
-      raise Program_Error with "client-backed three-run merge receipt lost exact authority";
+      raise Program_Error with "client-backed adjacent merge receipt lost exact authority";
    end if;
 
    --  The public blocking Compact is a literal wait over Start_Compaction.

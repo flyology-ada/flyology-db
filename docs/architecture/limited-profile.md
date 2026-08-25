@@ -55,12 +55,13 @@ retry, and endpoint policy remain outside Flyology.DB.
 
 This profile does not include family rename/drop/reconfiguration, appending across an unflushed commit suffix,
 public replica management, writer promotion, TTL, codecs, automatic Flush or
-automatic compaction selection, partial-run compaction, garbage-collection policy, an authenticated deployment walkthrough,
+automatic compaction selection, garbage-collection policy, an authenticated deployment walkthrough,
 background polling, transparent retry, retained borrowed request bodies, performance claims, or stable-format
 compatibility beyond the versions accepted by the current decoder. Public complete-view `Compact` is deliberately
 policy-neutral: the caller supplies every output and publication identity, and the operation retains predecessors.
-Private partial compaction and replica spines remain qualification work until separate public-policy decisions admit
-them.
+Public exact-adjacent compaction is likewise caller-selected and retains all history; it does not authorize an
+automatic selector, pruning, or deletion. The replica spine remains qualification work until separate public-policy
+decisions admit it.
 
 Expansion starts only after the acceptance scenario, deterministic suite, provider matrix, repository gate, TLA+ and
 TLAPS models, selected SPARK proof, API documentation, and findings cycle are green on one exact source/dependency

@@ -242,6 +242,17 @@ canonical-empty replacement, with independently validated lost-response/crash/re
 the unbounded kernel proves 26/26 TLAPS obligations while permitting an empty fresh-output set. No refinement theorem
 to the operational Ada implementation is claimed.
 
+The public exact-adjacent compaction candidate preserves the warning-strict 1,091/1,091 selected-unit result, with
+zero warnings, unproved/justified checks, or `pragma Assume`. The public overload is a contract and routing change
+over the established selected-run planner and owner-stack publisher; those dynamic runtime components and provider
+calls remain executable integration boundaries rather than newly selected SPARK units. The authenticated client
+probe drives a definite pre-read failure through typed `Finish`, verifies exact moved-token restoration, then reuses
+the same operation and identities for an accepted/lost output response resolved by same-generation whole Get. The
+resulting receipt proves that only the selected adjacent pair was replaced while a later run remains. The complete
+18-lane provider matrix repeats that path across RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite. The
+maintained partial-merge model remains green at 3,145,728 states with 5/5 TLAPS obligations and its dropped-tombstone
+negative probe. No automatic selection, Ada-to-TLA+ refinement theorem, pruning, or deletion claim follows.
+
 The private version-preserving two-run merge candidate reruns the current warning-strict selected-unit gate and
 proves all 1,088 checks: 165 by flow analysis and 923 by provers, with maximum successful effort 6,890 steps and zero
 warnings, unproved or justified checks, or `pragma Assume`. The operational runtime merger remains outside those six

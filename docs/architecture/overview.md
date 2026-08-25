@@ -59,10 +59,15 @@ Public `Start_Compaction` and blocking `Compact` expose the complete-replacement
 complete family/output identity map and successor manifest/transition identities. The operation selects no automatic
 trigger, level, fanout, schedule, retry, snapshot/replica retention horizon, run pruning, or physical garbage
 collection policy.
+The same public names are overloaded for exact adjacent-run replacement. The caller supplies the older and newer
+current run identities plus fresh output, manifest, and transition identities; the DB copies those identities,
+authenticates adjacency against current manifest authority, and retains every version and tombstone. The operation
+preserves surrounding runs and any later committed suffix. It does not choose a pair, trigger, level, fanout,
+schedule, retry, pruning horizon, or deletion policy.
 The separate LSM read-equivalence proof establishes that replacing a captured complete live view with one canonical
 Put-only run preserves every point read and that replaying any later Put/Delete delta remains equivalent. It does not
 claim a refinement from the operational merge loop to TLA+.
-The private partial-run coalescing kernel separately accepts two caller-selected SSTs from the same database/family
+The partial-run coalescing kernel separately accepts two caller-selected SSTs from the same database/family
 with strictly ordered nonoverlapping sequence ranges and a fresh output identity. It performs one lexicographic merge
 while retaining every version and tombstone, allocates only the exact summed entry/payload extents with checked
 arithmetic, and publishes no partial output on typed failure. Because no history is pruned, this kernel chooses no
@@ -70,7 +75,7 @@ snapshot-retention horizon. Its manifest-aware entry point admits the pair only 
 descriptors in one authenticated family, and it rejects an output identity already named by that manifest. Its
 effect-free successor builder requires the exact next checkpoint base, replaces only that pair, shifts later family
 slices exactly, and preserves every persisted replay, identity, limit, family, and retained-run field. Current
-HEAD-generation binding and conditional successor publication are now exercised by a private synchronous witness:
+HEAD-generation binding and conditional successor publication are exercised by the public caller-selected operation:
 it authenticates the current immutable runs, publishes the one merged SST and successor manifest through the shared
 certainty machinery, conditionally advances HEAD, and can rebuild the exact pair after an ambiguous object response.
 When a later log suffix exists, the plan clones its exact decoded transactions, mutations, and immutable-image
@@ -78,9 +83,9 @@ ownership before publication. Activation reconstructs only the successor SST vie
 snapshot conflicts, seen identities, and live values survive coordinator replacement. Cacheless recovery requires
 the validated manifest chain to anchor the latest batch transition and the exact checkpoint boundary at which its
 suffix begins. Client-backed selected-run reads now execute as one owner-driven HEAD, generation-bound header range,
-and same-generation whole-object sequence before the same publisher runs; the synchronous private wrapper literally
-waits on that operation. Backend-neutral memory/files reads remain blocking without helper tasks. Automatic
-trigger/fanout/level policy and a public partial-run compaction surface remain later units.
+and same-generation whole-object sequence before the same publisher runs; blocking `Compact` literally waits on that
+operation. Backend-neutral memory/files reads remain blocking without helper tasks. Automatic trigger/fanout/level
+policy remains a later unit.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,

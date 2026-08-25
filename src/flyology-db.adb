@@ -13375,6 +13375,27 @@ package body Flyology.DB is
          Lease);
    end Start_Composable_Adjacent_Merge;
 
+   procedure Start_Compaction
+     (Operation      : in out Flush_Operation;
+      Older_Run_ID   : Identifier;
+      Newer_Run_ID   : Identifier;
+      Output_Run_ID  : Identifier;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration) is
+   begin
+      Start_Composable_Adjacent_Merge
+        (Operation,
+         Older_Run_ID,
+         Newer_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Payload_Buffer,
+         Timeout);
+   end Start_Compaction;
+
    procedure Start_Composable_Three_Run_Merge
      (Operation      : in out Flush_Operation;
       First_Run_ID   : Identifier;
@@ -13896,7 +13917,7 @@ package body Flyology.DB is
       Result        : out Outcome_Code)
    is
       --  The caller supplies the sole deadline budget and every immutable
-      --  identity. This private publisher selects no merge trigger, retry,
+      --  identity. This caller-selected publisher selects no merge trigger, retry,
       --  helper task, output name, or timing default.
       Deadline     : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       State        : Engine_State_Access;
@@ -14080,7 +14101,7 @@ package body Flyology.DB is
          Receipt.Current_Outcome := Result;
    end Publish_Selected_Merge;
 
-   procedure Publish_Adjacent_Merge
+   procedure Compact
      (Item          : in out Database;
       Older_Run_ID  : Identifier;
       Newer_Run_ID  : Identifier;
@@ -14088,7 +14109,7 @@ package body Flyology.DB is
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
       Timeout       : Duration;
-      Token         : access Flyology.Cancellation.Token := null;
+      Token         : access Flyology.Cancellation.Token;
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code) is
    begin
@@ -14104,7 +14125,7 @@ package body Flyology.DB is
          Token,
          Receipt,
          Result);
-   end Publish_Adjacent_Merge;
+   end Compact;
 
    procedure Publish_Three_Run_Merge
      (Item          : in out Database;
@@ -16335,10 +16356,9 @@ package body Flyology.DB is
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code) is
    begin
-      --  The private witness removes harness timing from an explicitly
-      --  selected adjacent merge. Production trigger and deadline policy are
-      --  intentionally absent from this execution-path qualification unit.
-      Publish_Adjacent_Merge
+      --  The private witness removes harness timing from the public explicitly
+      --  selected adjacent merge. Trigger and deadline policy remain absent.
+      Compact
         (Item,
          Older_Run_ID,
          Newer_Run_ID,
@@ -16346,6 +16366,7 @@ package body Flyology.DB is
          Manifest_ID,
          Transition_ID,
          Duration'Last,
+         Token   => null,
          Receipt => Receipt,
          Result  => Result);
    end Publish_Test_Adjacent_Merge;

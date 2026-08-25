@@ -316,15 +316,17 @@ completion-set owner stack, exact moved token, typed `Finish`, absolute deadline
 same-identity whole-Get reconciliation. The receipt mode is retained solely so `Objects_Unknown` reconciliation
 rebuilds the identical replacement bytes and identities; it is not persisted policy.
 
-The private adjacent-merge publisher is a narrower policy-neutral sibling. Its caller supplies the exact older,
+The adjacent-merge publisher is a narrower policy-neutral sibling exposed through overloaded public
+`Start_Compaction` and `Compact` declarations. Its caller supplies the exact older,
 newer, output, manifest, and transition identities. Under the same exclusive checkpoint lifecycle, it binds the
 retained checkpoint manifest to the exact current HEAD generation, reads every named SST through the maintained
 header-first and generation-bound whole-object path, and admits the pair only through the manifest-aware adjacent
 merge kernel. It prepares the exact successor and its SST-derived activation base before the first write. The shared
 publisher then confirms the merged SST and successor manifest before the conditional HEAD transition. An ambiguous
 immutable-object result fences the writer and retains the selected input identities privately in the receipt so
-`Resolve_Flush` can rebuild only the same bytes and identities. It never substitutes an additive or complete-view
-plan, generates a new identity, or automatically retries.
+`Resolve_Flush` can rebuild only the same bytes and identities. The composable form retains the exact moved token
+until typed `Finish`; the blocking client form waits on that same operation. It never substitutes an additive or
+complete-view plan, generates a new identity, or automatically retries.
 
 If the retained checkpoint replay boundary precedes current HEAD, the quiescent planner clones every decoded suffix
 batch at its exact transaction and mutation extents and retains shared ownership of each immutable image before the
@@ -345,11 +347,12 @@ The client-backed path is caller-composable without a helper task. After the eff
 parent serially drives a bodyless HEAD, exact-generation frozen-header range, and same-generation bounded whole Get
 for every manifest-named run. One moved caller-selected buffer supplies all read and publication bodies; one absolute
 deadline and cancellation source cover the entire operation. Every loaded SST is revalidated against its exact
-database, family, and descriptor before the effect-free successor builder runs. Public blocking `Compact` is a
+database, family, and descriptor before the effect-free successor builder runs. Public blocking adjacent `Compact` is a
 literal wait on that operation and therefore shares its ownership, capacity, certainty, and result mapping.
 Backend-neutral memory/files reads remain on the blocking storage port and create no helper task.
-The public complete-view operation selects no automatic trigger, run, level, fanout, retry, or schedule policy. The
-caller must provide the complete family/output identity map and stable successor manifest/transition identities.
+Neither public compaction form selects an automatic trigger, run, level, fanout, retry, or schedule policy. The
+complete-view caller provides the complete family/output identity map; the adjacent caller provides the exact pair
+and fresh output identity. Both provide stable successor manifest/transition identities.
 
 `LSMPartialCompactionEquivalence.tla` now models the same abstract execution order: merge the selected consecutive
 runs, transfer one finite suffix batch and its identity authority unchanged, reconstruct the successor run view, and
@@ -365,7 +368,7 @@ output-capacity rejection, ordinary and canonical-empty replacement, accepted-lo
 retained old bytes, missing-output rejection for a present output, crash, and exact recovery. Separate
 machine-validated traces cover ordinary and zero-output recovery. The unbounded TLAPS kernel permits arbitrary fresh
 output sets including empty and proves the corresponding abstract replacement invariants. No TLA+-to-Ada refinement
-is claimed. Automatic selection and a public partial-run compaction operation remain separate API and policy units.
+is claimed. Automatic selection and compaction policy remain separate API and policy units.
 
 `LSMCompactionEquivalence.tla` separately closes the concrete point-read equation that the publication model leaves
 abstract. For every finite captured view in its qualification geometry, the replacement run contains the exact live
@@ -397,7 +400,7 @@ Those choices require their own authority, crash tests, provider conformance evi
 
 ## Non-goals
 
-This design does not implement automatic flushing or compaction, partial-run public compaction, run pruning, garbage
+This design does not implement automatic flushing or compaction selection, run pruning, garbage
 collection, or an LSM performance claim. Its operational scope is manifest-v3 root creation, initial whole-state
 runs, additive suffix-delta runs, public caller-selected complete-view replacement, private caller-selected
 adjacent-run publication, certainty-preserving checkpoint publication/reconciliation, and header-first cacheless

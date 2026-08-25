@@ -1,5 +1,36 @@
 # Review record
 
+## Accepted public exact-adjacent compaction candidate
+
+- Parent: public complete-view compaction commit `3fa6dfe`.
+- Scope and API: overload the established `Start_Compaction` and `Compact` names directly in `Flyology.DB` for one
+  exact caller-selected adjacent pair, reusing `Flush_Operation`, typed token-restoring `Finish`, `Flush_Receipt`, and
+  `Resolve_Flush`. The caller supplies both selected run identities and fresh output, manifest, and transition
+  identities. No public type, constant, default, selector, trigger, level, fanout, schedule, retry, retention horizon,
+  pruning rule, deletion rule, helper task, or compatibility namespace is introduced.
+- Ownership and certainty: the composable overload copies every identifier, validates operation/storage/pool owners,
+  reserves the parent slot and lifecycle checkpoint, and only then moves the caller's exact buffer token. Initiation
+  exceptions roll back lifecycle, slot, and token ownership. Typed `Finish` is the sole normal token-restoration path
+  and accepts any vacant same-pool handle. Any possibly admitted object or HEAD result remains `Outcome_Unknown` and
+  is reconciled read-only from the exact retained identities; no mutation is replayed under a new identity.
+- Durability and bounds: current manifest authority must contain the exact adjacent descriptors in one family. The
+  merge retains every version and tombstone, preserves surrounding runs and any later committed suffix, confirms the
+  immutable output and successor before conditional HEAD, and retains predecessor objects. All allocation extents
+  remain lazy checked derivations from persisted database/family limits and authenticated object shapes; failure
+  before provider admission publishes nothing.
+- Verification: `./tests/scripts/test.sh` passes the local engine, files crash/reopen, limited showcase, comparative
+  adapters, and authenticated client probe. The provider matrix passes all 18 RustFS, SeaweedFS, MinIO, and Flyology
+  memory/files/SQLite lanes on Object Storage `1978275b…`. `./scripts/check-tla.sh` passes every maintained lane,
+  including 3,145,728 partial-merge states, 5/5 TLAPS obligations, and the dropped-tombstone negative probe.
+  `./scripts/prove.sh` proves 1,091/1,091 warning-strict checks; repository and diff gates are green. GNATformat and
+  GNATdoc are unavailable in the installed toolchain, so no formatter or extracted-site result is claimed.
+- Findings cycle: the API/constants sweep confirmed that the cancellation token is mandatory rather than a new null
+  default and that no new public value or capacity was introduced. The first documentation sweep fixed stale private
+  surface wording, the client probe now exercises the public operation and exact token restoration, and an internal
+  comment was corrected to identify the now-public caller-selected publisher. The final correctness, crash-safety,
+  concurrency, ownership, bounds, format, storage, certainty, API, test, documentation, and unnecessary-surface sweep
+  has no actionable P0/P1/P2 finding.
+
 ## Accepted public complete-view compaction candidate
 
 - Parent: caller-composable column-family append commit `afe1b21`.
