@@ -2077,7 +2077,8 @@ package body Flyology.DB is
 
    --  Private constructor authority only. These positions are never persisted
    --  or exposed and select no automatic compaction trigger or run policy.
-   type Flush_Plan_Mode is (Additive_Plan, Complete_Replacement_Plan, Adjacent_Merge_Plan);
+   type Flush_Plan_Mode is
+     (Additive_Plan, Complete_Replacement_Plan, Adjacent_Merge_Plan, Three_Run_Merge_Plan);
 
    type Prepared_Flush_Image is record
       Owner  : Shared_Image_Access := null;
@@ -2101,6 +2102,7 @@ package body Flyology.DB is
       Manifest_ID         : Identifier := Zero_Identifier;
       Transition_ID       : Identifier := Zero_Identifier;
       Older_Run_ID        : Identifier := Zero_Identifier;
+      Middle_Run_ID       : Identifier := Zero_Identifier;
       Newer_Run_ID        : Identifier := Zero_Identifier;
       Output_Run_ID       : Identifier := Zero_Identifier;
       Run_Images          : Prepared_Flush_Image_Array := [others => (others => <>)];
@@ -3290,6 +3292,35 @@ package body Flyology.DB is
                            SST   : LSM_Runtime.SST_Access renames Plan.Recovered_SSTs (Run_Index);
                            Image : Shared_Image_Access renames Images (Run_Index);
                            Valid : Boolean;
+
+                           function Same_SST_Key
+                             (Left, Right : LSM_Runtime.SST_Entry) return Boolean
+                           is
+                           begin
+                              if Left.Key_Byte_Total /= Right.Key_Byte_Total then
+                                 return False;
+                              end if;
+                              if Left.Key_Byte_Total > 0 then
+                                 for Offset in Natural range 0 .. Left.Key_Byte_Total - 1 loop
+                                    if Flyology.Bytes.Element
+                                         (Image.Data, Left.Key_Offset + Offset)
+                                      /= Flyology.Bytes.Element
+                                           (Image.Data, Right.Key_Offset + Offset)
+                                    then
+                                       return False;
+                                    end if;
+                                 end loop;
+                              end if;
+                              return True;
+                           end Same_SST_Key;
+
+                           function Latest_For_Key (Index : Positive) return Boolean is
+                           begin
+                              return
+                                Index = SST.Entries'First
+                                or else not Same_SST_Key
+                                              (SST.Entries (Index - 1), SST.Entries (Index));
+                           end Latest_For_Key;
                         begin
                            if SST = null
                              or else Image = null
@@ -3320,55 +3351,75 @@ package body Flyology.DB is
                               end if;
                            end loop;
 
-                           --  Delete existing keys first, then replace existing
-                           --  puts, then add absent puts. The three passes avoid
-                           --  a transient capacity failure when one full run
-                           --  removes a key before introducing another.
-                           for Item of SST.Entries loop
-                              if Item.Operation = LSM_Runtime.LSM.Delete_Operation then
-                                 declare
-                                    Existing : constant Natural := Find_Key (Family_ID, Image, Item);
-                                 begin
-                                    if Existing > 0 then
-                                       Remove_At (Existing, Valid);
-                                       if not Valid then
-                                          Result := Corrupt;
-                                          return;
+                           --  Each SST is ordered by key and descending
+                           --  sequence, and a merged SST deliberately retains
+                           --  older versions. Only its first entry for a key
+                           --  contributes to recovered live state. Apply that
+                           --  latest operation in three capacity-safe passes:
+                           --  delete existing keys, replace existing puts,
+                           --  then add absent puts.
+                           for Item_Index in SST.Entries'Range loop
+                              declare
+                                 Item : LSM_Runtime.SST_Entry renames SST.Entries (Item_Index);
+                              begin
+                                 if Latest_For_Key (Item_Index)
+                                   and then Item.Operation = LSM_Runtime.LSM.Delete_Operation
+                                 then
+                                    declare
+                                       Existing : constant Natural := Find_Key (Family_ID, Image, Item);
+                                    begin
+                                       if Existing > 0 then
+                                          Remove_At (Existing, Valid);
+                                          if not Valid then
+                                             Result := Corrupt;
+                                             return;
+                                          end if;
                                        end if;
-                                    end if;
-                                 end;
-                              end if;
-                           end loop;
-                           for Item of SST.Entries loop
-                              if Item.Operation = LSM_Runtime.LSM.Put_Operation then
-                                 declare
-                                    Existing : constant Natural := Find_Key (Family_ID, Image, Item);
-                                 begin
-                                    if Existing > 0 then
-                                       Remove_At (Existing, Valid);
-                                       if not Valid then
-                                          Result := Corrupt;
-                                          return;
-                                       end if;
-                                       Add_Put (Family_ID, Image, Item, Valid);
-                                       if not Valid then
-                                          Result := Corrupt;
-                                          return;
-                                       end if;
-                                    end if;
-                                 end;
-                              end if;
-                           end loop;
-                           for Item of SST.Entries loop
-                              if Item.Operation = LSM_Runtime.LSM.Put_Operation
-                                and then Find_Key (Family_ID, Image, Item) = 0
-                              then
-                                 Add_Put (Family_ID, Image, Item, Valid);
-                                 if not Valid then
-                                    Result := Corrupt;
-                                    return;
+                                    end;
                                  end if;
-                              end if;
+                              end;
+                           end loop;
+                           for Item_Index in SST.Entries'Range loop
+                              declare
+                                 Item : LSM_Runtime.SST_Entry renames SST.Entries (Item_Index);
+                              begin
+                                 if Latest_For_Key (Item_Index)
+                                   and then Item.Operation = LSM_Runtime.LSM.Put_Operation
+                                 then
+                                    declare
+                                       Existing : constant Natural := Find_Key (Family_ID, Image, Item);
+                                    begin
+                                       if Existing > 0 then
+                                          Remove_At (Existing, Valid);
+                                          if not Valid then
+                                             Result := Corrupt;
+                                             return;
+                                          end if;
+                                          Add_Put (Family_ID, Image, Item, Valid);
+                                          if not Valid then
+                                             Result := Corrupt;
+                                             return;
+                                          end if;
+                                       end if;
+                                    end;
+                                 end if;
+                              end;
+                           end loop;
+                           for Item_Index in SST.Entries'Range loop
+                              declare
+                                 Item : LSM_Runtime.SST_Entry renames SST.Entries (Item_Index);
+                              begin
+                                 if Latest_For_Key (Item_Index)
+                                   and then Item.Operation = LSM_Runtime.LSM.Put_Operation
+                                   and then Find_Key (Family_ID, Image, Item) = 0
+                                 then
+                                    Add_Put (Family_ID, Image, Item, Valid);
+                                    if not Valid then
+                                       Result := Corrupt;
+                                       return;
+                                    end if;
+                                 end if;
+                              end;
                            end loop;
                         end;
                      end loop;
@@ -7491,9 +7542,10 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
    end Read_Checkpoint_SSTs;
 
-   procedure Prepare_Adjacent_Merge_Source
+   procedure Prepare_Selected_Merge_Source
      (State          : not null Engine_State_Access;
       Older_Run_ID   : Identifier;
+      Middle_Run_ID  : Identifier;
       Newer_Run_ID   : Identifier;
       Output_Run_ID  : Identifier;
       Manifest_ID    : Identifier;
@@ -7522,6 +7574,12 @@ package body Flyology.DB is
         or else Is_Zero (Manifest_ID)
         or else Is_Zero (Transition_ID)
         or else Older_Run_ID = Newer_Run_ID
+        or else
+          (not Is_Zero (Middle_Run_ID)
+           and then
+             (Middle_Run_ID = Older_Run_ID
+              or else Middle_Run_ID = Newer_Run_ID
+              or else Output_Run_ID = Middle_Run_ID))
         or else Output_Run_ID = Older_Run_ID
         or else Output_Run_ID = Newer_Run_ID
         or else Output_Run_ID = Manifest_ID
@@ -7566,7 +7624,9 @@ package body Flyology.DB is
       then
          Result := Capacity_Exceeded;
          return;
-      elsif Prior = null or else Prior.Run_Total < 2 then
+      elsif Prior = null
+        or else Prior.Run_Total < (if Is_Zero (Middle_Run_ID) then 2 else 3)
+      then
          Result := Invalid_State;
          return;
       elsif not LSM_Runtime.Structurally_Valid (Prior.all)
@@ -7628,11 +7688,12 @@ package body Flyology.DB is
       when others =>
          Release_Checkpoint_Plan (Current);
          raise;
-   end Prepare_Adjacent_Merge_Source;
+   end Prepare_Selected_Merge_Source;
 
-   procedure Complete_Adjacent_Merge_Plan
+   procedure Complete_Selected_Merge_Plan
      (State          : not null Engine_State_Access;
       Older_Run_ID   : Identifier;
+      Middle_Run_ID  : Identifier;
       Newer_Run_ID   : Identifier;
       Output_Run_ID  : Identifier;
       Base           : Manifests.Manifest;
@@ -7642,6 +7703,7 @@ package body Flyology.DB is
       Result         : out Outcome_Code)
    is
       Older_Index  : Natural := 0;
+      Middle_Index : Natural := 0;
       Newer_Index  : Natural := 0;
       Family_Index : Natural := 0;
       Merged       : LSM_Runtime.SST_Access := null;
@@ -7705,25 +7767,43 @@ package body Flyology.DB is
       for Index in Current.Manifest.Runs'Range loop
          if To_Identifier (Current.Manifest.Runs (Index).Run_ID) = Older_Run_ID then
             Older_Index := Index;
+         elsif To_Identifier (Current.Manifest.Runs (Index).Run_ID) = Middle_Run_ID then
+            Middle_Index := Index;
          elsif To_Identifier (Current.Manifest.Runs (Index).Run_ID) = Newer_Run_ID then
             Newer_Index := Index;
          end if;
       end loop;
-      if Older_Index = 0 or else Newer_Index = 0 then
+      if Older_Index = 0
+        or else Newer_Index = 0
+        or else (not Is_Zero (Middle_Run_ID) and then Middle_Index = 0)
+      then
          Release_Checkpoint_Plan (Current);
          Result := Invalid_State;
          return;
       end if;
 
-      LSM_Runtime.Build_Adjacent_Merge_Successor
-        (Current.Manifest.all,
-         Base,
-         Current.Recovered_SSTs (Older_Index).all,
-         Current.Recovered_SSTs (Newer_Index).all,
-         To_Head_ID (Output_Run_ID),
-         Merged,
-         Successor,
-         Merge_Result);
+      if Is_Zero (Middle_Run_ID) then
+         LSM_Runtime.Build_Adjacent_Merge_Successor
+           (Current.Manifest.all,
+            Base,
+            Current.Recovered_SSTs (Older_Index).all,
+            Current.Recovered_SSTs (Newer_Index).all,
+            To_Head_ID (Output_Run_ID),
+            Merged,
+            Successor,
+            Merge_Result);
+      else
+         LSM_Runtime.Build_Three_Run_Merge_Successor
+           (Current.Manifest.all,
+            Base,
+            Current.Recovered_SSTs (Older_Index).all,
+            Current.Recovered_SSTs (Middle_Index).all,
+            Current.Recovered_SSTs (Newer_Index).all,
+            To_Head_ID (Output_Run_ID),
+            Merged,
+            Successor,
+            Merge_Result);
+      end if;
       if not LSM_Runtime."=" (Merge_Result, LSM_Runtime.Merge_Completed) then
          Release_Checkpoint_Plan (Current);
          Result :=
@@ -7824,11 +7904,12 @@ package body Flyology.DB is
          Release_Checkpoint_Plan (Current);
          Release_Checkpoint_Plan (Plan);
          raise;
-   end Complete_Adjacent_Merge_Plan;
+   end Complete_Selected_Merge_Plan;
 
-   procedure Build_Adjacent_Merge_Plan
+   procedure Build_Selected_Merge_Plan
      (State          : not null Engine_State_Access;
       Older_Run_ID   : Identifier;
+      Middle_Run_ID  : Identifier;
       Newer_Run_ID   : Identifier;
       Output_Run_ID  : Identifier;
       Manifest_ID    : Identifier;
@@ -7844,9 +7925,10 @@ package body Flyology.DB is
       Current : Checkpoint_Plan;
    begin
       Plan := (others => <>);
-      Prepare_Adjacent_Merge_Source
+      Prepare_Selected_Merge_Source
         (State,
          Older_Run_ID,
+         Middle_Run_ID,
          Newer_Run_ID,
          Output_Run_ID,
          Manifest_ID,
@@ -7864,9 +7946,10 @@ package body Flyology.DB is
          Release_Checkpoint_Plan (Current);
          return;
       end if;
-      Complete_Adjacent_Merge_Plan
+      Complete_Selected_Merge_Plan
         (State,
          Older_Run_ID,
+         Middle_Run_ID,
          Newer_Run_ID,
          Output_Run_ID,
          Base,
@@ -7879,7 +7962,7 @@ package body Flyology.DB is
          Release_Checkpoint_Plan (Current);
          Release_Checkpoint_Plan (Plan);
          raise;
-   end Build_Adjacent_Merge_Plan;
+   end Build_Selected_Merge_Plan;
 
    procedure Decode_Stored_Batch
      (Data              : in out Flyology.Bytes.Unbounded_Bytes;
@@ -11293,6 +11376,7 @@ package body Flyology.DB is
       Result        : out Outcome_Code;
       Replace_Current_Runs : Boolean := False;
       Merge_Older_Run_ID   : Identifier := Zero_Identifier;
+      Merge_Middle_Run_ID  : Identifier := Zero_Identifier;
       Merge_Newer_Run_ID   : Identifier := Zero_Identifier)
    is
       Head       : Head_Snapshot;
@@ -11312,7 +11396,9 @@ package body Flyology.DB is
       end if;
       Receipt.Replaces_Current_Runs := Replace_Current_Runs;
       Receipt.Merges_Adjacent_Runs := not Is_Zero (Merge_Older_Run_ID);
+      Receipt.Merges_Three_Runs := not Is_Zero (Merge_Middle_Run_ID);
       Receipt.Older_Run_ID := Merge_Older_Run_ID;
+      Receipt.Middle_Run_ID := Merge_Middle_Run_ID;
       Receipt.Newer_Run_ID := Merge_Newer_Run_ID;
       Receipt.Run_Total := Runs'Length;
       for Offset in Natural range 0 .. Runs'Length - 1 loop
@@ -11963,9 +12049,10 @@ package body Flyology.DB is
       Family_Index : Natural := 0;
       Result       : Outcome_Code;
    begin
-      Complete_Adjacent_Merge_Plan
+      Complete_Selected_Merge_Plan
         (State.Engine,
          State.Older_Run_ID,
+         State.Middle_Run_ID,
          State.Newer_Run_ID,
          State.Output_Run_ID,
          State.Selected_Base,
@@ -12003,6 +12090,7 @@ package body Flyology.DB is
          Item.Final_Receipt,
          Result,
          Merge_Older_Run_ID => State.Older_Run_ID,
+         Merge_Middle_Run_ID => State.Middle_Run_ID,
          Merge_Newer_Run_ID => State.Newer_Run_ID);
       if Result = Success then
          Prepare_Flush_Images (Item, State, Result);
@@ -12408,10 +12496,11 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Timed_Out);
          return;
       end if;
-      if State.Mode = Adjacent_Merge_Plan then
-         Prepare_Adjacent_Merge_Source
+      if State.Mode in Adjacent_Merge_Plan | Three_Run_Merge_Plan then
+         Prepare_Selected_Merge_Source
            (State.Engine,
             State.Older_Run_ID,
+            State.Middle_Run_ID,
             State.Newer_Run_ID,
             State.Output_Run_ID,
             State.Manifest_ID,
@@ -12684,6 +12773,7 @@ package body Flyology.DB is
       Timeout              : Duration;
       Mode                 : Flush_Plan_Mode;
       Older_Run_ID         : Identifier;
+      Middle_Run_ID        : Identifier;
       Newer_Run_ID         : Identifier;
       Output_Run_ID        : Identifier;
       Lease                : access Lifecycle_Lease := null)
@@ -12739,6 +12829,7 @@ package body Flyology.DB is
          Operation.Driver_State.Transition_ID := Transition_ID;
          Operation.Driver_State.Mode := Mode;
          Operation.Driver_State.Older_Run_ID := Older_Run_ID;
+         Operation.Driver_State.Middle_Run_ID := Middle_Run_ID;
          Operation.Driver_State.Newer_Run_ID := Newer_Run_ID;
          Operation.Driver_State.Output_Run_ID := Output_Run_ID;
          if Is_Zero (Manifest_ID)
@@ -12746,12 +12837,20 @@ package body Flyology.DB is
            or else Manifest_ID = Transition_ID
          then
             Operation.Driver_State.Precheck_Result := Invalid_State;
-         elsif Mode = Adjacent_Merge_Plan then
+         elsif Mode in Adjacent_Merge_Plan | Three_Run_Merge_Plan then
             if Runs'Length /= 0
               or else Is_Zero (Older_Run_ID)
               or else Is_Zero (Newer_Run_ID)
               or else Is_Zero (Output_Run_ID)
               or else Older_Run_ID = Newer_Run_ID
+              or else
+                (if Mode = Three_Run_Merge_Plan
+                 then
+                   Is_Zero (Middle_Run_ID)
+                   or else Middle_Run_ID = Older_Run_ID
+                   or else Middle_Run_ID = Newer_Run_ID
+                   or else Output_Run_ID = Middle_Run_ID
+                 else not Is_Zero (Middle_Run_ID))
               or else Output_Run_ID = Older_Run_ID
               or else Output_Run_ID = Newer_Run_ID
               or else Output_Run_ID = Manifest_ID
@@ -12840,7 +12939,11 @@ package body Flyology.DB is
    begin
       Start_Composable_Checkpoint
         (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
-         Additive_Plan, Zero_Identifier, Zero_Identifier, Zero_Identifier);
+         Additive_Plan,
+         Zero_Identifier,
+         Zero_Identifier,
+         Zero_Identifier,
+         Zero_Identifier);
    end Start_Flush;
 
    procedure Start_Test_Compaction
@@ -12853,7 +12956,11 @@ package body Flyology.DB is
    begin
       Start_Composable_Checkpoint
         (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
-         Complete_Replacement_Plan, Zero_Identifier, Zero_Identifier, Zero_Identifier);
+         Complete_Replacement_Plan,
+         Zero_Identifier,
+         Zero_Identifier,
+         Zero_Identifier,
+         Zero_Identifier);
    end Start_Test_Compaction;
 
    procedure Start_Composable_Adjacent_Merge
@@ -12878,10 +12985,43 @@ package body Flyology.DB is
          Timeout,
          Adjacent_Merge_Plan,
          Older_Run_ID,
+         Zero_Identifier,
          Newer_Run_ID,
          Output_Run_ID,
          Lease);
    end Start_Composable_Adjacent_Merge;
+
+   procedure Start_Composable_Three_Run_Merge
+     (Operation      : in out Flush_Operation;
+      First_Run_ID   : Identifier;
+      Middle_Run_ID  : Identifier;
+      Last_Run_ID    : Identifier;
+      Output_Run_ID  : Identifier;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Lease          : access Lifecycle_Lease := null)
+   is
+      --  No_Runs is the canonical vacant family-output list because the exact
+      --  three selected inputs below determine one output after authenticated
+      --  reads. This is operation shape, not a zero-capacity policy.
+      No_Runs : Checkpoint_Run_Identity_Array (1 .. 0);
+   begin
+      Start_Composable_Checkpoint
+        (Operation,
+         No_Runs,
+         Manifest_ID,
+         Transition_ID,
+         Payload_Buffer,
+         Timeout,
+         Three_Run_Merge_Plan,
+         First_Run_ID,
+         Middle_Run_ID,
+         Last_Run_ID,
+         Output_Run_ID,
+         Lease);
+   end Start_Composable_Three_Run_Merge;
 
    procedure Finish
      (Operation      : in out Flush_Operation;
@@ -13315,9 +13455,10 @@ package body Flyology.DB is
       Maximum : out Natural;
       Result  : out Outcome_Code);
 
-   procedure Publish_Adjacent_Merge
+   procedure Publish_Selected_Merge
      (Item          : in out Database;
       Older_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
       Newer_Run_ID  : Identifier;
       Output_Run_ID : Identifier;
       Manifest_ID   : Identifier;
@@ -13380,16 +13521,30 @@ package body Flyology.DB is
             Started : Boolean := False;
          begin
             Flyology.Buffers.Acquire (Payload_Buffer);
-            Start_Composable_Adjacent_Merge
-              (Operation,
-               Older_Run_ID,
-               Newer_Run_ID,
-               Output_Run_ID,
-               Manifest_ID,
-               Transition_ID,
-               Payload_Buffer,
-               Timeout,
-               Lease'Access);
+            if Is_Zero (Middle_Run_ID) then
+               Start_Composable_Adjacent_Merge
+                 (Operation,
+                  Older_Run_ID,
+                  Newer_Run_ID,
+                  Output_Run_ID,
+                  Manifest_ID,
+                  Transition_ID,
+                  Payload_Buffer,
+                  Timeout,
+                  Lease'Access);
+            else
+               Start_Composable_Three_Run_Merge
+                 (Operation,
+                  Older_Run_ID,
+                  Middle_Run_ID,
+                  Newer_Run_ID,
+                  Output_Run_ID,
+                  Manifest_ID,
+                  Transition_ID,
+                  Payload_Buffer,
+                  Timeout,
+                  Lease'Access);
+            end if;
             Started := True;
             Flyology.Operations.Wait_All (Set);
             Finish (Operation, Receipt, Result, Payload_Buffer);
@@ -13426,9 +13581,10 @@ package body Flyology.DB is
       Guard.Life := Item.Life'Unchecked_Access;
       Guard.Active := True;
       Item.Life.Await_Quiescent;
-      Build_Adjacent_Merge_Plan
+      Build_Selected_Merge_Plan
         (State,
          Older_Run_ID,
+         Middle_Run_ID,
          Newer_Run_ID,
          Output_Run_ID,
          Manifest_ID,
@@ -13464,6 +13620,7 @@ package body Flyology.DB is
             Receipt,
             Result,
             Merge_Older_Run_ID => Older_Run_ID,
+            Merge_Middle_Run_ID => Middle_Run_ID,
             Merge_Newer_Run_ID => Newer_Run_ID);
          if Result = Success then
             Publish_Flush_Plan (Item, State, Plan, Deadline, Token, Receipt, Guard, Result);
@@ -13494,7 +13651,60 @@ package body Flyology.DB is
             Result := Local_Activation_Failed;
          end if;
          Receipt.Current_Outcome := Result;
+   end Publish_Selected_Merge;
+
+   procedure Publish_Adjacent_Merge
+     (Item          : in out Database;
+      Older_Run_ID  : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      Publish_Selected_Merge
+        (Item,
+         Older_Run_ID,
+         Zero_Identifier,
+         Newer_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Timeout,
+         Token,
+         Receipt,
+         Result);
    end Publish_Adjacent_Merge;
+
+   procedure Publish_Three_Run_Merge
+     (Item          : in out Database;
+      First_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
+      Last_Run_ID   : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      Publish_Selected_Merge
+        (Item,
+         First_Run_ID,
+         Middle_Run_ID,
+         Last_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Timeout,
+         Token,
+         Receipt,
+         Result);
+   end Publish_Three_Run_Merge;
 
    procedure Synchronous_Flush_Buffer_Capacity
      (State   : not null Engine_State_Access;
@@ -13683,6 +13893,7 @@ package body Flyology.DB is
                   Zero_Identifier,
                   Zero_Identifier,
                   Zero_Identifier,
+                  Zero_Identifier,
                   Lease'Access);
                Started := True;
                Flyology.Operations.Wait_All (Set);
@@ -13862,13 +14073,25 @@ package body Flyology.DB is
         or else Receipt.Database_ID = Zero_Database_ID
         or else Is_Zero (Receipt.Manifest_ID)
         or else
-          (Receipt.Merges_Adjacent_Runs
-           and then
-             (Receipt.Replaces_Current_Runs
-              or else Receipt.Run_Total /= 1
-              or else Is_Zero (Receipt.Older_Run_ID)
-              or else Is_Zero (Receipt.Newer_Run_ID)
-              or else Receipt.Older_Run_ID = Receipt.Newer_Run_ID))
+          (if Receipt.Merges_Adjacent_Runs
+           then
+             Receipt.Replaces_Current_Runs
+             or else Receipt.Run_Total /= 1
+             or else Is_Zero (Receipt.Older_Run_ID)
+             or else Is_Zero (Receipt.Newer_Run_ID)
+             or else Receipt.Older_Run_ID = Receipt.Newer_Run_ID
+             or else
+               (if Receipt.Merges_Three_Runs
+                then
+                  Is_Zero (Receipt.Middle_Run_ID)
+                  or else Receipt.Middle_Run_ID = Receipt.Older_Run_ID
+                  or else Receipt.Middle_Run_ID = Receipt.Newer_Run_ID
+                else not Is_Zero (Receipt.Middle_Run_ID))
+           else
+             Receipt.Merges_Three_Runs
+             or else not Is_Zero (Receipt.Older_Run_ID)
+             or else not Is_Zero (Receipt.Middle_Run_ID)
+             or else not Is_Zero (Receipt.Newer_Run_ID))
       then
          Result := Invalid_State;
          Receipt.Current_Outcome := Result;
@@ -13893,9 +14116,10 @@ package body Flyology.DB is
          Result := Invalid_State;
       elsif Receipt.Phase = Objects_Unknown then
          if Receipt.Merges_Adjacent_Runs then
-            Build_Adjacent_Merge_Plan
+            Build_Selected_Merge_Plan
               (State,
                Receipt.Older_Run_ID,
+               Receipt.Middle_Run_ID,
                Receipt.Newer_Run_ID,
                Receipt.Runs (1).Run_ID,
                Receipt.Manifest_ID,
@@ -15043,6 +15267,33 @@ package body Flyology.DB is
          Receipt => Receipt,
          Result  => Result);
    end Publish_Test_Adjacent_Merge;
+
+   procedure Publish_Test_Three_Run_Merge
+     (Item          : in out Database;
+      First_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
+      Last_Run_ID   : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      --  Duration'Last removes harness timing only. All four immutable IDs
+      --  and the exact three-run selection are caller fixture authority, not
+      --  a production trigger, fanout, output-name, or deadline policy.
+      Publish_Three_Run_Merge
+        (Item,
+         First_Run_ID,
+         Middle_Run_ID,
+         Last_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Duration'Last,
+         Receipt => Receipt,
+         Result  => Result);
+   end Publish_Test_Three_Run_Merge;
 
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code)

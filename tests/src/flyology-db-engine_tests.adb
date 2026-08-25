@@ -2898,6 +2898,194 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "adjacent-merge recovered database close failed");
    end Test_Adjacent_L0_Merge;
 
+   procedure Test_Three_Run_L0_Merge
+     (Backend : not null access Backends.Backend'Class; Prefix : String; Identity_Base : Natural)
+   is
+      Context      : aliased Storage_Context;
+      Item         : Database;
+      Txn          : Transaction;
+      Reader       : Transaction;
+      Commit_Info  : Commit_Receipt;
+      Create_Info  : Create_Receipt;
+      Flush_Info   : Flush_Receipt;
+      Result       : Outcome_Code;
+      Data         : Value;
+      Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
+      After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
+      --  One disjoint 100-ID test namespace assigns +10/+20/+30 to
+      --  chronological inputs, +40..+42 to the output/manifest/transition,
+      --  and +43..+45 to a rejected reordered attempt. These are fixture
+      --  identities, not production naming or compaction policy.
+      Database_ID : constant Database_Identifier :=
+        Database_Identifier (Numbered_ID (Identity_Base));
+      First_Run   : constant Identifier := Numbered_ID (Identity_Base + 10);
+      Middle_Run  : constant Identifier := Numbered_ID (Identity_Base + 20);
+      Last_Run    : constant Identifier := Numbered_ID (Identity_Base + 30);
+      Merged_Run  : constant Identifier := Numbered_ID (Identity_Base + 40);
+      --  Root, three additive manifests, and one three-run successor consume
+      --  five revisions. Three L0 slots are exact witness geometry, not a
+      --  persisted default, trigger, or automatic fanout.
+      Limits : constant Database_Limits :=
+        (Default_Limits with delta
+           Maximum_Column_Families => 1,
+           Maximum_Manifest_History => 5,
+           Maximum_Total_L0_Runs => 3);
+      Families : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family (1, [Byte (Character'Pos ('t'))], 8, 8, 16, 1, 3)];
+      First_Runs : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, First_Run)];
+      Middle_Runs : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, Middle_Run)];
+      Last_Runs : constant Checkpoint_Run_Identity_Array :=
+        [Configure_Checkpoint_Run (1, Last_Run)];
+      --  The middle run deletes First_Key and the last run touches only
+      --  Last_Key. That makes middle-tombstone retention observable after all
+      --  three source objects and local state are removed. Suffix_Key proves
+      --  exact later-log replay authority survives the same publication.
+      First_Key    : constant Key := To_Key ([1]);
+      Last_Key     : constant Key := To_Key ([2]);
+      Suffix_Key   : constant Key := To_Key ([3]);
+      First_Value  : constant Value := To_Value ([11]);
+      Last_Value   : constant Value := To_Value ([33]);
+      Suffix_Value : constant Value := To_Value ([44]);
+
+      procedure Commit_And_Flush
+        (Transaction_Number : Natural;
+         Delete_First       : Boolean;
+         Item_Key           : Key;
+         Item_Value         : Value;
+         Runs               : Checkpoint_Run_Identity_Array;
+         Manifest_Number    : Natural;
+         Transition_Number  : Natural)
+      is
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + Transaction_Number), Txn, Result);
+         Expect (Result, Success, "three-run transaction begin failed");
+         if Delete_First then
+            Delete (Item, Txn, 1, Item_Key, Result);
+         else
+            Put (Item, Txn, 1, Item_Key, Item_Value, Result);
+         end if;
+         Expect (Result, Success, "three-run mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "three-run commit failed");
+         Flush
+           (Item,
+            Runs,
+            Numbered_ID (Identity_Base + Manifest_Number),
+            Numbered_ID (Identity_Base + Transition_Number),
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
+         Expect (Result, Success, "three-run source Flush failed");
+      end Commit_And_Flush;
+   begin
+      Bind_Context (Context, Backend, Prefix);
+      Create
+        (Item,
+         Context'Access,
+         Database_ID,
+         Manifest_ID_For (Numbered_ID (Identity_Base + 1)),
+         Numbered_ID (Identity_Base + 1),
+         Limits,
+         Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "three-run database create failed");
+      Commit_And_Flush (2, False, First_Key, First_Value, First_Runs, 11, 12);
+      Commit_And_Flush (3, True, First_Key, First_Value, Middle_Runs, 21, 22);
+      Commit_And_Flush (4, False, Last_Key, Last_Value, Last_Runs, 31, 32);
+
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 5), Txn, Result);
+      Expect (Result, Success, "three-run suffix transaction begin failed");
+      Put (Item, Txn, 1, Suffix_Key, Suffix_Value, Result);
+      Expect (Result, Success, "three-run suffix Put failed");
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, Success, "three-run suffix commit failed");
+
+      Testing.Publication_Counts
+        (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+      Testing.Publish_Three_Run_Merge
+        (Item,
+         First_Run,
+         Last_Run,
+         Middle_Run,
+         Numbered_ID (Identity_Base + 43),
+         Numbered_ID (Identity_Base + 44),
+         Numbered_ID (Identity_Base + 45),
+         Flush_Info,
+         Result);
+      Expect (Result, Invalid_State, "reordered three-run selection reached publication");
+      Testing.Publication_Counts
+        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      if After_Batches /= Before_Batches
+        or else After_Runs /= Before_Runs
+        or else After_Manifests /= Before_Manifests
+        or else After_Heads /= Before_Heads
+      then
+         raise Program_Error with "reordered three-run rejection published an object";
+      end if;
+
+      Testing.Arm (Context, After_Run_Put, Unknown_After_Entry);
+      Testing.Arm (Context, Before_Immutable_Reconciliation, Definite_Failure);
+      Testing.Publish_Three_Run_Merge
+        (Item,
+         First_Run,
+         Middle_Run,
+         Last_Run,
+         Merged_Run,
+         Numbered_ID (Identity_Base + 41),
+         Numbered_ID (Identity_Base + 42),
+         Flush_Info,
+         Result);
+      Expect (Result, Outcome_Unknown, "lost three-run output response was falsely classified");
+      Resolve_Flush (Item, Flush_Info, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "same-identity three-run reconciliation failed");
+      if Testing.Receipt_Replaces_Current_Runs (Flush_Info)
+        or else Flush_Receipt_Run_Total (Flush_Info) /= 1
+        or else Flush_Receipt_Run (Flush_Info, 1) /= Configure_Checkpoint_Run (1, Merged_Run)
+      then
+         raise Program_Error with "three-run receipt lost exact output authority";
+      end if;
+      Testing.Publication_Counts
+        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      if After_Batches /= Before_Batches
+        or else After_Runs /= Before_Runs + 2
+        or else After_Manifests /= Before_Manifests + 1
+        or else After_Heads /= Before_Heads + 1
+      then
+         raise Program_Error with "three-run publication order/count changed";
+      end if;
+
+      Close (Item, Result);
+      Expect (Result, Success, "three-run database close failed");
+      Testing.Remove_Run (Context, First_Run, Result);
+      Expect (Result, Success, "retired first three-run source removal failed");
+      Testing.Remove_Run (Context, Middle_Run, Result);
+      Expect (Result, Success, "retired middle three-run source removal failed");
+      Testing.Remove_Run (Context, Last_Run, Result);
+      Expect (Result, Success, "retired last three-run source removal failed");
+      Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "three-run cacheless reopen failed");
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 70), Reader, Result);
+      Expect (Result, Success, "three-run recovered reader begin failed");
+      Get (Item, Reader, 1, First_Key, Data, Result);
+      Expect (Result, Not_Found, "middle tombstone did not mask the first-run value");
+      Get (Item, Reader, 1, Last_Key, Data, Result);
+      if Result /= Success or else Data /= Last_Value then
+         raise Program_Error with "three-run merge lost the last-run value";
+      end if;
+      Get (Item, Reader, 1, Suffix_Key, Data, Result);
+      if Result /= Success or else Data /= Suffix_Value then
+         raise Program_Error with "three-run merge lost the retained later suffix";
+      end if;
+      Rollback (Reader, Result);
+      Expect (Result, Success, "three-run recovered reader rollback failed");
+      Close (Item, Result);
+      Expect (Result, Success, "three-run recovered database close failed");
+   end Test_Three_Run_L0_Merge;
+
    procedure Test_Empty_L0_Compaction
      (Backend : not null access Backends.Backend'Class; Prefix : String; Identity_Base : Natural)
    is
@@ -7283,6 +7471,7 @@ package body Flyology.DB.Engine_Tests is
          --  Disjoint 100-ID domains keep the memory and files witnesses
          --  independently diagnosable; they are test namespace choices only.
          Test_Adjacent_L0_Merge (Store'Access, "memory-adjacent-merge", 32_400);
+         Test_Three_Run_L0_Merge (Store'Access, "memory-three-run-merge", 32_800);
          Test_Empty_L0_Compaction (Store'Access, "memory-empty-compaction", 32_600);
          Test_Flush_Certainty (Store'Access, "memory-flush");
          Test_Create_Publication (Store'Access);
@@ -7333,6 +7522,7 @@ package body Flyology.DB.Engine_Tests is
             --  This second domain is the files-backend counterpart of the
             --  memory fixture above and establishes no database identity rule.
             Test_Adjacent_L0_Merge (Store'Access, "files-adjacent-merge", 32_500);
+            Test_Three_Run_L0_Merge (Store'Access, "files-three-run-merge", 32_900);
             Test_Empty_L0_Compaction (Store'Access, "files-empty-compaction", 32_700);
             Test_Flush_Certainty (Store'Access, "files-flush");
             Test_Snapshot_Write_Validation (Store'Access);

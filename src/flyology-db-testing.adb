@@ -414,6 +414,29 @@ package body Flyology.DB.Testing is
          Result);
    end Publish_Adjacent_Merge;
 
+   procedure Publish_Three_Run_Merge
+     (Item          : in out Database;
+      First_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
+      Last_Run_ID   : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      Publish_Test_Three_Run_Merge
+        (Item,
+         First_Run_ID,
+         Middle_Run_ID,
+         Last_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Receipt,
+         Result);
+   end Publish_Three_Run_Merge;
+
    procedure Refresh_Replica
      (Item    : in out Database;
       Timeout : Duration;

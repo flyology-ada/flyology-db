@@ -1,5 +1,37 @@
 # Review record
 
+## Accepted operational exact-three-run publication candidate
+
+- Parent: composable UploadPartCopy dependency qualification commit `097c21e`.
+- Scope and authority: operationalize only the already-qualified exact-three algorithm through the private Flush
+  publisher. The caller supplies three source run IDs plus output, manifest, and transition identities. Three remains
+  qualification geometry; this unit adds no public API, automatic selection, trigger, fanout, level, retry, task,
+  timeout, capacity, or persisted-format policy.
+- Ownership and execution: the client-backed path uses the existing caller-owned completion set, one moved scratch
+  token, typed Finish, and one absolute deadline. It authenticates all three selected source objects before building
+  the effect-free successor, then publishes the exact output/manifest/HEAD chain. Memory and files use the same
+  planner synchronously. The receipt retains only the exact three immutable IDs needed to reconstruct an uncertain
+  attempt; it retains no caller handle, borrowed body, transport lease, or source/sink borrow.
+- Certainty and recovery: pre-read and invalid-selection failures publish nothing. An uncertain output response is
+  never retried under another identity; resolution rebuilds the exact selected triple and confirms the same bytes.
+  Activation preserves a later database-log suffix independently of the checkpoint. After cacheless reopen, each
+  sorted SST contributes only its highest-sequence entry per key to live state, so a retained middle tombstone masks
+  every older version from the same merged object.
+- Constants and allocation: every production allocation remains checked and derived lazily from authenticated SST
+  extents plus persisted database/family limits. Test-only three-run counts, one-byte values, identity offsets, and
+  manifest/L0 bounds are adjacent-documented witness geometry. No approved existing value is reopened and no public
+  constant or default is introduced.
+- Verification: `./tests/scripts/test.sh` passes repository provenance at Object Storage `00959177`, memory/files
+  exact-three publication and cacheless recovery, authenticated client-owned selected reads and same-identity output
+  reconciliation, filesystem crash recovery, all 32 comparative tests, and pinned TidesDB 4/4. The maintained TLA
+  and SPARK gates remain green at 12,288 exact-three TLC states, seven TLAPS obligations, and 1,090/1,090 selected
+  SPARK checks; exact pre/post formal-process audits are clean.
+- Findings cycle: the first operational test exposed one P1 recovery error: a tombstone with no already-loaded value
+  could be forgotten before an older put retained in the same merged SST was visited. Recovery now considers only
+  the first, highest-sequence entry for each key in each structurally validated SST. The middle-tombstone/source-loss
+  regression passes on memory and files, the full suite is green, and the repeated ownership, certainty, ordering,
+  bounds, compatibility, public-surface, and unnecessary-allocation sweep finds no remaining P0, P1, P2, or P3.
+
 ## Accepted composable UploadPartCopy dependency qualification
 
 - Parent: exact-three-run compaction kernel commit `fd1976c`.

@@ -881,7 +881,12 @@ private
       --  Objects_Unknown reconciliation can rebuild the same immutable bytes;
       --  they are neither a trigger nor a retained borrow.
       Merges_Adjacent_Runs : Boolean := False;
+      --  Exact-three qualification authority only. When true, Middle_Run_ID
+      --  completes the caller-selected triple between Older/Newer. It is not
+      --  a persisted fanout, trigger, level, or automatic-selection policy.
+      Merges_Three_Runs    : Boolean := False;
       Older_Run_ID         : Identifier := Zero_Identifier;
+      Middle_Run_ID        : Identifier := Zero_Identifier;
       Newer_Run_ID         : Identifier := Zero_Identifier;
       Run_Total           : Natural range 0 .. Maximum_Initial_Column_Families := 0;
       Runs                : Flush_Run_Receipt_Array := [others => (others => <>)];
@@ -1196,6 +1201,16 @@ private
      (Item          : in out Database;
       Older_Run_ID  : Identifier;
       Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code);
+   procedure Publish_Test_Three_Run_Merge
+     (Item          : in out Database;
+      First_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
+      Last_Run_ID   : Identifier;
       Output_Run_ID : Identifier;
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;

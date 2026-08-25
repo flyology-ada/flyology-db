@@ -124,8 +124,14 @@ The same private runtime now has an additive exact-three-run qualification kerne
 descriptors selected by its caller, uses one checked allocation for their exact combined entry/payload extents,
 retains every version and tombstone, and replaces only those three descriptors with one in the effect-free successor.
 The maintained TLC lane exhausts the middle-tombstone/last-empty case and TLAPS proves arbitrary-key associative
-composition with retained surrounding runs and a later suffix. This does not choose automatic selection, fanout,
-trigger, levels, publication scheduling, or a public API; those remain Milestone 4 and 6 work.
+composition with retained surrounding runs and a later suffix. The private publisher now operationalizes that exact
+slice through the established Flush owner stack: three authenticated source reads, one immutable output, one
+successor manifest, one conditional HEAD transition, and exact same-identity resolution after an uncertain response.
+The receipt retains the exact three source IDs needed to reconstruct the attempted bytes; it retains no caller handle
+or borrowed body. Cacheless activation treats only the first, highest-sequence entry for each key in a sorted SST as
+live-state authority, preserving a selected tombstone while older versions remain in the immutable object. This does
+not choose automatic selection, fanout, trigger, levels, retries, publication scheduling, or a public API; those
+remain Milestone 4 and 6 work.
 
 The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
 separation, and atomic capacity/allocation rollback. Its finite model exhausts 3,419 states and the arbitrary-universe

@@ -52,8 +52,12 @@ It accepts exactly three caller-selected adjacent descriptors, computes one chec
 every version and tombstone, and builds an effect-free successor that replaces only that slice. The exhaustive TLA+
 lane covers the essential middle-tombstone case when the last selected run has no mutation for the key; its TLAPS
 kernel proves associative composition and read equivalence with retained older/newer runs and any later suffix.
-Three is qualification geometry, not a fanout, trigger, level, or capacity. Publication and public/composable
-selection of this wider slice remain later units.
+The private operational publisher now reads all three exact generation-bound inputs through the same owner-driven
+Flush state machine as pair publication, publishes one immutable output and successor, conditionally advances HEAD,
+and retains all three source identities in an uncertain receipt for exact-byte reconciliation. Cacheless activation
+uses only the highest-sequence entry per key in each SST, so an admitted middle tombstone cannot resurrect an older
+put retained in the merged object. Three is qualification geometry, not a fanout, trigger, level, capacity, retry,
+or public policy.
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
 produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.
