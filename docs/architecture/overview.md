@@ -22,12 +22,13 @@ transition identity; continuing unavailability remains unknown.
 - Read-only replicas advance monotonically by observing valid head transitions.
 
 The replica boundary captures one exact HEAD ordinal/writer-epoch pair, validates its complete immutable graph, and
-installs it only above the replica's high-water pair and no later than current authority. A private synchronous
-driver now performs one explicit refresh under the existing exclusive lifecycle, retains the old engine on safe
-allocation failure, and refuses to turn a fenced writer into a promoted writer. Same or older observations are
-discarded without rollback. Writers publish only from their exact captured ordinal and epoch; fencing invalidates an
-already prepared writer. Public API spelling, polling, lease duration, promotion, and a composable driver remain
-undecided.
+installs it only above the replica's high-water pair and no later than current authority. Public synchronous
+`Refresh_Replica` performs one explicit caller-triggered refresh under the existing exclusive lifecycle, retains the
+old engine on safe allocation failure, and refuses to turn a fenced writer into a promoted writer. Same or older
+observations are discarded without rollback. The caller designates the handle for read-only replica use and must
+finish its active transactions before refresh; this operation does not introduce an enforced replica role or writer
+promotion. Writers publish only from their exact captured ordinal and epoch; fencing invalidates an already prepared
+writer. Polling, lease duration, registration, retention, promotion, and a composable driver remain undecided.
 
 The executable mutation surface remains log-only between explicit flushes, while recovery accepts either that form
 or the latest additive L0 checkpoint. Log-only recovery follows `HEAD.Latest_Batch` and the

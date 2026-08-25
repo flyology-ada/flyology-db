@@ -6122,7 +6122,7 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "shared-context first handle close failed");
    end Test_Shared_Context_Synchronization;
 
-   procedure Test_Private_Replica_Refresh
+   procedure Test_Public_Replica_Refresh
      (Backend : not null access Backends.Backend'Class; Prefix : String; Tag : Byte)
    is
       Context     : aliased Storage_Context;
@@ -6135,7 +6135,7 @@ package body Flyology.DB.Engine_Tests is
       Data        : Value;
       Database_ID : constant Database_Identifier := DB_ID (Tag);
       --  Two distinct keys/values and four following identities separate root,
-      --  first/second publication, and stale-writer roles in this private
+      --  first/second publication, and stale-writer roles in this public
       --  refresh witness. They are fixture geometry, not database policy.
       First_Key   : constant Key := To_Key ([Tag]);
       Second_Key  : constant Key := To_Key ([Tag + 1]);
@@ -6183,14 +6183,14 @@ package body Flyology.DB.Engine_Tests is
       end if;
       Expect_Missing (Replica, Tag + 4, First_Key, "lagging replica");
 
-      Testing.Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
+      Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "replica-refresh first catch-up failed");
       if Visible (Replica) /= 1 then
          raise Program_Error with "replica-refresh first catch-up lost its exact high-water sequence";
       end if;
       Expect_Read (Replica, Tag + 5, First_Key, First_Value, "replica-refresh first value");
 
-      Testing.Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
+      Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "replica-refresh same-HEAD no-op failed");
       if Visible (Replica) /= 1 then
          raise Program_Error with "same-HEAD refresh changed the replica high-water sequence";
@@ -6201,14 +6201,14 @@ package body Flyology.DB.Engine_Tests is
       Commit (Writer, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
       Expect (Result, Success, "replica-refresh second writer commit failed");
       Testing.Fail_Next_Allocation (Testing.Engine_State);
-      Testing.Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
+      Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
       Expect (Result, Capacity_Exceeded, "replica-refresh allocation failure was not definite");
       if Visible (Replica) /= 1 then
          raise Program_Error with "failed refresh changed the installed high-water sequence";
       end if;
       Expect_Missing (Replica, Tag + 7, Second_Key, "failed replica refresh");
 
-      Testing.Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
+      Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "replica-refresh retry after safe allocation failure failed");
       if Visible (Replica) /= 2 then
          raise Program_Error with "replica-refresh second catch-up lost its exact high-water sequence";
@@ -6233,7 +6233,7 @@ package body Flyology.DB.Engine_Tests is
       Put (Replica, Txn, 1, To_Key ([Tag + 3]), To_Value ([4]), Result);
       Commit (Replica, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
       Expect (Result, Stale_Writer, "lagging replica write was not fenced");
-      Testing.Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
+      Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
       Expect (Result, Stale_Writer, "refresh implicitly promoted a fenced writer");
       if Visible (Replica) /= 2 then
          raise Program_Error with "fenced refresh changed the replica high-water sequence";
@@ -6243,7 +6243,7 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "replica-refresh replica close failed");
       Close (Writer, Result);
       Expect (Result, Success, "replica-refresh writer close failed");
-   end Test_Private_Replica_Refresh;
+   end Test_Public_Replica_Refresh;
 
    procedure Test_Resolve_Lifecycle (Backend : not null access Backends.Backend'Class) is
       Context           : aliased Storage_Context;
@@ -7920,7 +7920,7 @@ package body Flyology.DB.Engine_Tests is
          Test_Resolve_Drains_Queued (Store'Access);
          Test_Unaccepted_Resolve_Drains_Queued (Store'Access);
          Test_Shared_Context_Synchronization (Store'Access);
-         Test_Private_Replica_Refresh (Store'Access, "memory-replica-refresh", 190);
+         Test_Public_Replica_Refresh (Store'Access, "memory-replica-refresh", 190);
          Test_Resolve_Lifecycle (Store'Access);
          Test_Snapshot_Write_Validation (Store'Access);
          Test_Serializable_Point_Validation (Store'Access, "memory-serializable-points");
@@ -7968,7 +7968,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Serializable_Point_Validation (Store'Access, "files-serializable-points");
             Test_Serializable_Range_Validation (Store'Access, "files-serializable-ranges");
             Test_Bounded_Scan (Store'Access, "files-bounded-scan");
-            Test_Private_Replica_Refresh (Store'Access, "files-replica-refresh", 200);
+            Test_Public_Replica_Refresh (Store'Access, "files-replica-refresh", 200);
             Test_Faults (Store'Access, "files-faults", 140);
          end;
          Ada.Directories.Delete_Tree (Root);

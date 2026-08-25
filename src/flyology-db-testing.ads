@@ -224,11 +224,6 @@ private package Flyology.DB.Testing is
       Transition_ID : Identifier;
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code);
-   procedure Refresh_Replica
-     (Item    : in out Database;
-      Timeout : Duration;
-      Token   : access Flyology.Cancellation.Token := null;
-      Result  : out Outcome_Code);
    function Receipt_Replaces_Current_Runs (Item : Flush_Receipt) return Boolean;
    function Test_Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 

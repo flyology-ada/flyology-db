@@ -425,10 +425,11 @@ remain executable boundaries rather than newly selected proof units.
   authority reaches ordinal two, installs that lagging snapshot monotonically, and catches up. Stale-writer and
   rollback probes must violate safety. The arbitrary-natural kernel proves 11/11 TLAPS obligations for confirmed
   authority, nonfuture captured/installed pairs, high-water equality, no rollback, and no stale publication. A
-  private synchronous Ada driver now qualifies complete graph validation, safe allocation failure, same-HEAD no-op,
+  public synchronous Ada operation now qualifies complete graph validation, safe allocation failure, same-HEAD no-op,
   monotonic catch-up, fenced-writer refusal, and close/reopen local-loss continuity through deterministic memory/files
-  tests. Transport certainty, polling, leases, promotion, progress, public/composable API, and formal refinement
-  remain outside.
+  tests. The authenticated provider probe also retains one stale checkpoint view and refreshes it to the exact final
+  compacted bytes. Polling, leases, registration, promotion, progress, a composable API, and formal refinement remain
+  outside.
 - The snapshot-isolation write/write model exhausts 336 states at depth 10. It checks fixed Begin sequences,
   per-written-key post-snapshot rejection, disjoint concurrent commits, checkpoint advancement of the retained exact
   history boundary, and conservative rejection below that boundary. Three independently validated witnesses cover

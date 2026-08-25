@@ -101,6 +101,7 @@ procedure Flyology.DB.Client_Probe is
      Low_Level.Make_Credentials (Access_Key, Secret_Key);
    Context                : aliased Storage_Context;
    Created                : aliased Database;
+   Replica                : Database;
    Reopened               : Database;
    Txn                    : Transaction;
    Reader                 : Transaction;
@@ -221,6 +222,13 @@ procedure Flyology.DB.Client_Probe is
    Empty_Compaction_Audit_Run_ID : constant Identifier := Numbered_ID (35);
    Empty_Compaction_Metadata_Run_ID : constant Identifier := Numbered_ID (36);
    Empty_Final_Metadata_Run_ID : constant Identifier := Numbered_ID (37);
+   --  IDs 38 and 39 identify the fixture's read-only transactions immediately
+   --  before and after its one caller-triggered replica refresh. They are
+   --  transaction-test geometry, not replica cadence or identity policy.
+   Replica_Initial_Reader_ID : constant Transaction_Identifier :=
+     Transaction_Identifier (Numbered_ID (38));
+   Replica_Refreshed_Reader_ID : constant Transaction_Identifier :=
+     Transaction_Identifier (Numbered_ID (39));
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag          : constant Interfaces.Unsigned_64 := 16#F105#;
@@ -554,6 +562,13 @@ begin
       raise Program_Error with "client-backed Flush receipt lost exact authority";
    end if;
 
+   --  Capture one caller-designated read-only handle at the first checkpoint.
+   --  It remains deliberately stale while the writer appends families, Flushes,
+   --  and compacts; the final public refresh must install the complete newer
+   --  graph without polling, retrying, or replaying a mutation.
+   Open (Replica, Context'Access, Probe_Database_ID, Test_Operation_Timeout, Result => Result);
+   Expect (Result, Success, "client-backed replica open failed");
+
    --  Family-registry publication must include the appended name/header in its
    --  caller-selected scratch requirement. A one-byte token is rejected before
    --  provider entry, restored exactly, and leaves the identities reusable.
@@ -819,9 +834,41 @@ begin
    Resolve_Flush (Created, Flush_Info, Test_Operation_Timeout, Result => Result);
    Expect (Result, Success, "blocking compaction exact resolution failed");
 
+   declare
+      Replica_Family : Column_Family;
+   begin
+      Open_Column_Family (Replica, 1, Replica_Family, Result);
+      Expect (Result, Success, "stale replica family lookup failed");
+      Begin_Transaction (Replica, Replica_Initial_Reader_ID, Reader, Result);
+      Expect (Result, Success, "stale replica reader begin failed");
+      Get (Replica, Reader, Replica_Family, Key_Data, Data, Result);
+      Expect (Result, Success, "stale replica read failed");
+      if not Same (Data, Value_Data) then
+         raise Program_Error with "replica advanced before its caller-triggered refresh";
+      end if;
+      Rollback (Reader, Result);
+      Expect (Result, Success, "stale replica reader rollback failed");
+
+      Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "client-backed replica refresh failed");
+      Open_Column_Family (Replica, 1, Replica_Family, Result);
+      Expect (Result, Success, "refreshed replica family lookup failed");
+      Begin_Transaction (Replica, Replica_Refreshed_Reader_ID, Reader, Result);
+      Expect (Result, Success, "refreshed replica reader begin failed");
+      Get (Replica, Reader, Replica_Family, Key_Data, Data, Result);
+      Expect (Result, Success, "refreshed replica read failed");
+      if not Same (Data, Third_Value_Data) then
+         raise Program_Error with "replica refresh installed the wrong authoritative bytes";
+      end if;
+      Rollback (Reader, Result);
+      Expect (Result, Success, "refreshed replica reader rollback failed");
+   end;
+
    Flyology.Buffers.Release (Flush_Buffer);
    Close (Created, Close_Result);
    Expect (Close_Result, Success, "client-backed close failed");
+   Close (Replica, Close_Result);
+   Expect (Close_Result, Success, "client-backed replica close failed");
 
    Open (Reopened, Context'Access, Probe_Database_ID, Test_Operation_Timeout, Result => Result);
    Expect (Result, Success, "cacheless client-backed reopen failed");
@@ -850,10 +897,11 @@ begin
    Close (Reopened, Close_Result);
    Expect (Close_Result, Success, "reopened client-backed close failed");
    Ada.Text_IO.Put_Line
-     ("Flyology.DB client-backed create/appends/commit/Flush/compaction/reopen passed");
+     ("Flyology.DB client-backed create/commit/Flush/compaction/refresh/reopen passed");
 exception
    when others =>
       Close (Created, Close_Result);
+      Close (Replica, Close_Result);
       Close (Reopened, Close_Result);
       raise;
 end Flyology.DB.Client_Probe;

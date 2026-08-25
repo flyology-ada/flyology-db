@@ -70,3 +70,12 @@ separate public-policy decisions admit it.
 Expansion starts only after the acceptance scenario, deterministic suite, provider matrix, repository gate, TLA+ and
 TLAPS models, selected SPARK proof, API documentation, and findings cycle are green on one exact source/dependency
 tree.
+
+## First additive expansion
+
+The accepted profile remains the smaller baseline above. The first additive operation beyond it is synchronous
+`Refresh_Replica`: one caller-triggered monotonic refresh of an already-open handle dedicated by the caller to
+read-only replica use. It validates and installs one complete newer authoritative graph or leaves the prior view
+unchanged. It adds no polling, helper task, retry, lease, registration, retention, promotion, or timeout default, and
+a fenced handle remains fenced. Authenticated provider qualification exercises a deliberately stale checkpoint view
+followed by one exact refresh to the writer's compacted view.

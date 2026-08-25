@@ -1,5 +1,32 @@
 # Review record
 
+## Accepted public one-shot monotonic replica refresh candidate
+
+- Parent: published dependency-chain qualification commit `e38ea25`.
+- API and scope: expose the already-qualified synchronous refresh directly in `Flyology.DB` as
+  `Refresh_Replica`, remove the private testing forwarding declaration, and route deterministic memory/files plus
+  authenticated client coverage through the public operation. The caller designates an open handle for read-only
+  replica use, finishes its active transactions, and supplies the operation's only monotonic timeout budget.
+- Authority and behavior: refresh drains the existing lifecycle, validates one complete authoritative recovery
+  graph, and atomically installs only a newer transition-number/writer-epoch pair. Same or older valid observations
+  are no-ops; recovery or allocation failure preserves the prior engine; a fenced handle remains `Stale_Writer`.
+  The operation adds no helper task, polling, retry, lease, registration, retention, promotion, persisted field,
+  allocation limit, or default.
+- Ownership and concurrency: the operation retains no caller input beyond the synchronous call and reuses the
+  established exclusive resolution lifecycle. The authenticated probe opens one stale checkpoint view, lets the
+  writer append families, Flush, and compact, verifies the stale bytes, then performs one refresh and reads the exact
+  final compacted bytes. No mutation is replayed and object storage remains the sole durable authority.
+- Verification: root/test builds and `./tests/scripts/test.sh` are green; the uninterrupted six-provider/three-run
+  matrix is 18/18 at Object Storage `179b16c…` and HTTP/QUIC `eb09a80…`; GNATdoc renders the operation and all four
+  parameter descriptions; the complete TLA/TLC/TLAPS gate is green, including replica refresh at 1,460 states and
+  11/11 obligations with stale-writer/rollback negative probes; GNATprove proves 1,091/1,091 checks and the exact
+  post-run host audit is clean. Project-aware GNATformat 26 loads the dependency graph, but its unconfigured baseline
+  rewrites thousands of untouched lines even under `--gitdiff`; that mechanical output was fully rejected, and every
+  changed handwritten Ada line remains within 110 columns.
+- Findings cycle: the first sweep found one P2 stale “private witness” comment after public promotion; it is corrected.
+  The repeated API, role, monotonicity, fencing, lifecycle, allocation rollback, certainty, constants, tests, proof,
+  documentation, formatting, compatibility, and unnecessary-surface sweep finds no actionable P0/P1/P2 finding.
+
 ## Accepted Object Storage and HTTP hook-selection dependency candidate
 
 - Parent: public exact-three-run compaction commit `c87f926`.

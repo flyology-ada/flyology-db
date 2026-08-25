@@ -83,10 +83,11 @@ The formal retention boundary separately requires both explicit age eligibility 
 before immutable-object deletion. Current authority, active snapshots, replica pins, required predecessors, and
 unresolved publication attempts remain protected; provider listing alone grants no deletion authority. No age
 horizon, delete batch policy, or operational collector is selected.
-The private replica-refresh spine now performs one caller-triggered, complete recovery under the existing exclusive
-lifecycle gate and installs only a strictly newer `(HEAD ordinal, writer epoch)` pair. Same or older observations are
-discarded, allocation failure leaves the prior view intact, and a fenced writer cannot refresh itself into a promoted
-writer. No public replica API, polling task, lease duration, retry, or promotion policy is selected.
+Public `Refresh_Replica` now performs one caller-triggered, complete recovery of an open handle dedicated by its
+caller to read-only use. Under the existing exclusive lifecycle gate it installs only a strictly newer
+`(HEAD ordinal, writer epoch)` pair. Same or older observations are discarded, allocation failure leaves the prior
+view intact, and a fenced writer cannot refresh itself into a promoted writer. The call supplies no polling task,
+lease duration, retry, registration, retention, or promotion policy.
 Transactions now capture a Begin-time sequence
 and reject exact written keys changed by later committed history. Fixed-snapshot point reads are operational;
 explicit serializable transactions retain and validate exact successful and absent point reads plus caller-observed

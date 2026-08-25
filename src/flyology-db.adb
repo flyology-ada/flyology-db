@@ -11383,15 +11383,15 @@ package body Flyology.DB is
        or else
          (Left.Transition_Number = Right.Transition_Number and then Left.Epoch < Right.Epoch));
 
-   procedure Refresh_Test_Replica
+   procedure Refresh_Replica
      (Item    : in out Database;
       Timeout : Duration;
       Token   : access Flyology.Cancellation.Token := null;
       Result  : out Outcome_Code)
    is
       --  One caller-selected monotonic deadline covers capture, complete
-      --  recovery, allocation, and installation. This private witness adds no
-      --  polling cadence, retry budget, or public refresh timeout default.
+      --  recovery, allocation, and installation. The public one-shot call adds
+      --  no polling cadence, retry budget, or refresh timeout default.
       Deadline           : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       State              : Engine_State_Access;
       New_State          : Engine_State_Access := null;
@@ -11505,7 +11505,7 @@ package body Flyology.DB is
       Item.Life.Finish_Resolve (New_State, Observed_Head.Highest);
       Guard.Active := False;
       Result := Success;
-   end Refresh_Test_Replica;
+   end Refresh_Replica;
 
    function Receipt_Outcome (Item : Commit_Receipt) return Outcome_Code
    is (Item.Current_Outcome);

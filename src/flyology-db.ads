@@ -214,6 +214,28 @@ package Flyology.DB is
       Token       : access Flyology.Cancellation.Token := null;
       Result      : out Outcome_Code);
 
+   --  Perform one caller-triggered monotonic refresh of an open handle used as
+   --  a read-only replica. The caller must finish every transaction and other
+   --  operation on Item before calling. Refresh validates a complete
+   --  authoritative recovery graph and atomically installs it only when its
+   --  transition-number/writer-epoch pair is newer than the installed pair;
+   --  observing the same or an older valid pair succeeds without changing the
+   --  local view. Allocation or recovery failure preserves the prior view.
+   --  This call neither polls nor retries and never promotes a fenced handle;
+   --  Stale_Writer remains terminal for that handle. Timeout is the caller's
+   --  one monotonic budget, and Token supplies optional cooperative
+   --  cancellation. The operation selects no replica lease, cadence,
+   --  registration, retention, or promotion policy.
+   --  @param Item Open caller-designated read-only replica handle to refresh
+   --  @param Timeout Whole-refresh monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Result Monotonic install/no-op or typed failure outcome
+   procedure Refresh_Replica
+     (Item    : in out Database;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null;
+      Result  : out Outcome_Code);
+
    --  Append one explicit immutable column-family configuration and publish
    --  one conditional manifest-bearing HEAD transition. Configuration supplies
    --  every key/value, memtable, and L0 authority; the DB selects no defaults.
@@ -1550,11 +1572,6 @@ private
       Transition_ID : Identifier;
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code);
-   procedure Refresh_Test_Replica
-     (Item    : in out Database;
-      Timeout : Duration;
-      Token   : access Flyology.Cancellation.Token := null;
-      Result  : out Outcome_Code);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB;
