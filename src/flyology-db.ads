@@ -642,6 +642,41 @@ package Flyology.DB is
        and then not Flyology.Operations.Is_Terminal (Operation),
        Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
+   --  Start an exact caller-selected three-run compaction. First_Run_ID,
+   --  Middle_Run_ID, and Last_Run_ID must name three consecutive current
+   --  descriptors in one family. Exactly three is the already-qualified
+   --  algorithm shape, not an automatic fanout or policy default. The merge
+   --  retains every version and tombstone, preserves surrounding runs and any
+   --  later committed suffix, and selects no trigger, level, schedule, retry,
+   --  retention horizon, pruning, or deletion policy. Selected identities are
+   --  copied into operation-owned state; no caller ID borrow survives return.
+   --  @param Operation Fresh or consumed client-bound checkpoint operation
+   --  @param First_Run_ID Exact first consecutive current-run identity
+   --  @param Middle_Run_ID Exact middle consecutive current-run identity
+   --  @param Last_Run_ID Exact last consecutive current-run identity
+   --  @param Output_Run_ID Fresh immutable merged-run identity
+   --  @param Manifest_ID Stable immutable successor-manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Storage binding
+   procedure Start_Compaction
+     (Operation      : in out Flush_Operation;
+      First_Run_ID   : Identifier;
+      Middle_Run_ID  : Identifier;
+      Last_Run_ID    : Identifier;
+      Output_Run_ID  : Identifier;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
    --  Consume a terminal composable Flush and restore its exact input token.
    --  Payload_Buffer may be any vacant handle from the original pool; no
    --  pointer to the initiating handle is retained. The restored token keeps
@@ -739,6 +774,38 @@ package Flyology.DB is
      (Item          : in out Database;
       Older_Run_ID  : Identifier;
       Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code);
+
+   --  Replace three exact consecutive current runs with one fresh immutable
+   --  run. Exactly three is the qualified algorithm shape exposed to an
+   --  explicit caller; it is not a fanout, trigger, or maintenance default.
+   --  Every selected and publication identity is caller-supplied. The merge
+   --  retains every version and tombstone, surrounding runs, any later suffix,
+   --  and every predecessor object. Client-backed execution waits on the
+   --  matching Start_Compaction overload; memory/files use the equivalent
+   --  backend-neutral publisher.
+   --  @param Item Open database whose exact consecutive runs are compacted
+   --  @param First_Run_ID Exact first consecutive current-run identity
+   --  @param Middle_Run_ID Exact middle consecutive current-run identity
+   --  @param Last_Run_ID Exact last consecutive current-run identity
+   --  @param Output_Run_ID Fresh immutable merged-run identity
+   --  @param Manifest_ID Stable immutable successor-manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @param Token Cooperative cancellation token, or null for no token
+   --  @param Receipt Self-contained publication and reconciliation authority
+   --  @param Result Terminal or presently unknown operation outcome
+   procedure Compact
+     (Item          : in out Database;
+      First_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
+      Last_Run_ID   : Identifier;
       Output_Run_ID : Identifier;
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;

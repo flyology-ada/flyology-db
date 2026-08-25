@@ -13429,6 +13429,29 @@ package body Flyology.DB is
          Lease);
    end Start_Composable_Three_Run_Merge;
 
+   procedure Start_Compaction
+     (Operation      : in out Flush_Operation;
+      First_Run_ID   : Identifier;
+      Middle_Run_ID  : Identifier;
+      Last_Run_ID    : Identifier;
+      Output_Run_ID  : Identifier;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration) is
+   begin
+      Start_Composable_Three_Run_Merge
+        (Operation,
+         First_Run_ID,
+         Middle_Run_ID,
+         Last_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Payload_Buffer,
+         Timeout);
+   end Start_Compaction;
+
    procedure Finish
      (Operation      : in out Flush_Operation;
       Receipt        : out Flush_Receipt;
@@ -14153,6 +14176,33 @@ package body Flyology.DB is
          Receipt,
          Result);
    end Publish_Three_Run_Merge;
+
+   procedure Compact
+     (Item          : in out Database;
+      First_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
+      Last_Run_ID   : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      Publish_Three_Run_Merge
+        (Item,
+         First_Run_ID,
+         Middle_Run_ID,
+         Last_Run_ID,
+         Output_Run_ID,
+         Manifest_ID,
+         Transition_ID,
+         Timeout,
+         Token,
+         Receipt,
+         Result);
+   end Compact;
 
    procedure Synchronous_Checkpoint_Buffer_Capacity
      (State   : not null Engine_State_Access;
@@ -16385,7 +16435,7 @@ package body Flyology.DB is
       --  Duration'Last removes harness timing only. All four immutable IDs
       --  and the exact three-run selection are caller fixture authority, not
       --  a production trigger, fanout, output-name, or deadline policy.
-      Publish_Three_Run_Merge
+      Compact
         (Item,
          First_Run_ID,
          Middle_Run_ID,
@@ -16394,6 +16444,7 @@ package body Flyology.DB is
          Manifest_ID,
          Transition_ID,
          Duration'Last,
+         Token   => null,
          Receipt => Receipt,
          Result  => Result);
    end Publish_Test_Three_Run_Merge;

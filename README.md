@@ -36,11 +36,12 @@ blocking `Compact` drive the complete-view replacement through that same owner s
 machinery. They build one complete live-state run per nonempty family and publish a successor manifest naming only
 those fresh outputs. The caller supplies the exact complete family/output map and stable manifest/transition
 identities; the DB retains superseded immutable objects and selects no automatic trigger, level, fanout, schedule,
-retry, or physical-GC policy. Overloaded public `Start_Compaction` and blocking `Compact` forms also accept one exact
-caller-selected adjacent run pair plus fresh output, manifest, and transition identities. They retain every version
-and tombstone, preserve surrounding runs and any later committed suffix, and use the same operation, receipt,
-certainty, and reconciliation machinery. Run selection, pruning, and broader family evolution remain separate
-review units.
+retry, or physical-GC policy. Overloaded public `Start_Compaction` and blocking `Compact` forms also accept either
+one exact caller-selected adjacent run pair or one exact caller-selected three-run consecutive slice, plus fresh
+output, manifest, and transition identities. They retain every version and tombstone, preserve surrounding runs and
+any later committed suffix, and use the same operation, receipt, certainty, and reconciliation machinery. Three is
+the qualified algorithm shape, not a fanout or maintenance default. Run selection, pruning, and broader family
+evolution remain separate review units.
 The LSM read-equivalence lane independently checks that a complete live-state replacement emits one Put for each
 live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
 later delta containing Puts, Deletes, or untouched keys. This closes concrete replacement-read semantics without
@@ -63,17 +64,18 @@ and replays the suffix into the replacement coordinator. Cacheless recovery acce
 validated manifest predecessor chain anchors
 both the latest batch publication and the checkpoint boundary it follows. It still selects no trigger, schedule,
 fanout, level policy, or automatic selection rule.
-An additive private three-run kernel now qualifies composition beyond the pair without choosing automatic policy.
+An additive exact-three-run kernel and public caller-selected overload qualify composition beyond the pair without
+choosing automatic policy.
 It accepts exactly three caller-selected adjacent descriptors, computes one checked exact output allocation, retains
 every version and tombstone, and builds an effect-free successor that replaces only that slice. The exhaustive TLA+
 lane covers the essential middle-tombstone case when the last selected run has no mutation for the key; its TLAPS
 kernel proves associative composition and read equivalence with retained older/newer runs and any later suffix.
-The private operational publisher now reads all three exact generation-bound inputs through the same owner-driven
+The operational publisher reads all three exact generation-bound inputs through the same owner-driven
 Flush state machine as pair publication, publishes one immutable output and successor, conditionally advances HEAD,
 and retains all three source identities in an uncertain receipt for exact-byte reconciliation. Cacheless activation
 uses only the highest-sequence entry per key in each SST, so an admitted middle tombstone cannot resurrect an older
-put retained in the merged object. Three is qualification geometry, not a fanout, trigger, level, capacity, retry,
-or public policy.
+put retained in the merged object. Three is qualification geometry exposed only through an exact caller-selected
+operation, not a fanout, trigger, level, capacity, retry, or automatic-maintenance policy.
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
 produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.

@@ -708,8 +708,9 @@ begin
    end if;
 
    --  The next commit writes both families; its family-1 value and a final
-   --  family-1 commit become newer current runs. Public adjacent compaction
-   --  selects only the first pair and must preserve the retained final run.
+   --  family-1 commit become newer current runs. Public exact-three-run
+   --  compaction selects all three consecutive root-family descriptors while
+   --  retaining the audit-family run and later committed suffix.
    Begin_Transaction (Created, Later_Transaction_ID, Txn, Result);
    Expect (Result, Success, "later client-backed transaction begin failed");
    Put (Created, Txn, Family, Key_Data, Later_Value_Data, Result);
@@ -745,13 +746,15 @@ begin
    Expect (Result, Success, "third client-backed additive Flush failed");
 
    --  A definite selected-read failure precedes publication, restores the
-   --  exact token, and leaves every identity reusable. The immediate retry is
-   --  explicit test authority, not an automatic DB retry.
+   --  exact token, and leaves every identity reusable. The immediate retry of
+   --  the same exact three-run selection is explicit test authority, not an
+   --  automatic DB retry.
    Context.Test_Control.Arm (Before_Get, Definite_Failure, 1);
    Start_Compaction
      (Flush_Work,
       Compaction_Run_ID,
       Later_Run_ID,
+      Third_Run_ID,
       Merged_Run_ID,
       Merged_Manifest_ID,
       Merged_Transition_ID,
@@ -759,11 +762,11 @@ begin
       Test_Operation_Timeout);
    Flyology.Operations.Wait_All (Composable_Set);
    Finish (Flush_Work, Flush_Info, Result, Flush_Buffer);
-   Expect (Result, Storage_Failure, "pre-read adjacent merge failure was ambiguous");
+   Expect (Result, Storage_Failure, "pre-read three-run merge failure was ambiguous");
    if not Flyology.Buffers.Has_Buffer (Flush_Buffer)
      or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
    then
-      raise Program_Error with "pre-read adjacent merge did not restore its exact token";
+      raise Program_Error with "pre-read three-run merge did not restore its exact token";
    end if;
    --  Losing the output PUT response after possible admission is reconciled
    --  by an exact same-generation whole Get inside the original operation.
@@ -773,6 +776,7 @@ begin
      (Flush_Work,
       Compaction_Run_ID,
       Later_Run_ID,
+      Third_Run_ID,
       Merged_Run_ID,
       Merged_Manifest_ID,
       Merged_Transition_ID,
@@ -780,15 +784,15 @@ begin
       Test_Operation_Timeout);
    Flyology.Operations.Wait_All (Composable_Set);
    Finish (Flush_Work, Flush_Info, Result, Flush_Buffer);
-   Expect (Result, Success, "client-backed composable adjacent merge failed");
+   Expect (Result, Success, "client-backed composable three-run merge failed");
    if not Flush_Info.Merges_Adjacent_Runs
-     or else Flush_Info.Merges_Three_Runs
+     or else not Flush_Info.Merges_Three_Runs
      or else Flush_Receipt_Run_Total (Flush_Info) /= 1
      or else Flush_Receipt_Run (Flush_Info, 1) /= Configure_Checkpoint_Run (1, Merged_Run_ID)
      or else Flush_Receipt_Manifest_ID (Flush_Info) /= Merged_Manifest_ID
      or else Flush_Receipt_Transition_ID (Flush_Info) /= Merged_Transition_ID
    then
-      raise Program_Error with "client-backed adjacent merge receipt lost exact authority";
+      raise Program_Error with "client-backed three-run merge receipt lost exact authority";
    end if;
 
    --  The public blocking Compact is a literal wait over Start_Compaction.

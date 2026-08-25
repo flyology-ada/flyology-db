@@ -302,22 +302,23 @@ binding, pre-read failure without publication, explicit same-identity retry, mer
 The abstract adjacent-merge algorithm is unchanged, so this execution-path unit does not claim a fresh TLA+ run or
 an Ada refinement theorem.
 
-The exact-three-run algorithm lane remains separate from automatic pair publication policy. TLC
+The public exact-three-run candidate remains separate from automatic pair publication policy. TLC
 exhausts 12,288/12,288 states at depth 3, the deliberately broken middle-tombstone-loss transition violates Safety,
 and the concrete first-Put/middle-Delete/last-empty/suffix-Put trace validates byte-for-byte. TLAPS proves all seven
 strict obligations for arbitrary nonempty key and value sets: associativity, last/middle mutation retention, middle
 tombstone retention, point and whole-view composition, and equality with retained older/newer runs plus any suffix.
-The private Ada kernel retains the stronger snapshot-safe representation of every version and tombstone in one exact
-checked allocation; deterministic tests bind three adjacent manifest descriptors, preserve retained neighbors, and
-reject retained-identity reuse and reordered sequence authority. The private operational publisher now reads those
-three exact inputs and publishes their successor through the existing Flush owner stack. Local tests additionally
+The Ada kernel retains the stronger snapshot-safe representation of every version and tombstone in one exact checked
+allocation; deterministic tests bind three adjacent manifest descriptors, preserve retained neighbors, and reject
+retained-identity reuse and reordered sequence authority. Public blocking and operation-last overloads now submit
+those three exact inputs through the existing Flush owner stack without selecting a trigger or maintenance policy.
+Local tests additionally
 cover reordered-input rejection before publication, an uncertain output response resolved from the exact same bytes,
 middle-tombstone recovery after all source objects and local state are removed, and a retained later-log suffix. The
-authenticated client probe covers the same selected-reader operation with a definite pre-read failure and an
-uncertain output response. Automatic selection, fanout, trigger, levels, public API, and an Ada refinement theorem
-remain outside this candidate. The warning-strict selected SPARK boundary remains green at 1,090/1,090 checks with
-the maintained success sentinel; the dynamic runtime merger and Object Storage driver remain executable boundaries
-rather than newly selected proof units.
+authenticated client probe calls the public operation with a definite pre-read failure and an uncertain output
+response, verifies exact token restoration, and reopens cachelessly from the merged output. Automatic selection,
+arbitrary fanout, trigger, levels, and an Ada refinement theorem remain outside this candidate. The exact maintained
+SPARK campaign proves 1,091/1,091 warning-strict selected checks; the dynamic runtime merger and Object Storage driver
+remain executable boundaries rather than newly selected proof units.
 
 ## TLA+ state-machine assurance
 

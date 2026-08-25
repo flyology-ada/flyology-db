@@ -1,5 +1,38 @@
 # Review record
 
+## Accepted public exact-three-run compaction candidate
+
+- Parent: APM dependency-isolation commit `28e35bc` over the qualified private three-run publisher.
+- Scope and API: add operation-last `Start_Compaction` and blocking `Compact` overloads directly in `Flyology.DB`
+  for exactly three caller-selected consecutive current runs. They reuse `Flush_Operation`, typed token-restoring
+  `Finish`, `Flush_Receipt`, and `Resolve_Flush`; no new type, constant, default, selector, compatibility namespace,
+  helper task, retry, trigger, level, schedule, retention horizon, pruning rule, or deletion rule is introduced.
+  Three is the already-qualified algorithm shape, not a product fanout or maintenance policy.
+- Ownership and certainty: both overloads delegate to the existing three-run publisher and owner-stack driver. The
+  operation copies all selected/publication identities and moves the exact caller buffer only after validation,
+  lifecycle admission, and slot reservation. Typed `Finish` remains the sole restoration authority. Any possibly
+  admitted immutable-object or HEAD failure retains `Outcome_Unknown` and is reconciled read-only from the same
+  identities and bytes; no mutation is replayed.
+- Durability and bounds: the current authenticated manifest must contain the three exact adjacent descriptors in one
+  family. The merge retains every version and tombstone, surrounding descriptors, later committed suffixes, and
+  predecessor objects. Allocation remains lazy, checked, and derived from persisted database/family limits and exact
+  authenticated object shapes; failure before provider admission publishes nothing.
+- Verification: root and test builds and `./tests/scripts/test.sh` pass on the public path. The uninterrupted provider
+  matrix passes all 18 RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite lanes against Object Storage
+  `1978275b…` with indexed HTTP/QUIC `eb09a80…`. `./scripts/check-tla.sh`
+  passes every maintained lane, including the 12,288-state three-run model with 7/7 TLAPS obligations and the
+  deliberately broken tombstone-loss negative probe. `./scripts/prove.sh` proves 1,091/1,091 warning-strict selected
+  checks and the exact post-run host audit is clean. The repository and diff gates are green. Project-aware
+  GNATformat 26 now loads the dependency graph after the HTTP hook-selection update, but its unconfigured default
+  style proposes broad existing repository/dependency rewrites; those formatter-only changes were removed, so no
+  mass-format or formatter-clean claim is made. All changed handwritten Ada is independently checked at no more than
+  110 columns.
+- Findings cycle: the API/constants review confirms that fixed arity is documented adjacent to both declarations and
+  introduces no limit/default policy. The implementation reuses one state machine rather than a second engine, and
+  the public client probe covers definite pre-admission failure, exact token restoration, uncertain output
+  reconciliation, successful publication, retained-family state, and cacheless reopen. No actionable P0/P1/P2
+  finding remains after final qualification.
+
 ## Accepted TidesDB adapter readiness candidate
 
 - Parent: adjacent-compaction limited-profile showcase commit `63e7767`.

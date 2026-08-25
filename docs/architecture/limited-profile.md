@@ -15,7 +15,8 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - Synchronous Snapshot transactions with point `Get`, ordered bounded `Scan`, `Put`, `Delete`, singleton `Commit`,
   and explicit atomic `Commit_Group`.
 - Explicit synchronous `Flush` into immutable SST and manifest objects, including a later suffix-delta Flush.
-- Exact caller-selected adjacent-run `Compact`, retaining every version/tombstone and all surrounding runs.
+- Exact caller-selected two- or three-consecutive-run `Compact`, retaining every version/tombstone and all
+  surrounding runs. The maintained Files acceptance scenario selects the two-run form.
 - Synchronous and caller-composable `Add_Column_Family` at an exact checkpoint boundary, with exact
   manifest/transition identities and same-receipt resolution of immutable or HEAD uncertainty.
 - `Outcome_Unknown` receipts resolved only through the original identity; no application transaction or mutation is
@@ -62,9 +63,9 @@ automatic compaction selection, garbage-collection policy, an authenticated depl
 background polling, transparent retry, retained borrowed request bodies, performance claims, or stable-format
 compatibility beyond the versions accepted by the current decoder. Public complete-view `Compact` is deliberately
 policy-neutral: the caller supplies every output and publication identity, and the operation retains predecessors.
-Public exact-adjacent compaction is likewise caller-selected and retains all history; it does not authorize an
-automatic selector, pruning, or deletion. The replica spine remains qualification work until separate public-policy
-decisions admit it.
+Public exact two- and three-run compaction is likewise caller-selected and retains all history; fixed arity does not
+authorize an automatic selector, fanout, pruning, or deletion. The replica spine remains qualification work until
+separate public-policy decisions admit it.
 
 Expansion starts only after the acceptance scenario, deterministic suite, provider matrix, repository gate, TLA+ and
 TLAPS models, selected SPARK proof, API documentation, and findings cycle are green on one exact source/dependency

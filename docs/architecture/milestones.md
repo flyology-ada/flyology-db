@@ -11,7 +11,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and public complete-view replacement operational; partial compaction and streaming scans pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
-| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete and exact-adjacent replacement operational and deletion safety proved; automatic/collector policy pending |
+| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete, exact-two-run, and exact-three-run replacement operational and deletion safety proved; automatic/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
 | 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Private one-shot refresh operational; public/composable replica and promotion policy pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
@@ -138,18 +138,19 @@ with shared ownership of its immutable images. The replacement coordinator recon
 then replays the suffix to preserve conflict and identity authority. Recovery admits that topology only through exact
 batch-to-manifest-chain and suffix-to-checkpoint-boundary anchors.
 
-The same private runtime now has an additive exact-three-run qualification kernel. It admits only three adjacent
-descriptors selected by its caller, uses one checked allocation for their exact combined entry/payload extents,
+The same runtime now has an additive exact-three-run qualification kernel and public caller-selected overload. It
+admits only three adjacent descriptors selected by its caller, uses one checked allocation for their exact combined
+entry/payload extents,
 retains every version and tombstone, and replaces only those three descriptors with one in the effect-free successor.
 The maintained TLC lane exhausts the middle-tombstone/last-empty case and TLAPS proves arbitrary-key associative
-composition with retained surrounding runs and a later suffix. The private publisher now operationalizes that exact
-slice through the established Flush owner stack: three authenticated source reads, one immutable output, one
+composition with retained surrounding runs and a later suffix. The publisher operationalizes that exact slice
+through the established Flush owner stack: three authenticated source reads, one immutable output, one
 successor manifest, one conditional HEAD transition, and exact same-identity resolution after an uncertain response.
 The receipt retains the exact three source IDs needed to reconstruct the attempted bytes; it retains no caller handle
 or borrowed body. Cacheless activation treats only the first, highest-sequence entry for each key in a sorted SST as
-live-state authority, preserving a selected tombstone while older versions remain in the immutable object. This does
-not choose automatic selection, fanout, trigger, levels, retries, publication scheduling, or a public API; those
-remain Milestone 4 and 6 work.
+live-state authority, preserving a selected tombstone while older versions remain in the immutable object. The
+fixed-arity public call still does not choose automatic selection, fanout, trigger, levels, retries, or publication
+scheduling; those remain Milestone 4 and 6 work.
 
 The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
 separation, and atomic capacity/allocation rollback. Its finite model exhausts 3,419 states and the arbitrary-universe
