@@ -8,8 +8,10 @@ first checkpoint, reconstructs its exact state and
 identity partition, and replays only later batches. The internal checkpoint planner assembles an exact successor and
 its family SSTs. Public synchronous `Flush`, caller-composable `Flush_Operation`, and `Resolve_Flush` publish and
 reconcile checkpoints through the same self-contained receipt and certainty rules. The first call publishes complete
-family snapshots; later calls append suffix-delta runs and retain the current descriptor set. Existing manifest-v1
-databases remain readable for log-only operation. Compaction and run pruning remain separate units.
+family snapshots; later calls append suffix-delta runs and retain the current descriptor set. Public
+`Start_Compaction` and blocking `Compact` replace the complete live view through that same state machine without
+selecting automatic policy. Existing manifest-v1 databases remain readable for log-only operation. Partial-run
+compaction and run pruning remain separate units.
 
 ## Staged compatibility decision
 
@@ -307,11 +309,12 @@ The operational replacement planner runs under the existing exclusive checkpoint
 live state rather than the post-boundary delta, allocates exact run and manifest extents from persisted database and
 per-family limits, rejects any current immutable run identity, and prepares the complete activation base before the
 first provider call. The shared checkpoint publisher then stores and confirms each output and the successor manifest
-before the conditional HEAD transition. A private test-qualified constructor also selects this mode in the existing
-caller-owned `Flush_Operation`; public `Start_Flush` continues to select additive mode. Both modes share the same
+before the conditional HEAD transition. Public `Start_Compaction` selects this mode in the existing caller-owned
+`Flush_Operation`, while `Start_Flush` continues to select additive mode. Blocking `Compact` waits on that operation
+for client storage and drives the equivalent backend-neutral publisher for memory/files. Both modes share the same
 completion-set owner stack, exact moved token, typed `Finish`, absolute deadline, publication certainty, and
-same-identity whole-Get reconciliation. Its private receipt mode is retained solely so `Objects_Unknown`
-reconciliation rebuilds the identical replacement bytes and identities; it is not persisted policy.
+same-identity whole-Get reconciliation. The receipt mode is retained solely so `Objects_Unknown` reconciliation
+rebuilds the identical replacement bytes and identities; it is not persisted policy.
 
 The private adjacent-merge publisher is a narrower policy-neutral sibling. Its caller supplies the exact older,
 newer, output, manifest, and transition identities. Under the same exclusive checkpoint lifecycle, it binds the
@@ -342,10 +345,11 @@ The client-backed path is caller-composable without a helper task. After the eff
 parent serially drives a bodyless HEAD, exact-generation frozen-header range, and same-generation bounded whole Get
 for every manifest-named run. One moved caller-selected buffer supplies all read and publication bodies; one absolute
 deadline and cancellation source cover the entire operation. Every loaded SST is revalidated against its exact
-database, family, and descriptor before the effect-free successor builder runs. The private synchronous client
-wrapper is a literal wait on that operation and therefore shares its ownership, capacity, certainty, and result
-mapping. Backend-neutral memory/files selected reads remain on the blocking storage port and create no helper task.
-Neither path publishes a public trigger or selects run, level, fanout, retry, or schedule policy.
+database, family, and descriptor before the effect-free successor builder runs. Public blocking `Compact` is a
+literal wait on that operation and therefore shares its ownership, capacity, certainty, and result mapping.
+Backend-neutral memory/files reads remain on the blocking storage port and create no helper task.
+The public complete-view operation selects no automatic trigger, run, level, fanout, retry, or schedule policy. The
+caller must provide the complete family/output identity map and stable successor manifest/transition identities.
 
 `LSMPartialCompactionEquivalence.tla` now models the same abstract execution order: merge the selected consecutive
 runs, transfer one finite suffix batch and its identity authority unchanged, reconstruct the successor run view, and
@@ -361,7 +365,7 @@ output-capacity rejection, ordinary and canonical-empty replacement, accepted-lo
 retained old bytes, missing-output rejection for a present output, crash, and exact recovery. Separate
 machine-validated traces cover ordinary and zero-output recovery. The unbounded TLAPS kernel permits arbitrary fresh
 output sets including empty and proves the corresponding abstract replacement invariants. No TLA+-to-Ada refinement
-is claimed. Naming and exposing a public compaction trigger remains a separate API unit.
+is claimed. Automatic selection and a public partial-run compaction operation remain separate API and policy units.
 
 `LSMCompactionEquivalence.tla` separately closes the concrete point-read equation that the publication model leaves
 abstract. For every finite captured view in its qualification geometry, the replacement run contains the exact live
@@ -393,8 +397,9 @@ Those choices require their own authority, crash tests, provider conformance evi
 
 ## Non-goals
 
-This design does not implement automatic flushing or compaction, a public compaction trigger, run pruning, garbage
-collection, remote-provider matrix qualification, or an LSM performance claim. Its operational scope is manifest-v3
-root creation, initial whole-state runs, additive suffix-delta runs, private complete-run replacement,
-private caller-selected adjacent-run publication, certainty-preserving checkpoint publication/reconciliation, and
-header-first cacheless recovery of every current run plus the later batch suffix.
+This design does not implement automatic flushing or compaction, partial-run public compaction, run pruning, garbage
+collection, or an LSM performance claim. Its operational scope is manifest-v3 root creation, initial whole-state
+runs, additive suffix-delta runs, public caller-selected complete-view replacement, private caller-selected
+adjacent-run publication, certainty-preserving checkpoint publication/reconciliation, and header-first cacheless
+recovery of every current run plus the later batch suffix. The complete-view operation is qualified across the
+maintained remote-provider matrix without selecting provider, endpoint, retry, or scheduling policy.

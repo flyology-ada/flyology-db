@@ -13328,7 +13328,7 @@ package body Flyology.DB is
          Zero_Identifier);
    end Add_Column_Family;
 
-   procedure Start_Test_Compaction
+   procedure Start_Compaction
      (Operation      : in out Flush_Operation;
       Runs           : Checkpoint_Run_Identity_Array;
       Manifest_ID    : Identifier;
@@ -13344,7 +13344,7 @@ package body Flyology.DB is
          Zero_Identifier,
          Zero_Identifier,
          Zero_Identifier);
-   end Start_Test_Compaction;
+   end Start_Compaction;
 
    procedure Start_Composable_Adjacent_Merge
      (Operation      : in out Flush_Operation;
@@ -14258,19 +14258,20 @@ package body Flyology.DB is
       end;
    end Synchronous_Checkpoint_Buffer_Capacity;
 
-   procedure Flush
-     (Item          : in out Database;
-      Runs          : Checkpoint_Run_Identity_Array;
-      Manifest_ID   : Identifier;
-      Transition_ID : Identifier;
-      Timeout       : Duration;
-      Token         : access Flyology.Cancellation.Token := null;
-      Receipt       : out Flush_Receipt;
-      Result        : out Outcome_Code)
+   procedure Drive_Synchronous_Checkpoint
+     (Item                 : in out Database;
+      Runs                 : Checkpoint_Run_Identity_Array;
+      Manifest_ID          : Identifier;
+      Transition_ID        : Identifier;
+      Replace_Current_Runs : Boolean;
+      Timeout              : Duration;
+      Token                : access Flyology.Cancellation.Token;
+      Receipt              : out Flush_Receipt;
+      Result               : out Outcome_Code)
    is
       --  One DB parent, one Object Storage child, one HTTP exchange, and one
-      --  transport child are the exact client Flush owner stack. This private
-      --  derived capacity is not a DB queue, connection, or caller default.
+      --  transport child are the exact client checkpoint owner stack. This
+      --  private derived capacity is not a DB queue, connection, or default.
       Synchronous_Set_Capacity : constant := 4;
       Lease                    : aliased Lifecycle_Lease;
       Storage                  : access Storage_Context;
@@ -14301,7 +14302,7 @@ package body Flyology.DB is
          declare
             Body_Entered : Boolean := False;
 
-            procedure Drive_Client_Flush is
+            procedure Drive_Client_Checkpoint is
                Set : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
                --  Exactly one moved payload token exists in this serial wait.
                --  Capacity one is ownership geometry, not persisted DB policy.
@@ -14326,7 +14327,7 @@ package body Flyology.DB is
                   Transition_ID,
                   Payload_Buffer,
                   Timeout,
-                  Additive_Plan,
+                  (if Replace_Current_Runs then Complete_Replacement_Plan else Additive_Plan),
                   (others => <>),
                   Zero_Identifier,
                   Zero_Identifier,
@@ -14364,13 +14365,13 @@ package body Flyology.DB is
                         else Storage_Failure);
                   end if;
                   Receipt.Current_Outcome := Result;
-            end Drive_Client_Flush;
+            end Drive_Client_Checkpoint;
          begin
             --  A failure while elaborating the temporary completion set or
-            --  pool occurs before Drive_Client_Flush can reserve a slot or
+            --  pool occurs before Drive_Client_Checkpoint can reserve a slot or
             --  enter checkpoint mode, so it is definite capacity failure.
             begin
-               Drive_Client_Flush;
+               Drive_Client_Checkpoint;
             exception
                when Storage_Error =>
                   if not Body_Entered then
@@ -14411,12 +14412,56 @@ package body Flyology.DB is
          Runs,
          Manifest_ID,
          Transition_ID,
-         Replace_Current_Runs => False,
+         Replace_Current_Runs => Replace_Current_Runs,
          Timeout              => Timeout,
          Token                => Token,
          Receipt              => Receipt,
          Result               => Result);
+   end Drive_Synchronous_Checkpoint;
+
+   procedure Flush
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      Drive_Synchronous_Checkpoint
+        (Item,
+         Runs,
+         Manifest_ID,
+         Transition_ID,
+         False,
+         Timeout,
+         Token,
+         Receipt,
+         Result);
    end Flush;
+
+   procedure Compact
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code) is
+   begin
+      Drive_Synchronous_Checkpoint
+        (Item,
+         Runs,
+         Manifest_ID,
+         Transition_ID,
+         True,
+         Timeout,
+         Token,
+         Receipt,
+         Result);
+   end Compact;
 
    procedure Activate_Recovered_Flush
      (Item          : in out Database;
@@ -16266,18 +16311,18 @@ package body Flyology.DB is
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code) is
    begin
-      --  This private test entry drives the production synchronous publisher
-      --  with explicit replacement mode. Duration'Last only removes harness
-      --  timing from the witness; it is not a production timeout default.
-      Publish_Checkpoint
+      --  This private test adapter drives the public complete-view compaction.
+      --  Duration'Last only removes harness timing from the witness; it is not
+      --  a production timeout default.
+      Compact
         (Item,
          Runs,
          Manifest_ID,
          Transition_ID,
-         Replace_Current_Runs => True,
-         Timeout              => Duration'Last,
-         Receipt              => Receipt,
-         Result               => Result);
+         Duration'Last,
+         Token   => null,
+         Receipt => Receipt,
+         Result  => Result);
    end Publish_Test_Compaction;
 
    procedure Publish_Test_Adjacent_Merge

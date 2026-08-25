@@ -578,6 +578,36 @@ package Flyology.DB is
        and then not Flyology.Operations.Is_Terminal (Operation),
        Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
+   --  Start an exact complete-view compaction in an established operation.
+   --  Runs maps every persisted family to a caller-selected fresh output
+   --  identity; empty families produce no object. Compaction copies Runs and
+   --  retains no borrow of that map after return. It removes no stored
+   --  predecessor and selects no trigger, level, fanout, schedule, retry, or
+   --  garbage-collection policy. Its normal operation-owner borrows and the
+   --  moved Payload_Buffer remain retained until Finish or finalization drain.
+   --  Ownership, deadline, certainty, and exact same-identity reconciliation
+   --  are identical to Start_Flush.
+   --  @param Operation Fresh or consumed client-bound checkpoint operation
+   --  @param Runs Exact complete family/output-run identity map copied before return
+   --  @param Manifest_ID Stable immutable successor-manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Storage binding
+   procedure Start_Compaction
+     (Operation      : in out Flush_Operation;
+      Runs           : Checkpoint_Run_Identity_Array;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
    --  Consume a terminal composable Flush and restore its exact input token.
    --  Payload_Buffer may be any vacant handle from the original pool; no
    --  pointer to the initiating handle is retained. The restored token keeps
@@ -624,6 +654,32 @@ package Flyology.DB is
       Transition_ID : Identifier;
       Timeout       : Duration;
       Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Flush_Receipt;
+      Result        : out Outcome_Code);
+
+   --  Publish an exact complete live-state replacement. The caller supplies
+   --  one fresh output-run identity for every persisted family; an empty
+   --  family consumes no output object or identity. The operation preserves
+   --  any later committed suffix and every never-reuse ledger entry, confirms
+   --  complete immutable outputs before one conditional HEAD transition, and
+   --  retains superseded objects. It chooses no automatic compaction or
+   --  deletion policy. Client-backed execution waits on Start_Compaction;
+   --  memory/files use the equivalent backend-neutral publisher.
+   --  @param Item Open database whose complete live view is compacted
+   --  @param Runs Exact complete family/output-run identity map
+   --  @param Manifest_ID Stable immutable successor-manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @param Token Cooperative cancellation token, or null for no token
+   --  @param Receipt Self-contained publication and reconciliation authority
+   --  @param Result Terminal or presently unknown operation outcome
+   procedure Compact
+     (Item          : in out Database;
+      Runs          : Checkpoint_Run_Identity_Array;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token;
       Receipt       : out Flush_Receipt;
       Result        : out Outcome_Code);
 
@@ -1368,18 +1424,6 @@ private
       Timeout : Duration;
       Token   : access Flyology.Cancellation.Token := null;
       Result  : out Outcome_Code);
-   procedure Start_Test_Compaction
-     (Operation      : in out Flush_Operation;
-      Runs           : Checkpoint_Run_Identity_Array;
-      Manifest_ID    : Identifier;
-      Transition_ID  : Identifier;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
-      Timeout        : Duration)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
-       and then Payload_Buffer.Owner = Operation.Payload_Pool
-       and then not Flyology.Operations.Is_Active (Operation)
-       and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
    function Structural_ID (Tag : Byte; Number : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB;

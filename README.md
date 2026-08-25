@@ -31,12 +31,13 @@ storage alone. An
 additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a bounded completion
 set, moving one caller-sized unique-buffer token until typed `Finish`. Client-bound synchronous `Flush` is a literal
 owner-driven wait over that operation; memory/files retain the backend-neutral synchronous publisher. Neither path
-creates a helper task, and both preserve the same receipt and certainty mapping. The private operational
-compaction spine now drives both a synchronous publisher and a test-qualified caller-composable replacement through
-the same owner stack, receipt, and certainty machinery. It builds complete live-state runs and publishes a successor
-manifest naming only those fresh outputs. It retains superseded immutable objects and adds no public trigger,
-automatic scheduling, or physical-GC policy. The public compaction surface, run pruning, and broader family
-evolution remain separate review units.
+creates a helper task, and both preserve the same receipt and certainty mapping. Public `Start_Compaction` and
+blocking `Compact` drive the complete-view replacement through that same owner stack, receipt, and certainty
+machinery. They build one complete live-state run per nonempty family and publish a successor manifest naming only
+those fresh outputs. The caller supplies the exact complete family/output map and stable manifest/transition
+identities; the DB retains superseded immutable objects and selects no automatic trigger, level, fanout, schedule,
+retry, or physical-GC policy. Partial-run publication, run pruning, and broader family evolution remain separate
+review units.
 The LSM read-equivalence lane independently checks that a complete live-state replacement emits one Put for each
 live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
 later delta containing Puts, Deletes, or untouched keys. This closes concrete replacement-read semantics without

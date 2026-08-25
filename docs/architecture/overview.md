@@ -54,9 +54,11 @@ immutable manifest before conditional HEAD, and activates or reconciles through 
 fresh-root and post-checkpoint-suffix state before publication rather than inventing immutable run identities. The
 client-backed synchronous form waits on the same `Flush_Operation` state machine as the operation-last composable
 form.
-The private complete-replacement compaction planner/publisher is operational through both synchronous and
-test-qualified caller-composable drivers; its public trigger, automatic policy, snapshot/replica retention horizon,
-run pruning, and physical garbage collection are not.
+Public `Start_Compaction` and blocking `Compact` expose the complete-replacement planner/publisher through the same
+`Flush_Operation`, typed `Finish`, receipt, and exact-identity resolution as additive Flush. The caller supplies the
+complete family/output identity map and successor manifest/transition identities. The operation selects no automatic
+trigger, level, fanout, schedule, retry, snapshot/replica retention horizon, run pruning, or physical garbage
+collection policy.
 The separate LSM read-equivalence proof establishes that replacing a captured complete live view with one canonical
 Put-only run preserves every point read and that replaying any later Put/Delete delta remains equivalent. It does not
 claim a refinement from the operational merge loop to TLA+.
@@ -78,7 +80,7 @@ the validated manifest chain to anchor the latest batch transition and the exact
 suffix begins. Client-backed selected-run reads now execute as one owner-driven HEAD, generation-bound header range,
 and same-generation whole-object sequence before the same publisher runs; the synchronous private wrapper literally
 waits on that operation. Backend-neutral memory/files reads remain blocking without helper tasks. Automatic
-trigger/fanout/level policy and the public compaction surface remain later units.
+trigger/fanout/level policy and a public partial-run compaction surface remain later units.
 
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,
@@ -159,8 +161,10 @@ whose generation is not yet known first performs HeadObject and then binds the r
 DB-level `Flush_Operation` now composes conditional Put and whole-Get children directly in the caller's bounded
 completion set. Client-bound synchronous `Flush` lazily derives one buffer extent from persisted limits, atomically
 promotes its lifecycle lease, and waits over that same operation; memory/files retain the backend-neutral synchronous
-publisher. The private replacement constructor selects complete current-run replacement without changing the public
-additive `Start_Flush`; both modes share exact ownership, deadline, certainty, and reconciliation behavior.
+publisher. Public `Start_Compaction` selects complete current-run replacement while `Start_Flush` selects additive
+publication; both modes share exact ownership, deadline, certainty, and reconciliation behavior. Blocking `Compact`
+waits on that same complete-replacement operation for client storage and uses the equivalent backend-neutral
+publisher for memory/files.
 Typed `Finish` restores the exact moved token into any vacant same-pool handle; an abandoned operation drains nested
 transport work before releasing that token. CPU-heavy sorting, compression, and merging will
 use bounded native Ada tasks or an explicitly isolated process with detached owned input. The engine will not create

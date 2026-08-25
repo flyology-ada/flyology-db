@@ -1,5 +1,38 @@
 # Review record
 
+## Accepted public complete-view compaction candidate
+
+- Parent: caller-composable column-family append commit `afe1b21`.
+- Scope and API: expose established-operation `Start_Compaction` and blocking `Compact` directly in `Flyology.DB`, reusing
+  the established limited `Flush_Operation`, typed token-restoring `Finish`, `Flush_Receipt`, and `Resolve_Flush`.
+  The caller supplies the complete family/output map and stable manifest/transition identities. No result type,
+  public constant, default, trigger, run selector, level, fanout, schedule, retry, retention horizon, deletion rule,
+  helper task, or compatibility wrapper is introduced. Partial-run merge publication remains private.
+- Implementation and ownership: one mode-selected checkpoint driver now owns both blocking Flush and Compact.
+  Client storage waits on the same caller-driven operation used by `Start_Compaction`; memory/files use the existing
+  backend-neutral publisher with the identical complete-replacement plan. The run map is copied before return, the
+  exact scratch token remains operation-owned until typed Finish or finalization drain, and every normal owner borrow,
+  absolute deadline, cancellation, and same-identity reconciliation rule remains unchanged.
+- Certainty, bounds, and durability: all persisted and transient extents remain lazily derived with checked arithmetic
+  from `Database_Limits`, per-family limits, exact encoded shapes, and caller buffer capacity. Definite prepublication
+  failure publishes nothing. Any possibly admitted immutable-object or HEAD failure remains `Outcome_Unknown`; the
+  original receipt alone authorizes read-only exact-byte/transition resolution. Complete outputs and the immutable
+  successor are confirmed before conditional HEAD. Superseded objects remain stored and gain no deletion authority.
+- Verification: `./tests/scripts/test.sh` passes the local engine, Files crash/reopen, limited showcase, comparative
+  adapters, and authenticated client probe. The probe covers public composable lost-run-response reconciliation,
+  exact token restoration, blocking lost-HEAD-response reconciliation, and three-family cacheless reopen. The full
+  provider matrix passes all 18 RustFS, SeaweedFS, MinIO, Flyology memory/files/SQLite lanes. `./scripts/check-tla.sh`
+  passes every maintained lane, including 35-state complete replacement, 576-state read equivalence, and 3,145,728
+  partial-merge states with all TLAPS obligations and negative probes. `./scripts/prove.sh` proves 1,091/1,091
+  warning-strict selected checks; repository and diff gates are green. GNATdoc is unavailable in the installed
+  toolchain, so no extracted-site build is claimed.
+- Findings cycle: the first API/ownership sweep fixed one P1 documentation ambiguity that incorrectly implied no
+  caller-owned state was retained after Start; the contract now distinguishes the copied run map from the moved token
+  and normal operation-owner borrows. The constants sweep removed an unauthorized new public null-token default and
+  replaced an unverified fixture-count explanation with the exact prior-sixteen-plus-four identity-role derivation.
+  The final correctness, crash-safety, concurrency, ownership, bounds, format, storage, certainty, API, test,
+  documentation, and unnecessary-surface sweep has no actionable P0/P1/P2 finding.
+
 ## Accepted caller-composable column-family append candidate
 
 - Parent: authenticated cross-provider family-append qualification `ac1dcd0`.

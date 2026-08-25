@@ -115,13 +115,13 @@ procedure Flyology.DB.Client_Probe is
    Bucket_Result          : Buckets.Create_Outcome;
 
    --  The remote fixture starts with one family, then appends two independently
-   --  bounded families after its first checkpoint. Eight manifest-history slots
-   --  admit exactly root, first checkpoint, two registry appends, replacement,
-   --  second and third additive checkpoints, and the three-run merge successor.
+   --  bounded families after its first checkpoint. Nine manifest-history slots
+   --  admit exactly root, first checkpoint, two registry appends, two complete
+   --  replacements, second and third additive checkpoints, and one merge.
    --  These are persisted fixture authority, not API defaults.
    Limits                   : constant Database_Limits :=
      (Maximum_Column_Families           => 3,
-      Maximum_Manifest_History          => 8,
+      Maximum_Manifest_History          => 9,
       Maximum_Batch_History             => 4,
       Maximum_Transactions_Per_Batch    => 1,
       Maximum_Mutations_Per_Transaction => 4,
@@ -131,10 +131,10 @@ procedure Flyology.DB.Client_Probe is
       Maximum_Batch_Payload_Bytes       => 2_048,
       Maximum_Live_State_Bytes          => 4_096,
       Maximum_Total_L0_Runs             => 4,
-      --  Sixteen exact identity slots cover the five fixture publications
-      --  and their retained run/transaction authority; this is test corpus
-      --  geometry, not a DB or production default.
-      Maximum_Checkpoint_Identities     => 16,
+      --  Twenty slots extend the prior sixteen-role fixture with the final
+      --  compaction's two output, manifest, and transition identities. This
+      --  is exact corpus geometry, not a DB or production default.
+      Maximum_Checkpoint_Identities     => 20,
       --  Maintained serializable remote-fixture counts, not DB defaults.
       Maximum_Point_Reads_Per_Transaction => 8,
       Maximum_Scan_Ranges_Per_Transaction => 4);
@@ -177,9 +177,11 @@ procedure Flyology.DB.Client_Probe is
    --  to the complete replacement, 16 to the later cross-family transaction,
    --  17/18/19/20 to its two runs/checkpoint/transition, 21 to a third
    --  transaction, 22/23/24 to its family-1 run/checkpoint/transition, and
-   --  25/26/27 to the selected three-run merge. IDs 28 through 32 are unused
-   --  run-map placeholders for unchanged/empty families; they never name attempted objects. These
-   --  values isolate fixture roles and are not ID-generation policy or tags.
+   --  25/26/27 to the selected three-run merge, and 28/29/30/31 to the final
+   --  two-run complete replacement and its manifest/transition. IDs 32 through
+   --  37 are unused run-map placeholders for unchanged or empty families;
+   --  they never name attempted objects. These values isolate fixture roles
+   --  and are not ID-generation policy or tags.
    Probe_Database_ID        : constant Database_Identifier := Database_Identifier (Numbered_ID (1));
    Root_Manifest_ID         : constant Identifier := Numbered_ID (2);
    Root_Transition_ID       : constant Identifier := Numbered_ID (3);
@@ -209,11 +211,16 @@ procedure Flyology.DB.Client_Probe is
    Merged_Run_ID            : constant Identifier := Numbered_ID (25);
    Merged_Manifest_ID       : constant Identifier := Numbered_ID (26);
    Merged_Transition_ID     : constant Identifier := Numbered_ID (27);
-   Empty_Later_Metadata_Run_ID : constant Identifier := Numbered_ID (28);
-   Unchanged_Third_Audit_Run_ID : constant Identifier := Numbered_ID (29);
-   Unchanged_Third_Metadata_Run_ID : constant Identifier := Numbered_ID (30);
-   Empty_Compaction_Audit_Run_ID : constant Identifier := Numbered_ID (31);
-   Empty_Compaction_Metadata_Run_ID : constant Identifier := Numbered_ID (32);
+   Final_Primary_Run_ID      : constant Identifier := Numbered_ID (28);
+   Final_Audit_Run_ID        : constant Identifier := Numbered_ID (29);
+   Final_Manifest_ID         : constant Identifier := Numbered_ID (30);
+   Final_Transition_ID       : constant Identifier := Numbered_ID (31);
+   Empty_Later_Metadata_Run_ID : constant Identifier := Numbered_ID (32);
+   Unchanged_Third_Audit_Run_ID : constant Identifier := Numbered_ID (33);
+   Unchanged_Third_Metadata_Run_ID : constant Identifier := Numbered_ID (34);
+   Empty_Compaction_Audit_Run_ID : constant Identifier := Numbered_ID (35);
+   Empty_Compaction_Metadata_Run_ID : constant Identifier := Numbered_ID (36);
+   Empty_Final_Metadata_Run_ID : constant Identifier := Numbered_ID (37);
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag          : constant Interfaces.Unsigned_64 := 16#F105#;
@@ -231,6 +238,10 @@ procedure Flyology.DB.Client_Probe is
      [Configure_Checkpoint_Run (1, Third_Run_ID),
       Configure_Checkpoint_Run (2, Unchanged_Third_Audit_Run_ID),
       Configure_Checkpoint_Run (3, Unchanged_Third_Metadata_Run_ID)];
+   Final_Compaction_Runs    : constant Checkpoint_Run_Identity_Array :=
+     [Configure_Checkpoint_Run (1, Final_Primary_Run_ID),
+      Configure_Checkpoint_Run (2, Final_Audit_Run_ID),
+      Configure_Checkpoint_Run (3, Empty_Final_Metadata_Run_ID)];
    Key_Data                 : constant Byte_Array := Bytes ("client-key");
    Value_Data               : constant Byte_Array := Bytes ("client-value");
    Later_Value_Data         : constant Byte_Array := Bytes ("client-value-later");
@@ -663,14 +674,14 @@ begin
    Open_Column_Family (Created, Metadata_Family_Config.ID, Metadata_Family, Result);
    Expect (Result, Success, "blocking appended family open failed");
 
-   --  The private replacement constructor selects only the already-frozen
-   --  complete-run algorithm. It reuses the public operation owner stack,
-   --  exact token move, typed Finish, certainty mapping, and one deadline;
-   --  it grants no public trigger or automatic compaction policy. Losing the
+   --  Public Start_Compaction selects only the already-frozen complete-run
+   --  algorithm. It reuses the Flush operation owner stack, exact token move,
+   --  typed Finish, certainty mapping, and one deadline; it grants no
+   --  automatic trigger, run-selection, or garbage-collection policy. Losing the
    --  run response after entry requires exact same-identity whole-Get
    --  reconciliation before the original operation can continue.
    Context.Test_Control.Arm (After_Run_Put, Unknown_After_Entry, 1);
-   Start_Test_Compaction
+   Start_Compaction
      (Flush_Work,
       Compaction_Runs,
       Compaction_Manifest_ID,
@@ -772,6 +783,31 @@ begin
    then
       raise Program_Error with "client-backed three-run merge receipt lost exact authority";
    end if;
+
+   --  The public blocking Compact is a literal wait over Start_Compaction.
+   --  Losing its HEAD response remains unknown until Resolve_Flush observes
+   --  the exact final replacement; neither call retries or changes identity.
+   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+   Compact
+     (Created,
+      Final_Compaction_Runs,
+      Final_Manifest_ID,
+      Final_Transition_ID,
+      Test_Operation_Timeout,
+      Token   => null,
+      Receipt => Flush_Info,
+      Result  => Result);
+   Expect (Result, Outcome_Unknown, "blocking compaction lost HEAD uncertainty");
+   if not Flush_Info.Replaces_Current_Runs
+     or else Flush_Receipt_Run_Total (Flush_Info) /= 3
+     or else Flush_Receipt_Manifest_ID (Flush_Info) /= Final_Manifest_ID
+     or else Flush_Receipt_Transition_ID (Flush_Info) /= Final_Transition_ID
+   then
+      raise Program_Error with "blocking compaction receipt lost exact authority";
+   end if;
+   Resolve_Flush (Created, Flush_Info, Test_Operation_Timeout, Result => Result);
+   Expect (Result, Success, "blocking compaction exact resolution failed");
+
    Flyology.Buffers.Release (Flush_Buffer);
    Close (Created, Close_Result);
    Expect (Close_Result, Success, "client-backed close failed");

@@ -9,9 +9,9 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local/client paths and six-provider matrix operational; broader acceptance pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Limited owned sync/composable spine and remote matrix operational; broader acceptance pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
-| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, private sync/composable replacement, and manifest-admitted version-preserving merge kernel operational; public compaction pending |
+| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and public complete-view replacement operational; partial compaction and streaming scans pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
-| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Private sync/composable replacement operational and deletion safety proved; public API/collector policy pending |
+| 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete replacement operational and deletion safety proved; automatic/partial/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
 | 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Private one-shot refresh operational; public/composable replica and promotion policy pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
@@ -94,12 +94,12 @@ replacement, additive per-family suffix runs, and cacheless oldest-to-newest rec
 strictly later batch suffix. Recovery restores live
 values, last-write sequences, and the exact never-reused checkpoint identity ledger from persisted authority.
 The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token through the same certainty contract
-without a helper task. A private operational path now builds one complete live-state run per nonempty family,
-publishes a successor manifest naming only those fresh runs, and reconciles unknown immutable-object responses by
-rebuilding the exact replacement plan. A private test-qualified constructor drives that same algorithm through the
-caller-owned composable operation and typed token-restoring `Finish`. The public compaction surface,
-streaming/physical scans, run pruning, retention/GC policy, and provider qualification remain later focused units, so
-Milestone 4 remains incomplete.
+without a helper task. Public `Start_Compaction` now builds one complete live-state run per nonempty family, publishes
+a successor manifest naming only those caller-identified fresh runs, and reconciles unknown immutable-object
+responses by rebuilding the exact replacement plan. Blocking `Compact` waits on that operation for client storage
+and drives the equivalent backend-neutral publisher for memory/files. Streaming/physical scans, public partial-run
+compaction, automatic selection, run pruning, and retention/GC policy remain later focused units, so Milestone 4
+remains incomplete.
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
 pins, lagging-replica pins, required predecessor reachability, and unresolved publication attempts each retain exact
@@ -115,15 +115,15 @@ retention pins, and explicit promotion remain pending Milestone 8 decisions.
 
 The LSM read-equivalence lane now exhausts all two-key/two-value captured views and later mutation maps, validates a
 concrete delete/put execution witness, rejects a replacement that omits one live key, and proves the arbitrary-key/
-value reconstruction and later-delta equations with TLAPS. This strengthens the private replacement spine without
-choosing a public trigger, automatic schedule, run-level policy, or storage budget.
+value reconstruction and later-delta equations with TLAPS. This strengthens the public complete-view replacement
+spine without choosing an automatic trigger, schedule, run-level policy, or storage budget.
 
 The policy-neutral partial-compaction lane now places two selected consecutive runs between retained older and newer
 runs. Its finite model exhausts every two-key/two-value mutation map, validates an older/selected/newer execution
 witness, and rejects a merger that drops a selected tombstone. Its arbitrary-key/value TLAPS kernel proves that the
 newest selected mutation per key exactly replaces the pair while retained surrounding order remains unchanged.
-Automatic run selection, trigger/fanout/level policy, and a public compaction surface remain separate Milestone 4
-and 6 work. The private runtime now supplies the narrower
+Automatic run selection, trigger/fanout/level policy, and a public partial-run compaction surface remain separate
+Milestone 4 and 6 work. The private runtime now supplies the narrower
 snapshot-safe merge iteration kernel: two validated ordered nonoverlapping SSTs become one fresh-identity SST while
 every version and tombstone remains. Exact output extents are checked sums of the inputs. The manifest-aware entry
 point requires the two exact SST descriptors to be adjacent in one authenticated family and rejects an output identity
