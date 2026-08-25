@@ -4,6 +4,9 @@ description: Agent instructions and skills for Flyology.DB.
 type: hybrid
 targets: [codex, claude]
 includes: auto
+compilation:
+  exclude:
+    - ".deps/**"
 dependencies:
   apm:
     - path: ./agent-packages/repository
