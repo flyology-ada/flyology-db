@@ -142,9 +142,13 @@ task with bounded count and byte admission and generation-stamped completion slo
 transaction. `Commit` is an uncoupled singleton. `Commit_Group` intentionally gives at most eight transactions one
 absolute deadline, immutable batch, and HEAD transition. Queue cancellation and timeout apply before atomic
 admission. Once publication starts, every admitted caller waits for terminal classification under that same absolute
-storage deadline. The current authenticated client binding is the first composable-core step: its synchronous
-conditional Put and whole/range Get calls are literal waits over Object Storage scoped state machines, with one moved
-unique-buffer token per body operation, one absolute DB deadline, no helper task, and no automatic retry. A range
+storage deadline. The current authenticated client binding is the first composable-core step: Object Storage's
+`Client.Objects` provider owns the synchronous calls, limited constructors, reusable operation-last procedures,
+operation types, and typed `Finish` contracts for conditional Put and whole/range Get. The synchronous forms are
+literal waits over those same state machines, with one moved unique-buffer token per body operation, one absolute DB
+deadline, no helper task, and no automatic retry. "Scoped" remains the lifetime and ownership discipline expressed
+by limited operations, the caller's completion set, cancellation/drain behavior, and typed `Finish`; it is not a
+parallel provider namespace. A range
 whose generation is not yet known first performs HeadObject and then binds the range read to that exact ETag. The
 DB-level `Flush_Operation` now composes conditional Put and whole-Get children directly in the caller's bounded
 completion set. Client-bound synchronous `Flush` lazily derives one buffer extent from persisted limits, atomically

@@ -6,21 +6,26 @@ substitute for the DB gate.
 
 | Capability | Memory | Files | SQLite | Authenticated S3 | Flyology.DB use |
 | --- | --- | --- | --- | --- | --- |
-| Complete immutable put | Implemented upstream | Implemented upstream | Implemented upstream | Buffer-owned scoped Put | Batch, SST, and manifest objects |
+| Complete immutable put | Implemented upstream | Implemented upstream | Implemented upstream | Buffer-owned provider operation | Batch, SST, and manifest objects |
 | Put if absent | Atomic protected publication | Atomic filesystem publication gate | Atomic catalog transaction | Typed admission/publication result | Immutable-object creation |
 | Replace expected generation | Atomic opaque-generation match | Atomic opaque-generation match | Atomic catalog transaction | Typed conditional Put result | Exact `meta/HEAD` transition |
 | Exact metadata/generation | Present | Present | Present | Opaque ETag/version retained | Same-response generation authority |
-| Generation-bound whole/range read | Present | Present | Present | Scoped whole/range Get and Head | Reconciliation and selected SST reads |
+| Generation-bound whole/range read | Present | Present | Present | Provider-owned whole/range Get and Head | Reconciliation and selected SST reads |
 | Explicit unknown publication | Conservatively mapped | Conservatively mapped | Conservatively mapped | `Outcome_Unknown` is typed | Same-identity read-only reconciliation |
-| Conditional delete | Batch ETag condition only | Batch ETag condition only | Batch ETag condition only | Typed scoped Delete | Later GC qualification only |
-| Bounded listing | Present | Present | Present | Scoped bounded page operations | Discovery/GC only, never visibility |
+| Conditional delete | Batch ETag condition only | Batch ETag condition only | Batch ETag condition only | Typed provider operation | Later GC qualification only |
+| Bounded listing | Present | Present | Present | Provider-owned bounded page operations | Discovery/GC only, never visibility |
 
 The current DB campaign pins the ignored clean Object Storage build clone at
-`ea8c92c84fbd53b3c82e5004d7133c5b47633f3a`. Its buffer-owned synchronous conditional Put and whole/range Get calls
-are literal waits over the same caller-owned `Client.Scoped` operations used by Flyology.DB's additive
+`3455cde3158fd589480281beac39bea51305bb5e`. Its buffer-owned synchronous conditional Put and whole/range Get calls
+are literal waits over the same caller-owned `Client.Objects` operations used by Flyology.DB's additive
 `Flush_Operation`. One moved `Unique_Buffer` token, typed terminal `Finish`, one absolute deadline, and the same
 publication/admission result therefore govern both blocking and composable DB calls. Neither layer creates a helper
 task, retains a borrowed request body, or automatically retries a mutation.
+
+The provider package owns the whole operation vocabulary: synchronous overload, limited constructor, reusable
+operation-last initiation, operation type, and typed `Finish`. Scoped lifetime remains an ownership property of that
+operation and its caller-owned completion set. It is not encoded in a second package tree, which would obscure the
+shared state machine and create documentation, testing, and maintenance drift.
 
 Flyology.DB never infers definite nonpublication from an exception or incomplete response after a mutation may have
 entered the provider. An inconclusive immutable-object Put remains `Outcome_Unknown` until a generation-bound whole
@@ -30,6 +35,6 @@ or a conclusive successor. Listing cannot establish either result.
 
 The maintained authenticated DB probe exercises create, commit, synchronous and composable Flush, complete-run
 replacement, caller-selected three-run merge, exact-token restoration, uncertainty reconciliation, close, and
-cacheless reopen. Its Flyology-memory lane is green at the current pin. Repeated RustFS, SeaweedFS, MinIO, Flyology
-files, and Flyology SQLite qualification remains pending the merged/indexed HTTP stale-reused-H1 correction; no DB or
-Object Storage retry/certainty workaround is accepted in its place.
+cacheless reopen. The published no-pin Object Storage handoff is qualified across RustFS, SeaweedFS, MinIO, Flyology
+memory/files, and Flyology SQLite. The guarded HTTP stale-reused-H1 safe-read correction is part of the indexed
+dependency closure; no DB or Object Storage retry/certainty workaround is present.

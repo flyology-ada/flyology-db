@@ -26,9 +26,10 @@ package Flyology.DB.Object_Storage is
    --  Checksum_Mode are copied exactly; the DB adds no endpoint, wire,
    --  credential, or retry policy.
    --  Conditional writes and whole/range reads use the buffer-owned Object
-   --  Storage calls, which wait on the same caller-composable Scoped state
-   --  machines and preserve their publication certainty. Rebinding is
-   --  rejected.
+   --  Storage calls, which wait on the same caller-composable provider-owned
+   --  state machines and preserve their publication certainty. Scoped lifetime
+   --  is expressed by operation ownership, not by a parallel package. Rebinding
+   --  is rejected.
    --  @param Item Context to bind exactly once
    --  @param Client Configured caller-owned HTTP client
    --  @param Origin Origin value matching Client configuration

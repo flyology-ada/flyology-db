@@ -5,17 +5,18 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `ea8c92c84fbd53b3c82e5004d7133c5b47633f3a`
-- Commit subject: `Problem: ListObjects v1 cannot compose legacy object discovery`
+- Commit: `3455cde3158fd589480281beac39bea51305bb5e`
+- Published constraint: `flyology_object_storage = "=0.1.0-dev"`
+- Flyology Alire index: `8e99188eb914e9d67243785f5427b494c041ac38`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
-  `a65f24f473bd771356a4fcb355fc10f961202534`
-- Observed: 2026-08-24, America/Vancouver
+  `b5cd966decfc81132b46fdc97f9cbbfa5bcdf86c`
+- Observed: 2026-08-25, America/Vancouver
 
-The dependency is local-only. Before a deterministic campaign, update the clean clone by fast-forward from its local
-origin, verify it is clean, and replace this record with the exact commit used. Do not update it during a running
-test, proof, or benchmark campaign.
+The published dependency is materialized through the local development clone. Before a deterministic campaign,
+update that clean clone by fast-forward from its local origin, verify it is clean, and replace this record with the
+exact commit used. Do not update it during a running test, proof, or benchmark campaign.
 
 Flyology.DB names `Flyology.Cancellation` and the native task model directly, so its root manifest declares
 `flyology` directly instead of relying on transitive visibility. This campaign resolves indexed Flyology 0.1.1 plus
@@ -24,11 +25,14 @@ the exact unpinned indexed Flyology.HTTP/QUIC revisions above. The root constrai
 deliberately after the Flyology runtime preparer and this repository's gates qualify the newer compiler.
 
 The dependency includes the reviewed backend-neutral conditional publication contract, synchronous conditional Put
-and whole Get operations, caller-owned `Client.Scoped` complete and conditional Put plus generation-bound whole/range
+and whole Get operations, caller-owned `Client.Objects` complete and conditional Put plus generation-bound whole/range
 Get, Head, Delete, CreateMultipartUpload, UploadPart preparation, CompleteMultipartUpload, and AbortMultipartUpload
 operations, bounded ListParts recovery reads, bounded ListMultipartUploads discovery reads, CopyObject, retained
 SQLite generations across ordinary and multipart publication, composable DeleteObjects, and generation-aware object
-mutation/read coverage. The buffer-owned synchronous calls are waits over those same scoped state machines. Both
+mutation/read coverage. The buffer-owned synchronous calls are waits over those same provider-owned state machines.
+The provider package colocates the synchronous overload, limited constructor, reusable operation-last procedure,
+operation type, and typed `Finish`; scoped lifetime is expressed by the operation's ownership and caller completion
+set rather than a parallel namespace. Both
 multipart listing operations own
 their prepared request, retain response bytes only to the XML decoder's maintained document bound, validate the
 successful response's exact request echoes including Requester Pays admission, and preserve typed HTTP terminal
@@ -46,7 +50,7 @@ embedded-error ambiguity remains unknown and requires generation-bound destinati
 DeleteObjects owns its exact serialized one-shot request and retains every per-entry Deleted/Error result only after a
 validated HTTP 200 response. Definite non-admission is typed; any admitted or inconclusive failure remains
 `Batch_Outcome_Unknown` and requires per-generation read-only reconciliation before retry. Its synchronous overload
-is a literal wait on the same scoped state machine, with no helper task, replay, or alternate protocol engine.
+is a literal wait on the same provider-owned state machine, with no helper task, replay, or alternate protocol engine.
 General complete PutObject accepts the full modeled non-body parameter record and moves one acquired payload token
 only after validation and signing. Typed `Finish` restores that exact token; the buffer-owned synchronous overload is
 a literal wait on the same operation. Successful checksum and RequestCharged fields are bound to the exact prepared

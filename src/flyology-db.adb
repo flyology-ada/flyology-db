@@ -9,7 +9,6 @@ with Flyology.DB.Head_Policy;
 with Flyology.DB.LSM_Runtime_Formats;
 with Flyology.DB.Manifest_Formats;
 with Flyology.Object_Storage;
-with Flyology.Object_Storage.Client.Objects;
 with Flyology.Object_Storage.S3.SigV4;
 with GNAT.SHA256;
 
@@ -17,9 +16,9 @@ package body Flyology.DB is
 
    package OS renames Flyology.Object_Storage;
    package Backends renames Flyology.Object_Storage.Backends;
+   package Client_Common renames Flyology.Object_Storage.Client;
    package Client_Low_Level renames Flyology.Object_Storage.Client.Low_Level;
    package Client_Objects renames Flyology.Object_Storage.Client.Objects;
-   package Client_Scoped renames Flyology.Object_Storage.Client.Scoped;
    package Batches renames Flyology.DB.Batch_Formats;
    package Heads renames Flyology.DB.Head_Policy;
    package LSM_Runtime renames Flyology.DB.LSM_Runtime_Formats;
@@ -40,12 +39,12 @@ package body Flyology.DB is
    use type Client_Low_Level.Head_Bucket_Outcome_Kind;
    use type Client_Low_Level.Head_Object_Outcome_Kind;
    use type Client_Low_Level.Put_Object_Outcome_Kind;
-   use type Client_Scoped.Conditional_Put_Result_Kind;
-   use type Client_Scoped.Failure_Reason;
-   use type Client_Scoped.Head_Result_Kind;
-   use type Client_Scoped.Publication_Disposition;
-   use type Client_Scoped.Range_Get_Result_Kind;
-   use type Client_Scoped.Whole_Get_Result_Kind;
+   use type Client_Objects.Conditional_Put_Result_Kind;
+   use type Client_Common.Failure_Reason;
+   use type Client_Objects.Head_Result_Kind;
+   use type Client_Common.Publication_Disposition;
+   use type Client_Objects.Range_Get_Result_Kind;
+   use type Client_Objects.Whole_Get_Result_Kind;
    use type Flyology.DB.Formats.Decode_Status;
    use type Heads.Identifier;
    use type Manifests.Decode_Status;
@@ -1041,16 +1040,16 @@ package body Flyology.DB is
             end if;
       end Bucket_Available;
 
-      procedure Classify_Read_Failure (Failure : Client_Scoped.Failure_Reason; Result : out Read_Outcome) is
+      procedure Classify_Read_Failure (Failure : Client_Common.Failure_Reason; Result : out Read_Outcome) is
       begin
          case Failure is
-            when Client_Scoped.Cancelled          =>
+            when Client_Common.Cancelled          =>
                Result := Read_Cancelled;
 
-            when Client_Scoped.Timed_Out          =>
+            when Client_Common.Timed_Out          =>
                Result := Read_Timed_Out;
 
-            when Client_Scoped.Response_Too_Large =>
+            when Client_Common.Response_Too_Large =>
                Result := Read_Capacity_Exceeded;
 
             when others                           =>
@@ -1118,7 +1117,7 @@ package body Flyology.DB is
                Parameters.Request_Payer := Storage.Client_Request_Payer;
                Parameters.Checksum_Mode := Storage.Client_Checksum_Mode;
                declare
-                  Head : constant Client_Scoped.Head_Result :=
+                  Head : constant Client_Objects.Head_Result :=
                     Client_Objects.Head_Object
                       (Storage.HTTP_Client.all,
                        Storage.Client_Origin,
@@ -1131,7 +1130,7 @@ package body Flyology.DB is
                        Remaining_Time (Deadline),
                        Token);
                begin
-                  if Head.Kind = Client_Scoped.Head_Exchange_Failed then
+                  if Head.Kind = Client_Objects.Head_Exchange_Failed then
                      Classify_Read_Failure (Head.Failure, Result);
                      return;
                   elsif Head.Response.Kind = Client_Low_Level.Head_Object_Rejected then
@@ -1163,7 +1162,7 @@ package body Flyology.DB is
 
          declare
             --  One exact destination token is the entire retained-body
-            --  requirement of a synchronous wait over the scoped Get child.
+            --  requirement of a synchronous wait over the provider-owned Get child.
             --  Its block derives from the authenticated/caller-selected DB
             --  read bound; capacity one is operation geometry, not DB policy.
             Pool        :
@@ -1174,7 +1173,7 @@ package body Flyology.DB is
             Flyology.Buffers.Acquire (Destination);
             if Requested.Kind = OS.Whole_Range then
                declare
-                  Outcome : constant Client_Scoped.Whole_Get_Result :=
+                  Outcome : constant Client_Objects.Whole_Get_Result :=
                     Client_Objects.Get_Whole
                       (Storage.HTTP_Client.all,
                        Storage.Client_Origin,
@@ -1192,7 +1191,7 @@ package body Flyology.DB is
                        Remaining_Time (Deadline),
                        Token);
                begin
-                  if Outcome.Kind = Client_Scoped.Whole_Get_Exchange_Failed then
+                  if Outcome.Kind = Client_Objects.Whole_Get_Exchange_Failed then
                      Classify_Read_Failure (Outcome.Failure, Result);
                      return;
                   end if;
@@ -1215,7 +1214,7 @@ package body Flyology.DB is
                end;
             else
                declare
-                  Outcome : constant Client_Scoped.Range_Get_Result :=
+                  Outcome : constant Client_Objects.Range_Get_Result :=
                     Client_Objects.Get_Range
                       (Storage.HTTP_Client.all,
                        Storage.Client_Origin,
@@ -1234,7 +1233,7 @@ package body Flyology.DB is
                        Remaining_Time (Deadline),
                        Token);
                begin
-                  if Outcome.Kind = Client_Scoped.Range_Get_Exchange_Failed then
+                  if Outcome.Kind = Client_Objects.Range_Get_Exchange_Failed then
                      Classify_Read_Failure (Outcome.Failure, Result);
                      return;
                   end if;
@@ -1508,7 +1507,7 @@ package body Flyology.DB is
             Flyology.Buffers.With_Writable_Data (Payload_Buffer, Fill'Access);
             declare
                Payload_SHA256 : constant String := Flyology.Object_Storage.S3.SigV4.SHA256_Hex (Payload_Text);
-               Outcome        : Client_Scoped.Conditional_Put_Result;
+               Outcome        : Client_Objects.Conditional_Put_Result;
             begin
                --  Test accounting starts only after all local validation,
                --  allocation, and hashing have succeeded, immediately before
@@ -1553,8 +1552,8 @@ package body Flyology.DB is
                        Token);
                end if;
                case Outcome.Disposition is
-                  when Client_Scoped.Published                    =>
-                     if Outcome.Kind /= Client_Scoped.Put_Response_Available
+                  when Client_Common.Published                    =>
+                     if Outcome.Kind /= Client_Objects.Put_Response_Available
                        or else Outcome.Response.Kind /= Client_Low_Level.Object_Put
                      then
                         Result := Put_Outcome_Unknown;
@@ -1568,21 +1567,21 @@ package body Flyology.DB is
                         end;
                      end if;
 
-                  when Client_Scoped.Precondition_Failed          =>
+                  when Client_Common.Precondition_Failed          =>
                      Result := Put_Precondition_Failed;
 
-                  when Client_Scoped.Cancelled_Before_Publication =>
+                  when Client_Common.Cancelled_Before_Publication =>
                      Result := Put_Cancelled;
 
-                  when Client_Scoped.Definitely_Not_Published     =>
+                  when Client_Common.Definitely_Not_Published     =>
                      Result :=
-                       (if Outcome.Failure = Client_Scoped.Cancelled
+                       (if Outcome.Failure = Client_Common.Cancelled
                         then Put_Cancelled
-                        elsif Outcome.Failure = Client_Scoped.Timed_Out
+                        elsif Outcome.Failure = Client_Common.Timed_Out
                         then Put_Timed_Out
                         else Put_Definite_Failure);
 
-                  when Client_Scoped.Outcome_Unknown              =>
+                  when Client_Common.Outcome_Unknown              =>
                      Result := Put_Outcome_Unknown;
                end case;
             end;
@@ -2131,15 +2130,15 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Flush_Driver_State, Flush_Driver_State_Access);
    procedure Free_Whole_Get_Operation is new
      Ada.Unchecked_Deallocation
-       (Flyology.Object_Storage.Client.Scoped.Whole_Get_Operation,
+       (Flyology.Object_Storage.Client.Objects.Whole_Get_Operation,
         Whole_Get_Operation_Access);
    procedure Free_Range_Get_Operation is new
      Ada.Unchecked_Deallocation
-       (Flyology.Object_Storage.Client.Scoped.Range_Get_Operation,
+       (Flyology.Object_Storage.Client.Objects.Range_Get_Operation,
         Range_Get_Operation_Access);
    procedure Free_Head_Operation is new
      Ada.Unchecked_Deallocation
-       (Flyology.Object_Storage.Client.Scoped.Head_Operation,
+       (Flyology.Object_Storage.Client.Objects.Head_Operation,
         Head_Operation_Access);
    type Seen_Transaction_Array is array (Positive range <>) of Transaction_Identifier;
    type Used_Batch_ID_Array is array (Positive range <>) of Identifier;
@@ -11686,9 +11685,8 @@ package body Flyology.DB is
          Is_Manifest => State.Current_Kind = Manifest_Object,
          Is_Run      => State.Current_Kind = Run_Object);
       if State.Current_Kind = Head_Object then
-         Client_Scoped.Start_Put_If_Matches
-           (Item.Put_Child,
-            Item.HTTP,
+         Client_Objects.Put_If_Matches
+           (Item.HTTP,
             Item.Storage.Client_Origin,
             UStrings.To_String (Item.Storage.Bucket),
             Current_Flush_Key (Item),
@@ -11701,11 +11699,11 @@ package body Flyology.DB is
             Item.Storage.Client_Style,
             UStrings.To_String (Item.Storage.Client_Content_Type),
             UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
-            Item.Cancellation);
+            Item.Cancellation,
+            Item.Put_Child);
       else
-         Client_Scoped.Start_Put_If_Absent
-           (Item.Put_Child,
-            Item.HTTP,
+         Client_Objects.Put_If_Absent
+           (Item.HTTP,
             Item.Storage.Client_Origin,
             UStrings.To_String (Item.Storage.Bucket),
             Current_Flush_Key (Item),
@@ -11717,7 +11715,8 @@ package body Flyology.DB is
             Item.Storage.Client_Style,
             UStrings.To_String (Item.Storage.Client_Content_Type),
             UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
-            Item.Cancellation);
+            Item.Cancellation,
+            Item.Put_Child);
       end if;
       State.Phase := (if State.Current_Kind = Head_Object then Putting_Head else Putting_Immutable);
       Flyology.Operations.Continue_After (Item, Item.Put_Child);
@@ -11778,9 +11777,8 @@ package body Flyology.DB is
       elsif Item.Read_Child = null then
          raise Program_Error with "Flush reconciliation child was not prepared";
       end if;
-      Client_Scoped.Start_Get_Whole
-        (Item.Read_Child.all,
-         Item.HTTP,
+      Client_Objects.Get_Whole
+        (Item.HTTP,
          Item.Storage.Client_Origin,
          UStrings.To_String (Item.Storage.Bucket),
          Current_Flush_Key (Item),
@@ -11792,7 +11790,8 @@ package body Flyology.DB is
          Expected_Bucket_Owner => UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
          Request_Payer         => UStrings.To_String (Item.Storage.Client_Request_Payer),
          Checksum_Mode         => Item.Storage.Client_Checksum_Mode,
-         Token                 => Item.Cancellation);
+         Token                 => Item.Cancellation,
+         Operation             => Item.Read_Child.all);
       State.Phase := Reading_Immutable;
       Flyology.Operations.Continue_After (Item, Item.Read_Child.all);
    exception
@@ -11813,12 +11812,12 @@ package body Flyology.DB is
    end Advance_After_Immutable;
 
    procedure Complete_Immutable_Read (Item : in out Flush_Operation) is
-      Outcome : Client_Scoped.Whole_Get_Result;
+      Outcome : Client_Objects.Whole_Get_Result;
       Image   : constant Shared_Image_Access := Current_Flush_Image (Item.Driver_State.all);
       Exact   : Boolean := False;
    begin
       begin
-         Client_Scoped.Finish (Item.Read_Child.all, Outcome);
+         Client_Objects.Finish (Item.Read_Child.all, Outcome);
       exception
          when others =>
             if Flyology.Operations.Id (Item.Read_Child.all) /= 0
@@ -11832,7 +11831,7 @@ package body Flyology.DB is
             return;
       end;
       Flyology.Operations.Release (Item.Read_Child.all);
-      if Outcome.Kind = Client_Scoped.Whole_Get_Response_Available
+      if Outcome.Kind = Client_Objects.Whole_Get_Response_Available
         and then Outcome.Response.Kind = Client_Low_Level.Object_Opened
       then
          --  S3 GetObject whole-response compatibility: a successful complete
@@ -11864,7 +11863,7 @@ package body Flyology.DB is
 
    procedure Complete_Head_Put
      (Item    : in out Flush_Operation;
-      Outcome : Client_Scoped.Conditional_Put_Result)
+      Outcome : Client_Objects.Conditional_Put_Result)
    is
       Generation : Generation_Value;
       Valid      : Boolean := False;
@@ -11872,8 +11871,8 @@ package body Flyology.DB is
       Guard      : Checkpoint_Guard;
    begin
       case Outcome.Disposition is
-         when Client_Scoped.Published =>
-            if Outcome.Kind = Client_Scoped.Put_Response_Available
+         when Client_Common.Published =>
+            if Outcome.Kind = Client_Objects.Put_Response_Available
               and then Outcome.Response.Kind = Client_Low_Level.Object_Put
             then
                Set_Quoted_Generation
@@ -11900,24 +11899,24 @@ package body Flyology.DB is
             end if;
             Complete_Composable_Flush (Item, Result);
 
-         when Client_Scoped.Precondition_Failed =>
+         when Client_Common.Precondition_Failed =>
             Item.Driver_State.Engine.Gate.Fence;
             Item.Final_Receipt.Phase := Flush_Resolved;
             Complete_Composable_Flush (Item, Stale_Writer);
 
-         when Client_Scoped.Cancelled_Before_Publication =>
+         when Client_Common.Cancelled_Before_Publication =>
             Finish_Composable_Phase (Item, Cancelled);
 
-         when Client_Scoped.Definitely_Not_Published =>
+         when Client_Common.Definitely_Not_Published =>
             Finish_Composable_Phase
               (Item,
-               (if Outcome.Failure = Client_Scoped.Cancelled
+               (if Outcome.Failure = Client_Common.Cancelled
                 then Cancelled
-                elsif Outcome.Failure = Client_Scoped.Timed_Out
+                elsif Outcome.Failure = Client_Common.Timed_Out
                 then Timed_Out
                 else Storage_Failure));
 
-         when Client_Scoped.Outcome_Unknown =>
+         when Client_Common.Outcome_Unknown =>
             Item.Driver_State.Engine.Gate.Fence;
             Complete_Composable_Flush (Item, Outcome_Unknown);
       end case;
@@ -11925,12 +11924,12 @@ package body Flyology.DB is
 
    procedure Complete_Immutable_Put
      (Item    : in out Flush_Operation;
-      Outcome : Client_Scoped.Conditional_Put_Result)
+      Outcome : Client_Objects.Conditional_Put_Result)
    is
    begin
       case Outcome.Disposition is
-         when Client_Scoped.Published =>
-            if Outcome.Kind = Client_Scoped.Put_Response_Available
+         when Client_Common.Published =>
+            if Outcome.Kind = Client_Objects.Put_Response_Available
               and then Outcome.Response.Kind = Client_Low_Level.Object_Put
             then
                Advance_After_Immutable (Item);
@@ -11938,29 +11937,29 @@ package body Flyology.DB is
                Start_Immutable_Read (Item);
             end if;
 
-         when Client_Scoped.Precondition_Failed | Client_Scoped.Outcome_Unknown =>
+         when Client_Common.Precondition_Failed | Client_Common.Outcome_Unknown =>
             Start_Immutable_Read (Item);
 
-         when Client_Scoped.Cancelled_Before_Publication =>
+         when Client_Common.Cancelled_Before_Publication =>
             Finish_Composable_Phase (Item, Cancelled);
 
-         when Client_Scoped.Definitely_Not_Published =>
+         when Client_Common.Definitely_Not_Published =>
             Finish_Composable_Phase
               (Item,
-               (if Outcome.Failure = Client_Scoped.Cancelled
+               (if Outcome.Failure = Client_Common.Cancelled
                 then Cancelled
-                elsif Outcome.Failure = Client_Scoped.Timed_Out
+                elsif Outcome.Failure = Client_Common.Timed_Out
                 then Timed_Out
                 else Storage_Failure));
       end case;
    end Complete_Immutable_Put;
 
    procedure Complete_Current_Put (Item : in out Flush_Operation) is
-      Outcome : Client_Scoped.Conditional_Put_Result;
+      Outcome : Client_Objects.Conditional_Put_Result;
       Fault   : Storage_Fault_Mode;
    begin
       begin
-         Client_Scoped.Finish (Item.Put_Child, Outcome, Item.Payload);
+         Client_Objects.Finish (Item.Put_Child, Outcome, Item.Payload);
       exception
          when others =>
             if Flyology.Operations.Id (Item.Put_Child) /= 0
@@ -11993,14 +11992,14 @@ package body Flyology.DB is
    end Complete_Current_Put;
 
    function Selected_Read_Failure
-     (Failure : Client_Scoped.Failure_Reason) return Outcome_Code
+     (Failure : Client_Common.Failure_Reason) return Outcome_Code
    is
    begin
       return
         (case Failure is
-           when Client_Scoped.Cancelled          => Cancelled,
-           when Client_Scoped.Timed_Out          => Timed_Out,
-           when Client_Scoped.Response_Too_Large => Capacity_Exceeded,
+           when Client_Common.Cancelled          => Cancelled,
+           when Client_Common.Timed_Out          => Timed_Out,
+           when Client_Common.Response_Too_Large => Capacity_Exceeded,
            when others                           => Storage_Failure);
    end Selected_Read_Failure;
 
@@ -12129,9 +12128,8 @@ package body Flyology.DB is
       elsif Item.Read_Child = null then
          raise Program_Error with "selected-run whole child was not prepared";
       end if;
-      Client_Scoped.Start_Get_Whole
-        (Item.Read_Child.all,
-         Item.HTTP,
+      Client_Objects.Get_Whole
+        (Item.HTTP,
          Item.Storage.Client_Origin,
          UStrings.To_String (Item.Storage.Bucket),
          Run_Key
@@ -12146,7 +12144,8 @@ package body Flyology.DB is
          Expected_Bucket_Owner => UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
          Request_Payer         => UStrings.To_String (Item.Storage.Client_Request_Payer),
          Checksum_Mode         => Item.Storage.Client_Checksum_Mode,
-         Token                 => Item.Cancellation);
+         Token                 => Item.Cancellation,
+         Operation             => Item.Read_Child.all);
       State.Phase := Reading_Selected_Whole;
       Flyology.Operations.Continue_After (Item, Item.Read_Child.all);
    exception
@@ -12158,14 +12157,14 @@ package body Flyology.DB is
 
    procedure Complete_Selected_Header (Item : in out Flush_Operation) is
       State         : Flush_Driver_State renames Item.Driver_State.all;
-      Outcome       : Client_Scoped.Range_Get_Result;
+      Outcome       : Client_Objects.Range_Get_Result;
       Image         : LSM_Runtime.Image_Access := null;
       Decode_Status : LSM_Runtime.Decode_Status;
       Generation    : Generation_Value;
       Valid         : Boolean := False;
    begin
       begin
-         Client_Scoped.Finish (Item.Range_Child.all, Outcome);
+         Client_Objects.Finish (Item.Range_Child.all, Outcome);
       exception
          when Error : others =>
             if Flyology.Operations.Id (Item.Range_Child.all) /= 0
@@ -12178,7 +12177,7 @@ package body Flyology.DB is
             return;
       end;
       Flyology.Operations.Release (Item.Range_Child.all);
-      if Outcome.Kind = Client_Scoped.Range_Get_Exchange_Failed then
+      if Outcome.Kind = Client_Objects.Range_Get_Exchange_Failed then
          Complete_Composable_Flush (Item, Selected_Read_Failure (Outcome.Failure));
          return;
       elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
@@ -12245,9 +12244,8 @@ package body Flyology.DB is
       elsif Item.Range_Child = null then
          raise Program_Error with "selected-run range child was not prepared";
       end if;
-      Client_Scoped.Start_Get_Range
-        (Item.Range_Child.all,
-         Item.HTTP,
+      Client_Objects.Get_Range
+        (Item.HTTP,
          Item.Storage.Client_Origin,
          UStrings.To_String (Item.Storage.Bucket),
          Run_Key
@@ -12266,7 +12264,8 @@ package body Flyology.DB is
          Expected_Bucket_Owner => UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
          Request_Payer         => UStrings.To_String (Item.Storage.Client_Request_Payer),
          Checksum_Mode         => Item.Storage.Client_Checksum_Mode,
-         Token                 => Item.Cancellation);
+         Token                 => Item.Cancellation,
+         Operation             => Item.Range_Child.all);
       State.Phase := Reading_Selected_Header;
       Flyology.Operations.Continue_After (Item, Item.Range_Child.all);
    exception
@@ -12278,7 +12277,7 @@ package body Flyology.DB is
 
    procedure Complete_Selected_Head (Item : in out Flush_Operation) is
       State      : Flush_Driver_State renames Item.Driver_State.all;
-      Outcome    : Client_Scoped.Head_Result;
+      Outcome    : Client_Objects.Head_Result;
       Generation : Generation_Value;
       Valid      : Boolean := False;
       --  A valid SST must contain the exact frozen header and integrity
@@ -12287,7 +12286,7 @@ package body Flyology.DB is
         Selected_SST_Header_Length + LSM_Runtime.LSM.Object_Trailer_Length;
    begin
       begin
-         Client_Scoped.Finish (Item.Head_Child.all, Outcome);
+         Client_Objects.Finish (Item.Head_Child.all, Outcome);
       exception
          when Error : others =>
             if Flyology.Operations.Id (Item.Head_Child.all) /= 0
@@ -12300,7 +12299,7 @@ package body Flyology.DB is
             return;
       end;
       Flyology.Operations.Release (Item.Head_Child.all);
-      if Outcome.Kind = Client_Scoped.Head_Exchange_Failed then
+      if Outcome.Kind = Client_Objects.Head_Exchange_Failed then
          Complete_Composable_Flush (Item, Selected_Read_Failure (Outcome.Failure));
          return;
       elsif Outcome.Response.Kind = Client_Low_Level.Head_Object_Rejected then
@@ -12334,14 +12333,14 @@ package body Flyology.DB is
 
    procedure Complete_Selected_Whole (Item : in out Flush_Operation) is
       State         : Flush_Driver_State renames Item.Driver_State.all;
-      Outcome       : Client_Scoped.Whole_Get_Result;
+      Outcome       : Client_Objects.Whole_Get_Result;
       Image         : LSM_Runtime.Image_Access := null;
       Decode_Status : LSM_Runtime.Decode_Status;
       Generation    : Generation_Value;
       Valid         : Boolean := False;
    begin
       begin
-         Client_Scoped.Finish (Item.Read_Child.all, Outcome);
+         Client_Objects.Finish (Item.Read_Child.all, Outcome);
       exception
          when Error : others =>
             if Flyology.Operations.Id (Item.Read_Child.all) /= 0
@@ -12354,7 +12353,7 @@ package body Flyology.DB is
             return;
       end;
       Flyology.Operations.Release (Item.Read_Child.all);
-      if Outcome.Kind = Client_Scoped.Whole_Get_Exchange_Failed then
+      if Outcome.Kind = Client_Objects.Whole_Get_Exchange_Failed then
          Complete_Composable_Flush (Item, Selected_Read_Failure (Outcome.Failure));
          return;
       elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
@@ -12459,9 +12458,8 @@ package body Flyology.DB is
       Parameters.Expected_Bucket_Owner := Item.Storage.Expected_Bucket_Owner;
       Parameters.Request_Payer := Item.Storage.Client_Request_Payer;
       Parameters.Checksum_Mode := Item.Storage.Client_Checksum_Mode;
-      Client_Scoped.Start_Head_Object
-        (Item.Head_Child.all,
-         Item.HTTP,
+      Client_Objects.Head_Object
+        (Item.HTTP,
          Item.Storage.Client_Origin,
          UStrings.To_String (Item.Storage.Bucket),
          Run_Key
@@ -12472,7 +12470,8 @@ package body Flyology.DB is
          Item.HTTP_Deadline,
          UStrings.To_String (Item.Storage.Client_Region),
          Item.Storage.Client_Style,
-         Item.Cancellation);
+         Item.Cancellation,
+         Item.Head_Child.all);
       State.Phase := Reading_Selected_Head;
       Flyology.Operations.Continue_After (Item, Item.Head_Child.all);
    exception
@@ -12518,14 +12517,14 @@ package body Flyology.DB is
            new Recovered_SST_Array'
              (1 .. State.Selected_Source.Manifest.Run_Total => null);
          Item.Head_Child :=
-           new Client_Scoped.Head_Operation
+           new Client_Objects.Head_Operation
              (Item.Set.all'Unchecked_Access,
               Item.HTTP.all'Unchecked_Access,
               (if Item.Cancellation = null
                then null
                else Item.Cancellation.all'Unchecked_Access));
          Item.Range_Child :=
-           new Client_Scoped.Range_Get_Operation
+           new Client_Objects.Range_Get_Operation
              (Item.Set.all'Unchecked_Access,
               Item.HTTP.all'Unchecked_Access,
               Item.Payload'Unchecked_Access,
@@ -12533,7 +12532,7 @@ package body Flyology.DB is
                then null
                else Item.Cancellation.all'Unchecked_Access));
          Item.Read_Child :=
-           new Client_Scoped.Whole_Get_Operation
+           new Client_Objects.Whole_Get_Operation
              (Item.Set.all'Unchecked_Access,
               Item.HTTP.all'Unchecked_Access,
               Item.Payload'Unchecked_Access,
@@ -12573,7 +12572,7 @@ package body Flyology.DB is
         --  and its inline retained buffer. The public discriminant contract
         --  requires all of them to outlive Finish/finalization; the child is
         --  drained and freed before any such borrow can end.
-        new Client_Scoped.Whole_Get_Operation
+        new Client_Objects.Whole_Get_Operation
           (Item.Set.all'Unchecked_Access,
            Item.HTTP.all'Unchecked_Access,
            Item.Payload'Unchecked_Access,

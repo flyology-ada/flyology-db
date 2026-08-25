@@ -11,7 +11,7 @@ private with Ada.Strings.Unbounded;
 private with Flyology.HTTP;
 private with Flyology.Object_Storage.Backends;
 private with Flyology.Object_Storage.Client.Low_Level;
-private with Flyology.Object_Storage.Client.Scoped;
+private with Flyology.Object_Storage.Client.Objects;
 private with Flyology.Wake_Sources;
 private with Interfaces.C;
 
@@ -901,9 +901,9 @@ private
 
    type Flush_Driver_State;
    type Flush_Driver_State_Access is access Flush_Driver_State;
-   type Whole_Get_Operation_Access is access Flyology.Object_Storage.Client.Scoped.Whole_Get_Operation;
-   type Range_Get_Operation_Access is access Flyology.Object_Storage.Client.Scoped.Range_Get_Operation;
-   type Head_Operation_Access is access Flyology.Object_Storage.Client.Scoped.Head_Operation;
+   type Whole_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Whole_Get_Operation;
+   type Range_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Range_Get_Operation;
+   type Head_Operation_Access is access Flyology.Object_Storage.Client.Objects.Head_Operation;
 
    --  @exclude
    type Flush_Operation
@@ -915,7 +915,7 @@ private
       Cancellation : access Flyology.Cancellation.Token) is
      new Flyology.Operations.Operation (Set) with record
       Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
-      Put_Child        : Flyology.Object_Storage.Client.Scoped.Conditional_Put_Operation
+      Put_Child        : Flyology.Object_Storage.Client.Objects.Conditional_Put_Operation
         (Set, HTTP, Cancellation);
       Read_Child       : Whole_Get_Operation_Access := null;
       Range_Child      : Range_Get_Operation_Access := null;

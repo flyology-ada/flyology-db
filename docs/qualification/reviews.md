@@ -1,5 +1,31 @@
 # Review record
 
+## Accepted provider-centric Object Storage migration
+
+- Parent: pre-migration main `487747b31e3f`.
+- Scope and provenance: migrate the DB consumer from the removed parallel `Client.Scoped` tree to the published
+  provider-owned declarations at Object Storage source `3455cde3158fd589480281beac39bea51305bb5e`, selected by
+  exact crate constraint `flyology_object_storage = "=0.1.0-dev"` from Flyology index
+  `8e99188eb914e9d67243785f5427b494c041ac38`. The ignored clean build clone is the only path pin; the author checkout
+  remains read-only. Indexed HTTP/QUIC resolve unpinned at 0.1.3-dev from
+  `b5cd966decfc81132b46fdc97f9cbbfa5bcdf86c`.
+- Architecture: scoped lifetime is an ownership discipline, not the provider. `Client.Objects` therefore colocates
+  each synchronous overload, limited constructor, reusable operation-last procedure, operation type, and typed
+  `Finish`. This keeps blocking and composable calls on one state machine and one certainty contract. DB introduces
+  no alias, forwarding child, deprecated rename, wrapper, helper task, retry path, or second operation vocabulary.
+- Contract preservation: conditional Put still moves one unique-buffer token and restores the exact token through
+  typed `Finish`; any post-entry exception without definite non-admission remains outcome unknown and is reconciled
+  read-only by generation-bound whole Get. Whole/range Get and Head retain their existing bounds, cancellation,
+  absolute deadlines, request binding, and response-failure classification. No public DB constant, default,
+  persisted format, allocation policy, or transaction behavior changes.
+- Verification: the root build, maintained deterministic suite, 18-lane authenticated provider matrix, GNATdoc,
+  repository gate, complete maintained TLC/TLAPS campaign, and warning-strict DB proof gate are green on the exact
+  dependency closure. The DB proof reports 1,090/1,090 selected checks; the Object Storage handoff reports 936/936.
+- Findings cycle: the first dependency run found one ignored nested test lock still selecting the earlier HTTP
+  origin; refreshing that generated lock selected the published flattened origin without changing source or adding a
+  pin. The API, ownership, certainty, constants, documentation, dependency-isolation, and unnecessary-surface sweep
+  finds no remaining actionable P0, P1, or P2 finding.
+
 ## Accepted composable ListObjects v1 dependency qualification
 
 - Parent: operational exact-three-run publication commit `0776d6a`.
@@ -9,9 +35,9 @@
   filesystem path pin is unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration, persisted
   format, allocation limit, task, retry, listing policy, or publication protocol changes.
 - Surface and ownership: Object Storage adds caller-owned `List_Objects_Operation`, constructor and reusable
-  `Start_List_Objects`, terminal-only typed `Finish`, and a synchronous `List_V1_Page` result overload that waits on
-  the same owner-stack state machine. The operation owns its prepared request and XML-limit-bounded response; signing
-  borrows credentials only for the call and no helper task or borrowed request input survives Start.
+  operation-last `List_Objects`, terminal-only typed `Finish`, and a synchronous `List_V1_Page` result overload that
+  waits on the same owner-stack state machine. The operation owns its prepared request and XML-limit-bounded response;
+  signing borrows credentials only for the call and no helper task or borrowed request input survives initiation.
 - Result boundary: complete strict pages preserve modeled listed/error results. Modeled request, authentication,
   authorization, missing-bucket, and backend-unavailable errors remain typed; malformed, unknown, inconsistent, or
   request-scope/payer-mismatched responses fail closed. Transport terminals retain result, phase, bounded detail, and
@@ -69,9 +95,9 @@
   filesystem path pin is unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration, persisted
   format, allocation limit, task, retry, multipart policy, or publication protocol changes.
 - Surface and ownership: Object Storage adds caller-owned `Upload_Part_Copy_Operation`, constructor and reusable
-  `Start_Upload_Part_Copy`, typed `Finish`, shared complete-response decoder, and a synchronous result overload that
-  literally waits on the same owner-stack state machine. The request body is an owned known-empty one-shot source;
-  no helper task, replay, or borrowed request retention is introduced.
+  operation-last `Upload_Part_Copy`, typed `Finish`, shared complete-response decoder, and a synchronous result
+  overload that literally waits on the same owner-stack state machine. The request body is an owned known-empty
+  one-shot source; no helper task, replay, or borrowed request retention is introduced.
 - Certainty and reconciliation: exact validated CopyPartResult is `Published`, exact 412 is
   `Precondition_Failed`, and exact modeled non-mutating 400/401/403/404/501 rejection is definitely not published.
   Embedded HTTP-200 error, retryable/malformed/oversized response, or any failure after possible admission remains
@@ -132,10 +158,10 @@
   root filesystem path pin is unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration,
   persisted format, allocation limit, task, retry, metadata policy, or publication protocol changes.
 - Surface and ownership: Object Storage adds caller-owned `Get_Object_Attributes_Operation`, constructor and
-  same-client/same-token reusable `Start_Get_Object_Attributes`, typed `Finish`, and a synchronous parameter-record
-  overload that literally waits on the same operation. The parent owns the prepared request and XML-limit-bounded
-  response through terminal drain, retains no caller request borrow, drives one HTTP child, and creates no helper
-  task or replay path.
+  same-client/same-token reusable operation-last `Get_Object_Attributes`, typed `Finish`, and a synchronous
+  parameter-record overload that literally waits on the same operation. The parent owns the prepared request and
+  XML-limit-bounded response through terminal drain, retains no caller request borrow, drives one HTTP child, and
+  creates no helper task or replay path.
 - Response binding and certainty: complete response decoding is shared by blocking and composable forms. A modeled
   success binds strict singleton metadata, exact requested opaque version echo, and Requester Pays admission to the
   prepared request. Read-only failures preserve HTTP terminal kind, causal phase, bounded detail, and admission
@@ -165,9 +191,9 @@
   root filesystem path pin is unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration,
   persisted format, allocation limit, task, retry, listing policy, or publication protocol changes.
 - Surface and ownership: Object Storage adds caller-owned `List_Object_Versions_Operation`, constructor and reusable
-  `Start_List_Object_Versions`, typed `Finish`, and a synchronous parameter-record overload that literally waits on
-  the same operation. The parent owns the prepared request and XML-limit-bounded response bytes through terminal
-  drain, retains no caller request borrow, drives one HTTP child, and creates no helper task or replay path.
+  operation-last `List_Object_Versions`, typed `Finish`, and a synchronous parameter-record overload that literally
+  waits on the same operation. The parent owns the prepared request and XML-limit-bounded response bytes through
+  terminal drain, retains no caller request borrow, drives one HTTP child, and creates no helper task or replay path.
 - Binding and pagination: a successful page binds bucket, prefix, delimiter, maximum, encoding, Requester Pays
   admission, and the paired key/version cursor to the exact prepared request. URL-encoded key markers are decoded
   before an explicit later Start while version IDs remain opaque. Each page is an independent service snapshot;
@@ -262,16 +288,18 @@
   `a632cc4b0bd4687e02b09cff7923ab4f9fccbfcf`. The author checkout remains read-only coordination state, the root
   filesystem path pin is unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration, format,
   allocation limit, task, retry, compaction policy, or publication protocol changes.
-- Complete PutObject ownership and certainty: the dependency adds `Scoped.Put_Object`, reusable
-  `Start_Put_Object`, typed `Finish`, and a buffer-owned synchronous overload that literally waits on that operation.
+- Complete PutObject ownership and certainty: the dependency adds `Client.Objects.Put_Object`, its reusable
+  operation-last overload, typed `Finish`, and a buffer-owned synchronous overload that literally waits on that
+  operation.
   Validation and signing complete before the acquired payload token moves; any vacant same-pool handle can receive
   the exact moved token at `Finish`, and no original caller-handle pointer is retained. The prepared request binds
   requested checksum and RequestCharged response fields. No path retries, creates a helper task, or retains borrowed
   input; every possibly admitted exchange failure retains conservative publication certainty for caller-driven
   generation-bound reconciliation.
-- ListObjectsV2 ownership and result: `Scoped.List_Objects_V2`, reusable `Start_List_Objects_V2`, typed `Finish`, and
-  the synchronous typed `Objects.List_Page` overload share one owner-driven state machine. It owns prepared request
-  facts and XML-limit-bounded response bytes, retains no request borrow, and preserves either a complete modeled page
+- ListObjectsV2 ownership and result: `Client.Objects.List_Objects_V2`, its reusable operation-last overload, typed
+  `Finish`, and the synchronous typed `Objects.List_Page` overload share one owner-driven state machine. It owns
+  prepared request facts and XML-limit-bounded response bytes, retains no request borrow, and preserves either a
+  complete modeled page
   or typed HTTP terminal/admission diagnostics. Successful pages bind bucket, prefix, delimiter, maximum,
   continuation/start cursor, encoding, Requester Pays admission, and singleton response headers to the exact request.
   Separate pages remain independent snapshots; DB selects no listing, pagination, discovery, or retry policy here.
@@ -338,9 +366,10 @@
   root filesystem path pin remains unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration,
   persisted format, allocation limit, task, retry, compaction policy, or publication protocol changes.
 - Surface and ownership: Object Storage adds caller-owned `Delete_Objects_Operation`, constructor and reusable
-  `Start_Delete_Objects`, typed `Finish`, and a synchronous result overload implemented as a wait on that same scoped
-  state machine. It copies and serializes the bounded request before admission, owns the exact XML as a one-shot
-  non-replayable body, retains no borrowed request input, drives one HTTP child, and creates no helper task.
+  reusable operation-last `Delete_Objects`, typed `Finish`, and a synchronous result overload implemented as a wait
+  on that same provider-owned state machine. It copies and serializes the bounded request before admission, owns the
+  exact XML as a one-shot non-replayable body, retains no borrowed request input, drives one HTTP child, and creates
+  no helper task.
 - Result and certainty boundary: only a validated HTTP 200 yields `Batch_Processed`, retaining the complete ordered
   per-entry Deleted/Error response. Definite rejection/non-admission and pre-admission cancellation are distinct;
   possible admission, transport loss, invalid/oversized response, or decoding failure remains
@@ -588,8 +617,9 @@
   `425acbaa41833ed0613e277f50f68576b54f81f3`. The dirty author checkout remains read-only coordination state, the root
   filesystem path pin remains unchanged, and no DB declaration, format, allocation limit, retry, task, or publication
   policy changes in this unit.
-- Surface and certainty: the dependency adds caller-owned scoped AbortMultipartUpload and a synchronous result overload
-  that literally waits on the same state machine. Only validated HTTP 204 is `Multipart_Aborted`; definite
+- Surface and certainty: the dependency adds a caller-owned provider operation for AbortMultipartUpload and a
+  synchronous result overload that literally waits on the same state machine. Only validated HTTP 204 is
+  `Multipart_Aborted`; definite
   non-admission and pre-admission cancellation retain distinct spellings. Every complete rejection or post-admission
   failure is abort-outcome unknown and requires exact-upload read-only reconciliation. Its one-shot empty source is
   not replayed, no helper task is created, and no caller borrow survives the operation lifetime.
@@ -610,10 +640,11 @@
   `aeb10422ba8caafc7b3eda3eceaa9619fddbd005`. The dirty author checkout remains read-only coordination state, the root
   filesystem path pin remains unchanged, and no DB declaration, format, allocation limit, retry, task, or publication
   policy changes in this unit.
-- Surface and certainty: the dependency adds caller-owned scoped UploadPart preparation and CompleteMultipartUpload
-  to its existing conditional Put, generation-bound whole/range Get, Head, Delete, and CreateMultipartUpload state
-  machines. The synchronous multipart-completion form is a literal wait over the same operation. Exact serialized XML
-  is owned and non-rewindable; there is no replay, helper task, or retained borrow. Only validated success is definite.
+- Surface and certainty: the dependency adds caller-owned provider operations for UploadPart preparation and
+  CompleteMultipartUpload to its existing conditional Put, generation-bound whole/range Get, Head, Delete, and
+  CreateMultipartUpload state machines. The synchronous multipart-completion form is a literal wait over the same
+  operation. Exact serialized XML is owned and non-rewindable; there is no replay, helper task, or retained borrow.
+  Only validated success is definite.
   A complete rejection, embedded HTTP-200 error, or post-admission failure remains completion-outcome unknown and
   requires destination plus exact-upload read-only reconciliation before any retry or abort.
 - Verification: the DB root build and maintained deterministic suite compile the complete DB/Object Storage/XML/HTTP/
@@ -670,8 +701,9 @@
   to the explicitly qualified local-only boundary `7550e45be97a0f5a1012ec81962a8bdff22decc2`. The author checkout remains
   read-only coordination state, the root filesystem path pin remains unchanged, and no DB declaration, format,
   allocation limit, retry, task, or publication policy changes in this unit.
-- Surface and certainty: the dependency adds caller-owned scoped Delete and CreateMultipartUpload operations to its
-  existing conditional Put, generation-bound whole/range Get, and Head state machines. Existing DB checkpoint calls
+- Surface and certainty: the dependency adds caller-owned provider operations for Delete and CreateMultipartUpload
+  to its existing conditional Put, generation-bound whole/range Get, and Head state machines. Existing DB checkpoint
+  calls
   continue using the same conditional-Put and whole-Get paths. No mutation result is inferred from an exception:
   absent definite pre-admission certainty remains `Outcome_Unknown`, read-only reconciliation is generation-bound,
   and no automatic retry or retained borrowed input is introduced.
@@ -1379,7 +1411,8 @@
 - Parent: Object Storage provenance update `1a6f98c`.
 - Scope: bind one storage context to caller-owned HTTP and signing state, copy all wire-policy selections explicitly,
   and route conditional immutable Put plus bounded whole/range Get through the buffer-owned Object Storage wrappers.
-  Those wrappers are literal waits over `Client.Scoped`, so the engine gains authenticated I/O without a helper task,
+  Those wrappers are literal waits over the provider-owned `Client.Objects` operations, so the engine gains
+  authenticated I/O without a helper task,
   retry path, or second certainty implementation. Reads preserve opaque ETag generations; an initially unbound range
   performs HeadObject and then uses that exact generation. This unit adds no DB-level composable operation and makes
   no remote-provider qualification claim.

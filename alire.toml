@@ -11,7 +11,7 @@ tags = ["ada", "database", "key-value", "transactions", "object-store", "spark"]
 project-files = ["flyology_db.gpr"]
 
 [[depends-on]]
-flyology_object_storage = "*"
+flyology_object_storage = "=0.1.0-dev"
 
 [[depends-on]]
 flyology = "*"

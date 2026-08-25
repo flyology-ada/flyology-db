@@ -14,6 +14,14 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
+The provider-centric Object Storage migration at source
+`3455cde3158fd589480281beac39bea51305bb5e` reruns this maintained gate without changing the selected SPARK
+algorithms or their proof boundary. The exact campaign proves 1,090/1,090 selected checks: 166 by flow analysis and
+924 by provers, with zero warnings, unproved or justified checks, or `pragma Assume` statements. The dependency's
+own 936/936 report is corroborating upstream evidence rather than a substitute for this DB campaign. Provider I/O,
+tasking, and the public limited-profile executable remain trusted integration boundaries exercised by maintained
+tests.
+
 The final local-provider log-only candidate reports 421/421 checks: 84 flow checks and 337 prover checks, with zero
 reported warnings, unproved or justified checks, or `pragma Assume` statements. This result applies only to the
 selected deterministic packages below. The operational storage port, protected lifecycle/coordinator, native task,
