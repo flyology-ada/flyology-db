@@ -1,5 +1,30 @@
 # Review record
 
+## Accepted adjacent-compaction limited-profile showcase candidate
+
+- Parent: public exact-adjacent compaction commit `4423d1e`.
+- Scope: extend only the public power-loss-durable files showcase and limited-profile documentation. After the
+  established two-family suffix Flush, the executable supplies the exact adjacent root-family pair and fresh output,
+  manifest, and transition identities to blocking `Compact`, verifies the self-contained receipt, verifies the live
+  two-family view, closes every DB/provider owner, and recovers the same bytes and family handles from object storage
+  alone. No library implementation, API, default, provider behavior, retry, selection, pruning, or deletion policy
+  changes.
+- Limits and constants: the persisted manifest-history fixture limit increases from four to five because its exact
+  scenario now contains root, first Flush, family append, suffix Flush, and adjacent successor manifests. IDs 20--22
+  are adjacent-documented output/manifest/transition fixture roles, and reader identities advance to avoid reusing
+  them. All other limits remain caller-selected persisted authority; no product ceiling is inferred.
+- Verification: the standalone `./showcases/run-limited-e2e.sh` passes. The first full-suite attempt passed every DB,
+  files crash/reopen, showcase, and authenticated client gate but hit a pre-existing TidesDB subprocess teardown
+  timeout. No orphan remained; the focused adapter rerun passed 32/32 plus 4/4 pinned upstream tests, and the following
+  complete `./tests/scripts/test.sh` rerun passed. Repository and diff checks are green, and the exact-tree
+  `./scripts/prove.sh` confirmation proves 1,091/1,091 warning-strict checks with a clean post-run audit. The
+  production implementation, public contract, formal models, and selected SPARK units are unchanged.
+- Findings cycle: the first compile found that equality for the private `Checkpoint_Run_Identity` result type needed
+  an explicit `use type`; it was fixed without opening representation. The API/authority sweep then replaced an
+  attempted private-component read with the caller's original stable run identities. The final correctness,
+  durability, ownership, bounds, constants, documentation, test, and unnecessary-surface sweep has no actionable
+  P0/P1/P2 finding in this unit.
+
 ## Accepted public exact-adjacent compaction candidate
 
 - Parent: public complete-view compaction commit `3fa6dfe`.

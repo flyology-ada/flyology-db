@@ -15,6 +15,7 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - Synchronous Snapshot transactions with point `Get`, ordered bounded `Scan`, `Put`, `Delete`, singleton `Commit`,
   and explicit atomic `Commit_Group`.
 - Explicit synchronous `Flush` into immutable SST and manifest objects, including a later suffix-delta Flush.
+- Exact caller-selected adjacent-run `Compact`, retaining every version/tombstone and all surrounding runs.
 - Synchronous and caller-composable `Add_Column_Family` at an exact checkpoint boundary, with exact
   manifest/transition identities and same-receipt resolution of immutable or HEAD uncertainty.
 - `Outcome_Unknown` receipts resolved only through the original identity; no application transaction or mutation is
@@ -38,11 +39,13 @@ One maintained executable must perform the following sequence using only public 
    reopen it by stable ID and exact name.
 5. Atomically commit a group whose members affect both families, verify one all-or-nothing visible sequence, delete
    one key, verify ordered half-open scanning, and Flush the suffix without changing prior run identity.
-6. Close the database, discard every process-local DB object and buffer, construct a fresh database value, and Open
+6. Compact the exact adjacent root-family pair under caller-supplied output, manifest, and transition identities,
+   then verify that the second family and complete logical view remain unchanged.
+7. Close the database, discard every process-local DB object and buffer, construct a fresh database value, and Open
    it from the same object-store prefix.
-7. Verify the exact surviving bytes, deletion, canonical scan order, highest visible sequence, and persisted family
+8. Verify the exact surviving bytes, deletion, canonical scan order, highest visible sequence, and persisted family
    handles after recovery.
-8. Close cleanly and report every non-success outcome without retrying a mutation or silently weakening certainty.
+9. Close cleanly and report every non-success outcome without retrying a mutation or silently weakening certainty.
 
 The authenticated provider matrix directly exercises checkpoint-bound family append, lost-HEAD-response
 reconciliation through the original receipt, cross-family commit and Flush, compaction, close, and cacheless reopen

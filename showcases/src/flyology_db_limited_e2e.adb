@@ -14,6 +14,7 @@ procedure Flyology_DB_Limited_E2E is
    package OS renames Flyology.Object_Storage;
 
    use type DB.Byte;
+   use type DB.Checkpoint_Run_Identity;
    use type DB.Column_Family_ID;
    use type DB.Identifier;
    use type DB.Outcome_Code;
@@ -94,12 +95,13 @@ procedure Flyology_DB_Limited_E2E is
    Operation_Timeout : constant Duration := 10.0;
 
    --  The persisted limits admit exactly this one-family root, one appended
-   --  family, and two-checkpoint scenario with bounded headroom for its commit batches and owned
-   --  scan materialization. They are explicit database creation authority,
-   --  never implicit product defaults.
+   --  family, two Flush checkpoints, and one adjacent-compaction successor
+   --  with bounded headroom for commit batches and owned scan materialization.
+   --  They are explicit database creation authority, never implicit product
+   --  defaults.
    Limits   : constant DB.Database_Limits :=
      (Maximum_Column_Families             => 2,
-      Maximum_Manifest_History            => 4,
+      Maximum_Manifest_History            => 5,
       Maximum_Batch_History               => 4,
       Maximum_Transactions_Per_Batch      => 2,
       Maximum_Mutations_Per_Transaction   => 2,
@@ -140,11 +142,19 @@ procedure Flyology_DB_Limited_E2E is
    --  immutable run, manifest, and HEAD transition visibly distinct in this
    --  fresh namespace. They are deterministic fixture identities, not an ID
    --  allocation algorithm or persisted tag convention.
+   First_Run_ID  : constant DB.Identifier := Numbered_ID (6);
+   Second_Run_ID : constant DB.Identifier := Numbered_ID (16);
    First_Runs  : constant DB.Checkpoint_Run_Identity_Array :=
-     [DB.Configure_Checkpoint_Run (1, Numbered_ID (6))];
+     [DB.Configure_Checkpoint_Run (1, First_Run_ID)];
    Second_Runs : constant DB.Checkpoint_Run_Identity_Array :=
-     [DB.Configure_Checkpoint_Run (1, Numbered_ID (16)),
+     [DB.Configure_Checkpoint_Run (1, Second_Run_ID),
       DB.Configure_Checkpoint_Run (2, Numbered_ID (17))];
+   --  IDs 20 through 22 are the caller-owned adjacent-compaction output,
+   --  immutable successor, and HEAD transition. They extend the fixture's
+   --  stable identity sequence; they are not an allocator or product policy.
+   Merged_Run_ID        : constant DB.Identifier := Numbered_ID (20);
+   Merged_Manifest_ID   : constant DB.Identifier := Numbered_ID (21);
+   Merged_Transition_ID : constant DB.Identifier := Numbered_ID (22);
 
    procedure Verify_Recovered_State (Item : in out DB.Database; Reader_ID : DB.Transaction_Identifier) is
       Reader           : DB.Transaction;
@@ -328,7 +338,27 @@ procedure Flyology_DB_Limited_E2E is
       Expect (Result, DB.Success, "suffix Flush failed");
       Require (DB.Flush_Receipt_Run_Total (Flush_Info) = 2, "suffix Flush did not publish both families");
 
-      Verify_Recovered_State (Created, Transaction_ID (20));
+      DB.Compact
+        (Created,
+         First_Run_ID,
+         Second_Run_ID,
+         Merged_Run_ID,
+         Merged_Manifest_ID,
+         Merged_Transition_ID,
+         Operation_Timeout,
+         Token   => null,
+         Receipt => Flush_Info,
+         Result  => Result);
+      Expect (Result, DB.Success, "adjacent compaction failed");
+      Require
+        (DB.Flush_Receipt_Run_Total (Flush_Info) = 1
+         and then DB.Flush_Receipt_Run (Flush_Info, 1) =
+           DB.Configure_Checkpoint_Run (1, Merged_Run_ID)
+         and then DB.Flush_Receipt_Manifest_ID (Flush_Info) = Merged_Manifest_ID
+         and then DB.Flush_Receipt_Transition_ID (Flush_Info) = Merged_Transition_ID,
+         "adjacent compaction receipt lost exact authority");
+
+      Verify_Recovered_State (Created, Transaction_ID (23));
       DB.Close (Created, Close_Result);
       Expect (Close_Result, DB.Success, "created database close failed");
    exception
@@ -351,7 +381,7 @@ procedure Flyology_DB_Limited_E2E is
       Binding.Bind (Context, Store'Access, Bucket, Prefix);
       DB.Open (Reopened, Context'Access, Database_ID (1), Operation_Timeout, Result => Result);
       Expect (Result, DB.Success, "authoritative reopen failed");
-      Verify_Recovered_State (Reopened, Transaction_ID (21));
+      Verify_Recovered_State (Reopened, Transaction_ID (24));
       DB.Close (Reopened, Close_Result);
       Expect (Close_Result, DB.Success, "reopened database close failed");
    exception
