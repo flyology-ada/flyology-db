@@ -16,7 +16,7 @@ substitute for the DB gate.
 | Bounded listing | Present | Present | Present | Provider-owned bounded page operations | Discovery/GC only, never visibility |
 
 The current DB campaign pins the ignored clean Object Storage build clone at
-`1978275b4c4cd4704adc41ec52b167a7587b411f`. Its buffer-owned synchronous conditional Put and whole/range Get calls
+`179b16c414090662924c04355a5d292c29d33204`. Its buffer-owned synchronous conditional Put and whole/range Get calls
 are literal waits over the same caller-owned `Client.Objects` operations used by Flyology.DB's additive
 `Flush_Operation`. One moved `Unique_Buffer` token, typed terminal `Finish`, one absolute deadline, and the same
 publication/admission result therefore govern both blocking and composable DB calls. Neither layer creates a helper

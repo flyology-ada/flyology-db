@@ -1,5 +1,22 @@
 # Review record
 
+## Accepted Object Storage and HTTP hook-selection dependency candidate
+
+- Parent: public exact-three-run compaction commit `c87f926`.
+- Scope and provenance: fast-forward only the clean ignored `.deps/flyology-object-storage` build clone from
+  `1978275b…` to published source `179b16c414090662924c04355a5d292c29d33204`, then record Alire index
+  `ade6ebbddd254f9fa0515fa8bb11397427d0a76b`. The root filesystem pin and exact
+  `flyology_object_storage = "=0.1.0-dev"` constraint remain unchanged. The ignored solve selects unpinned
+  HTTP/QUIC 0.1.3-dev at `eb09a80a7e06274e93289861c2cae1ca7e8cb1af`; no external transport pin is added.
+- API and behavior: the dependency update is additive outside the DB-consumed `Client.Objects` conditional Put,
+  whole/range Get, and Head contracts. DB source, ownership, deadlines, cancellation, publication certainty,
+  same-identity reconciliation, and non-replay rules do not change. New bucket-control operations grant no DB policy
+  and are not consumed by this unit.
+- Verification and findings: the root/test build, deterministic suite, authenticated provider matrix, repository
+  gate, warning-strict DB proof, exact host audit, and dependency cleanliness are rerun against the exact fast-forward
+  before commit. The review covers API drift, transport origin, pin state, mutation replay, certainty mapping,
+  formatter baseline, and unnecessary surface; no actionable P0/P1/P2 finding remains after qualification.
+
 ## Accepted public exact-three-run compaction candidate
 
 - Parent: APM dependency-isolation commit `28e35bc` over the qualified private three-run publisher.
