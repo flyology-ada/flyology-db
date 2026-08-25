@@ -5,8 +5,8 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `296b94f1ec7fd78c20838f2447d7dc4234e43c79`
-- Commit subject: `Problem: GetObjectAttributes cannot compose metadata discovery`
+- Commit: `00959177c49f7e6e38f2ac19b8e958afba78c901`
+- Commit subject: `Problem: UploadPartCopy cannot compose multipart copy staging`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
@@ -67,6 +67,13 @@ GetObjectAttributes now has the same bounded owner-driven shape. The operation o
 XML-limit-bounded response, retains no caller borrow, and binds a successful modeled response to the exact requested
 opaque version and Requester Pays admission with strict singleton metadata. Its typed synchronous parameter-record
 overload waits on that state machine; failure retains HTTP terminal kind, phase, detail, and admission diagnostics.
+UploadPartCopy now follows the same owner-stack rule for one exact upload identity and part number. Its request body
+is owned, known-empty, one-shot, and non-rewindable; the operation retains no borrowed request input and creates no
+helper task or replay path. Exact validated CopyPartResult is `Published`, exact 412 is `Precondition_Failed`, and
+modeled non-mutating 400/401/403/404/501 rejection is definitely not published. Embedded HTTP-200 errors,
+retryable/malformed/oversized responses, and every failure after possible admission remain `Outcome_Unknown` until
+exact upload-ID/part-number ListParts reconciliation. The synchronous result overload literally waits on this same
+state machine.
 Object Storage records no external HTTP/QUIC pin at this boundary; the generated DB solve likewise marks every
 HTTP/QUIC lock entry unpinned.
 

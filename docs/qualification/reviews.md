@@ -1,5 +1,35 @@
 # Review record
 
+## Accepted composable UploadPartCopy dependency qualification
+
+- Parent: exact-three-run compaction kernel commit `fd1976c`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage build clone from
+  `296b94f1ec7fd78c20838f2447d7dc4234e43c79` to exact authoritative local main
+  `00959177c49f7e6e38f2ac19b8e958afba78c901`. The author checkout remains read-only coordination state, the root
+  filesystem path pin is unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration, persisted
+  format, allocation limit, task, retry, multipart policy, or publication protocol changes.
+- Surface and ownership: Object Storage adds caller-owned `Upload_Part_Copy_Operation`, constructor and reusable
+  `Start_Upload_Part_Copy`, typed `Finish`, shared complete-response decoder, and a synchronous result overload that
+  literally waits on the same owner-stack state machine. The request body is an owned known-empty one-shot source;
+  no helper task, replay, or borrowed request retention is introduced.
+- Certainty and reconciliation: exact validated CopyPartResult is `Published`, exact 412 is
+  `Precondition_Failed`, and exact modeled non-mutating 400/401/403/404/501 rejection is definitely not published.
+  Embedded HTTP-200 error, retryable/malformed/oversized response, or any failure after possible admission remains
+  `Outcome_Unknown` and requires exact upload-ID/part-number ListParts reconciliation before retry or completion.
+  Flyology.DB adds no multipart-copy call or retry policy in this dependency-only unit.
+- Constants and compatibility: XML retention derives from `S3.XML.Default_Limits`; completion-set capacity derives
+  from the maintained owner stack. Region, addressing, timeout, and cancellation defaults match the established
+  synchronous surface. Qualification introduces no DB public constant, default, persisted value, or resource
+  ceiling.
+- Verification and findings: `./tests/scripts/test.sh` rebuilds the complete dependency closure at exact `00959177`,
+  passes repository provenance, the local engine, authenticated client-backed create/commit/Flush/compaction/reopen,
+  filesystem crash and cacheless recovery, all 32 comparative tests, and pinned TidesDB 4/4. `./scripts/prove.sh`
+  proves 1,090/1,090 selected checks with its maintained success sentinel; exact pre/post host audits are clean.
+  Upstream's reported 41/41 tests, 126 crash cases, full provider matrix, GNATdoc, and 936/936 proof are corroborating
+  evidence rather than substitutes for the DB gates. API compatibility, owned-source lifetime, exact request/response
+  binding, certainty mapping, reconciliation identity, author-checkout isolation, constants, and unnecessary-surface
+  review find no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted exact-three-run compaction kernel candidate
 
 - Parent: composable GetObjectAttributes dependency qualification commit `7766301`.
