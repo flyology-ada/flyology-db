@@ -48,6 +48,12 @@ class Protocol:
             bufsize=1,
         )
         self.request_id = 0
+        # run.sh validates/builds the pinned adapter before exec.  A test that
+        # uses only pure helpers can otherwise finish and close stdin while the
+        # child is still in that pre-exec phase, turning ordinary build latency
+        # into a false teardown timeout.  The protocol is usable only after one
+        # complete request/response handshake; this adds no timing policy.
+        self.request("capabilities")
 
     def request(self, command: str, **fields: Any) -> dict[str, Any]:
         assert self.process.stdin is not None

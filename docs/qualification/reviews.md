@@ -1,5 +1,24 @@
 # Review record
 
+## Accepted TidesDB adapter readiness candidate
+
+- Parent: adjacent-compaction limited-profile showcase commit `63e7767`.
+- Problem and scope: a pure-helper adapter test can finish before its `run.sh` child completes the maintained
+  validate/build/exec sequence. Closing stdin during that pre-exec phase does not reach the Python protocol, so
+  ordinary build latency can exceed the established teardown wait and report a false leaked-process failure. The
+  change is test-harness only; it does not alter a DB, adapter, TidesDB, timeout, retry, or compatibility contract.
+- Solution and lifecycle: `Protocol` now completes one ordinary `capabilities` request/response during construction.
+  Every test therefore begins only after `run.sh` has exec'd the adapter and the protocol consumes stdin. Teardown
+  retains its established timeout and EOF behavior; no wait value is raised and no failure is masked by forced
+  termination. Subsequent request identifiers advance normally and remain checked against each response.
+- Verification: the formerly failing pure-helper test passes ten consecutive fresh-process runs. The focused
+  `./oracles/adapters/tidesdb/scripts/test.sh` gate passes 32/32 adapter tests, 4/4 pinned upstream tests, and every
+  workload fixture. The complete `./tests/scripts/test.sh` gate then passes, including the public Files showcase,
+  authenticated DB client, crash/recovery probes, comparative adapters, and another 32/32 plus 4/4 TidesDB pass.
+- Findings cycle: readiness uses an existing protocol command and adds no timing constant, platform branch, or
+  subprocess ownership path. The final correctness, process-lifecycle, protocol, constants, portability, test, and
+  unnecessary-surface sweep has no actionable P0/P1/P2 finding.
+
 ## Accepted adjacent-compaction limited-profile showcase candidate
 
 - Parent: public exact-adjacent compaction commit `4423d1e`.
