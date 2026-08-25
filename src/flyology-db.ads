@@ -147,7 +147,7 @@ package Flyology.DB is
    type Commit_Receipt is private;
    --  Self-contained checkpoint publication and reconciliation state.
    type Flush_Receipt is private;
-   --  Caller-composable checkpoint publication. The discriminants are
+   --  Caller-composable checkpoint and family-registry publication. The discriminants are
    --  retained borrows: Set, Item, Storage, HTTP, Payload_Pool, and
    --  Cancellation must outlive terminal Finish or scope-abandonment drain.
    --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
@@ -243,6 +243,51 @@ package Flyology.DB is
       Token         : access Flyology.Cancellation.Token := null;
       Receipt       : out Column_Family_Receipt;
       Result        : out Outcome_Code);
+
+   --  Start the same family-registry publication in an established caller-owned
+   --  checkpoint operation. Configuration and identities are copied before
+   --  return. Initiating owner/request-shape validation, completion-slot
+   --  reservation, and lifecycle admission precede moving Payload_Buffer;
+   --  persisted-state validation then runs in the owner-driven operation.
+   --  Successful initiation leaves the caller handle vacant until the typed
+   --  Finish below. No helper task, retry, second deadline, or retained caller
+   --  input is introduced.
+   --  @param Configuration Exact caller-selected family authority to append
+   --  @param Manifest_ID Stable immutable successor-manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @param Operation Fresh or consumed client-bound checkpoint operation
+   procedure Add_Column_Family
+     (Configuration  : Column_Family_Configuration;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Flush_Operation)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Consume a terminal composable family append and restore its exact input
+   --  token into any vacant same-pool handle. Receipt preserves the same
+   --  publication and reconciliation authority as the synchronous overload.
+   --  @param Operation Terminal caller-owned checkpoint operation
+   --  @param Receipt Self-contained publication and reconciliation authority
+   --  @param Result Definite terminal or presently unknown outcome
+   --  @param Payload_Buffer Vacant same-pool destination for the exact token
+   --  @exception Program_Error Operation contains a Flush result instead
+   procedure Finish
+     (Operation      : in out Flush_Operation;
+      Receipt        : out Column_Family_Receipt;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+     with Pre => Flyology.Operations.Is_Terminal (Operation)
+       and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool,
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Continue exact immutable-manifest confirmation or reconcile the attempted
    --  HEAD retained by Receipt. No identity, configuration, or bytes change.
@@ -544,6 +589,7 @@ package Flyology.DB is
    --  @param Receipt Self-contained operation identity and certainty record
    --  @param Result Terminal or presently unknown operation outcome
    --  @param Payload_Buffer Vacant same-pool destination for the exact token
+   --  @exception Program_Error Operation contains a family-append result instead
    procedure Finish
      (Operation      : in out Flush_Operation;
       Receipt        : out Flush_Receipt;
@@ -1022,6 +1068,11 @@ private
       Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
       HTTP_Deadline    : Flyology.HTTP.Client.Monotonic_Deadline;
       Final_Receipt    : Flush_Receipt;
+      Final_Family_Receipt : Column_Family_Receipt;
+      --  Runtime terminal-result discriminator for the two typed Finish
+      --  overloads sharing this checkpoint state machine. It is never
+      --  persisted and prevents the wrong Finish from consuming ownership.
+      Final_Is_Family_Append : Boolean := False;
       Final_Result     : Outcome_Code := Invalid_State;
       Has_Final_Result : Boolean := False;
       Has_Saved_Error  : Boolean := False;

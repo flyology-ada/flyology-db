@@ -15,16 +15,16 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - Synchronous Snapshot transactions with point `Get`, ordered bounded `Scan`, `Put`, `Delete`, singleton `Commit`,
   and explicit atomic `Commit_Group`.
 - Explicit synchronous `Flush` into immutable SST and manifest objects, including a later suffix-delta Flush.
-- Synchronous `Add_Column_Family` at an exact checkpoint boundary, with exact manifest/transition identities and
-  same-receipt resolution of immutable or HEAD uncertainty.
+- Synchronous and caller-composable `Add_Column_Family` at an exact checkpoint boundary, with exact
+  manifest/transition identities and same-receipt resolution of immutable or HEAD uncertainty.
 - `Outcome_Unknown` receipts resolved only through the original identity; no application transaction or mutation is
   automatically replayed.
 - `Close`, complete loss of process-local DB state, and `Open` recovery solely from authoritative object storage.
 - A provider-neutral power-loss-durable files run of the complete database-level oracle.
 
-The synchronous profile is the first user-facing entry point. Its client-backed Flush already waits on the same
-provider-owned Object Storage state machines as the caller-composable DB operation, so this boundary does not create
-a second transport or certainty implementation.
+The synchronous profile is the first user-facing entry point. Its client-backed Flush and family append wait on the
+same DB operations and provider-owned Object Storage state machines as their caller-composable forms, so this
+boundary does not create a second transport or certainty implementation.
 
 ## Acceptance scenario
 
@@ -53,8 +53,8 @@ retry, and endpoint policy remain outside Flyology.DB.
 
 ## Explicit exclusions
 
-This profile does not include family rename/drop/reconfiguration, appending across an unflushed commit suffix, a
-composable family-append overload, public replica management, writer promotion, TTL, codecs, automatic Flush or
+This profile does not include family rename/drop/reconfiguration, appending across an unflushed commit suffix,
+public replica management, writer promotion, TTL, codecs, automatic Flush or
 compaction selection, public compaction/garbage-collection policy, an authenticated deployment walkthrough,
 background polling, transparent retry, retained borrowed request bodies, performance claims, or stable-format
 compatibility beyond the versions accepted by the current decoder. Existing private compaction and replica spines

@@ -33,9 +33,10 @@ read validates the exact attempted bytes. An inconclusive HEAD transition retain
 `Flush_Receipt`, fences later publication, and remains unknown until read-only reconciliation observes that transition
 or a conclusive successor. Listing cannot establish either result.
 
-The maintained authenticated DB probe exercises create, first checkpoint, one differently bounded family append,
-lost-HEAD-response resolution through the exact append receipt, cross-family commit and Flush, complete-run
-replacement, caller-selected three-run merge, exact-token restoration, close, and cacheless reopen of both families.
+The maintained authenticated DB probe exercises create, first checkpoint, one direct-composable differently bounded
+family append with lost-HEAD-response resolution through the exact append receipt, one blocking append implemented as
+a wait on that same state machine, cross-family commit and Flush, complete-run replacement, caller-selected three-run
+merge, exact-token restoration, close, and cacheless reopen of all three families.
 The published no-pin Object Storage handoff is qualified across RustFS, SeaweedFS, MinIO, Flyology memory/files, and
 Flyology SQLite. The guarded HTTP stale-reused-H1 safe-read correction is part of the indexed dependency closure; no
 DB or Object Storage retry/certainty workaround is present.

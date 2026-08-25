@@ -1,5 +1,32 @@
 # Review record
 
+## Accepted caller-composable column-family append candidate
+
+- Parent: authenticated cross-provider family-append qualification `ac1dcd0`.
+- Scope and API: add an operation-last `Add_Column_Family` overload and receipt-shaped typed `Finish` directly in
+  `Flyology.DB`, reusing the established `Flush_Operation`. Scoped lifetime is expressed by the limited operation,
+  caller-owned completion set, retained owner borrows, cancellation/drain protocol, moved token, and typed Finish;
+  no parallel `.Scoped` package, alias, helper task, default, or second state machine is introduced. Client-backed
+  synchronous append is now a literal wait over this operation; memory/files retain their backend-neutral publisher.
+- Ownership and certainty: slot and lifecycle admission precede moving the exact caller buffer token. Initiating
+  exceptions roll back admission and ownership exactly. Terminal family Finish accepts any vacant same-pool handle,
+  restores the exact token, and transfers the self-contained receipt. A runtime result discriminator rejects the
+  wrong receipt-shaped Finish before consuming either result or token. Manifest/HEAD ambiguity retains the exact
+  bytes, identities, expected generation, and transition for read-only resolution; no mutation is replayed.
+- Bounds and activation: the synchronous scratch extent adds the exact incoming family name and frozen format
+  framing to persisted live-state, run, identity, and family authorities with checked arithmetic. Composable planning
+  lazily builds the complete activation graph only after admission. Allocation or undersized caller scratch fails
+  safely with no partial publication.
+- Verification and findings: the maintained client probe covers prepublication one-byte scratch failure and identity
+  reuse, wrong-Finish rejection without consumption, post-admission unknown HEAD resolution, exact token restoration,
+  blocking wait equivalence, and cacheless reopen of three families. `./tests/scripts/test.sh` is green, and the full
+  provider matrix passes all 18 RustFS, SeaweedFS, MinIO, Flyology memory/files/SQLite lanes. `./scripts/check-tla.sh`
+  passes every maintained TLC/TLAPS lane, including 3,145,728 partial-merge states; `./scripts/prove.sh` proves
+  1,091/1,091 warning-strict selected checks. Repository and diff checks are green. GNATdoc is unavailable in the
+  installed toolchain, so the public leading comments are compiler- and repository-checked but no extracted-site
+  build is claimed. The final API, ownership, certainty, bounds, constants, provider, test, documentation, and
+  unnecessary-surface sweep has no actionable P0/P1/P2 finding.
+
 ## Accepted authenticated cross-provider family-append qualification
 
 - Parent: published Object Storage provenance update `492edad` over synchronous family append `b95df46`.

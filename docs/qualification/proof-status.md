@@ -32,6 +32,13 @@ protected checkpoint lifecycle, cacheless reconciliation, and local engine repla
 boundaries rather than SPARK-proved code. Their maintained evidence is the memory/files fault corpus, public
 process-local-loss showcase, and the abstract checkpoint/registry TLC/TLAPS lanes; no refinement proof is claimed.
 
+The caller-composable `Add_Column_Family` candidate and its client-backed synchronous wait preserve the same exact
+1,091/1,091 selected-unit result. The new owner-stack driver, moved-buffer restoration, provider certainty mapping,
+and local activation bridge remain executable integration boundaries rather than new SPARK claims. Their direct
+oracles cover undersized scratch before provider entry, wrong typed Finish without consumption, ambiguous HEAD
+resolution, exact token restoration, blocking/composable equivalence, and three-family cacheless reopen across the
+six-provider matrix.
+
 The provider-centric Object Storage migration at source
 `3455cde3158fd589480281beac39bea51305bb5e` reruns this maintained gate without changing the selected SPARK
 algorithms or their proof boundary. The exact campaign proves 1,090/1,090 selected checks: 166 by flow analysis and

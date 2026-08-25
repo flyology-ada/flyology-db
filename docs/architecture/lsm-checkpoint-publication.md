@@ -70,7 +70,8 @@ keys. The manifest and runs are immutable; provider generations remain opaque va
 
 ## Publication state machine
 
-Both public forms serialize `Flush` against the existing bounded native Ada coordinator. The additive
+Both public Flush forms and the exact-checkpoint family-append forms serialize against the existing bounded native
+Ada coordinator. The additive
 `Flush_Operation` is an owner-stack state machine driven by the caller's completion set. Client-bound synchronous
 `Flush` creates its temporary set and buffer pool lazily, atomically promotes its existing lifecycle lease into that
 same operation, and waits as the owner. Memory/files retain the backend-neutral synchronous publisher until those
@@ -80,7 +81,7 @@ Once admitted, either form follows one absolute deadline and retains a self-cont
 and manifest IDs, exact expected HEAD generation/transition, attempted transition identity, replay boundary, and
 phase.
 
-The composable established form retains borrows of its completion set, database, client-bound storage context, exact
+The composable established forms retain borrows of their completion set, database, client-bound storage context, exact
 HTTP client, buffer pool, and optional cancellation token until typed `Finish` or finalization drain. `Start_Flush`
 validates those owners and copies the run map before reserving its visible slot. Only then does it move the exact
 caller `Unique_Buffer` token into operation ownership. Any initiating exception rolls back lifecycle and slot
@@ -234,8 +235,11 @@ automatic mutation retry.
 After confirmed publication, activation replaces the local engine through the existing checkpoint lifecycle while
 preserving the process-session incarnation. A failed local allocation/install is `Local_Activation_Failed`, retains
 durable-success authority, and can be completed by `Resolve_Add_Column_Family`. Terminal success exposes the family
-through the existing `Open_Column_Family` calls. The synchronous operation is the first public form; an additive
-caller-composable overload may later drive this same state machine without changing certainty or ownership.
+through the existing `Open_Column_Family` calls. The additive operation-last form reuses `Flush_Operation`, its
+caller-owned completion set, moved scratch token, and typed token-restoring `Finish`; a runtime result discriminator
+prevents the receipt-shaped Flush and family finishes from consuming one another. The client-backed synchronous form
+allocates one derived scratch token and waits on that exact state machine. Memory and files retain the backend-neutral
+synchronous publisher. No helper task, automatic retry, second deadline, or parallel API package is introduced.
 
 ## Cacheless recovery
 

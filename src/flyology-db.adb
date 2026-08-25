@@ -2084,7 +2084,11 @@ package body Flyology.DB is
    --  Private constructor authority only. These positions are never persisted
    --  or exposed and select no automatic compaction trigger or run policy.
    type Flush_Plan_Mode is
-     (Additive_Plan, Complete_Replacement_Plan, Adjacent_Merge_Plan, Three_Run_Merge_Plan);
+     (Additive_Plan,
+      Complete_Replacement_Plan,
+      Adjacent_Merge_Plan,
+      Three_Run_Merge_Plan,
+      Family_Append_Plan);
 
    type Prepared_Flush_Image is record
       Owner  : Shared_Image_Access := null;
@@ -2111,6 +2115,7 @@ package body Flyology.DB is
       Middle_Run_ID       : Identifier := Zero_Identifier;
       Newer_Run_ID        : Identifier := Zero_Identifier;
       Output_Run_ID       : Identifier := Zero_Identifier;
+      Family_Configuration : Column_Family_Configuration;
       Run_Images          : Prepared_Flush_Image_Array := [others => (others => <>)];
       Manifest_Image      : Prepared_Flush_Image;
       Head_Image          : Prepared_Flush_Image;
@@ -5448,12 +5453,13 @@ package body Flyology.DB is
    end Build_Checkpoint_Plan;
 
    procedure Build_Column_Family_Plan
-     (State          : not null Engine_State_Access;
-      Configuration  : Column_Family_Configuration;
-      Manifest_ID    : Identifier;
-      Transition_ID  : Identifier;
-      Plan           : out Checkpoint_Plan;
-      Result         : out Outcome_Code)
+     (State              : not null Engine_State_Access;
+      Configuration      : Column_Family_Configuration;
+      Manifest_ID        : Identifier;
+      Transition_ID      : Identifier;
+      Prepare_Activation : Boolean;
+      Plan               : out Checkpoint_Plan;
+      Result             : out Outcome_Code)
    is
       Base           : Manifests.Manifest;
       Head           : Head_Snapshot;
@@ -5600,6 +5606,14 @@ package body Flyology.DB is
       then
          Release_Checkpoint_Plan (Plan);
          Result := Invalid_State;
+      elsif Prepare_Activation then
+         --  Direct composable activation needs the same complete current-state
+         --  ownership graph as Flush. The appended family contributes no rows;
+         --  all extents derive lazily from the authenticated live snapshot.
+         Prepare_Live_Checkpoint_Base (State, Plan, Result);
+         if Result /= Success then
+            Release_Checkpoint_Plan (Plan);
+         end if;
       else
          Result := Success;
       end if;
@@ -11514,6 +11528,15 @@ package body Flyology.DB is
       Guard      : in out Checkpoint_Guard;
       Result     : out Outcome_Code);
 
+   procedure Initialize_Column_Family_Receipt
+     (State          : not null Engine_State_Access;
+      Configuration  : Column_Family_Configuration;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Plan           : Checkpoint_Plan;
+      Receipt        : out Column_Family_Receipt;
+      Result         : out Outcome_Code);
+
    procedure Release_Flush_State (Value : in out Flush_Driver_State_Access) is
    begin
       if Value /= null then
@@ -11527,6 +11550,19 @@ package body Flyology.DB is
          Free_Flush_Driver_State (Value);
       end if;
    end Release_Flush_State;
+
+   function Is_Family_Append (Item : Flush_Operation) return Boolean
+   is (Item.Driver_State /= null and then Item.Driver_State.Mode = Family_Append_Plan);
+
+   function Current_Attempted_Head (Item : Flush_Operation) return Head_Snapshot
+   is (if Is_Family_Append (Item)
+       then Item.Final_Family_Receipt.Attempted_Head
+       else Item.Final_Receipt.Attempted_Head);
+
+   function Current_Expected_Generation (Item : Flush_Operation) return Generation_Value
+   is (if Is_Family_Append (Item)
+       then Item.Final_Family_Receipt.Expected_Generation
+       else Item.Final_Receipt.Expected_Generation);
 
    function Digest_Image (Image : not null Shared_Image_Access) return GNAT.SHA256.Message_Digest is
       Data : constant Ada.Streams.Stream_Element_Array := Flyology.Bytes.To_Array (Image.Data);
@@ -11635,7 +11671,7 @@ package body Flyology.DB is
       Adopt_Encoded_Image (Encoded, State.Manifest_Image);
       Maximum := Natural'Max (Maximum, Flyology.Bytes.Length (State.Manifest_Image.Owner.Data));
 
-      State.Head_Image.Owner := New_Image (Formats.Encode_Head (To_Head (Item.Final_Receipt.Attempted_Head)));
+      State.Head_Image.Owner := New_Image (Formats.Encode_Head (To_Head (Current_Attempted_Head (Item))));
       State.Head_Image.Digest := Digest_Image (State.Head_Image.Owner);
       Maximum := Natural'Max (Maximum, Flyology.Bytes.Length (State.Head_Image.Owner.Data));
       if Maximum = 0 or else Maximum > Flyology.Buffers.Buffer_Capacity (Item.Payload) then
@@ -11785,7 +11821,16 @@ package body Flyology.DB is
          Item.Driver_State.Phase := Flush_Terminal;
       end if;
       Item.Final_Result := Result;
-      Item.Final_Receipt.Current_Outcome := Result;
+      if Is_Family_Append (Item) then
+         Item.Final_Family_Receipt.Current_Outcome := Result;
+         if Item.Final_Family_Receipt.Phase = No_Family_Publication
+           and then Result /= Outcome_Unknown
+         then
+            Release_Retained_Manifest (Item.Final_Family_Receipt);
+         end if;
+      else
+         Item.Final_Receipt.Current_Outcome := Result;
+      end if;
       Item.Has_Final_Result := True;
       Release_Flush_State (Item.Driver_State);
       Flyology.Operations.Drivers.Complete (Item, Outcome);
@@ -11797,7 +11842,21 @@ package body Flyology.DB is
    is
       Result : Outcome_Code := Storage_Failure;
    begin
-      if Item.Final_Receipt.Phase in Objects_Unknown | Flush_Head_Unknown then
+      if Is_Family_Append (Item)
+        and then Item.Final_Family_Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown
+      then
+         if Item.Driver_State.Engine /= null then
+            Item.Driver_State.Engine.Gate.Fence;
+         end if;
+         Result := Outcome_Unknown;
+      elsif Is_Family_Append (Item)
+        and then Item.Final_Family_Receipt.Phase = Family_Head_Confirmed
+      then
+         if Item.Driver_State.Engine /= null then
+            Item.Driver_State.Engine.Gate.Fence;
+         end if;
+         Result := Local_Activation_Failed;
+      elsif Item.Final_Receipt.Phase in Objects_Unknown | Flush_Head_Unknown then
          if Item.Driver_State /= null and then Item.Driver_State.Engine /= null then
             Item.Driver_State.Engine.Gate.Fence;
          end if;
@@ -11822,7 +11881,13 @@ package body Flyology.DB is
       Result : Outcome_Code)
    is
    begin
-      if Item.Final_Receipt.Phase in Objects_Unknown | Flush_Head_Unknown
+      if Is_Family_Append (Item)
+        and then Item.Final_Family_Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown
+        and then Result /= Outcome_Unknown
+      then
+         Item.Final_Family_Receipt.Phase := Family_Resolved;
+         Release_Retained_Manifest (Item.Final_Family_Receipt);
+      elsif Item.Final_Receipt.Phase in Objects_Unknown | Flush_Head_Unknown
         and then Result /= Outcome_Unknown
       then
          Item.Final_Receipt.Phase := Flush_Resolved;
@@ -11844,8 +11909,16 @@ package body Flyology.DB is
       end if;
       --  From this certainty boundary onward, an injected post-entry loss or
       --  a completed child without a conclusive response must remain unknown.
-      Item.Final_Receipt.Phase :=
-        (if State.Current_Kind = Head_Object then Flush_Head_Unknown else Objects_Unknown);
+      if Is_Family_Append (Item) then
+         Item.Final_Family_Receipt.Phase :=
+           (if State.Current_Kind = Head_Object then Family_Head_Unknown else Family_Manifest_Unknown);
+         if State.Current_Kind = Head_Object then
+            Item.Final_Family_Receipt.Head_Entered := True;
+         end if;
+      else
+         Item.Final_Receipt.Phase :=
+           (if State.Current_Kind = Head_Object then Flush_Head_Unknown else Objects_Unknown);
+      end if;
       Consume_Fault
         (Item.Storage.all, Flush_Fault_Point (State.Current_Kind, After_Entry => False), Fault);
       if Fault = Definite_Failure then
@@ -11874,7 +11947,7 @@ package body Flyology.DB is
             Item.Storage.Client_Origin,
             UStrings.To_String (Item.Storage.Bucket),
             Current_Flush_Key (Item),
-            Quoted_Generation (Item.Final_Receipt.Expected_Generation),
+            Quoted_Generation (Current_Expected_Generation (Item)),
             Item.Payload,
             String (Current_Flush_Digest (State)),
             Item.Storage.Client_Identity.all,
@@ -11910,7 +11983,12 @@ package body Flyology.DB is
             --  Conditional-PUT Start restores exact ownership on every
             --  initiating exception. Slot exhaustion is therefore definite
             --  caller-selected backpressure, not publication ambiguity.
-            Item.Final_Receipt.Phase := Flush_Resolved;
+            if Is_Family_Append (Item) then
+               Item.Final_Family_Receipt.Phase := Family_Resolved;
+               Release_Retained_Manifest (Item.Final_Family_Receipt);
+            else
+               Item.Final_Receipt.Phase := Flush_Resolved;
+            end if;
             Complete_Composable_Flush (Item, Capacity_Exceeded);
          else
             raise Program_Error with "conditional PUT lost its token on capacity rejection";
@@ -11919,7 +11997,12 @@ package body Flyology.DB is
          if Flyology.Buffers.Has_Buffer (Item.Payload) then
             --  The child did not admit a request. Preserve programming or
             --  provider exceptions for typed Finish after restoring ownership.
-            Item.Final_Receipt.Phase := Flush_Resolved;
+            if Is_Family_Append (Item) then
+               Item.Final_Family_Receipt.Phase := Family_Resolved;
+               Release_Retained_Manifest (Item.Final_Family_Receipt);
+            else
+               Item.Final_Receipt.Phase := Flush_Resolved;
+            end if;
          end if;
          Fail_Composable_Flush (Item, Error);
    end Start_Current_Put;
@@ -12045,6 +12128,47 @@ package body Flyology.DB is
       end if;
    end Complete_Immutable_Read;
 
+   procedure Activate_Composable_Family
+     (Item       : in out Flush_Operation;
+      Generation : Generation_Value;
+      Result     : out Outcome_Code)
+   is
+      Guard : Checkpoint_Guard;
+      Core  : Flush_Receipt :=
+        (Current_Outcome     => Success,
+         Phase               => Flush_Head_Unknown,
+         Database_ID         => Item.Final_Family_Receipt.Database_ID,
+         Incarnation         => Item.Final_Family_Receipt.Incarnation,
+         Manifest_ID         => Item.Final_Family_Receipt.Manifest_ID,
+         Replay_Boundary     => Sequence_Number (Item.Driver_State.Plan.Manifest.Replay_Boundary),
+         Expected_Generation => Item.Final_Family_Receipt.Expected_Generation,
+         Expected_Head       => Item.Final_Family_Receipt.Expected_Head,
+         Attempted_Head      => Item.Final_Family_Receipt.Attempted_Head,
+         others              => <>);
+   begin
+      Item.Final_Family_Receipt.Phase := Family_Head_Confirmed;
+      Guard.Life := Item.Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Activate_Flush_Plan
+        (Item.Item.all,
+         Item.Driver_State.Engine,
+         Item.Driver_State.Plan,
+         Generation,
+         Core,
+         Guard,
+         Result);
+      Item.Driver_State.Checkpoint_Admitted := Guard.Active;
+      if Guard.Active then
+         Item.Final_Family_Receipt.Current_Outcome := Local_Activation_Failed;
+         Result := Local_Activation_Failed;
+      else
+         Item.Driver_State.Engine := null;
+         Item.Final_Family_Receipt.Phase := Family_Resolved;
+         Item.Final_Family_Receipt.Current_Outcome := Success;
+         Release_Retained_Manifest (Item.Final_Family_Receipt);
+      end if;
+   end Activate_Composable_Family;
+
    procedure Complete_Head_Put
      (Item    : in out Flush_Operation;
       Outcome : Client_Objects.Conditional_Put_Result)
@@ -12067,25 +12191,34 @@ package body Flyology.DB is
                Finish_Composable_Phase (Item, Outcome_Unknown);
                return;
             end if;
-            Guard.Life := Item.Item.Life'Unchecked_Access;
-            Guard.Active := True;
-            Activate_Flush_Plan
-              (Item.Item.all,
-               Item.Driver_State.Engine,
-               Item.Driver_State.Plan,
-               Generation,
-               Item.Final_Receipt,
-               Guard,
-               Result);
-            Item.Driver_State.Checkpoint_Admitted := Guard.Active;
-            if not Guard.Active then
-               Item.Driver_State.Engine := null;
+            if Is_Family_Append (Item) then
+               Activate_Composable_Family (Item, Generation, Result);
+            else
+               Guard.Life := Item.Item.Life'Unchecked_Access;
+               Guard.Active := True;
+               Activate_Flush_Plan
+                 (Item.Item.all,
+                  Item.Driver_State.Engine,
+                  Item.Driver_State.Plan,
+                  Generation,
+                  Item.Final_Receipt,
+                  Guard,
+                  Result);
+               Item.Driver_State.Checkpoint_Admitted := Guard.Active;
+               if not Guard.Active then
+                  Item.Driver_State.Engine := null;
+               end if;
             end if;
             Complete_Composable_Flush (Item, Result);
 
          when Client_Common.Precondition_Failed =>
             Item.Driver_State.Engine.Gate.Fence;
-            Item.Final_Receipt.Phase := Flush_Resolved;
+            if Is_Family_Append (Item) then
+               Item.Final_Family_Receipt.Phase := Family_Resolved;
+               Release_Retained_Manifest (Item.Final_Family_Receipt);
+            else
+               Item.Final_Receipt.Phase := Flush_Resolved;
+            end if;
             Complete_Composable_Flush (Item, Stale_Writer);
 
          when Client_Common.Cancelled_Before_Publication =>
@@ -12726,27 +12859,49 @@ package body Flyology.DB is
          Start_Next_Selected_Head (Item);
          return;
       end if;
-      Build_Checkpoint_Plan
-        (State.Engine,
-         State.Runs (1 .. State.Run_Total),
-         State.Manifest_ID,
-         State.Transition_ID,
-         State.Plan,
-         Result,
-         Replace_Current_Runs => State.Mode = Complete_Replacement_Plan);
+      if State.Mode = Family_Append_Plan then
+         Build_Column_Family_Plan
+           (State.Engine,
+            State.Family_Configuration,
+            State.Manifest_ID,
+            State.Transition_ID,
+            True,
+            State.Plan,
+            Result);
+      else
+         Build_Checkpoint_Plan
+           (State.Engine,
+            State.Runs (1 .. State.Run_Total),
+            State.Manifest_ID,
+            State.Transition_ID,
+            State.Plan,
+            Result,
+            Replace_Current_Runs => State.Mode = Complete_Replacement_Plan);
+      end if;
       if Result /= Success then
          Complete_Composable_Flush (Item, Result);
          return;
       end if;
-      Initialize_Flush_Receipt
-        (State.Engine,
-         State.Plan,
-         State.Runs (1 .. State.Run_Total),
-         State.Manifest_ID,
-         State.Transition_ID,
-         Item.Final_Receipt,
-         Result,
-         Replace_Current_Runs => State.Mode = Complete_Replacement_Plan);
+      if State.Mode = Family_Append_Plan then
+         Initialize_Column_Family_Receipt
+           (State.Engine,
+            State.Family_Configuration,
+            State.Manifest_ID,
+            State.Transition_ID,
+            State.Plan,
+            Item.Final_Family_Receipt,
+            Result);
+      else
+         Initialize_Flush_Receipt
+           (State.Engine,
+            State.Plan,
+            State.Runs (1 .. State.Run_Total),
+            State.Manifest_ID,
+            State.Transition_ID,
+            Item.Final_Receipt,
+            Result,
+            Replace_Current_Runs => State.Mode = Complete_Replacement_Plan);
+      end if;
       if Result /= Success then
          Complete_Composable_Flush (Item, Result);
          return;
@@ -12955,6 +13110,7 @@ package body Flyology.DB is
       Payload_Buffer       : in out Flyology.Buffers.Unique_Buffer;
       Timeout              : Duration;
       Mode                 : Flush_Plan_Mode;
+      Configuration        : Column_Family_Configuration;
       Older_Run_ID         : Identifier;
       Middle_Run_ID        : Identifier;
       Newer_Run_ID         : Identifier;
@@ -12994,6 +13150,8 @@ package body Flyology.DB is
          else Flyology.HTTP.Client.Deadline_After (Remaining_Time (Operation.Deadline)));
 
       Operation.Final_Receipt := (others => <>);
+      Operation.Final_Family_Receipt := (others => <>);
+      Operation.Final_Is_Family_Append := Mode = Family_Append_Plan;
       Operation.Final_Result := Invalid_State;
       Operation.Has_Final_Result := False;
       Operation.Has_Saved_Error := False;
@@ -13015,11 +13173,16 @@ package body Flyology.DB is
          Operation.Driver_State.Middle_Run_ID := Middle_Run_ID;
          Operation.Driver_State.Newer_Run_ID := Newer_Run_ID;
          Operation.Driver_State.Output_Run_ID := Output_Run_ID;
+         Operation.Driver_State.Family_Configuration := Configuration;
          if Is_Zero (Manifest_ID)
            or else Is_Zero (Transition_ID)
            or else Manifest_ID = Transition_ID
          then
             Operation.Driver_State.Precheck_Result := Invalid_State;
+         elsif Mode = Family_Append_Plan then
+            if Runs'Length /= 0 then
+               Operation.Driver_State.Precheck_Result := Invalid_State;
+            end if;
          elsif Mode in Adjacent_Merge_Plan | Three_Run_Merge_Plan then
             if Runs'Length /= 0
               or else Is_Zero (Older_Run_ID)
@@ -13087,7 +13250,11 @@ package body Flyology.DB is
       Moved := True;
       if Operation.Driver_State = null then
          Operation.Final_Result := Capacity_Exceeded;
-         Operation.Final_Receipt.Current_Outcome := Capacity_Exceeded;
+         if Mode = Family_Append_Plan then
+            Operation.Final_Family_Receipt.Current_Outcome := Capacity_Exceeded;
+         else
+            Operation.Final_Receipt.Current_Outcome := Capacity_Exceeded;
+         end if;
          Operation.Has_Final_Result := True;
          Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
       elsif Operation.Driver_State.Precheck_Result /= Success then
@@ -13106,6 +13273,9 @@ package body Flyology.DB is
             Operation.Item.Life.Cancel_Checkpoint;
          end if;
          Release_Flush_State (Operation.Driver_State);
+         if Mode = Family_Append_Plan then
+            Release_Retained_Manifest (Operation.Final_Family_Receipt);
+         end if;
          if Started and then Flyology.Operations.Is_Active (Operation) then
             Flyology.Operations.Drivers.Rollback_Start (Operation);
          end if;
@@ -13123,11 +13293,40 @@ package body Flyology.DB is
       Start_Composable_Checkpoint
         (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
          Additive_Plan,
+         (others => <>),
          Zero_Identifier,
          Zero_Identifier,
          Zero_Identifier,
          Zero_Identifier);
    end Start_Flush;
+
+   procedure Add_Column_Family
+     (Configuration  : Column_Family_Configuration;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Flush_Operation)
+   is
+      --  Registry publication preserves every retained run and creates no new
+      --  SST. The empty map is therefore derived from the family-append
+      --  protocol, not a run-count or capacity choice.
+      No_Runs : Checkpoint_Run_Identity_Array (1 .. 0);
+   begin
+      Start_Composable_Checkpoint
+        (Operation,
+         No_Runs,
+         Manifest_ID,
+         Transition_ID,
+         Payload_Buffer,
+         Timeout,
+         Family_Append_Plan,
+         Configuration,
+         Zero_Identifier,
+         Zero_Identifier,
+         Zero_Identifier,
+         Zero_Identifier);
+   end Add_Column_Family;
 
    procedure Start_Test_Compaction
      (Operation      : in out Flush_Operation;
@@ -13140,6 +13339,7 @@ package body Flyology.DB is
       Start_Composable_Checkpoint
         (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
          Complete_Replacement_Plan,
+         (others => <>),
          Zero_Identifier,
          Zero_Identifier,
          Zero_Identifier,
@@ -13167,6 +13367,7 @@ package body Flyology.DB is
          Payload_Buffer,
          Timeout,
          Adjacent_Merge_Plan,
+         (others => <>),
          Older_Run_ID,
          Zero_Identifier,
          Newer_Run_ID,
@@ -13199,6 +13400,7 @@ package body Flyology.DB is
          Payload_Buffer,
          Timeout,
          Three_Run_Merge_Plan,
+         (others => <>),
          First_Run_ID,
          Middle_Run_ID,
          Last_Run_ID,
@@ -13215,6 +13417,8 @@ package body Flyology.DB is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "Flush Finish requires the original buffer pool";
+      elsif Operation.Final_Is_Family_Append then
+         raise Program_Error with "family append requires its Column_Family_Receipt Finish";
       end if;
       Flyology.Operations.Consume (Operation);
       Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
@@ -13239,6 +13443,44 @@ package body Flyology.DB is
       Result := Operation.Final_Result;
    end Finish;
 
+   procedure Finish
+     (Operation      : in out Flush_Operation;
+      Receipt        : out Column_Family_Receipt;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+   is
+   begin
+      if Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "family append Finish requires the original buffer pool";
+      elsif not Operation.Final_Is_Family_Append then
+         raise Program_Error with "Flush publication requires its Flush_Receipt Finish";
+      end if;
+      Flyology.Operations.Consume (Operation);
+      Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+      Release_Flush_State (Operation.Driver_State);
+      if Operation.Read_Child /= null then
+         Free_Whole_Get_Operation (Operation.Read_Child);
+      end if;
+      if Operation.Range_Child /= null then
+         Free_Range_Get_Operation (Operation.Range_Child);
+      end if;
+      if Operation.Head_Child /= null then
+         Free_Head_Operation (Operation.Head_Child);
+      end if;
+      if Operation.Has_Saved_Error then
+         Release_Retained_Manifest (Operation.Final_Family_Receipt);
+         Ada.Exceptions.Raise_Exception
+           (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
+            Ada.Exceptions.Exception_Message (Operation.Saved_Error));
+      elsif not Operation.Has_Final_Result then
+         Release_Retained_Manifest (Operation.Final_Family_Receipt);
+         raise Program_Error with "composable family append has no terminal result";
+      end if;
+      Receipt := Operation.Final_Family_Receipt;
+      Release_Retained_Manifest (Operation.Final_Family_Receipt);
+      Result := Operation.Final_Result;
+   end Finish;
+
    overriding procedure Finalize (Item : in out Flush_Operation) is
    begin
       begin
@@ -13256,6 +13498,7 @@ package body Flyology.DB is
       if Item.Head_Child /= null then
          Free_Head_Operation (Item.Head_Child);
       end if;
+      Release_Retained_Manifest (Item.Final_Family_Receipt);
       Flyology.Buffers.Release (Item.Payload);
    end Finalize;
 
@@ -13633,8 +13876,9 @@ package body Flyology.DB is
          Receipt.Current_Outcome := Result;
    end Publish_Checkpoint;
 
-   procedure Synchronous_Flush_Buffer_Capacity
+   procedure Synchronous_Checkpoint_Buffer_Capacity
      (State   : not null Engine_State_Access;
+      Additional_Family_Name_Length : Natural;
       Maximum : out Natural;
       Result  : out Outcome_Code);
 
@@ -13681,7 +13925,7 @@ package body Flyology.DB is
             Receipt.Current_Outcome := Result;
             return;
          end if;
-         Synchronous_Flush_Buffer_Capacity (Lease.State, Maximum, Result);
+         Synchronous_Checkpoint_Buffer_Capacity (Lease.State, 0, Maximum, Result);
          if Result /= Success then
             Receipt.Current_Outcome := Result;
             return;
@@ -13889,8 +14133,9 @@ package body Flyology.DB is
          Result);
    end Publish_Three_Run_Merge;
 
-   procedure Synchronous_Flush_Buffer_Capacity
+   procedure Synchronous_Checkpoint_Buffer_Capacity
      (State   : not null Engine_State_Access;
+      Additional_Family_Name_Length : Natural;
       Maximum : out Natural;
       Result  : out Outcome_Code)
    is
@@ -13976,6 +14221,15 @@ package body Flyology.DB is
             return;
          end if;
       end loop;
+      if Additional_Family_Name_Length > 0
+        and then not Add
+          (Manifest_Bound,
+           Interfaces.Unsigned_64
+             (LSM_Runtime.LSM.Checkpoint_Family_Header_Length + Additional_Family_Name_Length))
+      then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
       if not Add_Product
                (Manifest_Bound,
                 Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Total_L0_Runs),
@@ -14002,7 +14256,7 @@ package body Flyology.DB is
             Result := Success;
          end if;
       end;
-   end Synchronous_Flush_Buffer_Capacity;
+   end Synchronous_Checkpoint_Buffer_Capacity;
 
    procedure Flush
      (Item          : in out Database;
@@ -14039,7 +14293,7 @@ package body Flyology.DB is
          Receipt.Current_Outcome := Result;
          return;
       else
-         Synchronous_Flush_Buffer_Capacity (Lease.State, Maximum, Result);
+         Synchronous_Checkpoint_Buffer_Capacity (Lease.State, 0, Maximum, Result);
          if Result /= Success then
             Receipt.Current_Outcome := Result;
             return;
@@ -14073,6 +14327,7 @@ package body Flyology.DB is
                   Payload_Buffer,
                   Timeout,
                   Additive_Plan,
+                  (others => <>),
                   Zero_Identifier,
                   Zero_Identifier,
                   Zero_Identifier,
@@ -14798,8 +15053,94 @@ package body Flyology.DB is
       State    : Engine_State_Access := null;
       Plan     : Checkpoint_Plan;
       Guard    : Checkpoint_Guard;
+      Lease    : aliased Lifecycle_Lease;
+      Storage  : access Storage_Context;
+      Maximum  : Natural := 0;
+      --  One DB parent, one Object Storage child, one HTTP exchange, and one
+      --  transport child are the exact family-append owner stack. This is
+      --  operation geometry, not a DB queue, connection, or public default.
+      Synchronous_Set_Capacity : constant := 4;
    begin
       Receipt := (others => <>);
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Storage := Lease.State.Storage;
+      if Storage.HTTP_Client /= null then
+         if Storage.Client_Identity = null then
+            Receipt.Current_Outcome := Invalid_State;
+            Result := Invalid_State;
+            return;
+         end if;
+         Synchronous_Checkpoint_Buffer_Capacity
+           (Lease.State, Configuration.Name_Length, Maximum, Result);
+         if Result /= Success then
+            Receipt.Current_Outcome := Result;
+            return;
+         end if;
+         declare
+            Set : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+            --  Exactly one moved payload token exists in this serial wait.
+            --  Capacity one is ownership geometry, not persisted DB policy.
+            Pool : aliased Flyology.Buffers.Pool
+              (Block_Size => Positive (Maximum), Capacity => 1);
+            Payload_Buffer : Flyology.Buffers.Unique_Buffer (Pool'Access);
+            Operation      : Flush_Operation
+              (Set'Access,
+               Item'Unchecked_Access,
+               Storage,
+               Storage.HTTP_Client,
+               Pool'Access,
+               Token);
+            No_Runs        : Checkpoint_Run_Identity_Array (1 .. 0);
+            Started        : Boolean := False;
+         begin
+            Flyology.Buffers.Acquire (Payload_Buffer);
+            Start_Composable_Checkpoint
+              (Operation,
+               No_Runs,
+               Manifest_ID,
+               Transition_ID,
+               Payload_Buffer,
+               Remaining_Time (Deadline),
+               Family_Append_Plan,
+               Configuration,
+               Zero_Identifier,
+               Zero_Identifier,
+               Zero_Identifier,
+               Zero_Identifier,
+               Lease'Access);
+            Started := True;
+            Flyology.Operations.Wait_All (Set);
+            Finish (Operation, Receipt, Result, Payload_Buffer);
+         exception
+            when Storage_Error =>
+               Receipt := (if Started then Operation.Final_Family_Receipt else (others => <>));
+               Result :=
+                 (if not Started or else Receipt.Phase = No_Family_Publication
+                  then Capacity_Exceeded
+                  elsif Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown
+                  then Outcome_Unknown
+                  elsif Receipt.Phase = Family_Head_Confirmed
+                  then Local_Activation_Failed
+                  else Storage_Failure);
+               Receipt.Current_Outcome := Result;
+            when others =>
+               Receipt := (if Started then Operation.Final_Family_Receipt else (others => <>));
+               Result :=
+                 (if Started
+                    and then Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown
+                  then Outcome_Unknown
+                  elsif Started and then Receipt.Phase = Family_Head_Confirmed
+                  then Local_Activation_Failed
+                  else Storage_Failure);
+               Receipt.Current_Outcome := Result;
+         end;
+         return;
+      end if;
+      Release (Lease);
       Item.Life.Begin_Checkpoint (State, Result);
       if Result /= Success then
          Receipt.Current_Outcome := Result;
@@ -14809,7 +15150,13 @@ package body Flyology.DB is
       Guard.Active := True;
       Item.Life.Await_Quiescent;
       Build_Column_Family_Plan
-        (State, Configuration, Manifest_ID, Transition_ID, Plan, Result);
+        (State,
+         Configuration,
+         Manifest_ID,
+         Transition_ID,
+         False,
+         Plan,
+         Result);
       if Result = Success then
          Initialize_Column_Family_Receipt
            (State, Configuration, Manifest_ID, Transition_ID, Plan, Receipt, Result);

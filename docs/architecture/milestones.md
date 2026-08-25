@@ -6,8 +6,8 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | Milestone | Acceptance gate | State |
 | --- | --- | --- |
 | 0 Foundation | Crate, guide, dependency clone/pin, architecture/format/oracle contracts, runners, provenance | Accepted at `8b9ff8c` |
-| 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
-| 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine and exact-checkpoint family append operational; remote matrix pending |
+| 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local/client paths and six-provider matrix operational; broader acceptance pending |
+| 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Limited owned sync/composable spine and remote matrix operational; broader acceptance pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, private sync/composable replacement, and manifest-admitted version-preserving merge kernel operational; public compaction pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
@@ -25,10 +25,10 @@ exercises create, commit, synchronous and composable checkpoint Flush, composabl
 through provider-owned Object Storage operations in `Client.Objects`. Client-bound synchronous Flush is now an
 owner-driven wait over the same DB operation; memory/files retain the backend-neutral synchronous fallback. The
 limited operation and caller-owned completion set express scoped lifetime; a separate `.Scoped` package would create
-a second vocabulary for the same provider state machine and is intentionally absent. Remote-provider matrix
-qualification and a composable family-append form remain prerequisites for accepting Milestone 2. The accepted
-owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication models remain abstract assurance lanes
-rather than a claimed refinement proof.
+a second vocabulary for the same provider state machine and is intentionally absent. Remote-provider qualification
+now includes the exact-checkpoint family append through both direct-composable and blocking-wait calls. Broader
+Milestone 2 acceptance remains pending. The pooled TLA+ and manifest-publication models remain abstract assurance
+lanes rather than a claimed refinement proof.
 
 The persisted transition and cacheless-recovery prerequisite admits a manifest-v3 checkpoint carrier that
 either preserves the exact registry or appends exactly one higher-ID family while leaving every prior record fixed.
@@ -37,7 +37,8 @@ later commit suffix. It copies all prior runs and reserved identities, derives t
 caller-supplied persisted limits, publishes immutable manifest bytes before one conditional HEAD, and reconciles
 only through its exact receipt. Fresh-root and suffix-bearing calls return `Invalid_State` before publication rather
 than selecting SST identities. The files-backed public showcase carries the appended family through its first L0
-run and cacheless reopen. A composable overload and broader family lifecycle remain pending Milestone 2 work.
+run and cacheless reopen. The client-backed synchronous overload waits on the same caller-owned `Flush_Operation`
+used by the operation-last composable form. Broader family lifecycle remains pending Milestone 2 work.
 
 The immediate integration target is the [limited end-to-end profile](limited-profile.md). It freezes one coherent
 public workflow before broadening policy: fixed initial families, synchronous transactions, explicit Flush, complete

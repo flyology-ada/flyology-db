@@ -21,7 +21,9 @@ canonical suffix-delta run for each affected family while retaining every curren
 remain explicit, and cacheless recovery merges all named runs before replaying only the latest checkpoint's later log
 suffix. Live activation replaces the coordinator without invalidating family handles or active transactions. An
 exact-checkpoint `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
-immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. It derives all
+immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. Its additive
+operation-last overload uses the existing caller-owned `Flush_Operation`; the client-backed synchronous form is a
+literal wait over that state machine. It derives all
 allocation extents from persisted database and family limits; fresh-root and unflushed-suffix calls reject before
 publication because no caller-owned SST identity may be invented. The public files showcase checkpoints one root
 family, appends a second, writes and Flushes both, discards all local state, and recovers both families from object
@@ -33,8 +35,8 @@ creates a helper task, and both preserve the same receipt and certainty mapping.
 compaction spine now drives both a synchronous publisher and a test-qualified caller-composable replacement through
 the same owner stack, receipt, and certainty machinery. It builds complete live-state runs and publishes a successor
 manifest naming only those fresh outputs. It retains superseded immutable objects and adds no public trigger,
-automatic scheduling, or physical-GC policy. Remote-provider qualification, the public compaction surface, run
-pruning, broader family evolution, and a composable family-append overload remain separate review units.
+automatic scheduling, or physical-GC policy. The public compaction surface, run pruning, and broader family
+evolution remain separate review units.
 The LSM read-equivalence lane independently checks that a complete live-state replacement emits one Put for each
 live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
 later delta containing Puts, Deletes, or untouched keys. This closes concrete replacement-read semantics without

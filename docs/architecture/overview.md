@@ -48,10 +48,12 @@ The checkpoint protocol is specified separately in
 [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md). Manifest-v3 root creation, public synchronous Flush
 and caller-composable Flush with self-contained certainty receipts, exact same-identity reconciliation, live
 coordinator replacement, additive multi-run L0 publication, and cacheless all-run recovery are operational.
-Synchronous `Add_Column_Family` carries one higher-ID caller configuration across an exact checkpoint, confirms its
+Synchronous and caller-composable `Add_Column_Family` carry one higher-ID caller configuration across an exact
+checkpoint, confirm its
 immutable manifest before conditional HEAD, and activates or reconciles through a self-contained receipt. It rejects
 fresh-root and post-checkpoint-suffix state before publication rather than inventing immutable run identities. The
-same operation's caller-composable form remains additive future work.
+client-backed synchronous form waits on the same `Flush_Operation` state machine as the operation-last composable
+form.
 The private complete-replacement compaction planner/publisher is operational through both synchronous and
 test-qualified caller-composable drivers; its public trigger, automatic policy, snapshot/replica retention horizon,
 run pruning, and physical garbage collection are not.

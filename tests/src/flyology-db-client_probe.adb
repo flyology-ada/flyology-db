@@ -104,7 +104,7 @@ procedure Flyology.DB.Client_Probe is
    Reopened               : Database;
    Txn                    : Transaction;
    Reader                 : Transaction;
-   Family, Audit_Family   : Column_Family;
+   Family, Audit_Family, Metadata_Family : Column_Family;
    Receipt                : Create_Receipt;
    Family_Info            : Column_Family_Receipt;
    Commit_Info            : Commit_Receipt;
@@ -114,14 +114,14 @@ procedure Flyology.DB.Client_Probe is
    Close_Result           : Outcome_Code;
    Bucket_Result          : Buckets.Create_Outcome;
 
-   --  The remote fixture starts with one family, then appends one independently
-   --  bounded family after its first checkpoint. Seven manifest-history slots
-   --  admit exactly root, first checkpoint, registry append, replacement,
+   --  The remote fixture starts with one family, then appends two independently
+   --  bounded families after its first checkpoint. Eight manifest-history slots
+   --  admit exactly root, first checkpoint, two registry appends, replacement,
    --  second and third additive checkpoints, and the three-run merge successor.
    --  These are persisted fixture authority, not API defaults.
    Limits                   : constant Database_Limits :=
-     (Maximum_Column_Families           => 2,
-      Maximum_Manifest_History          => 7,
+     (Maximum_Column_Families           => 3,
+      Maximum_Manifest_History          => 8,
       Maximum_Batch_History             => 4,
       Maximum_Transactions_Per_Batch    => 1,
       Maximum_Mutations_Per_Transaction => 4,
@@ -159,15 +159,26 @@ procedure Flyology.DB.Client_Probe is
         Memtable_Max_Bytes   => 256,
         Memtable_Max_Entries => 2,
         Maximum_L0_Runs      => 1);
+   --  The second appended family supplies another exact caller policy and
+   --  remains empty to prove registry preservation does not invent an SST.
+   Metadata_Family_Config   : constant Column_Family_Configuration :=
+     Configure_Column_Family
+       (3,
+        Bytes ("metadata"),
+        Max_Key_Bytes        => 16,
+        Max_Value_Bytes      => 96,
+        Memtable_Max_Bytes   => 384,
+        Memtable_Max_Entries => 3,
+        Maximum_L0_Runs      => 1);
    --  Stable one-byte fixture identities assign 1 to the database, 2/3 to the
    --  root manifest/transition, 4 to the committed transaction, 5 to the
    --  read-only probe, 6/7/8 to the additive run/checkpoint/HEAD transition,
-   --  9/10 to the appended-family manifest/transition, 11/12/13 to the complete
-   --  replacement, 14 to the later cross-family transaction, 15/16/17/18 to
-   --  its two runs/checkpoint/transition, 19 to a third transaction,
-   --  20/21/22 to its family-1 run/checkpoint/transition, and 23/24/25 to the
-   --  selected three-run merge. IDs 26 and 27 are unused run-map placeholders
-   --  for unchanged/empty family 2; they never name attempted objects. These
+   --  9/10 and 11/12 to the two appended-family manifest/transitions, 13/14/15
+   --  to the complete replacement, 16 to the later cross-family transaction,
+   --  17/18/19/20 to its two runs/checkpoint/transition, 21 to a third
+   --  transaction, 22/23/24 to its family-1 run/checkpoint/transition, and
+   --  25/26/27 to the selected three-run merge. IDs 28 through 32 are unused
+   --  run-map placeholders for unchanged/empty families; they never name attempted objects. These
    --  values isolate fixture roles and are not ID-generation policy or tags.
    Probe_Database_ID        : constant Database_Identifier := Database_Identifier (Numbered_ID (1));
    Root_Manifest_ID         : constant Identifier := Numbered_ID (2);
@@ -179,25 +190,30 @@ procedure Flyology.DB.Client_Probe is
    Checkpoint_Transition_ID : constant Identifier := Numbered_ID (8);
    Family_Manifest_ID       : constant Identifier := Numbered_ID (9);
    Family_Transition_ID     : constant Identifier := Numbered_ID (10);
-   Compaction_Run_ID        : constant Identifier := Numbered_ID (11);
-   Compaction_Manifest_ID   : constant Identifier := Numbered_ID (12);
-   Compaction_Transition_ID : constant Identifier := Numbered_ID (13);
+   Metadata_Manifest_ID     : constant Identifier := Numbered_ID (11);
+   Metadata_Transition_ID   : constant Identifier := Numbered_ID (12);
+   Compaction_Run_ID        : constant Identifier := Numbered_ID (13);
+   Compaction_Manifest_ID   : constant Identifier := Numbered_ID (14);
+   Compaction_Transition_ID : constant Identifier := Numbered_ID (15);
    Later_Transaction_ID     : constant Transaction_Identifier :=
-     Transaction_Identifier (Numbered_ID (14));
-   Later_Run_ID             : constant Identifier := Numbered_ID (15);
-   Audit_Run_ID             : constant Identifier := Numbered_ID (16);
-   Later_Manifest_ID        : constant Identifier := Numbered_ID (17);
-   Later_Transition_ID      : constant Identifier := Numbered_ID (18);
+     Transaction_Identifier (Numbered_ID (16));
+   Later_Run_ID             : constant Identifier := Numbered_ID (17);
+   Audit_Run_ID             : constant Identifier := Numbered_ID (18);
+   Later_Manifest_ID        : constant Identifier := Numbered_ID (19);
+   Later_Transition_ID      : constant Identifier := Numbered_ID (20);
    Third_Transaction_ID     : constant Transaction_Identifier :=
-     Transaction_Identifier (Numbered_ID (19));
-   Third_Run_ID             : constant Identifier := Numbered_ID (20);
-   Third_Manifest_ID        : constant Identifier := Numbered_ID (21);
-   Third_Transition_ID      : constant Identifier := Numbered_ID (22);
-   Merged_Run_ID            : constant Identifier := Numbered_ID (23);
-   Merged_Manifest_ID       : constant Identifier := Numbered_ID (24);
-   Merged_Transition_ID     : constant Identifier := Numbered_ID (25);
-   Empty_Compaction_Run_ID  : constant Identifier := Numbered_ID (26);
-   Unchanged_Third_Run_ID   : constant Identifier := Numbered_ID (27);
+     Transaction_Identifier (Numbered_ID (21));
+   Third_Run_ID             : constant Identifier := Numbered_ID (22);
+   Third_Manifest_ID        : constant Identifier := Numbered_ID (23);
+   Third_Transition_ID      : constant Identifier := Numbered_ID (24);
+   Merged_Run_ID            : constant Identifier := Numbered_ID (25);
+   Merged_Manifest_ID       : constant Identifier := Numbered_ID (26);
+   Merged_Transition_ID     : constant Identifier := Numbered_ID (27);
+   Empty_Later_Metadata_Run_ID : constant Identifier := Numbered_ID (28);
+   Unchanged_Third_Audit_Run_ID : constant Identifier := Numbered_ID (29);
+   Unchanged_Third_Metadata_Run_ID : constant Identifier := Numbered_ID (30);
+   Empty_Compaction_Audit_Run_ID : constant Identifier := Numbered_ID (31);
+   Empty_Compaction_Metadata_Run_ID : constant Identifier := Numbered_ID (32);
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag          : constant Interfaces.Unsigned_64 := 16#F105#;
@@ -205,12 +221,16 @@ procedure Flyology.DB.Client_Probe is
      [Configure_Checkpoint_Run (1, Checkpoint_Run_ID)];
    Compaction_Runs          : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Compaction_Run_ID),
-      Configure_Checkpoint_Run (2, Empty_Compaction_Run_ID)];
+      Configure_Checkpoint_Run (2, Empty_Compaction_Audit_Run_ID),
+      Configure_Checkpoint_Run (3, Empty_Compaction_Metadata_Run_ID)];
    Later_Runs               : constant Checkpoint_Run_Identity_Array :=
-     [Configure_Checkpoint_Run (1, Later_Run_ID), Configure_Checkpoint_Run (2, Audit_Run_ID)];
+     [Configure_Checkpoint_Run (1, Later_Run_ID),
+      Configure_Checkpoint_Run (2, Audit_Run_ID),
+      Configure_Checkpoint_Run (3, Empty_Later_Metadata_Run_ID)];
    Third_Runs               : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Third_Run_ID),
-      Configure_Checkpoint_Run (2, Unchanged_Third_Run_ID)];
+      Configure_Checkpoint_Run (2, Unchanged_Third_Audit_Run_ID),
+      Configure_Checkpoint_Run (3, Unchanged_Third_Metadata_Run_ID)];
    Key_Data                 : constant Byte_Array := Bytes ("client-key");
    Value_Data               : constant Byte_Array := Bytes ("client-value");
    Later_Value_Data         : constant Byte_Array := Bytes ("client-value-later");
@@ -523,30 +543,125 @@ begin
       raise Program_Error with "client-backed Flush receipt lost exact authority";
    end if;
 
-   --  Lose the registry HEAD response after possible admission. The append
-   --  must remain unknown until the exact receipt performs a generation-bound
-   --  cacheless reconciliation; no replacement identity or mutation retry is
-   --  permitted. This is the remote counterpart of the local append corpus.
-   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+   --  Family-registry publication must include the appended name/header in its
+   --  caller-selected scratch requirement. A one-byte token is rejected before
+   --  provider entry, restored exactly, and leaves the identities reusable.
+   declare
+      Tiny_Pool    : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
+      Tiny_Buffer  : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
+      Tiny_Work    : Flush_Operation
+        (Composable_Set'Access,
+         Created'Access,
+         Context'Access,
+         Client'Access,
+         Tiny_Pool'Access,
+         null);
+      Tiny_Family  : Column_Family_Receipt;
+   begin
+      Flyology.Buffers.Acquire (Tiny_Buffer);
+      Add_Column_Family
+        (Appended_Family,
+         Family_Manifest_ID,
+         Family_Transition_ID,
+         Tiny_Buffer,
+         Test_Operation_Timeout,
+         Tiny_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Tiny_Work, Tiny_Family, Result, Tiny_Buffer);
+      Expect (Result, Capacity_Exceeded, "undersized family append scratch was not rejected");
+      if not Flyology.Buffers.Has_Buffer (Tiny_Buffer) then
+         raise Program_Error with "undersized family append lost its exact token";
+      end if;
+      Flyology.Operations.Release (Tiny_Work);
+      Flyology.Buffers.Release (Tiny_Buffer);
+   end;
+
+   --  A duplicate-family rejection is prepublication and consumes the typed
+   --  terminal result while restoring the exact token. The same established
+   --  operation and identities therefore remain reusable for the valid append.
    Add_Column_Family
-     (Created,
-      Appended_Family,
+     (Families (1),
       Family_Manifest_ID,
       Family_Transition_ID,
+      Restored_Buffer,
       Test_Operation_Timeout,
-      Receipt => Family_Info,
-      Result  => Result);
+      Flush_Work);
+   Flyology.Operations.Wait_All (Composable_Set);
+   declare
+      Wrong_Finish_Rejected : Boolean := False;
+   begin
+      begin
+         Finish (Flush_Work, Flush_Info, Result, Flush_Buffer);
+      exception
+         when Program_Error =>
+            Wrong_Finish_Rejected := True;
+      end;
+      if not Wrong_Finish_Rejected
+        or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Operations.Is_Terminal (Flush_Work)
+      then
+         raise Program_Error with "wrong family-append Finish consumed terminal ownership";
+      end if;
+   end;
+   Finish (Flush_Work, Family_Info, Result, Flush_Buffer);
+   Expect (Result, Already_Exists, "composable duplicate family was not rejected definitely");
+   if Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "rejected family append did not restore its exact token";
+   end if;
+
+   --  Lose the registry HEAD response after possible admission. Typed Finish
+   --  must preserve the exact receipt and token; later resolution performs a
+   --  generation-bound cacheless read without replay or replacement identity.
+   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+   Add_Column_Family
+     (Appended_Family,
+      Family_Manifest_ID,
+      Family_Transition_ID,
+      Flush_Buffer,
+      Test_Operation_Timeout,
+      Flush_Work);
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Family_Info, Result, Restored_Buffer);
    Expect (Result, Outcome_Unknown, "client-backed family append lost HEAD uncertainty");
-   if Column_Family_Receipt_Manifest_ID (Family_Info) /= Family_Manifest_ID
+   if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+     or else Column_Family_Receipt_Family_ID (Family_Info) /= Appended_Family.ID
+     or else Column_Family_Receipt_Manifest_ID (Family_Info) /= Family_Manifest_ID
      or else Column_Family_Receipt_Transition_ID (Family_Info) /= Family_Transition_ID
    then
-      raise Program_Error with "client-backed family append receipt lost exact authority";
+      raise Program_Error with "composable family append lost exact token or receipt authority";
    end if;
    Resolve_Add_Column_Family
      (Created, Family_Info, Test_Operation_Timeout, Result => Result);
    Expect (Result, Success, "client-backed family append reconciliation failed");
    Open_Column_Family (Created, Appended_Family.ID, Audit_Family, Result);
    Expect (Result, Success, "client-backed appended family open failed");
+
+   --  The blocking client overload is a literal wait over the consumed
+   --  operation above. A second successful append proves that wrapper reaches
+   --  the same provider publication and activation path without inventing an
+   --  SST for the deliberately empty family.
+   Add_Column_Family
+     (Created,
+      Metadata_Family_Config,
+      Metadata_Manifest_ID,
+      Metadata_Transition_ID,
+      Test_Operation_Timeout,
+      Receipt => Family_Info,
+      Result  => Result);
+   Expect (Result, Success, "blocking client family append failed");
+   if Column_Family_Receipt_Family_ID (Family_Info) /= Metadata_Family_Config.ID
+     or else Column_Family_Receipt_Manifest_ID (Family_Info) /= Metadata_Manifest_ID
+     or else Column_Family_Receipt_Transition_ID (Family_Info) /= Metadata_Transition_ID
+   then
+      raise Program_Error with "blocking family append receipt lost exact authority";
+   end if;
+   Open_Column_Family (Created, Metadata_Family_Config.ID, Metadata_Family, Result);
+   Expect (Result, Success, "blocking appended family open failed");
 
    --  The private replacement constructor selects only the already-frozen
    --  complete-run algorithm. It reuses the public operation owner stack,
@@ -669,6 +784,8 @@ begin
    Expect (Result, Success, "reopened family lookup failed");
    Open_Column_Family (Reopened, Appended_Family.ID, Audit_Family, Result);
    Expect (Result, Success, "reopened appended family lookup failed");
+   Open_Column_Family (Reopened, Metadata_Family_Config.ID, Metadata_Family, Result);
+   Expect (Result, Success, "reopened blocking-appended family lookup failed");
    Get (Reopened, Reader, Family, Key_Data, Data, Result);
    Expect (Result, Success, "reopened client-backed read failed");
    if not Same (Data, Third_Value_Data) then
@@ -679,12 +796,14 @@ begin
    if not Same (Data, Audit_Value_Data) then
       raise Program_Error with "client-backed appended family returned the wrong bytes";
    end if;
+   Get (Reopened, Reader, Metadata_Family, Audit_Key_Data, Data, Result);
+   Expect (Result, Not_Found, "empty blocking-appended family invented a value");
    Rollback (Reader, Result);
    Expect (Result, Success, "client-backed reader rollback failed");
    Close (Reopened, Close_Result);
    Expect (Close_Result, Success, "reopened client-backed close failed");
    Ada.Text_IO.Put_Line
-     ("Flyology.DB client-backed create/append/commit/Flush/compaction/reopen passed");
+     ("Flyology.DB client-backed create/appends/commit/Flush/compaction/reopen passed");
 exception
    when others =>
       Close (Created, Close_Result);
