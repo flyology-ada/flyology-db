@@ -164,7 +164,8 @@ registry and are ignored.
 `Max_Key_Bytes` and `Max_Value_Bytes` are nonzero per-family semantic authorities. The manifest-level transaction
 and batch payload budgets count logical key bytes plus Put-value bytes, not wire framing. A family key/value pair
 must fit both the transaction logical-payload budget and live-state byte budget. The codec does not prescribe a
-4 KiB/1 MiB default; that policy belongs to the later public family-creation API. The format ceiling permits 16
+4 KiB/1 MiB default; `Create` and `Add_Column_Family` persist only caller-supplied family authority. The format
+ceiling permits 16
 transactions per batch, while the current log-only runtime admits at most eight. Count and logical-byte budgets are
 persisted configuration, not native allocation sizes. A valid configuration cannot admit more transactions per
 batch than total mutations per batch, because every transaction in a batch contains at least one mutation.

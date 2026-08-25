@@ -11,14 +11,21 @@ transaction.
 This repository is under active development. The current acceptance state and remaining work are recorded in
 [the milestone plan](docs/architecture/milestones.md). No production qualification or performance claim is made.
 The next usable boundary is the deliberately narrow
-[limited end-to-end profile](docs/architecture/limited-profile.md): one writer, fixed families, synchronous
-transactions and Flush, exact close/local-loss/reopen recovery, and no automatic maintenance or retry policy.
-The current operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v2 roots with explicit
+[limited end-to-end profile](docs/architecture/limited-profile.md): one writer, one checkpoint-bound append-only
+family change, synchronous transactions and Flush, exact close/local-loss/reopen recovery, and no automatic
+maintenance or retry policy.
+The current operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v3 roots with explicit
 LSM limits, stable column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/
 database limits. Public synchronous `Flush` publishes and reconciles a complete checkpoint; later calls append one
 canonical suffix-delta run for each affected family while retaining every current run oldest-to-newest. Tombstones
 remain explicit, and cacheless recovery merges all named runs before replaying only the latest checkpoint's later log
 suffix. Live activation replaces the coordinator without invalidating family handles or active transactions. An
+exact-checkpoint `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
+immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. It derives all
+allocation extents from persisted database and family limits; fresh-root and unflushed-suffix calls reject before
+publication because no caller-owned SST identity may be invented. The public files showcase checkpoints one root
+family, appends a second, writes and Flushes both, discards all local state, and recovers both families from object
+storage alone. An
 additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a bounded completion
 set, moving one caller-sized unique-buffer token until typed `Finish`. Client-bound synchronous `Flush` is a literal
 owner-driven wait over that operation; memory/files retain the backend-neutral synchronous publisher. Neither path
@@ -27,7 +34,7 @@ compaction spine now drives both a synchronous publisher and a test-qualified ca
 the same owner stack, receipt, and certainty machinery. It builds complete live-state runs and publishes a successor
 manifest naming only those fresh outputs. It retains superseded immutable objects and adds no public trigger,
 automatic scheduling, or physical-GC policy. Remote-provider qualification, the public compaction surface, run
-pruning, and dynamic family changes remain separate review units.
+pruning, broader family evolution, and a composable family-append overload remain separate review units.
 The LSM read-equivalence lane independently checks that a complete live-state replacement emits one Put for each
 live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
 later delta containing Puts, Deletes, or untouched keys. This closes concrete replacement-read semantics without

@@ -1,5 +1,40 @@
 # Review record
 
+## Accepted checkpoint-bound column-family append candidate
+
+- Parent: checkpoint-carried registry prerequisite `021bdd2`.
+- Scope and contract: `Add_Column_Family` appends exactly one caller-configured, higher-ID family at an exact durable
+  checkpoint with no later commit suffix. The caller supplies the complete per-family limits plus stable immutable
+  manifest and HEAD transition identities. Duplicate ID/name, non-increasing ID, fresh-root state, suffix-bearing
+  state, persisted family/history capacity, and invalid limits reject before publication. Rename, drop, reorder,
+  prior-family mutation, automatic Flush, and a composable overload remain outside this unit.
+- Allocation and formats: planning lazily allocates the authenticated checkpoint extents with one additional family,
+  checked arithmetic, the prior run and identity totals, and the existing persisted database-wide ceilings. It copies
+  every prior registry record, run descriptor, identity, replay boundary, and LSM limit exactly; the new family starts
+  with zero runs. Allocation failure is typed `Capacity_Exceeded` and publishes no partial manifest or HEAD. No public
+  constant, default, timeout, ID allocator, task count, or resource ceiling is introduced.
+- Certainty and ownership: the private receipt owns the exact encoded successor manifest, expected provider
+  generation/HEAD, attempted transition, family configuration, and engine incarnation. Immutable uncertainty permits
+  only same-ID/same-byte continuation. HEAD uncertainty fences the writer and permits only complete cacheless
+  reconciliation; an older observation remains unknown, the attempted manifest in a fully validated reachable chain
+  confirms publication, and a conclusive excluding successor is stale-writer evidence. Confirmed publication followed
+  by failed local replacement is `Local_Activation_Failed` and retains sufficient authority for exact resolution. No
+  result authorizes mutation replay or a replacement identity.
+- Acceptance evidence: the memory and files corpus covers duplicate rejection, persisted capacity, exact receipt
+  authority, appended-family key/value enforcement, first-run Flush, cacheless reopen, fresh-root and unflushed-suffix
+  rejection, exact allocation rollback, immutable and HEAD lost-response resolution, and local-activation recovery.
+  The public Files showcase now creates one family, checkpoints it, appends a differently bounded family, commits and
+  Flushes both, destroys all process-local state, and recovers both solely from object storage. The full deterministic
+  suite, repository gate, GNATdoc generation, all maintained TLC models/witnesses/negative probes, 251/251 TLAPS
+  obligations, and warning-strict GNATprove 1,091/1,091 checks (167 flow, 924 prover) are green; the post-run formal
+  audit is clean.
+- Findings cycle: the first pass fixed a P1 certainty downgrade that could classify an incomplete read after a
+  confirmed HEAD as publication unknown, and separated unsupported call state from authenticated corruption. The
+  acceptance review then fixed a P2 showcase gap by carrying the appended family through a two-family Flush and
+  process-local-loss reopen, and corrected one timeout description and one formatting defect. Final API, ownership,
+  concurrency, certainty, allocation, persisted-format, constants, recovery, tests, documentation, and
+  unnecessary-surface re-review finds no actionable P0, P1, or P2 finding.
+
 ## Accepted checkpoint-carried registry append prerequisite
 
 - Parent: limited end-to-end profile `d511de4`.

@@ -7,7 +7,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | --- | --- | --- |
 | 0 Foundation | Crate, guide, dependency clone/pin, architecture/format/oracle contracts, runners, provenance | Accepted at `8b9ff8c` |
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local and authenticated-client paths implemented; remote matrix pending |
-| 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine accepted at `c909c57`; authenticated binding added; remote matrix pending |
+| 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Owned synchronous spine and exact-checkpoint family append operational; remote matrix pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, private sync/composable replacement, and manifest-admitted version-preserving merge kernel operational; public compaction pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
@@ -26,20 +26,24 @@ through provider-owned Object Storage operations in `Client.Objects`. Client-bou
 owner-driven wait over the same DB operation; memory/files retain the backend-neutral synchronous fallback. The
 limited operation and caller-owned completion set express scoped lifetime; a separate `.Scoped` package would create
 a second vocabulary for the same provider state machine and is intentionally absent. Remote-provider matrix
-qualification and dynamic append-only family changes remain prerequisites for accepting Milestone 2. The accepted
+qualification and a composable family-append form remain prerequisites for accepting Milestone 2. The accepted
 owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication models remain abstract assurance lanes
 rather than a claimed refinement proof.
 
-The persisted transition and cacheless-recovery prerequisite now admits a manifest-v3 checkpoint carrier that
+The persisted transition and cacheless-recovery prerequisite admits a manifest-v3 checkpoint carrier that
 either preserves the exact registry or appends exactly one higher-ID family while leaving every prior record fixed.
-This prevents a later dynamic-family publication from discarding an already-compacted replay boundary. It does not
-yet expose or claim the public dynamic-family publication operation; that lifecycle, receipt, reconciliation, and
-activation slice remains part of Milestone 2.
+The public synchronous `Add_Column_Family` operation now uses that carrier at an exact durable checkpoint with no
+later commit suffix. It copies all prior runs and reserved identities, derives the new family allocation from its
+caller-supplied persisted limits, publishes immutable manifest bytes before one conditional HEAD, and reconciles
+only through its exact receipt. Fresh-root and suffix-bearing calls return `Invalid_State` before publication rather
+than selecting SST identities. The files-backed public showcase carries the appended family through its first L0
+run and cacheless reopen. A composable overload and broader family lifecycle remain pending Milestone 2 work.
 
 The immediate integration target is the [limited end-to-end profile](limited-profile.md). It freezes one coherent
 public workflow before broadening policy: fixed initial families, synchronous transactions, explicit Flush, complete
-process-local state loss, and authoritative reopen. Dynamic families, public compaction policy, replicas, TTL, and
-automatic maintenance remain outside that acceptance claim.
+process-local state loss, one exact-checkpoint append-only family change, and authoritative reopen. Family
+rename/drop/reconfiguration, public compaction policy, replicas, TTL, and automatic maintenance remain outside that
+acceptance claim.
 
 Milestone 3 now has a formal-first and operational write/write validation boundary. A transaction captures the global
 sequence at Begin and must prove every written key unchanged since that snapshot from retained exact history.

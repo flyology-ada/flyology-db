@@ -14,6 +14,8 @@ procedure Flyology_DB_Limited_E2E is
    package OS renames Flyology.Object_Storage;
 
    use type DB.Byte;
+   use type DB.Column_Family_ID;
+   use type DB.Identifier;
    use type DB.Outcome_Code;
    use type DB.Sequence_Number;
    use type OS.Status;
@@ -91,13 +93,13 @@ procedure Flyology_DB_Limited_E2E is
    --  It is fixture stability geometry, not a library timeout or retry budget.
    Operation_Timeout : constant Duration := 10.0;
 
-   --  The persisted limits admit exactly this two-family, two-checkpoint
-   --  scenario with bounded headroom for its four commit batches and owned
+   --  The persisted limits admit exactly this one-family root, one appended
+   --  family, and two-checkpoint scenario with bounded headroom for its commit batches and owned
    --  scan materialization. They are explicit database creation authority,
    --  never implicit product defaults.
    Limits   : constant DB.Database_Limits :=
      (Maximum_Column_Families             => 2,
-      Maximum_Manifest_History            => 3,
+      Maximum_Manifest_History            => 4,
       Maximum_Batch_History               => 4,
       Maximum_Transactions_Per_Batch      => 2,
       Maximum_Mutations_Per_Transaction   => 2,
@@ -110,10 +112,10 @@ procedure Flyology_DB_Limited_E2E is
       Maximum_Checkpoint_Identities       => 8,
       Maximum_Point_Reads_Per_Transaction => 8,
       Maximum_Scan_Ranges_Per_Transaction => 2);
-   --  Each family admits the fixture's short byte keys/values, four live rows,
-   --  and one run from each explicit Flush. The different key/value ceilings
-   --  remain family authority rather than a database-wide hard-coded policy.
-   Families : constant DB.Column_Family_Configuration_Array :=
+   --  The root family admits the fixture's short account bytes, four live
+   --  rows, and one run from each explicit Flush. These are exact persisted
+   --  fixture limits, not database-wide hard-coded policy.
+   Initial_Families : constant DB.Column_Family_Configuration_Array :=
      [DB.Configure_Column_Family
         (1,
          Bytes ("accounts"),
@@ -121,24 +123,28 @@ procedure Flyology_DB_Limited_E2E is
          Max_Value_Bytes      => 64,
          Memtable_Max_Bytes   => 1_024,
          Memtable_Max_Entries => 4,
-         Maximum_L0_Runs      => 2),
-      DB.Configure_Column_Family
-        (2,
-         Bytes ("audit"),
-         Max_Key_Bytes        => 48,
-         Max_Value_Bytes      => 96,
-         Memtable_Max_Bytes   => 1_024,
-         Memtable_Max_Entries => 4,
          Maximum_L0_Runs      => 2)];
+   --  The appended family independently supplies its exact name and bounds;
+   --  Add_Column_Family derives no default from the root family.
+   Audit_Family : constant DB.Column_Family_Configuration :=
+     DB.Configure_Column_Family
+       (2,
+        Bytes ("audit"),
+        Max_Key_Bytes        => 48,
+        Max_Value_Bytes      => 96,
+        Memtable_Max_Bytes   => 1_024,
+        Memtable_Max_Entries => 4,
+        Maximum_L0_Runs      => 2);
 
    --  Stable one-byte-tail identities make every application transaction,
    --  immutable run, manifest, and HEAD transition visibly distinct in this
    --  fresh namespace. They are deterministic fixture identities, not an ID
    --  allocation algorithm or persisted tag convention.
    First_Runs  : constant DB.Checkpoint_Run_Identity_Array :=
-     [DB.Configure_Checkpoint_Run (1, Numbered_ID (9)), DB.Configure_Checkpoint_Run (2, Numbered_ID (10))];
+     [DB.Configure_Checkpoint_Run (1, Numbered_ID (6))];
    Second_Runs : constant DB.Checkpoint_Run_Identity_Array :=
-     [DB.Configure_Checkpoint_Run (1, Numbered_ID (14)), DB.Configure_Checkpoint_Run (2, Numbered_ID (15))];
+     [DB.Configure_Checkpoint_Run (1, Numbered_ID (16)),
+      DB.Configure_Checkpoint_Run (2, Numbered_ID (17))];
 
    procedure Verify_Recovered_State (Item : in out DB.Database; Reader_ID : DB.Transaction_Identifier) is
       Reader           : DB.Transaction;
@@ -194,9 +200,9 @@ procedure Flyology_DB_Limited_E2E is
 
       DB.Highest_Visible (Item, Visible, Local_Result);
       Expect (Local_Result, DB.Success, "highest-visible query failed");
-      --  One singleton, a two-member group, one delete, and one later
-      --  singleton assign the canonical five committed transaction sequences.
-      Require (Visible = 5, "highest-visible sequence is not five");
+      --  Two initial singletons, a two-member group, one delete, and one later
+      --  singleton assign the canonical six committed transaction sequences.
+      Require (Visible = 6, "highest-visible sequence is not six");
       DB.Rollback (Reader, Local_Result);
       Expect (Local_Result, DB.Success, "reader rollback failed");
    exception
@@ -221,6 +227,7 @@ procedure Flyology_DB_Limited_E2E is
       Create_Info    : DB.Create_Receipt;
       Commit_Info    : DB.Commit_Receipt;
       Flush_Info     : DB.Flush_Receipt;
+      Family_Info    : DB.Column_Family_Receipt;
       Result         : DB.Outcome_Code;
       Close_Result   : DB.Outcome_Code;
    begin
@@ -233,16 +240,13 @@ procedure Flyology_DB_Limited_E2E is
          Numbered_ID (2),
          Numbered_ID (3),
          Limits,
-         Families,
+         Initial_Families,
          Operation_Timeout,
          Receipt => Create_Info,
          Result  => Result);
       Expect (Result, DB.Success, "database create failed");
       DB.Open_Column_Family (Created, 1, Accounts, Result);
       Expect (Result, DB.Success, "accounts open failed");
-      DB.Open_Column_Family (Created, Bytes ("audit"), Audit, Result);
-      Expect (Result, DB.Success, "audit open failed");
-
       DB.Begin_Transaction (Created, Transaction_ID (4), DB.Snapshot, Txn, Result);
       Expect (Result, DB.Success, "first transaction begin failed");
       DB.Put (Created, Txn, Accounts, Bytes ("alice"), Bytes ("100"), Result);
@@ -250,37 +254,61 @@ procedure Flyology_DB_Limited_E2E is
       DB.Commit (Created, Txn, Operation_Timeout, Receipt => Commit_Info, Result => Result);
       Expect (Result, DB.Success, "first commit failed");
 
-      DB.Begin_Transaction (Created, Transaction_ID (5), DB.Snapshot, Group (1), Result);
+      DB.Begin_Transaction (Created, Transaction_ID (5), DB.Snapshot, Txn, Result);
+      Expect (Result, DB.Success, "second transaction begin failed");
+      DB.Put (Created, Txn, Accounts, Bytes ("bob"), Bytes ("200"), Result);
+      Expect (Result, DB.Success, "second put failed");
+      DB.Commit (Created, Txn, Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, DB.Success, "second commit failed");
+
+      DB.Flush
+        (Created,
+         First_Runs,
+         Numbered_ID (7),
+         Numbered_ID (8),
+         Operation_Timeout,
+         Receipt => Flush_Info,
+         Result  => Result);
+      Expect (Result, DB.Success, "first Flush failed");
+      Require (DB.Flush_Receipt_Run_Total (Flush_Info) = 1, "first Flush did not publish the root family");
+
+      DB.Add_Column_Family
+        (Created,
+         Audit_Family,
+         Numbered_ID (9),
+         Numbered_ID (10),
+         Operation_Timeout,
+         Receipt => Family_Info,
+         Result  => Result);
+      Expect (Result, DB.Success, "audit family append failed");
+      Require
+        (DB.Column_Family_Receipt_Family_ID (Family_Info) = 2
+         and then DB.Column_Family_Receipt_Manifest_ID (Family_Info) = Numbered_ID (9)
+         and then DB.Column_Family_Receipt_Transition_ID (Family_Info) = Numbered_ID (10),
+         "family append receipt lost its stable identities");
+      DB.Open_Column_Family (Created, Bytes ("audit"), Audit, Result);
+      Expect (Result, DB.Success, "appended audit family open failed");
+
+      DB.Begin_Transaction (Created, Transaction_ID (11), DB.Snapshot, Group (1), Result);
       Expect (Result, DB.Success, "first group member begin failed");
-      DB.Put (Created, Group (1), Accounts, Bytes ("bob"), Bytes ("200"), Result);
+      DB.Put (Created, Group (1), Accounts, Bytes ("bob"), Bytes ("225"), Result);
       Expect (Result, DB.Success, "first group member put failed");
-      DB.Begin_Transaction (Created, Transaction_ID (6), DB.Snapshot, Group (2), Result);
+      DB.Begin_Transaction (Created, Transaction_ID (12), DB.Snapshot, Group (2), Result);
       Expect (Result, DB.Success, "second group member begin failed");
       DB.Put (Created, Group (2), Audit, Bytes ("event-1"), Bytes ("created"), Result);
       Expect (Result, DB.Success, "second group member put failed");
       DB.Commit_Group
-        (Created, Numbered_ID (7), Group, Operation_Timeout, Receipts => Group_Receipts, Result => Result);
+        (Created, Numbered_ID (13), Group, Operation_Timeout, Receipts => Group_Receipts, Result => Result);
       Expect (Result, DB.Success, "atomic group commit failed");
 
-      DB.Begin_Transaction (Created, Transaction_ID (8), DB.Snapshot, Txn, Result);
+      DB.Begin_Transaction (Created, Transaction_ID (14), DB.Snapshot, Txn, Result);
       Expect (Result, DB.Success, "delete transaction begin failed");
       DB.Delete (Created, Txn, Accounts, Bytes ("alice"), Result);
       Expect (Result, DB.Success, "delete failed");
       DB.Commit (Created, Txn, Operation_Timeout, Receipt => Commit_Info, Result => Result);
       Expect (Result, DB.Success, "delete commit failed");
 
-      DB.Flush
-        (Created,
-         First_Runs,
-         Numbered_ID (11),
-         Numbered_ID (12),
-         Operation_Timeout,
-         Receipt => Flush_Info,
-         Result  => Result);
-      Expect (Result, DB.Success, "first Flush failed");
-      Require (DB.Flush_Receipt_Run_Total (Flush_Info) = 2, "first Flush did not publish both families");
-
-      DB.Begin_Transaction (Created, Transaction_ID (13), DB.Snapshot, Txn, Result);
+      DB.Begin_Transaction (Created, Transaction_ID (15), DB.Snapshot, Txn, Result);
       Expect (Result, DB.Success, "suffix transaction begin failed");
       DB.Put (Created, Txn, Accounts, Bytes ("bob"), Bytes ("250"), Result);
       Expect (Result, DB.Success, "suffix account update failed");
@@ -292,15 +320,15 @@ procedure Flyology_DB_Limited_E2E is
       DB.Flush
         (Created,
          Second_Runs,
-         Numbered_ID (16),
-         Numbered_ID (17),
+         Numbered_ID (18),
+         Numbered_ID (19),
          Operation_Timeout,
          Receipt => Flush_Info,
          Result  => Result);
       Expect (Result, DB.Success, "suffix Flush failed");
       Require (DB.Flush_Receipt_Run_Total (Flush_Info) = 2, "suffix Flush did not publish both families");
 
-      Verify_Recovered_State (Created, Transaction_ID (18));
+      Verify_Recovered_State (Created, Transaction_ID (20));
       DB.Close (Created, Close_Result);
       Expect (Close_Result, DB.Success, "created database close failed");
    exception
@@ -323,7 +351,7 @@ procedure Flyology_DB_Limited_E2E is
       Binding.Bind (Context, Store'Access, Bucket, Prefix);
       DB.Open (Reopened, Context'Access, Database_ID (1), Operation_Timeout, Result => Result);
       Expect (Result, DB.Success, "authoritative reopen failed");
-      Verify_Recovered_State (Reopened, Transaction_ID (19));
+      Verify_Recovered_State (Reopened, Transaction_ID (21));
       DB.Close (Reopened, Close_Result);
       Expect (Close_Result, DB.Success, "reopened database close failed");
    exception

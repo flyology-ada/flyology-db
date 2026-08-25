@@ -2244,6 +2244,443 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "dynamic descriptor database close failed");
    end Test_Manifest_And_Family_API;
 
+   procedure Test_Column_Family_Append
+     (Backend : not null access Backends.Backend'Class; Prefix : String; Identity_Base : Natural)
+   is
+      --  Two families, four manifest revisions, two L0 runs, and the ordinary
+      --  transaction/history byte budgets are the exact append corpus geometry.
+      --  They are persisted test authority, not DB defaults or production
+      --  sizing recommendations. Identity_Base selects one disjoint fixture
+      --  namespace; 100-wide offsets separate uncertainty cases, while each
+      --  case's documented call arguments remain caller-owned identities.
+      Limits : constant Database_Limits :=
+        (Default_Limits with delta
+           Maximum_Column_Families => 2,
+           Maximum_Manifest_History => 4,
+           Maximum_Total_L0_Runs => 2);
+      Initial_Families : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family
+           (1, [Byte (Character'Pos ('a'))], 8, 8, 16, 2, 2)];
+      Appended_Family : constant Column_Family_Configuration :=
+        Configure_Column_Family
+          (3, [Byte (Character'Pos ('b'))], 4, 6, 20, 2, 1);
+
+      procedure Prepare_Checkpoint
+        (Context : aliased in out Storage_Context;
+         Item    : in out Database;
+         Suffix  : String;
+         Offset  : Natural;
+         Result  : out Outcome_Code)
+      is
+         Create_Info : Create_Receipt;
+         Txn         : Transaction;
+         Commit_Info : Commit_Receipt;
+         Flush_Info  : Flush_Receipt;
+         Runs        : constant Checkpoint_Run_Identity_Array :=
+           [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + Offset + 3))];
+      begin
+         Bind_Context (Context, Backend, Prefix & "-" & Suffix);
+         Create
+           (Item,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Identity_Base + Offset)),
+            Manifest_ID_For (Numbered_ID (Identity_Base + Offset + 1)),
+            Numbered_ID (Identity_Base + Offset + 1),
+            Limits,
+            Initial_Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         if Result /= Success then
+            return;
+         end if;
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + Offset + 2), Txn, Result);
+         if Result /= Success then
+            return;
+         end if;
+         Put (Item, Txn, 1, To_Key ([1]), To_Value ([11]), Result);
+         if Result /= Success then
+            return;
+         end if;
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         if Result /= Success then
+            return;
+         end if;
+         Flush
+           (Item,
+            Runs,
+            Manifest_ID_For (Numbered_ID (Identity_Base + Offset + 4)),
+            Numbered_ID (Identity_Base + Offset + 5),
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
+      end Prepare_Checkpoint;
+
+      procedure Expect_Family_Available
+        (Item : in out Database; Expected_ID : Column_Family_ID; Expected_Name : Byte_Array; Context : String)
+      is
+         By_ID, By_Name : Column_Family;
+         Result         : Outcome_Code;
+      begin
+         Open_Column_Family (Item, Expected_ID, By_ID, Result);
+         Expect (Result, Success, Context & " ID lookup failed");
+         Open_Column_Family (Item, Expected_Name, By_Name, Result);
+         Expect (Result, Success, Context & " name lookup failed");
+      end Expect_Family_Available;
+   begin
+      declare
+         Context                                  : aliased Storage_Context;
+         Item, Reopened                           : Database;
+         Txn                                      : Transaction;
+         Commit_Info                              : Commit_Receipt;
+         Flush_Info                               : Flush_Receipt;
+         Append_Info, Rejected_Info               : Column_Family_Receipt;
+         Result                                   : Outcome_Code;
+         Data                                     : Value;
+         Before_Batches, Before_Manifests, Before_Heads : Natural;
+         After_Batches, After_Manifests, After_Heads     : Natural;
+         Duplicate_ID : constant Column_Family_Configuration :=
+           Configure_Column_Family
+             (1, [Byte (Character'Pos ('c'))], 4, 6, 20, 2, 1);
+         Duplicate_Name : constant Column_Family_Configuration :=
+           Configure_Column_Family
+             (2, [Byte (Character'Pos ('a'))], 4, 6, 20, 2, 1);
+         Capacity_Candidate : constant Column_Family_Configuration :=
+           Configure_Column_Family
+             (4, [Byte (Character'Pos ('c'))], 4, 6, 20, 2, 1);
+         --  Flush requires one caller-owned run identity per registered family.
+         --  Family 1 has no suffix and therefore publishes no object under its
+         --  supplied identity; family 3 publishes its first immutable L0 run.
+         --  The following two IDs name the checkpoint and HEAD update.
+         Appended_Runs : constant Checkpoint_Run_Identity_Array :=
+           [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 16)),
+            Configure_Checkpoint_Run (3, Numbered_ID (Identity_Base + 17))];
+      begin
+         Prepare_Checkpoint (Context, Item, "complete", 0, Result);
+         Expect (Result, Success, "column-family append setup failed");
+
+         Testing.Publication_Counts
+           (Context, Before_Batches, Before_Manifests, Before_Heads);
+         Add_Column_Family
+           (Item,
+            Duplicate_ID,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 6)),
+            Numbered_ID (Identity_Base + 7),
+            Test_Operation_Timeout,
+            Receipt => Rejected_Info,
+            Result  => Result);
+         Expect (Result, Already_Exists, "duplicate family ID reached publication");
+         if Column_Family_Receipt_Manifest_ID (Rejected_Info) /= Zero_Identifier
+           or else Column_Family_Receipt_Transition_ID (Rejected_Info) /= Zero_Identifier
+         then
+            raise Program_Error with "duplicate family ID returned publication authority";
+         end if;
+         Add_Column_Family
+           (Item,
+            Duplicate_Name,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 8)),
+            Numbered_ID (Identity_Base + 9),
+            Test_Operation_Timeout,
+            Receipt => Rejected_Info,
+            Result  => Result);
+         Expect (Result, Already_Exists, "duplicate family name reached publication");
+         Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Manifests /= Before_Manifests
+           or else After_Heads /= Before_Heads
+         then
+            raise Program_Error with "rejected family append published an object";
+         end if;
+
+         Add_Column_Family
+           (Item,
+            Appended_Family,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 10)),
+            Numbered_ID (Identity_Base + 11),
+            Test_Operation_Timeout,
+            Receipt => Append_Info,
+            Result  => Result);
+         Expect (Result, Success, "column-family append failed");
+         if Column_Family_Receipt_Outcome (Append_Info) /= Success
+           or else Column_Family_Receipt_Family_ID (Append_Info) /= Appended_Family.ID
+           or else Column_Family_Receipt_Manifest_ID (Append_Info)
+                     /= Manifest_ID_For (Numbered_ID (Identity_Base + 10))
+           or else Column_Family_Receipt_Transition_ID (Append_Info)
+                     /= Numbered_ID (Identity_Base + 11)
+         then
+            raise Program_Error with "successful family receipt lost exact authority";
+         end if;
+         Expect_Family_Available
+           (Item, Appended_Family.ID, [Byte (Character'Pos ('b'))], "appended family");
+
+         Add_Column_Family
+           (Item,
+            Capacity_Candidate,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 12)),
+            Numbered_ID (Identity_Base + 13),
+            Test_Operation_Timeout,
+            Receipt => Rejected_Info,
+            Result  => Result);
+         Expect (Result, Capacity_Exceeded, "full registry did not apply persisted family capacity");
+         if Column_Family_Receipt_Transition_ID (Rejected_Info) /= Zero_Identifier then
+            raise Program_Error with "capacity rejection exposed a HEAD transition identity";
+         end if;
+
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 14), Txn, Result);
+         Expect (Result, Success, "appended-family transaction begin failed");
+         Put (Item, Txn, Appended_Family.ID, To_Key ([1, 2, 3, 4, 5]), To_Value ([1]), Result);
+         Expect (Result, Capacity_Exceeded, "appended family key limit plus one was admitted");
+         Put
+           (Item,
+            Txn,
+            Appended_Family.ID,
+            To_Key ([2]),
+            To_Value ([1, 2, 3, 4, 5, 6, 7]),
+            Result);
+         Expect (Result, Capacity_Exceeded, "appended family value limit plus one was admitted");
+         Put (Item, Txn, Appended_Family.ID, To_Key ([2]), To_Value ([22, 23]), Result);
+         Expect (Result, Success, "appended-family mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "appended-family commit failed");
+         Flush
+           (Item,
+            Appended_Runs,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 18)),
+            Numbered_ID (Identity_Base + 19),
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
+         Expect (Result, Success, "appended-family first L0 publication failed");
+         Close (Item, Result);
+         Expect (Result, Success, "appended-family database close failed");
+
+         Open
+           (Reopened,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Identity_Base)),
+            Test_Operation_Timeout,
+            Result => Result);
+         Expect (Result, Success, "appended-family cacheless reopen failed");
+         Expect_Family_Available
+           (Reopened, Appended_Family.ID, [Byte (Character'Pos ('b'))], "reopened appended family");
+         Begin_Transaction (Reopened, Numbered_TX_ID (Identity_Base + 15), Txn, Result);
+         Expect (Result, Success, "appended-family reopen reader failed");
+         Get (Reopened, Txn, 1, To_Key ([1]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([11]) then
+            raise Program_Error with "family append changed checkpoint-carried data";
+         end if;
+         Get (Reopened, Txn, Appended_Family.ID, To_Key ([2]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([22, 23]) then
+            raise Program_Error with "appended-family data did not survive cacheless reopen";
+         end if;
+         Rollback (Txn, Result);
+         Close (Reopened, Result);
+         Expect (Result, Success, "appended-family reopened database did not close");
+      end;
+
+      declare
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Create_Info : Create_Receipt;
+         Append_Info : Column_Family_Receipt;
+         Result      : Outcome_Code;
+      begin
+         Bind_Context (Context, Backend, Prefix & "-fresh-root");
+         Create
+           (Item,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Identity_Base + 400)),
+            Manifest_ID_For (Numbered_ID (Identity_Base + 401)),
+            Numbered_ID (Identity_Base + 401),
+            Limits,
+            Initial_Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "fresh-root append setup failed");
+         Add_Column_Family
+           (Item,
+            Appended_Family,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 410)),
+            Numbered_ID (Identity_Base + 411),
+            Test_Operation_Timeout,
+            Receipt => Append_Info,
+            Result  => Result);
+         Expect (Result, Invalid_State, "fresh root was silently converted into an append checkpoint");
+         if Column_Family_Receipt_Manifest_ID (Append_Info) /= Zero_Identifier
+           or else Column_Family_Receipt_Transition_ID (Append_Info) /= Zero_Identifier
+         then
+            raise Program_Error with "fresh-root rejection returned publication authority";
+         end if;
+         Close (Item, Result);
+         Expect (Result, Success, "fresh-root append rejection did not close");
+      end;
+
+      declare
+         Context                                  : aliased Storage_Context;
+         Item                                     : Database;
+         Txn                                      : Transaction;
+         Commit_Info                              : Commit_Receipt;
+         Append_Info                              : Column_Family_Receipt;
+         Result                                   : Outcome_Code;
+         Before_Batches, Before_Manifests, Before_Heads : Natural;
+         After_Batches, After_Manifests, After_Heads     : Natural;
+      begin
+         Prepare_Checkpoint (Context, Item, "unflushed-suffix", 500, Result);
+         Expect (Result, Success, "unflushed-suffix append setup failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 506), Txn, Result);
+         Expect (Result, Success, "unflushed-suffix transaction begin failed");
+         Put (Item, Txn, 1, To_Key ([2]), To_Value ([12]), Result);
+         Expect (Result, Success, "unflushed-suffix mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "unflushed-suffix commit failed");
+         Testing.Publication_Counts
+           (Context, Before_Batches, Before_Manifests, Before_Heads);
+         Add_Column_Family
+           (Item,
+            Appended_Family,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 510)),
+            Numbered_ID (Identity_Base + 511),
+            Test_Operation_Timeout,
+            Receipt => Append_Info,
+            Result  => Result);
+         Expect (Result, Invalid_State, "unflushed commit suffix was omitted by family append");
+         Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Manifests /= Before_Manifests
+           or else After_Heads /= Before_Heads
+           or else Column_Family_Receipt_Transition_ID (Append_Info) /= Zero_Identifier
+         then
+            raise Program_Error with "unflushed-suffix rejection published partial state";
+         end if;
+         Close (Item, Result);
+         Expect (Result, Success, "unflushed-suffix append rejection did not close");
+      end;
+
+      declare
+         Context                                  : aliased Storage_Context;
+         Item                                     : Database;
+         Receipt                                  : Column_Family_Receipt;
+         Result                                   : Outcome_Code;
+         Before_Batches, Before_Manifests, Before_Heads : Natural;
+         After_Batches, After_Manifests, After_Heads     : Natural;
+      begin
+         Prepare_Checkpoint (Context, Item, "allocation-fault", 600, Result);
+         Expect (Result, Success, "allocation-fault append setup failed");
+         Testing.Publication_Counts
+           (Context, Before_Batches, Before_Manifests, Before_Heads);
+         Testing.Fail_Next_Allocation (Testing.Checkpoint_Manifest);
+         Add_Column_Family
+           (Item,
+            Appended_Family,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 610)),
+            Numbered_ID (Identity_Base + 611),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Capacity_Exceeded, "family-plan allocation failure was not typed capacity");
+         Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Manifests /= Before_Manifests
+           or else After_Heads /= Before_Heads
+           or else Column_Family_Receipt_Manifest_ID (Receipt) /= Zero_Identifier
+           or else Column_Family_Receipt_Transition_ID (Receipt) /= Zero_Identifier
+         then
+            raise Program_Error with "family-plan allocation failure published partial state";
+         end if;
+         Close (Item, Result);
+         Expect (Result, Success, "allocation-failed family append did not close");
+      end;
+
+      declare
+         Context : aliased Storage_Context;
+         Item    : Database;
+         Receipt : Column_Family_Receipt;
+         Result  : Outcome_Code;
+      begin
+         Prepare_Checkpoint (Context, Item, "manifest-unknown", 100, Result);
+         Expect (Result, Success, "manifest-unknown append setup failed");
+         Testing.Arm (Context, After_Manifest_Put, Unknown_After_Entry);
+         Testing.Arm (Context, Before_Immutable_Reconciliation, Definite_Failure);
+         Add_Column_Family
+           (Item,
+            Appended_Family,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 110)),
+            Numbered_ID (Identity_Base + 111),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Outcome_Unknown, "lost family manifest response was falsely classified");
+         if Column_Family_Receipt_Transition_ID (Receipt) /= Zero_Identifier then
+            raise Program_Error with "manifest-only ambiguity exposed a HEAD transition identity";
+         end if;
+         Resolve_Add_Column_Family (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "exact family manifest continuation failed");
+         Expect_Family_Available
+           (Item, Appended_Family.ID, [Byte (Character'Pos ('b'))], "manifest-resolved family");
+         Close (Item, Result);
+         Expect (Result, Success, "manifest-resolved append did not close");
+      end;
+
+      declare
+         Context : aliased Storage_Context;
+         Item    : Database;
+         Receipt : Column_Family_Receipt;
+         Result  : Outcome_Code;
+      begin
+         Prepare_Checkpoint (Context, Item, "head-unknown", 200, Result);
+         Expect (Result, Success, "HEAD-unknown append setup failed");
+         Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+         Add_Column_Family
+           (Item,
+            Appended_Family,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 210)),
+            Numbered_ID (Identity_Base + 211),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Outcome_Unknown, "lost family HEAD response was falsely classified");
+         if Column_Family_Receipt_Transition_ID (Receipt) /= Numbered_ID (Identity_Base + 211) then
+            raise Program_Error with "HEAD ambiguity lost its exact transition identity";
+         end if;
+         Testing.Arm (Context, Before_Manifest_Get, Definite_Failure);
+         Resolve_Add_Column_Family (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Outcome_Unknown, "failed HEAD reconciliation lost publication ambiguity");
+         Resolve_Add_Column_Family (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "family HEAD reconciliation failed");
+         Expect_Family_Available
+           (Item, Appended_Family.ID, [Byte (Character'Pos ('b'))], "HEAD-resolved family");
+         Close (Item, Result);
+         Expect (Result, Success, "HEAD-resolved append did not close");
+      end;
+
+      declare
+         Context : aliased Storage_Context;
+         Item    : Database;
+         Receipt : Column_Family_Receipt;
+         Result  : Outcome_Code;
+      begin
+         Prepare_Checkpoint (Context, Item, "activation-fault", 300, Result);
+         Expect (Result, Success, "activation-fault append setup failed");
+         Testing.Arm (Context, Before_Local_Activation, Definite_Failure);
+         Add_Column_Family
+           (Item,
+            Appended_Family,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 310)),
+            Numbered_ID (Identity_Base + 311),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Local_Activation_Failed, "durable family append lost activation certainty");
+         Resolve_Add_Column_Family (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "confirmed family append could not recover local activation");
+         Expect_Family_Available
+           (Item, Appended_Family.ID, [Byte (Character'Pos ('b'))], "activation-recovered family");
+         Close (Item, Result);
+         Expect (Result, Success, "activation-recovered append did not close");
+      end;
+   end Test_Column_Family_Append;
+
    procedure Test_Checkpoint_Recovery_Failures (Backend : not null access Backends.Backend'Class) is
       --  Five disjoint deterministic fixture domains separate first-checkpoint
       --  capacity, successive-checkpoint capacity, missing, checksum-corrupt,
@@ -7466,6 +7903,7 @@ package body Flyology.DB.Engine_Tests is
          Test_Dynamic_Mutation_Descriptors (Store'Access, "memory-dynamic-mutations", 13);
          Test_Allocation_Failures (Store'Access);
          Test_Manifest_And_Family_API (Store'Access);
+         Test_Column_Family_Append (Store'Access, "memory-family-append", 33_200);
          Test_Checkpoint_Recovery_Failures (Store'Access);
          Test_L0_Accumulation_Capacity (Store'Access);
          --  Disjoint 100-ID domains keep the memory and files witnesses
@@ -7517,6 +7955,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Large_Production_Profile (Store'Access, "files-large-profile", 22);
             Test_Dynamic_Mutation_Descriptors (Store'Access, "files-dynamic-mutations", 23);
             Test_Manifest_And_Family_API (Store'Access);
+            Test_Column_Family_Append (Store'Access, "files-family-append", 33_600);
             Test_Checkpoint_Recovery_Failures (Store'Access);
             Test_L0_Accumulation_Capacity (Store'Access);
             --  This second domain is the files-backend counterpart of the

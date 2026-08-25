@@ -141,6 +141,9 @@ package Flyology.DB is
    --  reclaimed automatically; the type introduces no copy or default limit.
    type Scan_Result is limited private;
    type Create_Receipt is private;
+   --  Self-contained exact family-registry publication and reconciliation
+   --  authority. Its retained immutable bytes are reclaimed automatically.
+   type Column_Family_Receipt is private;
    type Commit_Receipt is private;
    --  Self-contained checkpoint publication and reconciliation state.
    type Flush_Receipt is private;
@@ -210,6 +213,71 @@ package Flyology.DB is
       Timeout     : Duration;
       Token       : access Flyology.Cancellation.Token := null;
       Result      : out Outcome_Code);
+
+   --  Append one explicit immutable column-family configuration and publish
+   --  one conditional manifest-bearing HEAD transition. Configuration supplies
+   --  every key/value, memtable, and L0 authority; the DB selects no defaults.
+   --  ID must be strictly greater than the current last family ID and Name must
+   --  be unique. The current state must be an exact durable checkpoint with no
+   --  later commit suffix; call Flush first when commits follow that checkpoint.
+   --  This preserves every existing run and reserved identity without selecting
+   --  new run identities. Manifest_ID and Transition_ID are caller-stable and
+   --  never reusable after their publication begins. Outcome_Unknown must be
+   --  resolved with the exact Receipt and never replayed under replacement
+   --  identities. Success makes the family discoverable through
+   --  Open_Column_Family.
+   --  @param Item Open current-writer database whose registry is extended
+   --  @param Configuration Exact caller-selected family authority to append
+   --  @param Manifest_ID Stable immutable successor-manifest identity
+   --  @param Transition_ID Stable attempted HEAD transition identity
+   --  @param Timeout Whole-operation monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Receipt Self-contained publication and reconciliation authority
+   --  @param Result Definite terminal or presently unknown outcome
+   procedure Add_Column_Family
+     (Item          : in out Database;
+      Configuration : Column_Family_Configuration;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Column_Family_Receipt;
+      Result        : out Outcome_Code);
+
+   --  Continue exact immutable-manifest confirmation or reconcile the attempted
+   --  HEAD retained by Receipt. No identity, configuration, or bytes change.
+   --  @param Item Same open database retained by the original append attempt
+   --  @param Receipt Original nonterminal receipt, updated in place
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Result Terminal or still-unknown resolution outcome
+   procedure Resolve_Add_Column_Family
+     (Item    : in out Database;
+      Receipt : in out Column_Family_Receipt;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null;
+      Result  : out Outcome_Code);
+
+   --  Outcome most recently assigned to Receipt.
+   --  @param Item Family-registry publication receipt
+   --  @return Most recent terminal or nonterminal classification
+   function Column_Family_Receipt_Outcome (Item : Column_Family_Receipt) return Outcome_Code;
+
+   --  Stable appended family identity carried by Receipt.
+   --  @param Item Family-registry publication receipt
+   --  @return Exact caller-supplied family ID, or zero before plan admission
+   function Column_Family_Receipt_Family_ID (Item : Column_Family_Receipt) return Column_Family_ID;
+
+   --  Stable immutable successor-manifest identity carried by Receipt.
+   --  @param Item Family-registry publication receipt
+   --  @return Exact caller-supplied manifest ID, or zero before plan admission
+   function Column_Family_Receipt_Manifest_ID (Item : Column_Family_Receipt) return Identifier;
+
+   --  Attempted HEAD transition identity, or zero before conditional HEAD
+   --  call entry.
+   --  @param Item Family-registry publication receipt
+   --  @return Exact caller-supplied transition ID or zero
+   function Column_Family_Receipt_Transition_ID (Item : Column_Family_Receipt) return Identifier;
 
    --  Drain admitted commits, stop and join the coordinator, and close Item.
    procedure Close (Item : in out Database; Result : out Outcome_Code);
@@ -854,6 +922,34 @@ private
       Manifest_ID       : Identifier := Zero_Identifier;
       Retained_Manifest : Shared_Image_Lease;
       Attempted_Head    : Head_Snapshot;
+   end record;
+
+   --  Runtime-only certainty phases. Enumeration positions are never
+   --  persisted. Manifest_Unknown retains exact immutable bytes for same-ID
+   --  continuation; Family_Head_Unknown permits read-only HEAD reconciliation;
+   --  Family_Head_Confirmed records durable success awaiting local activation.
+   type Column_Family_Receipt_Phase is
+     (No_Family_Publication,
+      Family_Manifest_Unknown,
+      Family_Head_Unknown,
+      Family_Head_Confirmed,
+      Family_Resolved);
+
+   type Column_Family_Receipt is record
+      Current_Outcome   : Outcome_Code := Invalid_State;
+      Phase             : Column_Family_Receipt_Phase := No_Family_Publication;
+      Configuration     : Column_Family_Configuration;
+      Database_ID       : Database_Identifier := Zero_Database_ID;
+      Incarnation       : Engine_Incarnation := No_Incarnation;
+      Manifest_ID       : Identifier := Zero_Identifier;
+      Retained_Manifest : Shared_Image_Lease;
+      Expected_Generation : Generation_Value;
+      Expected_Head     : Head_Snapshot;
+      Attempted_Head    : Head_Snapshot;
+      --  Runtime-only certainty witness: True immediately before entering the
+      --  conditional HEAD provider call. It prevents a pre-call rejection
+      --  from exposing an identity as though publication had been attempted.
+      Head_Entered      : Boolean := False;
    end record;
 
    --  Receipt phases are in-memory certainty states, never persisted enum

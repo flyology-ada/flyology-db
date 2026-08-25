@@ -202,6 +202,41 @@ before HEAD admission; a lost accepted HEAD response remains unknown until cache
 manifest and replay boundary. Rebuilding an `Objects_Unknown` plan uses only the receipt's original identities.
 Repeated publication never creates a replacement identity or retries an application transaction.
 
+## Append-only family registry publication
+
+`Add_Column_Family` is the deliberately narrow operational use of the checkpoint-carried registry transition. It
+accepts one complete `Column_Family_Configuration`, immutable successor-manifest identity, HEAD transition identity,
+whole-operation monotonic timeout budget, optional cancellation token, and an owned receipt. The family ID must be strictly greater
+than the existing last ID; its byte name must be unique. Every key/value, memtable, and L0 limit comes from that
+configuration, while database-wide family, history, run, and identity capacity comes from the authenticated current
+manifest. No default, generated ID, rename, drop, reorder, or prior-family mutation is selected.
+
+The operation requires an exact durable checkpoint and no admitted commit suffix after it. This is a correctness
+boundary rather than an automatic-Flush policy: the successor copies the retained checkpoint's replay boundary,
+run descriptors, identity ledger, LSM limits, and every prior family record byte for byte. A fresh root has no
+retained checkpoint plan, while an unflushed suffix contains identities not represented by that plan. Both reject as
+`Invalid_State` before allocation or object publication; callers may explicitly Flush first with their own complete
+family-to-run identity map.
+
+Planning lazily allocates exactly one successor checkpoint with `prior family count + 1`, the prior run count, and
+the prior identity count. Checked arithmetic and structural validation precede effects. Allocation failure is
+`Capacity_Exceeded` and leaves manifest and HEAD publication counts unchanged. The new family starts with zero runs;
+its first later Flush uses the same persisted per-family and database-wide L0 capacity as every other family.
+
+Publication confirms the exact immutable manifest bytes first, then enters one conditional HEAD replacement from
+the retained provider generation. `Column_Family_Receipt` owns the exact configuration, manifest bytes, expected
+HEAD/generation, attempted transition, and originating engine incarnation. Manifest ambiguity permits only
+same-identity/same-byte continuation. HEAD ambiguity permits only complete cacheless recovery: an older observation
+remains `Outcome_Unknown`, the exact attempted manifest in a validated reachable chain confirms publication, and a
+conclusive successor chain that excludes it fences the stale writer. No result authorizes a replacement identity or
+automatic mutation retry.
+
+After confirmed publication, activation replaces the local engine through the existing checkpoint lifecycle while
+preserving the process-session incarnation. A failed local allocation/install is `Local_Activation_Failed`, retains
+durable-success authority, and can be completed by `Resolve_Add_Column_Family`. Terminal success exposes the family
+through the existing `Open_Column_Family` calls. The synchronous operation is the first public form; an additive
+caller-composable overload may later drive this same state machine without changing certainty or ownership.
+
 ## Cacheless recovery
 
 Recovery after total local loss starts from `meta/HEAD`; listing and local state are never authority. It reads and

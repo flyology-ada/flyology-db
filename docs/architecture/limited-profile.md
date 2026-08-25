@@ -7,12 +7,16 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 ## Included behavior
 
 - One fenced writer and no concurrent promotion.
-- An immutable set of column families supplied at `Create`, with stable IDs and exact byte names.
+- One initial family set supplied at `Create`, followed by at most the caller-driven append operations admitted by
+  persisted registry/history capacity. Each append adds exactly one higher stable ID and one exact byte name; rename,
+  drop, reorder, and prior-family mutation remain unavailable.
 - Arbitrary byte keys and values within the persisted per-family limits selected by the caller.
 - Explicit persisted `Database_Limits`; the library supplies no hidden key, value, transaction, or live-state limit.
 - Synchronous Snapshot transactions with point `Get`, ordered bounded `Scan`, `Put`, `Delete`, singleton `Commit`,
   and explicit atomic `Commit_Group`.
 - Explicit synchronous `Flush` into immutable SST and manifest objects, including a later suffix-delta Flush.
+- Synchronous `Add_Column_Family` at an exact checkpoint boundary, with exact manifest/transition identities and
+  same-receipt resolution of immutable or HEAD uncertainty.
 - `Outcome_Unknown` receipts resolved only through the original identity; no application transaction or mutation is
   automatically replayed.
 - `Close`, complete loss of process-local DB state, and `Open` recovery solely from authoritative object storage.
@@ -28,10 +32,12 @@ One maintained executable must perform the following sequence using only public 
 
 1. Receive every database identity, object identity, column-family limit, database limit, timeout, provider endpoint,
    bucket, prefix, and credential choice explicitly from its fixture or caller.
-2. Create a database with at least two fixed families and reopen both by stable ID and exact name.
-3. Commit exact byte keys and values, verify point reads, delete one key, and verify ordered half-open scanning.
-4. Atomically commit a group whose members affect different families and verify one all-or-nothing visible sequence.
-5. Flush a complete first checkpoint, commit a later suffix, and Flush the suffix without changing prior run identity.
+2. Create a database with one explicit family and reopen it by stable ID and exact name.
+3. Commit exact byte keys and values, then Flush a complete first checkpoint.
+4. Append one independently bounded higher-ID family with caller-stable manifest and transition identities, then
+   reopen it by stable ID and exact name.
+5. Atomically commit a group whose members affect both families, verify one all-or-nothing visible sequence, delete
+   one key, verify ordered half-open scanning, and Flush the suffix without changing prior run identity.
 6. Close the database, discard every process-local DB object and buffer, construct a fresh database value, and Open
    it from the same object-store prefix.
 7. Verify the exact surviving bytes, deletion, canonical scan order, highest visible sequence, and persisted family
@@ -45,11 +51,12 @@ remain outside Flyology.DB.
 
 ## Explicit exclusions
 
-This profile does not include dynamic family changes, public replica management, writer promotion, TTL, codecs,
-automatic Flush or compaction selection, public compaction/garbage-collection policy, an authenticated deployment
-walkthrough, background polling, transparent retry, retained borrowed request bodies, performance claims, or
-stable-format compatibility beyond the versions accepted by the current decoder. Existing private compaction and
-replica spines remain qualification work until a separate public-policy decision admits them.
+This profile does not include family rename/drop/reconfiguration, appending across an unflushed commit suffix, a
+composable family-append overload, public replica management, writer promotion, TTL, codecs, automatic Flush or
+compaction selection, public compaction/garbage-collection policy, an authenticated deployment walkthrough,
+background polling, transparent retry, retained borrowed request bodies, performance claims, or stable-format
+compatibility beyond the versions accepted by the current decoder. Existing private compaction and replica spines
+remain qualification work until a separate public-policy decision admits them.
 
 Expansion starts only after the acceptance scenario, deterministic suite, provider matrix, repository gate, TLA+ and
 TLAPS models, selected SPARK proof, API documentation, and findings cycle are green on one exact source/dependency

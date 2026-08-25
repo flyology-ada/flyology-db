@@ -20,8 +20,17 @@ The checkpoint-carried registry-append prerequisite adds the carrier-aware prede
 corpus separately confirms that the carrier accepts both existing transition shapes, rejects mutation of a prior
 family, and leaves the strict same-registry checkpoint predicate unchanged for compaction builders. Cacheless
 recovery uses the carrier-aware predicate only after the object version identifies the current object as a checkpoint
-manifest. Provider I/O, dynamic-family publication, and local engine replacement remain executable-test boundaries,
-not claims made by this format proof.
+manifest.
+
+The synchronous checkpoint-bound `Add_Column_Family` candidate reruns that exact warning-strict gate and preserves
+1,091/1,091 selected checks: 94 initialization, 526 run-time, 91 assertion, 306 functional-contract, and 74
+termination checks; flow analysis discharges 167 and provers discharge 924, with maximum successful effort 6,890
+steps. The preliminary representation-information phase records the established partial-data warning outside the
+selected-unit analysis; every analyzed selected unit reports zero warnings, unproved/justified checks, and zero
+`pragma Assume` statements. The runtime planner, dynamically sized allocation, provider I/O, receipt ownership,
+protected checkpoint lifecycle, cacheless reconciliation, and local engine replacement remain executable-test
+boundaries rather than SPARK-proved code. Their maintained evidence is the memory/files fault corpus, public
+process-local-loss showcase, and the abstract checkpoint/registry TLC/TLAPS lanes; no refinement proof is claimed.
 
 The provider-centric Object Storage migration at source
 `3455cde3158fd589480281beac39bea51305bb5e` reruns this maintained gate without changing the selected SPARK

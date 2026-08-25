@@ -1968,6 +1968,13 @@ package body Flyology.DB is
       Release_Image (Image);
    end Release_Retained_Manifest;
 
+   procedure Release_Retained_Manifest (Receipt : in out Column_Family_Receipt) is
+      Image : Shared_Image_Access := Receipt.Retained_Manifest.Image;
+   begin
+      Receipt.Retained_Manifest.Image := null;
+      Release_Image (Image);
+   end Release_Retained_Manifest;
+
    type Slot_State is (Free, Queued, Running, Completed);
    type Completion_Slot is record
       State      : Slot_State := Free;
@@ -5440,6 +5447,171 @@ package body Flyology.DB is
          raise;
    end Build_Checkpoint_Plan;
 
+   procedure Build_Column_Family_Plan
+     (State          : not null Engine_State_Access;
+      Configuration  : Column_Family_Configuration;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Plan           : out Checkpoint_Plan;
+      Result         : out Outcome_Code)
+   is
+      Base           : Manifests.Manifest;
+      Head           : Head_Snapshot;
+      Generation     : Generation_Value;
+      Uncertain      : Boolean;
+      Fenced         : Boolean;
+      Identity_Total : Natural;
+      Prior          : constant LSM_Runtime.Checkpoint_Manifest_Access := State.Checkpoint_Manifest;
+      Candidate      : constant Manifests.Column_Family_Configuration :=
+        To_Manifest_Configuration (Configuration);
+      Allocation     : LSM_Runtime.Allocation_Status;
+   begin
+      Plan := (others => <>);
+      if Is_Zero (Manifest_ID)
+        or else Is_Zero (Transition_ID)
+        or else Manifest_ID = Transition_ID
+        or else not Manifests.Valid_Configuration (Candidate)
+        or else Configuration.Memtable_Max_Bytes = 0
+        or else Configuration.Memtable_Max_Entries = 0
+        or else Configuration.Maximum_L0_Runs = 0
+      then
+         Result := Invalid_State;
+         return;
+      elsif not State.LSM_Authority.Enabled
+        or else State.LSM_Authority.Maximum_Point_Reads_Per_Transaction = 0
+        or else State.LSM_Authority.Maximum_Scan_Ranges_Per_Transaction = 0
+      then
+         Result := Unsupported_Format;
+         return;
+      end if;
+
+      State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+         return;
+      elsif Fenced then
+         Result := Stale_Writer;
+         return;
+      elsif Head.Transition_Number = Interfaces.Unsigned_64'Last
+        or else Head.Latest_Manifest = Zero_Identifier
+        or else Manifest_ID = Head.Latest_Manifest
+        or else Transition_ID = Head.Transition_ID
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+
+      State.Gate.Checkpoint_Metadata (Base, Identity_Total, Result);
+      if Result /= Success then
+         return;
+      --  Root revision one plus exact one-step predecessors makes this the
+      --  current manifest-chain depth. The persisted history bound is the
+      --  authority for one more immutable registry successor.
+      elsif Base.Registry_Revision = Interfaces.Unsigned_64'Last
+        or else Base.Registry_Revision
+          >= Interfaces.Unsigned_64 (Base.Limits.Maximum_Manifest_History)
+        or else Base.Family_Total = Manifests.Family_Count'Last
+        or else Interfaces.Unsigned_32 (Base.Family_Total) >= Base.Limits.Maximum_Column_Families
+      then
+         Result := Capacity_Exceeded;
+         return;
+      elsif Prior = null then
+         --  Append carries an already-published checkpoint exactly. A fresh
+         --  root has no retained checkpoint plan and cannot be converted here
+         --  without inventing caller-owned SST identities.
+         Result := Invalid_State;
+         return;
+      elsif not LSM_Runtime.Structurally_Valid (Prior.all)
+        or else Prior.Base /= Base
+        or else Prior.Family_Total /= Natural (Base.Family_Total)
+        or else Prior.Replay_Boundary /= State.LSM_Authority.Replay_Boundary
+      then
+         Result := Corrupt;
+         return;
+      elsif Prior.Identity_Total /= Identity_Total then
+         --  Additional reserved identities mean commits exist after the
+         --  retained checkpoint. The caller must Flush that suffix before a
+         --  registry-only successor can preserve it exactly.
+         Result := Invalid_State;
+         return;
+      end if;
+
+      for Index in Manifests.Family_Slot range 1 .. Base.Family_Total loop
+         if Candidate.ID = Base.Families (Index).ID
+           or else
+             (Candidate.Name_Length = Base.Families (Index).Name_Length
+              and then Candidate.Name (1 .. Candidate.Name_Length)
+                         = Base.Families (Index).Name (1 .. Base.Families (Index).Name_Length))
+         then
+            Result := Already_Exists;
+            return;
+         end if;
+      end loop;
+      if Candidate.ID <= Base.Families (Base.Family_Total).ID then
+         Result := Invalid_State;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Checkpoint_Manifest_Allocation);
+      --  The successor's only new extent is one family slot. Run and identity
+      --  extents come unchanged from the authenticated retained checkpoint.
+      LSM_Runtime.Create_Checkpoint_Manifest
+        (Prior.Family_Total + 1,
+         Prior.Run_Total,
+         Prior.Identity_Total,
+         Plan.Manifest,
+         Allocation);
+      if Allocation /= LSM_Runtime.Allocated then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      Base.Manifest_ID := To_Head_ID (Manifest_ID);
+      Base.Previous_Manifest_ID := To_Head_ID (Head.Latest_Manifest);
+      Base.Expected_Transition_ID := To_Head_ID (Head.Transition_ID);
+      Base.Expected_Transition_Number := Head.Transition_Number;
+      Base.Publication_Transition_ID := To_Head_ID (Transition_ID);
+      Base.Publication_Transition_Number := Head.Transition_Number + 1;
+      Base.Writer_Epoch := Head.Epoch;
+      Base.Registry_Revision := Base.Registry_Revision + 1;
+      Base.Family_Total := Base.Family_Total + 1;
+      Base.Families (Base.Family_Total) := Candidate;
+
+      Plan.Manifest.Base := Base;
+      Plan.Manifest.Replay_Boundary := Prior.Replay_Boundary;
+      Plan.Manifest.Maximum_Total_L0_Runs := Prior.Maximum_Total_L0_Runs;
+      Plan.Manifest.Maximum_Checkpoint_Identities := Prior.Maximum_Checkpoint_Identities;
+      Plan.Manifest.Maximum_Point_Reads_Per_Transaction :=
+        Prior.Maximum_Point_Reads_Per_Transaction;
+      Plan.Manifest.Maximum_Scan_Ranges_Per_Transaction :=
+        Prior.Maximum_Scan_Ranges_Per_Transaction;
+      Plan.Manifest.Families (1 .. Prior.Family_Total) := Prior.Families;
+      Plan.Manifest.Families (Plan.Manifest.Family_Total) :=
+        (Memtable_Max_Bytes   => Configuration.Memtable_Max_Bytes,
+         Memtable_Max_Entries => Configuration.Memtable_Max_Entries,
+         Maximum_L0_Runs      => Configuration.Maximum_L0_Runs,
+         First_Run            => 0,
+         Run_Total            => 0);
+      Plan.Manifest.Runs := Prior.Runs;
+      Plan.Manifest.Identities := Prior.Identities;
+      Plan.Expected_Generation := Generation;
+      if not Manifests.Valid_Checkpoint_Chain_Predecessor (Plan.Manifest.Base, Prior.Base)
+        or else not LSM_Runtime.Structurally_Valid (Plan.Manifest.all)
+      then
+         Release_Checkpoint_Plan (Plan);
+         Result := Invalid_State;
+      else
+         Result := Success;
+      end if;
+   exception
+      when Storage_Error =>
+         Release_Checkpoint_Plan (Plan);
+         Result := Capacity_Exceeded;
+      when others =>
+         Release_Checkpoint_Plan (Plan);
+         raise;
+   end Build_Column_Family_Plan;
+
    protected body Database_Lifecycle is
 
       procedure Begin_Open (Result : out Outcome_Code) is
@@ -7992,7 +8164,9 @@ package body Flyology.DB is
       Checkpoint    : out Checkpoint_Plan;
       History       : out Batch_History_Access;
       Count         : out Natural;
-      Result        : out Outcome_Code)
+      Result        : out Outcome_Code;
+      Sought_Manifest : Identifier := Zero_Identifier;
+      Sought_Found    : access Boolean := null)
    is
       Data                : Small_Metadata_Buffer;
       Length              : Natural;
@@ -8032,6 +8206,9 @@ package body Flyology.DB is
 
       procedure Load is
       begin
+         if Sought_Found /= null then
+            Sought_Found.all := False;
+         end if;
          Head := (others => <>);
          Generation := (others => <>);
          Manifest := Manifests.Empty_Manifest;
@@ -8155,7 +8332,14 @@ package body Flyology.DB is
             elsif To_Identifier (Manifests_Seen (Manifest_Count).Manifest_ID) /= Current_Manifest_ID then
                Result := Corrupt;
                return;
-            elsif Manifest_Count = 1 and then not Manifests.Referenced_By (Manifests_Seen (1), To_Head (Head))
+            end if;
+            if Sought_Found /= null
+              and then not Is_Zero (Sought_Manifest)
+              and then Current_Manifest_ID = Sought_Manifest
+            then
+               Sought_Found.all := True;
+            end if;
+            if Manifest_Count = 1 and then not Manifests.Referenced_By (Manifests_Seen (1), To_Head (Head))
             then
                Result := Corrupt;
                return;
@@ -14263,6 +14447,513 @@ package body Flyology.DB is
       end if;
       return Item.Runs (Index);
    end Flush_Receipt_Run;
+
+   procedure Initialize_Column_Family_Receipt
+     (State          : not null Engine_State_Access;
+      Configuration  : Column_Family_Configuration;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Plan           : Checkpoint_Plan;
+      Receipt        : out Column_Family_Receipt;
+      Result         : out Outcome_Code)
+   is
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Uncertain     : Boolean;
+      Fenced        : Boolean;
+      Encoded       : LSM_Runtime.Image_Access := null;
+      Encode_Result : LSM_Runtime.Encode_Status;
+   begin
+      Receipt := (others => <>);
+      State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Plan.Manifest = null
+        or else Uncertain
+        or else Fenced
+        or else Generation /= Plan.Expected_Generation
+      then
+         Result := (if Uncertain then Outcome_Unknown elsif Fenced then Stale_Writer else Invalid_State);
+         return;
+      end if;
+      LSM_Runtime.Encode_Checkpoint_Manifest (Plan.Manifest.all, Encoded, Encode_Result);
+      if Encode_Result /= LSM_Runtime.Encoded then
+         LSM_Runtime.Release (Encoded);
+         Result := (if Encode_Result = LSM_Runtime.Allocation_Failed then Capacity_Exceeded else Corrupt);
+         return;
+      end if;
+      Receipt.Configuration := Configuration;
+      Receipt.Database_ID := Head.Database_ID;
+      Receipt.Incarnation := State.Gate.Current_Incarnation;
+      Receipt.Manifest_ID := Manifest_ID;
+      Receipt.Expected_Generation := Generation;
+      Receipt.Expected_Head := Head;
+      Receipt.Attempted_Head :=
+        (Database_ID            => Head.Database_ID,
+         Version                => Head.Version,
+         Epoch                  => Head.Epoch,
+         Highest                => Head.Highest,
+         Latest_Batch           => Head.Latest_Batch,
+         Latest_Manifest        => Manifest_ID,
+         Transition_ID          => Transition_ID,
+         Predecessor_Transition => Head.Transition_ID,
+         Transition_Number      => Head.Transition_Number + 1);
+      Receipt.Retained_Manifest.Image := New_Image (Encoded.all);
+      LSM_Runtime.Release (Encoded);
+      Result := Success;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Encoded);
+         Release_Retained_Manifest (Receipt);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Encoded);
+         Release_Retained_Manifest (Receipt);
+         raise;
+   end Initialize_Column_Family_Receipt;
+
+   function Family_Configuration_Matches
+     (Manifest      : Manifests.Manifest;
+      LSM_Authority : Engine_LSM_Authority;
+      Expected      : Column_Family_Configuration) return Boolean
+   is
+      Actual : Column_Family_Configuration;
+   begin
+      for Index in Manifests.Family_Slot range 1 .. Manifest.Family_Total loop
+         if Manifest.Families (Index).ID = Interfaces.Unsigned_32 (Expected.ID) then
+            Actual := From_Manifest_Configuration (Manifest.Families (Index));
+            Actual.Memtable_Max_Bytes := LSM_Authority.Families (Index).State.Memtable_Max_Bytes;
+            Actual.Memtable_Max_Entries := LSM_Authority.Families (Index).State.Memtable_Max_Entries;
+            Actual.Maximum_L0_Runs := LSM_Authority.Families (Index).State.Maximum_L0_Runs;
+            return LSM_Authority.Families (Index).ID = Manifest.Families (Index).ID
+              and then Same_Configuration (Actual, Expected);
+         end if;
+      end loop;
+      return False;
+   end Family_Configuration_Matches;
+
+   procedure Recover_Column_Family_Activation
+     (Item     : in out Database;
+      State    : in out Engine_State_Access;
+      Deadline : Ada.Real_Time.Time;
+      Token    : access Flyology.Cancellation.Token;
+      Receipt  : in out Column_Family_Receipt;
+      Guard    : in out Checkpoint_Guard;
+      Result   : out Outcome_Code)
+   is
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Manifest      : Manifests.Manifest;
+      Root          : Manifests.Manifest;
+      LSM_Authority : Engine_LSM_Authority;
+      Checkpoint    : Checkpoint_Plan;
+      History       : Batch_History_Access := null;
+      History_Count : Natural := 0;
+      Sought_Found  : aliased Boolean := False;
+      Core          : Flush_Receipt;
+   begin
+      Read_Recovery
+        (State.Storage.all,
+         Receipt.Database_ID,
+         Deadline,
+         Token,
+         Head,
+         Generation,
+         Manifest,
+         Root,
+         LSM_Authority,
+         Checkpoint,
+         History,
+         History_Count,
+         Result,
+         Sought_Manifest => Receipt.Manifest_ID,
+         Sought_Found    => Sought_Found'Access);
+      if Result /= Success then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Result :=
+           (if Receipt.Phase = Family_Head_Confirmed
+            then Local_Activation_Failed
+            else Outcome_Unknown);
+         Receipt.Current_Outcome := Result;
+         return;
+      elsif Head.Transition_Number < Receipt.Attempted_Head.Transition_Number then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Result :=
+           (if Receipt.Phase = Family_Head_Confirmed
+            then Local_Activation_Failed
+            else Outcome_Unknown);
+         Receipt.Current_Outcome := Result;
+         return;
+      elsif not Sought_Found then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         State.Gate.Fence;
+         if Receipt.Phase = Family_Head_Confirmed then
+            Receipt.Current_Outcome := Local_Activation_Failed;
+            Result := Local_Activation_Failed;
+         else
+            Receipt.Phase := Family_Resolved;
+            Receipt.Current_Outcome := Stale_Writer;
+            Release_Retained_Manifest (Receipt);
+            Result := Stale_Writer;
+         end if;
+         return;
+      end if;
+
+      --  A complete validated successor chain containing the exact attempted
+      --  immutable manifest conclusively establishes publication even when
+      --  the original conditional-HEAD response was lost. Failures after this
+      --  point are local activation failures, never publication uncertainty.
+      Receipt.Phase := Family_Head_Confirmed;
+      if Checkpoint.Manifest = null
+        or else not Family_Configuration_Matches (Manifest, LSM_Authority, Receipt.Configuration)
+      then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         State.Gate.Fence;
+         Result := Local_Activation_Failed;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+
+      Core :=
+        (Current_Outcome     => Success,
+         Phase               => Flush_Head_Confirmed,
+         Database_ID         => Receipt.Database_ID,
+         Incarnation         => Receipt.Incarnation,
+         Manifest_ID         => Receipt.Manifest_ID,
+         Replay_Boundary     => Sequence_Number (Checkpoint.Manifest.Replay_Boundary),
+         Expected_Generation => Receipt.Expected_Generation,
+         Expected_Head       => Receipt.Expected_Head,
+         Attempted_Head      => Receipt.Attempted_Head,
+         others              => <>);
+      Activate_Recovered_Flush
+        (Item,
+         State,
+         Head,
+         Generation,
+         Manifest,
+         LSM_Authority,
+         Checkpoint,
+         History,
+         History_Count,
+         Core,
+         Guard,
+         Result);
+      Release_History (History, History_Count);
+      Release_Checkpoint_Plan (Checkpoint);
+      if Result = Success then
+         Receipt.Phase := Family_Resolved;
+         Receipt.Current_Outcome := Success;
+         Release_Retained_Manifest (Receipt);
+      else
+         Receipt.Phase := Family_Head_Confirmed;
+         Receipt.Current_Outcome := Local_Activation_Failed;
+         Result := Local_Activation_Failed;
+      end if;
+   exception
+      when others =>
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Receipt.Phase := Family_Head_Confirmed;
+         Receipt.Current_Outcome := Local_Activation_Failed;
+         Result := Local_Activation_Failed;
+   end Recover_Column_Family_Activation;
+
+   procedure Attempt_Column_Family_Head
+     (Item     : in out Database;
+      State    : in out Engine_State_Access;
+      Deadline : Ada.Real_Time.Time;
+      Token    : access Flyology.Cancellation.Token;
+      Receipt  : in out Column_Family_Receipt;
+      Guard    : in out Checkpoint_Guard;
+      Result   : out Outcome_Code)
+   is
+      Owner          : Shared_Image_Access := null;
+      New_Generation : Generation_Value;
+      Put_Result     : Put_Outcome;
+   begin
+      if Token /= null and then Token.Requested then
+         Receipt.Phase := Family_Resolved;
+         Receipt.Current_Outcome := Cancelled;
+         Release_Retained_Manifest (Receipt);
+         Result := Cancelled;
+         return;
+      elsif Deadline <= Ada.Real_Time.Clock then
+         Receipt.Phase := Family_Resolved;
+         Receipt.Current_Outcome := Timed_Out;
+         Release_Retained_Manifest (Receipt);
+         Result := Timed_Out;
+         return;
+      end if;
+      Owner := New_Image (Formats.Encode_Head (To_Head (Receipt.Attempted_Head)));
+      Receipt.Phase := Family_Head_Unknown;
+      Receipt.Head_Entered := True;
+      Storage_Port.Put_Replace
+        (State.Storage.all,
+         Full_Key (State.Storage.all, Head_Key_Suffix),
+         Owner,
+         Receipt.Expected_Generation,
+         Deadline,
+         Token,
+         New_Generation,
+         Put_Result);
+      Release_Image (Owner);
+      if Put_Result = Object_Published then
+         Receipt.Phase := Family_Head_Confirmed;
+         Recover_Column_Family_Activation (Item, State, Deadline, Token, Receipt, Guard, Result);
+      elsif Put_Result = Put_Precondition_Failed then
+         State.Gate.Fence;
+         Receipt.Phase := Family_Resolved;
+         Receipt.Current_Outcome := Stale_Writer;
+         Release_Retained_Manifest (Receipt);
+         Result := Stale_Writer;
+      elsif Put_Result = Put_Outcome_Unknown then
+         State.Gate.Fence;
+         Receipt.Current_Outcome := Outcome_Unknown;
+         Result := Outcome_Unknown;
+      elsif Put_Result = Put_Cancelled then
+         Receipt.Phase := Family_Resolved;
+         Receipt.Current_Outcome := Cancelled;
+         Release_Retained_Manifest (Receipt);
+         Result := Cancelled;
+      elsif Put_Result = Put_Timed_Out then
+         Receipt.Phase := Family_Resolved;
+         Receipt.Current_Outcome := Timed_Out;
+         Release_Retained_Manifest (Receipt);
+         Result := Timed_Out;
+      else
+         Receipt.Phase := Family_Resolved;
+         Receipt.Current_Outcome := Storage_Failure;
+         Release_Retained_Manifest (Receipt);
+         Result := Storage_Failure;
+      end if;
+   exception
+      when others =>
+         Release_Image (Owner);
+         if Receipt.Phase = Family_Head_Confirmed then
+            State.Gate.Fence;
+            Result := Local_Activation_Failed;
+         else
+            State.Gate.Fence;
+            Result := Outcome_Unknown;
+         end if;
+         Receipt.Current_Outcome := Result;
+   end Attempt_Column_Family_Head;
+
+   procedure Publish_Column_Family_Plan
+     (Item     : in out Database;
+      State    : in out Engine_State_Access;
+      Deadline : Ada.Real_Time.Time;
+      Token    : access Flyology.Cancellation.Token;
+      Receipt  : in out Column_Family_Receipt;
+      Guard    : in out Checkpoint_Guard;
+      Result   : out Outcome_Code)
+   is
+   begin
+      Receipt.Phase := Family_Manifest_Unknown;
+      Confirm_Immutable_Object
+        (State.Storage.all,
+         Manifest_Key (State.Storage.all, Receipt.Manifest_ID),
+         Manifest_Object,
+         Receipt.Retained_Manifest.Image,
+         Deadline,
+         Token,
+         Result);
+      if Result = Success then
+         Attempt_Column_Family_Head (Item, State, Deadline, Token, Receipt, Guard, Result);
+      elsif Result = Outcome_Unknown then
+         State.Gate.Fence;
+         Receipt.Current_Outcome := Outcome_Unknown;
+      else
+         Receipt.Phase := Family_Resolved;
+         Receipt.Current_Outcome := Result;
+         Release_Retained_Manifest (Receipt);
+      end if;
+   exception
+      when others =>
+         if Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown then
+            State.Gate.Fence;
+            Result := Outcome_Unknown;
+         elsif Receipt.Phase = Family_Head_Confirmed then
+            State.Gate.Fence;
+            Result := Local_Activation_Failed;
+         else
+            Result := Storage_Failure;
+         end if;
+         Receipt.Current_Outcome := Result;
+   end Publish_Column_Family_Plan;
+
+   procedure Add_Column_Family
+     (Item          : in out Database;
+      Configuration : Column_Family_Configuration;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Timeout       : Duration;
+      Token         : access Flyology.Cancellation.Token := null;
+      Receipt       : out Column_Family_Receipt;
+      Result        : out Outcome_Code)
+   is
+      Deadline : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State    : Engine_State_Access := null;
+      Plan     : Checkpoint_Plan;
+      Guard    : Checkpoint_Guard;
+   begin
+      Receipt := (others => <>);
+      Item.Life.Begin_Checkpoint (State, Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Item.Life.Await_Quiescent;
+      Build_Column_Family_Plan
+        (State, Configuration, Manifest_ID, Transition_ID, Plan, Result);
+      if Result = Success then
+         Initialize_Column_Family_Receipt
+           (State, Configuration, Manifest_ID, Transition_ID, Plan, Receipt, Result);
+      end if;
+      if Result = Success then
+         Publish_Column_Family_Plan (Item, State, Deadline, Token, Receipt, Guard, Result);
+      end if;
+      Release_Checkpoint_Plan (Plan);
+      if Guard.Active then
+         Item.Life.Finish_Checkpoint;
+         Guard.Active := False;
+      end if;
+      Receipt.Current_Outcome := Result;
+   exception
+      when Storage_Error =>
+         Release_Checkpoint_Plan (Plan);
+         if Guard.Active then
+            if Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown then
+               State.Gate.Fence;
+               Result := Outcome_Unknown;
+            elsif Receipt.Phase = Family_Head_Confirmed then
+               State.Gate.Fence;
+               Result := Local_Activation_Failed;
+            else
+               Result := Capacity_Exceeded;
+            end if;
+            Item.Life.Finish_Checkpoint;
+            Guard.Active := False;
+         else
+            Result := Local_Activation_Failed;
+         end if;
+         Receipt.Current_Outcome := Result;
+      when others =>
+         Release_Checkpoint_Plan (Plan);
+         if Guard.Active then
+            if Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown then
+               State.Gate.Fence;
+               Result := Outcome_Unknown;
+            elsif Receipt.Phase = Family_Head_Confirmed then
+               State.Gate.Fence;
+               Result := Local_Activation_Failed;
+            else
+               Result := Storage_Failure;
+            end if;
+            Item.Life.Finish_Checkpoint;
+            Guard.Active := False;
+         else
+            Result := Local_Activation_Failed;
+         end if;
+         Receipt.Current_Outcome := Result;
+   end Add_Column_Family;
+
+   procedure Resolve_Add_Column_Family
+     (Item    : in out Database;
+      Receipt : in out Column_Family_Receipt;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null;
+      Result  : out Outcome_Code)
+   is
+      Deadline   : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State      : Engine_State_Access := null;
+      Head       : Head_Snapshot;
+      Generation : Generation_Value;
+      Uncertain  : Boolean;
+      Fenced     : Boolean;
+      Guard      : Checkpoint_Guard;
+   begin
+      if Receipt.Phase not in Family_Manifest_Unknown | Family_Head_Unknown | Family_Head_Confirmed
+        or else Receipt.Database_ID = Zero_Database_ID
+        or else Receipt.Incarnation = No_Incarnation
+        or else Is_Zero (Receipt.Manifest_ID)
+        or else Receipt.Retained_Manifest.Image = null
+      then
+         Result := Invalid_State;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Item.Life.Begin_Checkpoint (State, Result);
+      if Result /= Success then
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Item.Life.Await_Quiescent;
+      State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if State.Gate.Current_Incarnation /= Receipt.Incarnation
+        or else Head.Database_ID /= Receipt.Database_ID
+        or else Head /= Receipt.Expected_Head
+        or else Generation /= Receipt.Expected_Generation
+      then
+         Result := Invalid_State;
+      elsif Receipt.Phase = Family_Manifest_Unknown then
+         Confirm_Immutable_Object
+           (State.Storage.all,
+            Manifest_Key (State.Storage.all, Receipt.Manifest_ID),
+            Manifest_Object,
+            Receipt.Retained_Manifest.Image,
+            Deadline,
+            Token,
+            Result);
+         if Result = Success then
+            Attempt_Column_Family_Head (Item, State, Deadline, Token, Receipt, Guard, Result);
+         elsif Result /= Outcome_Unknown then
+            Receipt.Phase := Family_Resolved;
+            Release_Retained_Manifest (Receipt);
+         end if;
+      else
+         Recover_Column_Family_Activation (Item, State, Deadline, Token, Receipt, Guard, Result);
+      end if;
+      if Guard.Active then
+         Item.Life.Finish_Checkpoint;
+         Guard.Active := False;
+      end if;
+      Receipt.Current_Outcome := Result;
+   exception
+      when others =>
+         if Guard.Active then
+            if Receipt.Phase = Family_Head_Confirmed then
+               State.Gate.Fence;
+               Result := Local_Activation_Failed;
+            else
+               State.Gate.Fence;
+               Result := Outcome_Unknown;
+            end if;
+            Item.Life.Finish_Checkpoint;
+            Guard.Active := False;
+         else
+            Result := Local_Activation_Failed;
+         end if;
+         Receipt.Current_Outcome := Result;
+   end Resolve_Add_Column_Family;
+
+   function Column_Family_Receipt_Outcome (Item : Column_Family_Receipt) return Outcome_Code
+   is (Item.Current_Outcome);
+
+   function Column_Family_Receipt_Family_ID (Item : Column_Family_Receipt) return Column_Family_ID
+   is (Item.Configuration.ID);
+
+   function Column_Family_Receipt_Manifest_ID (Item : Column_Family_Receipt) return Identifier
+   is (Item.Manifest_ID);
+
+   function Column_Family_Receipt_Transition_ID (Item : Column_Family_Receipt) return Identifier
+   is (if Item.Head_Entered then Item.Attempted_Head.Transition_ID else Zero_Identifier);
 
    procedure Highest_Visible (Item : in out Database; Value : out Sequence_Number; Result : out Outcome_Code)
    is
