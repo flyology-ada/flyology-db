@@ -5,8 +5,8 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `00959177c49f7e6e38f2ac19b8e958afba78c901`
-- Commit subject: `Problem: UploadPartCopy cannot compose multipart copy staging`
+- Commit: `ea8c92c84fbd53b3c82e5004d7133c5b47633f3a`
+- Commit subject: `Problem: ListObjects v1 cannot compose legacy object discovery`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit

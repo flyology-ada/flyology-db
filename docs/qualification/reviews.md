@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted composable ListObjects v1 dependency qualification
+
+- Parent: operational exact-three-run publication commit `0776d6a`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage build clone from
+  `00959177c49f7e6e38f2ac19b8e958afba78c901` to exact authoritative local main
+  `ea8c92c84fbd53b3c82e5004d7133c5b47633f3a`. The author checkout remains read-only coordination state, the root
+  filesystem path pin is unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration, persisted
+  format, allocation limit, task, retry, listing policy, or publication protocol changes.
+- Surface and ownership: Object Storage adds caller-owned `List_Objects_Operation`, constructor and reusable
+  `Start_List_Objects`, terminal-only typed `Finish`, and a synchronous `List_V1_Page` result overload that waits on
+  the same owner-stack state machine. The operation owns its prepared request and XML-limit-bounded response; signing
+  borrows credentials only for the call and no helper task or borrowed request input survives Start.
+- Result boundary: complete strict pages preserve modeled listed/error results. Modeled request, authentication,
+  authorization, missing-bucket, and backend-unavailable errors remain typed; malformed, unknown, inconsistent, or
+  request-scope/payer-mismatched responses fail closed. Transport terminals retain result, phase, bounded detail, and
+  request-admission certainty. This surface is read-only, performs no automatic retry, and treats pages as independent
+  snapshots. Flyology.DB does not consume it in this dependency-only unit.
+- Constants and compatibility: XML retention derives from `S3.XML.Default_Limits`; operation capacity derives from
+  the established owner stack. Region, addressing, timeout, and cancellation defaults remain the existing Object
+  Storage surface. Qualification introduces no DB public constant, default, persisted value, or resource ceiling.
+- Verification and findings: `./tests/scripts/test.sh` rebuilds the dependency closure at exact `ea8c92c`, passes
+  repository provenance, the local engine, authenticated client-backed create/commit/Flush/compaction/reopen,
+  filesystem crash and cacheless recovery, all 32 comparative tests, and pinned TidesDB 4/4. `./scripts/prove.sh`
+  proves 1,090/1,090 selected checks with its maintained success sentinel; exact pre/post host audits are clean.
+  Upstream's reported 41/41 tests, 126 crash cases, provider matrix, GNATdoc, and 936/936 proof are corroborating
+  evidence rather than substitutes for DB gates. API compatibility, ownership, response binding, read-only certainty,
+  author-checkout isolation, constants, and unnecessary-surface review find no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted operational exact-three-run publication candidate
 
 - Parent: composable UploadPartCopy dependency qualification commit `097c21e`.
