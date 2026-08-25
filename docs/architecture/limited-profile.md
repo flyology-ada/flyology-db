@@ -44,10 +44,12 @@ One maintained executable must perform the following sequence using only public 
    handles after recovery.
 8. Close cleanly and report every non-success outcome without retrying a mutation or silently weakening certainty.
 
-The existing authenticated provider matrix remains corroborating transport and certainty evidence, but it is not
-claimed as the exact showcase workflow. Porting this public-only oracle unchanged to a caller-configured authenticated
-provider is the first expansion after the files profile is accepted. S3, HTTP, signing, retry, and endpoint policy
-remain outside Flyology.DB.
+The authenticated provider matrix directly exercises checkpoint-bound family append, lost-HEAD-response
+reconciliation through the original receipt, cross-family commit and Flush, compaction, close, and cacheless reopen
+against RustFS, SeaweedFS, MinIO, and Flyology memory, files, and SQLite. The public Files showcase remains the exact
+complete-local-loss acceptance workflow; the matrix is a provider qualification of the same family-registry and
+recovery spine, not a claim that its transport harness is the showcase executable unchanged. S3, HTTP, signing,
+retry, and endpoint policy remain outside Flyology.DB.
 
 ## Explicit exclusions
 

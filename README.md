@@ -116,8 +116,9 @@ alr build
 
 The separate S3 matrix requires Docker and runs the authenticated DB probe three times against pinned RustFS,
 SeaweedFS, MinIO, and Flyology memory, files, and SQLite servers. It reuses Object Storage's maintained provider
-lifecycle scripts while DB owns the database-level create, commit, Flush, compaction, and cacheless-reopen oracle.
-The repetition count is qualification geometry and can be changed for focused diagnostics with
+lifecycle scripts while DB owns the database-level create, checkpoint-bound family append, exact lost-response
+resolution, cross-family commit and Flush, compaction, and cacheless-reopen oracle. The repetition count is
+qualification geometry and can be changed for focused diagnostics with
 `FLYOLOGY_DB_S3_MATRIX_REPEATS`; it is not a database retry or compatibility policy.
 
 The exact Object Storage commit used by the current campaign is recorded in

@@ -104,8 +104,9 @@ procedure Flyology.DB.Client_Probe is
    Reopened               : Database;
    Txn                    : Transaction;
    Reader                 : Transaction;
-   Family                 : Column_Family;
+   Family, Audit_Family   : Column_Family;
    Receipt                : Create_Receipt;
+   Family_Info            : Column_Family_Receipt;
    Commit_Info            : Commit_Receipt;
    Flush_Info             : Flush_Receipt;
    Data                   : Flyology.Bytes.Unbounded_Bytes;
@@ -113,14 +114,14 @@ procedure Flyology.DB.Client_Probe is
    Close_Result           : Outcome_Code;
    Bucket_Result          : Buckets.Create_Outcome;
 
-   --  The one-family remote fixture deliberately exercises unequal 20-byte
-   --  key and 400-byte value authority. Six manifest-history slots admit
-   --  exactly root, additive checkpoint, replacement checkpoint, second
-   --  and third additive checkpoints, and the three-run merge successor in
-   --  this remote corpus; these are not API defaults.
+   --  The remote fixture starts with one family, then appends one independently
+   --  bounded family after its first checkpoint. Seven manifest-history slots
+   --  admit exactly root, first checkpoint, registry append, replacement,
+   --  second and third additive checkpoints, and the three-run merge successor.
+   --  These are persisted fixture authority, not API defaults.
    Limits                   : constant Database_Limits :=
-     (Maximum_Column_Families           => 1,
-      Maximum_Manifest_History          => 6,
+     (Maximum_Column_Families           => 2,
+      Maximum_Manifest_History          => 7,
       Maximum_Batch_History             => 4,
       Maximum_Transactions_Per_Batch    => 1,
       Maximum_Mutations_Per_Transaction => 4,
@@ -129,7 +130,7 @@ procedure Flyology.DB.Client_Probe is
       Maximum_Transaction_Payload_Bytes => 1_024,
       Maximum_Batch_Payload_Bytes       => 2_048,
       Maximum_Live_State_Bytes          => 4_096,
-      Maximum_Total_L0_Runs             => 3,
+      Maximum_Total_L0_Runs             => 4,
       --  Sixteen exact identity slots cover the five fixture publications
       --  and their retained run/transaction authority; this is test corpus
       --  geometry, not a DB or production default.
@@ -146,14 +147,28 @@ procedure Flyology.DB.Client_Probe is
          Memtable_Max_Bytes   => 1_680,
          Memtable_Max_Entries => 4,
          Maximum_L0_Runs      => 3)];
+   --  The appended family supplies a distinct exact byte/value and memtable/L0
+   --  policy. It is caller authority persisted by Add_Column_Family, not a
+   --  value derived from the initial family or selected by the DB.
+   Appended_Family          : constant Column_Family_Configuration :=
+     Configure_Column_Family
+       (2,
+        Bytes ("audit"),
+        Max_Key_Bytes        => 12,
+        Max_Value_Bytes      => 64,
+        Memtable_Max_Bytes   => 256,
+        Memtable_Max_Entries => 2,
+        Maximum_L0_Runs      => 1);
    --  Stable one-byte fixture identities assign 1 to the database, 2/3 to the
    --  root manifest/transition, 4 to the committed transaction, 5 to the
    --  read-only probe, 6/7/8 to the additive run/checkpoint/HEAD transition,
-   --  9/10/11 to its complete replacement, 12 to the later transaction,
-   --  13/14/15 to its additive run/checkpoint/transition, 16 to a third
-   --  transaction, 17/18/19 to its additive run/checkpoint/transition, and
-   --  20/21/22 to the selected three-run merge. They isolate object roles in
-   --  this fresh bucket and are not ID-generation policy or persisted tags.
+   --  9/10 to the appended-family manifest/transition, 11/12/13 to the complete
+   --  replacement, 14 to the later cross-family transaction, 15/16/17/18 to
+   --  its two runs/checkpoint/transition, 19 to a third transaction,
+   --  20/21/22 to its family-1 run/checkpoint/transition, and 23/24/25 to the
+   --  selected three-run merge. IDs 26 and 27 are unused run-map placeholders
+   --  for unchanged/empty family 2; they never name attempted objects. These
+   --  values isolate fixture roles and are not ID-generation policy or tags.
    Probe_Database_ID        : constant Database_Identifier := Database_Identifier (Numbered_ID (1));
    Root_Manifest_ID         : constant Identifier := Numbered_ID (2);
    Root_Transition_ID       : constant Identifier := Numbered_ID (3);
@@ -162,37 +177,46 @@ procedure Flyology.DB.Client_Probe is
    Checkpoint_Run_ID        : constant Identifier := Numbered_ID (6);
    Checkpoint_Manifest_ID   : constant Identifier := Numbered_ID (7);
    Checkpoint_Transition_ID : constant Identifier := Numbered_ID (8);
-   Compaction_Run_ID        : constant Identifier := Numbered_ID (9);
-   Compaction_Manifest_ID   : constant Identifier := Numbered_ID (10);
-   Compaction_Transition_ID : constant Identifier := Numbered_ID (11);
+   Family_Manifest_ID       : constant Identifier := Numbered_ID (9);
+   Family_Transition_ID     : constant Identifier := Numbered_ID (10);
+   Compaction_Run_ID        : constant Identifier := Numbered_ID (11);
+   Compaction_Manifest_ID   : constant Identifier := Numbered_ID (12);
+   Compaction_Transition_ID : constant Identifier := Numbered_ID (13);
    Later_Transaction_ID     : constant Transaction_Identifier :=
-     Transaction_Identifier (Numbered_ID (12));
-   Later_Run_ID             : constant Identifier := Numbered_ID (13);
-   Later_Manifest_ID        : constant Identifier := Numbered_ID (14);
-   Later_Transition_ID      : constant Identifier := Numbered_ID (15);
+     Transaction_Identifier (Numbered_ID (14));
+   Later_Run_ID             : constant Identifier := Numbered_ID (15);
+   Audit_Run_ID             : constant Identifier := Numbered_ID (16);
+   Later_Manifest_ID        : constant Identifier := Numbered_ID (17);
+   Later_Transition_ID      : constant Identifier := Numbered_ID (18);
    Third_Transaction_ID     : constant Transaction_Identifier :=
-     Transaction_Identifier (Numbered_ID (16));
-   Third_Run_ID             : constant Identifier := Numbered_ID (17);
-   Third_Manifest_ID        : constant Identifier := Numbered_ID (18);
-   Third_Transition_ID      : constant Identifier := Numbered_ID (19);
-   Merged_Run_ID            : constant Identifier := Numbered_ID (20);
-   Merged_Manifest_ID       : constant Identifier := Numbered_ID (21);
-   Merged_Transition_ID     : constant Identifier := Numbered_ID (22);
+     Transaction_Identifier (Numbered_ID (19));
+   Third_Run_ID             : constant Identifier := Numbered_ID (20);
+   Third_Manifest_ID        : constant Identifier := Numbered_ID (21);
+   Third_Transition_ID      : constant Identifier := Numbered_ID (22);
+   Merged_Run_ID            : constant Identifier := Numbered_ID (23);
+   Merged_Manifest_ID       : constant Identifier := Numbered_ID (24);
+   Merged_Transition_ID     : constant Identifier := Numbered_ID (25);
+   Empty_Compaction_Run_ID  : constant Identifier := Numbered_ID (26);
+   Unchanged_Third_Run_ID   : constant Identifier := Numbered_ID (27);
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag          : constant Interfaces.Unsigned_64 := 16#F105#;
    Checkpoint_Runs          : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Checkpoint_Run_ID)];
    Compaction_Runs          : constant Checkpoint_Run_Identity_Array :=
-     [Configure_Checkpoint_Run (1, Compaction_Run_ID)];
+     [Configure_Checkpoint_Run (1, Compaction_Run_ID),
+      Configure_Checkpoint_Run (2, Empty_Compaction_Run_ID)];
    Later_Runs               : constant Checkpoint_Run_Identity_Array :=
-     [Configure_Checkpoint_Run (1, Later_Run_ID)];
+     [Configure_Checkpoint_Run (1, Later_Run_ID), Configure_Checkpoint_Run (2, Audit_Run_ID)];
    Third_Runs               : constant Checkpoint_Run_Identity_Array :=
-     [Configure_Checkpoint_Run (1, Third_Run_ID)];
+     [Configure_Checkpoint_Run (1, Third_Run_ID),
+      Configure_Checkpoint_Run (2, Unchanged_Third_Run_ID)];
    Key_Data                 : constant Byte_Array := Bytes ("client-key");
    Value_Data               : constant Byte_Array := Bytes ("client-value");
    Later_Value_Data         : constant Byte_Array := Bytes ("client-value-later");
    Third_Value_Data         : constant Byte_Array := Bytes ("client-value-third");
+   Audit_Key_Data           : constant Byte_Array := Bytes ("event-1");
+   Audit_Value_Data         : constant Byte_Array := Bytes ("remote-append");
    --  One visible DB parent, one Object Storage child, its HTTP exchange, and
    --  its single transport child are the exact owner-stack slot geometry of
    --  this serial probe. It is test capacity, not a DB completion-set default.
@@ -499,6 +523,31 @@ begin
       raise Program_Error with "client-backed Flush receipt lost exact authority";
    end if;
 
+   --  Lose the registry HEAD response after possible admission. The append
+   --  must remain unknown until the exact receipt performs a generation-bound
+   --  cacheless reconciliation; no replacement identity or mutation retry is
+   --  permitted. This is the remote counterpart of the local append corpus.
+   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+   Add_Column_Family
+     (Created,
+      Appended_Family,
+      Family_Manifest_ID,
+      Family_Transition_ID,
+      Test_Operation_Timeout,
+      Receipt => Family_Info,
+      Result  => Result);
+   Expect (Result, Outcome_Unknown, "client-backed family append lost HEAD uncertainty");
+   if Column_Family_Receipt_Manifest_ID (Family_Info) /= Family_Manifest_ID
+     or else Column_Family_Receipt_Transition_ID (Family_Info) /= Family_Transition_ID
+   then
+      raise Program_Error with "client-backed family append receipt lost exact authority";
+   end if;
+   Resolve_Add_Column_Family
+     (Created, Family_Info, Test_Operation_Timeout, Result => Result);
+   Expect (Result, Success, "client-backed family append reconciliation failed");
+   Open_Column_Family (Created, Appended_Family.ID, Audit_Family, Result);
+   Expect (Result, Success, "client-backed appended family open failed");
+
    --  The private replacement constructor selects only the already-frozen
    --  complete-run algorithm. It reuses the public operation owner stack,
    --  exact token move, typed Finish, certainty mapping, and one deadline;
@@ -532,15 +581,17 @@ begin
       raise Program_Error with "client-backed compaction receipt lost replacement authority";
    end if;
 
-   --  Two later committed values become the second and third immutable runs
-   --  in the same family. The private exact-three wrapper must drive every
-   --  selected-run HEAD/range/whole read and publication through the same
-   --  owner-stack Flush operation; no helper task or blocking client adapter
-   --  is involved.
+   --  The next commit writes both families; its family-1 value and a final
+   --  family-1 commit become the second and third selected runs. The private
+   --  exact-three wrapper must drive every selected-run HEAD/range/whole read
+   --  and publication through the same owner-stack Flush operation; no helper
+   --  task or blocking client adapter is involved.
    Begin_Transaction (Created, Later_Transaction_ID, Txn, Result);
    Expect (Result, Success, "later client-backed transaction begin failed");
    Put (Created, Txn, Family, Key_Data, Later_Value_Data, Result);
    Expect (Result, Success, "later client-backed put failed");
+   Put (Created, Txn, Audit_Family, Audit_Key_Data, Audit_Value_Data, Result);
+   Expect (Result, Success, "appended-family remote put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "later client-backed commit failed");
    Flush
@@ -616,16 +667,24 @@ begin
    Expect (Result, Success, "client-backed reader begin failed");
    Open_Column_Family (Reopened, 1, Family, Result);
    Expect (Result, Success, "reopened family lookup failed");
+   Open_Column_Family (Reopened, Appended_Family.ID, Audit_Family, Result);
+   Expect (Result, Success, "reopened appended family lookup failed");
    Get (Reopened, Reader, Family, Key_Data, Data, Result);
    Expect (Result, Success, "reopened client-backed read failed");
    if not Same (Data, Third_Value_Data) then
       raise Program_Error with "client-backed recovery returned the wrong bytes";
    end if;
+   Get (Reopened, Reader, Audit_Family, Audit_Key_Data, Data, Result);
+   Expect (Result, Success, "reopened appended-family read failed");
+   if not Same (Data, Audit_Value_Data) then
+      raise Program_Error with "client-backed appended family returned the wrong bytes";
+   end if;
    Rollback (Reader, Result);
    Expect (Result, Success, "client-backed reader rollback failed");
    Close (Reopened, Close_Result);
    Expect (Close_Result, Success, "reopened client-backed close failed");
-   Ada.Text_IO.Put_Line ("Flyology.DB client-backed create/commit/Flush/compaction/reopen passed");
+   Ada.Text_IO.Put_Line
+     ("Flyology.DB client-backed create/append/commit/Flush/compaction/reopen passed");
 exception
    when others =>
       Close (Created, Close_Result);

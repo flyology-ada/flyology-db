@@ -1,5 +1,28 @@
 # Review record
 
+## Accepted authenticated cross-provider family-append qualification
+
+- Parent: published Object Storage provenance update `492edad` over synchronous family append `b95df46`.
+- Scope: strengthen only the maintained authenticated client probe. After its first checkpoint, it appends one
+  caller-configured family with distinct key, value, memtable, and L0 limits; deliberately loses the conditional HEAD
+  response after possible admission; resolves only through the original receipt; writes both families atomically;
+  Flushes both; compacts the original family; closes; and cachelessly reopens and verifies both exact values. No
+  production source, public declaration, persisted format, retry, timeout, provider policy, or allocation behavior
+  changes in this qualification unit.
+- Authority and bounds: the probe expands only its persisted fixture geometry from one to two families, six to seven
+  retained manifests, and three to four total L0 runs. Adjacent source comments tie those values and every new
+  object identity to the exact corpus path; none is a DB default. The second family's complete policy remains caller
+  authority and deliberately differs from the initial family.
+- Verification: `./tests/scripts/test.sh` passes the repository, local engine, authenticated memory server,
+  power-loss Files, limited showcase, 32 comparative, and TidesDB 4/4 gates. The maintained S3 matrix passes all
+  18 lanes: RustFS, SeaweedFS, MinIO, Flyology memory, files, and SQLite, three repetitions each, against exact
+  Object Storage `1978275b4c4cd4704adc41ec52b167a7587b411f`. Every lane reports the complete
+  `create/append/commit/Flush/compaction/reopen` sentinel.
+- Findings cycle: the first constants/test-oracle sweep fixed a P2 accidental gap in the remapped one-byte object-ID
+  sequence and corrected a stale single-family comment. API, ownership, certainty, bounds, provider compatibility,
+  recovery, test-oracle, and unnecessary-surface re-review finds no actionable P0, P1, or P2 finding. The production
+  source and selected proof units are unchanged from the warning-strict 1,091/1,091 proof campaign recorded below.
+
 ## Accepted checkpoint-bound column-family append candidate
 
 - Parent: checkpoint-carried registry prerequisite `021bdd2`.
