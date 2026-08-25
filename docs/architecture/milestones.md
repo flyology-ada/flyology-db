@@ -120,6 +120,13 @@ with shared ownership of its immutable images. The replacement coordinator recon
 then replays the suffix to preserve conflict and identity authority. Recovery admits that topology only through exact
 batch-to-manifest-chain and suffix-to-checkpoint-boundary anchors.
 
+The same private runtime now has an additive exact-three-run qualification kernel. It admits only three adjacent
+descriptors selected by its caller, uses one checked allocation for their exact combined entry/payload extents,
+retains every version and tombstone, and replaces only those three descriptors with one in the effect-free successor.
+The maintained TLC lane exhausts the middle-tombstone/last-empty case and TLAPS proves arbitrary-key associative
+composition with retained surrounding runs and a later suffix. This does not choose automatic selection, fanout,
+trigger, levels, publication scheduling, or a public API; those remain Milestone 4 and 6 work.
+
 The scan-range-normalization lane freezes same-family half-open union, transitive bridge coalescing, cross-family
 separation, and atomic capacity/allocation rollback. Its finite model exhausts 3,419 states and the arbitrary-universe
 kernel proves 19 TLAPS obligations. Production and the bounded SPARK oracle now implement that rule: they build a

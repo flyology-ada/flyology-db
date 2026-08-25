@@ -1,5 +1,38 @@
 # Review record
 
+## Accepted exact-three-run compaction kernel candidate
+
+- Parent: composable GetObjectAttributes dependency qualification commit `7766301`.
+- Scope and authority: add one private effect-free kernel for exactly three caller-selected consecutive SSTs and a
+  successor builder for their three adjacent authenticated descriptors. Three is algorithm-qualification geometry,
+  not a public or persisted trigger, fanout, level, capacity, scheduler, retry rule, or automatic selection policy.
+- Algorithm and ownership: all three inputs must be structurally valid, share database/family authority, and carry
+  strictly increasing disjoint sequence ranges. Checked entry, payload, and logical-byte sums authorize one exact
+  output allocation; the merger never constructs pairwise temporary SSTs and publishes no partial candidate. Equal
+  keys remain in descending sequence order, preserving every Put and Delete version. The successor replaces only the
+  admitted three-descriptor slice and copies every retained family, run, replay boundary, identity, and persisted
+  limit exactly.
+- Formal boundary: exhaustive TLC checks 12,288 distinct states at depth 3 and rejects a probe that drops a middle
+  tombstone when the last selected run has no mutation for that key. The concrete three-state witness validates the
+  first-Put/middle-Delete/last-empty/suffix-Put path. TLAPS proves all seven arbitrary-key/value composition and
+  retained-context obligations. This establishes read semantics, not operational publication or an Ada refinement
+  theorem.
+- Constants and allocation: the exact three-run count, one-key/two-value model, and five-descriptor retained-neighbor
+  fixture are adjacent-documented qualification geometry. Production allocation extents derive only from validated
+  SST discriminants with checked arithmetic and lazy exact allocation. No DB public constant, default, ceiling, or
+  persisted format changes.
+- Verification: the focused root/test builds and runtime corpus pass; `./tests/scripts/test.sh` passes repository
+  provenance at Object Storage `296b94f1ec7fd78c20838f2447d7dc4234e43c79`, authenticated client and filesystem
+  crash/recovery paths, all 32 comparative tests, and pinned TidesDB 4/4. Final maintained TLA and SPARK gate evidence
+  is green: the complete `./scripts/check-tla.sh` campaign includes the 12,288-state/7-obligation three-run lane and
+  all prior lanes, while `./scripts/prove.sh` proves 1,090/1,090 checks with its maintained success sentinel. Exact
+  post-run host audits are clean.
+- Findings cycle: architecture, ordering, checked arithmetic, allocation rollback, descriptor adjacency, retained
+  slices, tombstone behavior, constants, public surface, and unnecessary-allocation review found one P2 coverage
+  gap: the first test retained neighbors in the same family but did not verify a later family's derived flat-table
+  offset. The added two-family fixture checks the exact shift by two and retained descriptor equality. Rebuild,
+  deterministic rerun, and final re-review find no remaining P0, P1, P2, or P3 issue.
+
 ## Accepted composable GetObjectAttributes dependency qualification
 
 - Parent: composable ListObjectVersions dependency qualification commit `5557db0`.

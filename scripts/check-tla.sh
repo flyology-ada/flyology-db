@@ -582,6 +582,63 @@ grep -q 'Invariant WitnessPending is violated.' \
   >"$temporary_root/tlaps-lsm-partial-equivalence.log" 2>&1
 grep -q 'All 5 obligations proved.' "$temporary_root/tlaps-lsm-partial-equivalence.log"
 
+#  Exactly three caller-selected consecutive runs qualify composition beyond
+#  the two-run kernel without choosing a product fanout, trigger, level, or
+#  capacity. The middle tombstone case is explicit because a later selected
+#  run may contain no mutation for the key.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-lsm-three-run-states" \
+  -config LSMThreeRunCompactionEquivalence.cfg \
+  LSMThreeRunCompactionEquivalence \
+  >"$temporary_root/tlc-lsm-three-run.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-lsm-three-run.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lsm-three-run.log"
+grep -q '12288 distinct states found' "$temporary_root/tlc-lsm-three-run.log"
+grep -q 'The depth of the complete state graph search is 3.' \
+  "$temporary_root/tlc-lsm-three-run.log"
+for action in BuildThreeRunMerge RecoverMergedRuns
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-lsm-three-run.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-lsm-three-run-probe-states" \
+  -config LSMThreeRunCompactionEquivalenceProbe.cfg \
+  LSMThreeRunCompactionEquivalenceProbe \
+  >"$temporary_root/tlc-lsm-three-run-probe.log" 2>&1
+lsm_three_run_probe_status=$?
+set -e
+test "$lsm_three_run_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-lsm-three-run-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lsm-three-run-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-lsm-three-run-witness-states" \
+  -config LSMThreeRunCompactionEquivalenceWitness.cfg \
+  -dumpTrace json "$temporary_root/lsm-three-run-compaction-equivalence.json" \
+  LSMThreeRunCompactionEquivalenceWitness \
+  >"$temporary_root/tlc-lsm-three-run-witness.log" 2>&1
+lsm_three_run_witness_status=$?
+set -e
+test "$lsm_three_run_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-lsm-three-run-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lsm-three-run-witness.log"
+"$model_root/validate_lsm_three_run_compaction_equivalence_witness.py" \
+  "$temporary_root/lsm-three-run-compaction-equivalence.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-lsm-three-run-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/LSMThreeRunCompactionEquivalenceSafetyProof.tla" \
+  >"$temporary_root/tlaps-lsm-three-run.log" 2>&1
+grep -q 'All 7 obligations proved.' "$temporary_root/tlaps-lsm-three-run.log"
+
 #  Zero-versus-one cache capacity is finite qualification geometry, not a
 #  product default. Exact immutable generations bind requests, cache entries,
 #  coalesced fetches, and results; local cache/fetch state remains disposable.
@@ -1042,6 +1099,10 @@ printf '%s\n' "  Partial LSM merge TLC 3145728 distinct states, depth 3"
 printf '%s\n' "  Partial LSM merge TLAPS 5/5 obligations"
 printf '%s\n' "  Partial LSM older/selected/newer/suffix merge witness validated"
 printf '%s\n' "  Negative dropped-tombstone partial-merge probe detected"
+printf '%s\n' "  Three-run LSM merge TLC 12288 distinct states, depth 3"
+printf '%s\n' "  Three-run LSM merge TLAPS 7/7 obligations"
+printf '%s\n' "  Three-run middle-tombstone/suffix witness validated"
+printf '%s\n' "  Negative dropped-middle-tombstone probe detected"
 printf '%s\n' "  Immutable cache TLC 623 distinct states, depth 12"
 printf '%s\n' "  Immutable cache TLAPS 13/13 obligations"
 printf '%s\n' "  Cache coalescing/loss/corruption witness validated"

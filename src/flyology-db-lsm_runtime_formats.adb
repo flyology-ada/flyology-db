@@ -1482,6 +1482,409 @@ package body Flyology.DB.LSM_Runtime_Formats is
          raise;
    end Build_Adjacent_Merge_Successor;
 
+   procedure Merge_Three_Consecutive_SSTs
+     (First_Run      : SST;
+      Middle_Run     : SST;
+      Last_Run       : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Value          : out SST_Access;
+      Status         : out Merge_Status)
+   is
+      Candidate        : SST_Access := null;
+      Allocation       : Allocation_Status;
+      Entry_Total      : Natural;
+      Partial_Entries  : Natural;
+      Payload_Total    : Natural;
+      Partial_Payload  : Natural;
+      Logical_Total    : Interfaces.Unsigned_64;
+      Partial_Logical  : Interfaces.Unsigned_64;
+      First_Index      : Positive := First_Run.Entries'First;
+      Middle_Index     : Positive := Middle_Run.Entries'First;
+      Last_Index       : Positive := Last_Run.Entries'First;
+      First_Remaining  : Natural := First_Run.Entry_Total;
+      Middle_Remaining : Natural := Middle_Run.Entry_Total;
+      Last_Remaining   : Natural := Last_Run.Entry_Total;
+      Output_Index     : Natural := 1;
+      Payload_Cursor   : Natural := 1;
+
+      function Precedes
+        (Left_Table  : SST;
+         Left_Index  : Positive;
+         Right_Table : SST;
+         Right_Index : Positive) return Boolean
+      is
+         Left_Entry  : SST_Entry renames Left_Table.Entries (Left_Index);
+         Right_Entry : SST_Entry renames Right_Table.Entries (Right_Index);
+      begin
+         if Key_Less
+              (Left_Table.Payload,
+               Left_Entry.Key_Offset - 1,
+               Left_Entry.Key_Byte_Total,
+               Right_Table.Payload,
+               Right_Entry.Key_Offset - 1,
+               Right_Entry.Key_Byte_Total)
+         then
+            return True;
+         elsif Key_Less
+                 (Right_Table.Payload,
+                  Right_Entry.Key_Offset - 1,
+                  Right_Entry.Key_Byte_Total,
+                  Left_Table.Payload,
+                  Left_Entry.Key_Offset - 1,
+                  Left_Entry.Key_Byte_Total)
+         then
+            return False;
+         else
+            --  Equal keys retain descending sequence order across the three
+            --  disjoint persisted sequence ranges.
+            return Left_Entry.Sequence > Right_Entry.Sequence;
+         end if;
+      end Precedes;
+
+      procedure Append_Entry (Source : SST; Source_Index : Positive) is
+         Source_Entry : SST_Entry renames Source.Entries (Source_Index);
+         Target_Entry : SST_Entry renames Candidate.Entries (Output_Index);
+      begin
+         Target_Entry.Sequence := Source_Entry.Sequence;
+         Target_Entry.Operation := Source_Entry.Operation;
+         Target_Entry.Key_Offset := Payload_Cursor;
+         Target_Entry.Key_Byte_Total := Source_Entry.Key_Byte_Total;
+         Target_Entry.Value_Offset := Payload_Cursor + Source_Entry.Key_Byte_Total;
+         Target_Entry.Value_Byte_Total := Source_Entry.Value_Byte_Total;
+         for Offset in Natural range 1 .. Source_Entry.Key_Byte_Total loop
+            Candidate.Payload (Payload_Cursor + Offset - 1) :=
+              Source.Payload (Source_Entry.Key_Offset + Offset - 1);
+         end loop;
+         Payload_Cursor := Payload_Cursor + Source_Entry.Key_Byte_Total;
+         for Offset in Natural range 1 .. Source_Entry.Value_Byte_Total loop
+            Candidate.Payload (Payload_Cursor + Offset - 1) :=
+              Source.Payload (Source_Entry.Value_Offset + Offset - 1);
+         end loop;
+         Payload_Cursor := Payload_Cursor + Source_Entry.Value_Byte_Total;
+         Output_Index := Output_Index + 1;
+      end Append_Entry;
+   begin
+      Value := null;
+      if not Structurally_Valid (First_Run)
+        or else not Structurally_Valid (Middle_Run)
+        or else not Structurally_Valid (Last_Run)
+        or else First_Run.Database_ID /= Middle_Run.Database_ID
+        or else First_Run.Database_ID /= Last_Run.Database_ID
+        or else First_Run.Family_ID /= Middle_Run.Family_ID
+        or else First_Run.Family_ID /= Last_Run.Family_ID
+        or else First_Run.Highest_Sequence >= Middle_Run.Lowest_Sequence
+        or else Middle_Run.Highest_Sequence >= Last_Run.Lowest_Sequence
+        or else Head_Policy.Is_Zero (Output_Run_ID)
+        or else Output_Run_ID = First_Run.Run_ID
+        or else Output_Run_ID = Middle_Run.Run_ID
+        or else Output_Run_ID = Last_Run.Run_ID
+      then
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      if Middle_Run.Entry_Total > Natural'Last - First_Run.Entry_Total then
+         Status := Merge_Length_Overflow;
+         return;
+      end if;
+      Partial_Entries := First_Run.Entry_Total + Middle_Run.Entry_Total;
+      if Last_Run.Entry_Total > Natural'Last - Partial_Entries
+        or else Middle_Run.Payload_Byte_Total > Natural'Last - First_Run.Payload_Byte_Total
+      then
+         Status := Merge_Length_Overflow;
+         return;
+      end if;
+      Entry_Total := Partial_Entries + Last_Run.Entry_Total;
+      Partial_Payload := First_Run.Payload_Byte_Total + Middle_Run.Payload_Byte_Total;
+      if Last_Run.Payload_Byte_Total > Natural'Last - Partial_Payload
+        or else not Add_U64
+                      (First_Run.Logical_Payload_Bytes,
+                       Middle_Run.Logical_Payload_Bytes,
+                       Partial_Logical)
+        or else not Add_U64
+                      (Partial_Logical, Last_Run.Logical_Payload_Bytes, Logical_Total)
+      then
+         Status := Merge_Length_Overflow;
+         return;
+      end if;
+      Payload_Total := Partial_Payload + Last_Run.Payload_Byte_Total;
+      Create_SST (Entry_Total, Payload_Total, Candidate, Allocation);
+      if Allocation = Allocation_Failed then
+         Status := Merge_Allocation_Failed;
+         return;
+      elsif Allocation /= Allocated then
+         Status := Merge_Length_Overflow;
+         return;
+      end if;
+      Candidate.Database_ID := First_Run.Database_ID;
+      Candidate.Run_ID := Output_Run_ID;
+      Candidate.Family_ID := First_Run.Family_ID;
+      Candidate.Lowest_Sequence := First_Run.Lowest_Sequence;
+      Candidate.Highest_Sequence := Last_Run.Highest_Sequence;
+      Candidate.Logical_Payload_Bytes := Logical_Total;
+
+      while First_Remaining > 0 or else Middle_Remaining > 0 or else Last_Remaining > 0 loop
+         declare
+            Source : Natural := 0;
+         begin
+            if First_Remaining > 0 then
+               Source := 1;
+            end if;
+            if Middle_Remaining > 0
+              and then
+                (Source = 0
+                 or else Precedes (Middle_Run, Middle_Index, First_Run, First_Index))
+            then
+               Source := 2;
+            end if;
+            if Last_Remaining > 0
+              and then
+                (Source = 0
+                 or else
+                   (Source = 1
+                    and then Precedes (Last_Run, Last_Index, First_Run, First_Index))
+                 or else
+                   (Source = 2
+                    and then Precedes (Last_Run, Last_Index, Middle_Run, Middle_Index)))
+            then
+               Source := 3;
+            end if;
+            case Source is
+               when 1 =>
+                  Append_Entry (First_Run, First_Index);
+                  First_Remaining := First_Remaining - 1;
+                  if First_Remaining > 0 then
+                     First_Index := First_Index + 1;
+                  end if;
+               when 2 =>
+                  Append_Entry (Middle_Run, Middle_Index);
+                  Middle_Remaining := Middle_Remaining - 1;
+                  if Middle_Remaining > 0 then
+                     Middle_Index := Middle_Index + 1;
+                  end if;
+               when 3 =>
+                  Append_Entry (Last_Run, Last_Index);
+                  Last_Remaining := Last_Remaining - 1;
+                  if Last_Remaining > 0 then
+                     Last_Index := Last_Index + 1;
+                  end if;
+               when others =>
+                  Release (Candidate);
+                  Status := Merge_Invalid_Input;
+                  return;
+            end case;
+         end;
+      end loop;
+      if Output_Index /= Entry_Total + 1
+        or else Payload_Cursor /= Payload_Total + 1
+        or else not Structurally_Valid (Candidate.all)
+      then
+         Release (Candidate);
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      Value := Candidate;
+      Status := Merge_Completed;
+   exception
+      when others =>
+         Release (Candidate);
+         Value := null;
+         raise;
+   end Merge_Three_Consecutive_SSTs;
+
+   procedure Merge_Manifest_Three_Adjacent_SSTs
+     (Current        : Checkpoint_Manifest;
+      First_Run      : SST;
+      Middle_Run     : SST;
+      Last_Run       : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Value          : out SST_Access;
+      Status         : out Merge_Status) is
+   begin
+      Value := null;
+      if not Structurally_Valid (Current)
+        or else First_Run.Family_ID /= Middle_Run.Family_ID
+        or else First_Run.Family_ID /= Last_Run.Family_ID
+      then
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      for Descriptor of Current.Runs loop
+         if Descriptor.Run_ID = Output_Run_ID then
+            Status := Merge_Invalid_Input;
+            return;
+         end if;
+      end loop;
+      for Family_Index in Current.Families'Range loop
+         if Current.Base.Families (Family_Index).ID = First_Run.Family_ID then
+            declare
+               Family : Family_LSM_State renames Current.Families (Family_Index);
+            begin
+               if Family.Run_Total < 3 then
+                  Status := Merge_Invalid_Input;
+                  return;
+               end if;
+               for Run_Index in Positive range
+                 Family.First_Run .. Family.First_Run + Family.Run_Total - 3
+               loop
+                  if Descriptor_Matches
+                       (First_Run,
+                        Current.Base.Database_ID,
+                        First_Run.Family_ID,
+                        Current.Runs (Run_Index))
+                    and then Descriptor_Matches
+                               (Middle_Run,
+                                Current.Base.Database_ID,
+                                Middle_Run.Family_ID,
+                                Current.Runs (Run_Index + 1))
+                    and then Descriptor_Matches
+                               (Last_Run,
+                                Current.Base.Database_ID,
+                                Last_Run.Family_ID,
+                                Current.Runs (Run_Index + 2))
+                  then
+                     Merge_Three_Consecutive_SSTs
+                       (First_Run, Middle_Run, Last_Run, Output_Run_ID, Value, Status);
+                     return;
+                  end if;
+               end loop;
+               Status := Merge_Invalid_Input;
+               return;
+            end;
+         end if;
+      end loop;
+      Status := Merge_Invalid_Input;
+   end Merge_Manifest_Three_Adjacent_SSTs;
+
+   procedure Build_Three_Run_Merge_Successor
+     (Current        : Checkpoint_Manifest;
+      Successor_Base : Manifests.Manifest;
+      First_Run      : SST;
+      Middle_Run     : SST;
+      Last_Run       : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Merged         : out SST_Access;
+      Successor      : out Checkpoint_Manifest_Access;
+      Status         : out Merge_Status)
+   is
+      Candidate    : Checkpoint_Manifest_Access := null;
+      Allocation   : Allocation_Status;
+      Output_Index : Natural := 0;
+      Replaced     : Boolean := False;
+   begin
+      Merged := null;
+      Successor := null;
+      if not Structurally_Valid (Current)
+        or else not Manifests.Valid_Checkpoint_Predecessor (Successor_Base, Current.Base)
+      then
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      Merge_Manifest_Three_Adjacent_SSTs
+        (Current, First_Run, Middle_Run, Last_Run, Output_Run_ID, Merged, Status);
+      if Status /= Merge_Completed then
+         return;
+      end if;
+
+      Create_Checkpoint_Manifest
+        (Current.Family_Total,
+         Current.Run_Total - 2,
+         Current.Identity_Total,
+         Candidate,
+         Allocation);
+      if Allocation /= Allocated then
+         Release (Merged);
+         Status :=
+           (if Allocation = Allocation_Failed
+            then Merge_Allocation_Failed
+            else Merge_Length_Overflow);
+         return;
+      end if;
+      Candidate.Base := Successor_Base;
+      Candidate.Replay_Boundary := Current.Replay_Boundary;
+      Candidate.Maximum_Total_L0_Runs := Current.Maximum_Total_L0_Runs;
+      Candidate.Maximum_Checkpoint_Identities := Current.Maximum_Checkpoint_Identities;
+      Candidate.Maximum_Point_Reads_Per_Transaction :=
+        Current.Maximum_Point_Reads_Per_Transaction;
+      Candidate.Maximum_Scan_Ranges_Per_Transaction :=
+        Current.Maximum_Scan_Ranges_Per_Transaction;
+      Candidate.Identities := Current.Identities;
+
+      for Family_Index in Current.Families'Range loop
+         declare
+            Source           : Family_LSM_State renames Current.Families (Family_Index);
+            Target           : Family_LSM_State renames Candidate.Families (Family_Index);
+            Source_Index     : Natural := Source.First_Run;
+            Source_Remaining : Natural := Source.Run_Total;
+            Selected         : constant Boolean :=
+              Current.Base.Families (Family_Index).ID = First_Run.Family_ID;
+         begin
+            Target := Source;
+            Target.First_Run := (if Source.Run_Total = 0 then 0 else Output_Index + 1);
+            if Selected then
+               Target.Run_Total := Source.Run_Total - 2;
+            end if;
+            while Source_Remaining > 0 loop
+               if Selected
+                 and then not Replaced
+                 and then Source_Remaining >= 3
+                 and then Descriptor_Matches
+                            (First_Run,
+                             Current.Base.Database_ID,
+                             First_Run.Family_ID,
+                             Current.Runs (Source_Index))
+                 and then Descriptor_Matches
+                            (Middle_Run,
+                             Current.Base.Database_ID,
+                             Middle_Run.Family_ID,
+                             Current.Runs (Source_Index + 1))
+                 and then Descriptor_Matches
+                            (Last_Run,
+                             Current.Base.Database_ID,
+                             Last_Run.Family_ID,
+                             Current.Runs (Source_Index + 2))
+               then
+                  Output_Index := Output_Index + 1;
+                  Candidate.Runs (Output_Index) :=
+                    (Run_ID                => Merged.Run_ID,
+                     Lowest_Sequence       => Merged.Lowest_Sequence,
+                     Highest_Sequence      => Merged.Highest_Sequence,
+                     Entry_Total           => Interfaces.Unsigned_32 (Merged.Entry_Total),
+                     Logical_Payload_Bytes => Merged.Logical_Payload_Bytes);
+                  Source_Remaining := Source_Remaining - 3;
+                  if Source_Remaining > 0 then
+                     Source_Index := Source_Index + 3;
+                  end if;
+                  Replaced := True;
+               else
+                  Output_Index := Output_Index + 1;
+                  Candidate.Runs (Output_Index) := Current.Runs (Source_Index);
+                  Source_Remaining := Source_Remaining - 1;
+                  if Source_Remaining > 0 then
+                     Source_Index := Source_Index + 1;
+                  end if;
+               end if;
+            end loop;
+         end;
+      end loop;
+      if not Replaced
+        or else Output_Index /= Candidate.Run_Total
+        or else not Structurally_Valid (Candidate.all)
+      then
+         Release (Candidate);
+         Release (Merged);
+         Status := Merge_Invalid_Input;
+         return;
+      end if;
+      Successor := Candidate;
+      Status := Merge_Completed;
+   exception
+      when others =>
+         Release (Candidate);
+         Release (Merged);
+         Successor := null;
+         raise;
+   end Build_Three_Run_Merge_Successor;
+
    procedure Encode_SST (Value : SST; Image : out Image_Access; Status : out Encode_Status) is
       Entry_Bytes : Interfaces.Unsigned_64;
       Total       : Interfaces.Unsigned_64;

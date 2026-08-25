@@ -1354,6 +1354,310 @@ package body Flyology.DB.LSM_Format_Tests is
          raise;
    end Test_Runtime_Partial_Merge;
 
+   procedure Test_Runtime_Three_Run_Merge is
+      First_Run       : Runtime.SST_Access;
+      Middle_Run      : Runtime.SST_Access;
+      Last_Run        : Runtime.SST_Access;
+      Merged          : Runtime.SST_Access;
+      Rejected        : Runtime.SST_Access;
+      Manifest        : Runtime.Checkpoint_Manifest_Access;
+      Successor       : Runtime.Checkpoint_Manifest_Access;
+      Multi_Manifest  : Runtime.Checkpoint_Manifest_Access;
+      Multi_Successor : Runtime.Checkpoint_Manifest_Access;
+      Multi_Merged    : Runtime.SST_Access;
+      Allocation      : Runtime.Allocation_Status;
+      Merge_Result    : Runtime.Merge_Status;
+      First_Cursor    : Positive := 1;
+      Middle_Cursor   : Positive := 1;
+      Last_Cursor     : Positive := 1;
+      Successor_Base  : Manifests.Manifest := Base_Manifest;
+      Multi_Base      : Manifests.Manifest := Base_Manifest;
+      Multi_Successor_Base : Manifests.Manifest;
+
+      procedure Fill_Entry
+        (Table     : not null Runtime.SST_Access;
+         Cursor    : in out Positive;
+         Sequence  : Interfaces.Unsigned_64;
+         Operation : Formats.Byte;
+         Key       : Character;
+         Has_Value : Boolean;
+         Value     : Character)
+      is
+         Item : Runtime.SST_Entry renames Table.Entries (1);
+      begin
+         Item.Sequence := Sequence;
+         Item.Operation := Operation;
+         Item.Key_Offset := Cursor;
+         Item.Key_Byte_Total := 1;
+         Table.Payload (Cursor) := Character'Pos (Key);
+         Cursor := Cursor + 1;
+         Item.Value_Offset := Cursor;
+         Item.Value_Byte_Total := (if Has_Value then 1 else 0);
+         if Has_Value then
+            Table.Payload (Cursor) := Character'Pos (Value);
+            Cursor := Cursor + 1;
+         end if;
+      end Fill_Entry;
+
+      procedure Expect_Entry
+        (Position  : Positive;
+         Sequence  : Interfaces.Unsigned_64;
+         Operation : Formats.Byte;
+         Key       : Character;
+         Has_Value : Boolean;
+         Value     : Character)
+      is
+         Item : Runtime.SST_Entry renames Merged.Entries (Position);
+      begin
+         if Item.Sequence /= Sequence
+           or else Item.Operation /= Operation
+           or else Item.Key_Byte_Total /= 1
+           or else Merged.Payload (Item.Key_Offset) /= Character'Pos (Key)
+           or else Item.Value_Byte_Total /= (if Has_Value then 1 else 0)
+           or else (Has_Value and then Merged.Payload (Item.Value_Offset) /= Character'Pos (Value))
+         then
+            raise Program_Error with "three-run merge changed entry" & Positive'Image (Position);
+         end if;
+      end Expect_Entry;
+   begin
+      --  The three one-entry runs are exact algorithm-qualification geometry,
+      --  not a product fanout. The last run intentionally has no mutation for
+      --  key 'a', so the middle tombstone must remain ahead of the first Put.
+      Runtime.Create_SST (1, 2, First_Run, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "first three-run fixture allocation failed";
+      end if;
+      Runtime.Create_SST (1, 1, Middle_Run, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "middle three-run fixture allocation failed";
+      end if;
+      Runtime.Create_SST (1, 2, Last_Run, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "last three-run fixture allocation failed";
+      end if;
+
+      First_Run.Database_ID := ID (1);
+      First_Run.Run_ID := ID (21);
+      First_Run.Family_ID := 1;
+      First_Run.Lowest_Sequence := 2;
+      First_Run.Highest_Sequence := 2;
+      First_Run.Logical_Payload_Bytes := 2;
+      Fill_Entry
+        (First_Run, First_Cursor, 2, Runtime.LSM.Put_Operation, 'a', True, 'x');
+
+      Middle_Run.Database_ID := ID (1);
+      Middle_Run.Run_ID := ID (22);
+      Middle_Run.Family_ID := 1;
+      Middle_Run.Lowest_Sequence := 3;
+      Middle_Run.Highest_Sequence := 3;
+      Middle_Run.Logical_Payload_Bytes := 1;
+      Fill_Entry
+        (Middle_Run, Middle_Cursor, 3, Runtime.LSM.Delete_Operation, 'a', False, ' ');
+
+      Last_Run.Database_ID := ID (1);
+      Last_Run.Run_ID := ID (23);
+      Last_Run.Family_ID := 1;
+      Last_Run.Lowest_Sequence := 4;
+      Last_Run.Highest_Sequence := 4;
+      Last_Run.Logical_Payload_Bytes := 2;
+      Fill_Entry (Last_Run, Last_Cursor, 4, Runtime.LSM.Put_Operation, 'b', True, 'y');
+
+      --  Five descriptors retain one run on each side of the selected slice.
+      --  Their identities and single-entry extents are fixture authority; the
+      --  successor must preserve them while replacing only positions 2..4.
+      Runtime.Create_Checkpoint_Manifest (1, 5, 0, Manifest, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "three-run manifest allocation failed";
+      end if;
+      Manifest.Base := Base_Manifest;
+      Manifest.Replay_Boundary := 5;
+      Manifest.Maximum_Total_L0_Runs := 5;
+      Manifest.Maximum_Checkpoint_Identities := 1;
+      Manifest.Maximum_Point_Reads_Per_Transaction := 1;
+      Manifest.Maximum_Scan_Ranges_Per_Transaction := 1;
+      Manifest.Families (1) :=
+        (Memtable_Max_Bytes   => 5,
+         Memtable_Max_Entries => 3,
+         Maximum_L0_Runs      => 5,
+         First_Run            => 1,
+         Run_Total            => 5);
+      Manifest.Runs (1) :=
+        (Run_ID                => ID (20),
+         Lowest_Sequence       => 1,
+         Highest_Sequence      => 1,
+         Entry_Total           => 1,
+         Logical_Payload_Bytes => 1);
+      Manifest.Runs (2) :=
+        (Run_ID                => First_Run.Run_ID,
+         Lowest_Sequence       => First_Run.Lowest_Sequence,
+         Highest_Sequence      => First_Run.Highest_Sequence,
+         Entry_Total           => 1,
+         Logical_Payload_Bytes => First_Run.Logical_Payload_Bytes);
+      Manifest.Runs (3) :=
+        (Run_ID                => Middle_Run.Run_ID,
+         Lowest_Sequence       => Middle_Run.Lowest_Sequence,
+         Highest_Sequence      => Middle_Run.Highest_Sequence,
+         Entry_Total           => 1,
+         Logical_Payload_Bytes => Middle_Run.Logical_Payload_Bytes);
+      Manifest.Runs (4) :=
+        (Run_ID                => Last_Run.Run_ID,
+         Lowest_Sequence       => Last_Run.Lowest_Sequence,
+         Highest_Sequence      => Last_Run.Highest_Sequence,
+         Entry_Total           => 1,
+         Logical_Payload_Bytes => Last_Run.Logical_Payload_Bytes);
+      Manifest.Runs (5) :=
+        (Run_ID                => ID (24),
+         Lowest_Sequence       => 5,
+         Highest_Sequence      => 5,
+         Entry_Total           => 1,
+         Logical_Payload_Bytes => 1);
+
+      Successor_Base.Manifest_ID := ID (25);
+      Successor_Base.Previous_Manifest_ID := Manifest.Base.Manifest_ID;
+      Successor_Base.Expected_Transition_ID := Manifest.Base.Publication_Transition_ID;
+      Successor_Base.Expected_Transition_Number := Manifest.Base.Publication_Transition_Number;
+      Successor_Base.Publication_Transition_ID := ID (26);
+      Successor_Base.Publication_Transition_Number := Manifest.Base.Publication_Transition_Number + 1;
+      Successor_Base.Registry_Revision := Manifest.Base.Registry_Revision + 1;
+      Runtime.Build_Three_Run_Merge_Successor
+        (Manifest.all,
+         Successor_Base,
+         First_Run.all,
+         Middle_Run.all,
+         Last_Run.all,
+         ID (27),
+         Merged,
+         Successor,
+         Merge_Result);
+      if Merge_Result /= Runtime.Merge_Completed
+        or else Merged = null
+        or else Successor = null
+        or else not Runtime.Structurally_Valid (Merged.all)
+        or else not Runtime.Structurally_Valid (Successor.all)
+        or else Merged.Entry_Total /= 3
+        or else Merged.Payload_Byte_Total /= 5
+        or else Merged.Lowest_Sequence /= 2
+        or else Merged.Highest_Sequence /= 4
+        or else Successor.Run_Total /= 3
+        or else Successor.Families (1).Run_Total /= 3
+        or else Successor.Runs (1) /= Manifest.Runs (1)
+        or else Successor.Runs (2).Run_ID /= ID (27)
+        or else Successor.Runs (3) /= Manifest.Runs (5)
+      then
+         raise Program_Error with "three-run successor was not the exact adjacent replacement";
+      end if;
+      Expect_Entry (1, 3, Runtime.LSM.Delete_Operation, 'a', False, ' ');
+      Expect_Entry (2, 2, Runtime.LSM.Put_Operation, 'a', True, 'x');
+      Expect_Entry (3, 4, Runtime.LSM.Put_Operation, 'b', True, 'y');
+
+      --  One retained descriptor in a later family checks the derived flat
+      --  run-table shift by two. Family/identity values are fixture geometry;
+      --  the compatibility requirement is exact preservation of that slice.
+      Multi_Base.Family_Total := 2;
+      Multi_Base.Families (2).ID := 2;
+      Multi_Base.Families (2).Max_Key_Bytes := 8;
+      Multi_Base.Families (2).Max_Value_Bytes := 8;
+      Multi_Base.Families (2).Name_Length := 2;
+      Multi_Base.Families (2).Name (1 .. 2) :=
+        [Character'Pos ('c'), Character'Pos ('g')];
+      Runtime.Create_Checkpoint_Manifest (2, 6, 0, Multi_Manifest, Allocation);
+      if Allocation /= Runtime.Allocated then
+         raise Program_Error with "multi-family three-run manifest allocation failed";
+      end if;
+      Multi_Manifest.Base := Multi_Base;
+      Multi_Manifest.Replay_Boundary := 6;
+      Multi_Manifest.Maximum_Total_L0_Runs := 6;
+      Multi_Manifest.Maximum_Checkpoint_Identities := 1;
+      Multi_Manifest.Maximum_Point_Reads_Per_Transaction := 1;
+      Multi_Manifest.Maximum_Scan_Ranges_Per_Transaction := 1;
+      Multi_Manifest.Families (1) := Manifest.Families (1);
+      Multi_Manifest.Families (2) :=
+        (Memtable_Max_Bytes   => 1,
+         Memtable_Max_Entries => 1,
+         Maximum_L0_Runs      => 1,
+         First_Run            => 6,
+         Run_Total            => 1);
+      Multi_Manifest.Runs (1 .. 5) := Manifest.Runs;
+      Multi_Manifest.Runs (6) :=
+        (Run_ID                => ID (29),
+         Lowest_Sequence       => 6,
+         Highest_Sequence      => 6,
+         Entry_Total           => 1,
+         Logical_Payload_Bytes => 1);
+      Multi_Successor_Base := Successor_Base;
+      Multi_Successor_Base.Family_Total := Multi_Base.Family_Total;
+      Multi_Successor_Base.Families := Multi_Base.Families;
+      Runtime.Build_Three_Run_Merge_Successor
+        (Multi_Manifest.all,
+         Multi_Successor_Base,
+         First_Run.all,
+         Middle_Run.all,
+         Last_Run.all,
+         ID (30),
+         Multi_Merged,
+         Multi_Successor,
+         Merge_Result);
+      if Merge_Result /= Runtime.Merge_Completed
+        or else Multi_Merged = null
+        or else Multi_Successor = null
+        or else not Runtime.Structurally_Valid (Multi_Successor.all)
+        or else Multi_Successor.Run_Total /= 4
+        or else Multi_Successor.Families (1).First_Run /= 1
+        or else Multi_Successor.Families (1).Run_Total /= 3
+        or else Multi_Successor.Families (2).First_Run /= 4
+        or else Multi_Successor.Families (2).Run_Total /= 1
+        or else Multi_Successor.Runs (4) /= Multi_Manifest.Runs (6)
+      then
+         raise Program_Error with "three-run merge changed a retained family slice";
+      end if;
+
+      Runtime.Merge_Manifest_Three_Adjacent_SSTs
+        (Manifest.all,
+         First_Run.all,
+         Middle_Run.all,
+         Last_Run.all,
+         Manifest.Runs (1).Run_ID,
+         Rejected,
+         Merge_Result);
+      if Merge_Result /= Runtime.Merge_Invalid_Input or else Rejected /= null then
+         raise Program_Error with "three-run merge reused a retained identity";
+      end if;
+      Runtime.Merge_Manifest_Three_Adjacent_SSTs
+        (Manifest.all,
+         First_Run.all,
+         Last_Run.all,
+         Middle_Run.all,
+         ID (28),
+         Rejected,
+         Merge_Result);
+      if Merge_Result /= Runtime.Merge_Invalid_Input or else Rejected /= null then
+         raise Program_Error with "three-run merge accepted reordered sequence authority";
+      end if;
+
+      Runtime.Release (Merged);
+      Runtime.Release (Successor);
+      Runtime.Release (Multi_Merged);
+      Runtime.Release (Multi_Successor);
+      Runtime.Release (Multi_Manifest);
+      Runtime.Release (Manifest);
+      Runtime.Release (Last_Run);
+      Runtime.Release (Middle_Run);
+      Runtime.Release (First_Run);
+   exception
+      when others =>
+         Runtime.Release (Rejected);
+         Runtime.Release (Merged);
+         Runtime.Release (Successor);
+         Runtime.Release (Multi_Merged);
+         Runtime.Release (Multi_Successor);
+         Runtime.Release (Multi_Manifest);
+         Runtime.Release (Manifest);
+         Runtime.Release (Last_Run);
+         Runtime.Release (Middle_Run);
+         Runtime.Release (First_Run);
+         raise;
+   end Test_Runtime_Three_Run_Merge;
+
    procedure Test_Runtime_Rejection is
       --  Corruption positions use the frozen manifest-v3 table: identity count
       --  212, family run count 272, run high sequence 306, and ledger
@@ -1438,6 +1742,7 @@ package body Flyology.DB.LSM_Format_Tests is
       Test_Runtime_Golden_Parity;
       Test_Runtime_Persisted_Limits;
       Test_Runtime_Partial_Merge;
+      Test_Runtime_Three_Run_Merge;
       Test_Runtime_Rejection;
    end Run;
 

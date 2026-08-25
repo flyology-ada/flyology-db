@@ -233,6 +233,44 @@ private package Flyology.DB.LSM_Runtime_Formats is
       Successor      : out Checkpoint_Manifest_Access;
       Status         : out Merge_Status);
 
+   --  Coalesce one caller-selected slice of exactly three consecutive SSTs.
+   --  Three is an algorithm-qualification shape, not a trigger, fanout, level,
+   --  or capacity policy. All versions and tombstones remain in the exact
+   --  output allocation; no pairwise temporary SST is constructed.
+   procedure Merge_Three_Consecutive_SSTs
+     (First_Run      : SST;
+      Middle_Run     : SST;
+      Last_Run       : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Value          : out SST_Access;
+      Status         : out Merge_Status);
+
+   --  Admit the exact three-run merge only for three adjacent authenticated
+   --  descriptors in one family of Current. The caller still selects the
+   --  slice and must bind Current to HEAD before any publication effects.
+   procedure Merge_Manifest_Three_Adjacent_SSTs
+     (Current        : Checkpoint_Manifest;
+      First_Run      : SST;
+      Middle_Run     : SST;
+      Last_Run       : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Value          : out SST_Access;
+      Status         : out Merge_Status);
+
+   --  Replace only the admitted three-descriptor slice with one fresh run.
+   --  This effect-free builder preserves all other family slices, replay and
+   --  identity authority, and persisted limits exactly.
+   procedure Build_Three_Run_Merge_Successor
+     (Current        : Checkpoint_Manifest;
+      Successor_Base : Manifests.Manifest;
+      First_Run      : SST;
+      Middle_Run     : SST;
+      Last_Run       : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Merged         : out SST_Access;
+      Successor      : out Checkpoint_Manifest_Access;
+      Status         : out Merge_Status);
+
    function Descriptor_Matches
      (Value             : SST;
       Expected_Database : Head_Policy.Identifier;

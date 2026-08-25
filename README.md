@@ -47,6 +47,13 @@ and replays the suffix into the replacement coordinator. Cacheless recovery acce
 validated manifest predecessor chain anchors
 both the latest batch publication and the checkpoint boundary it follows. It still selects no trigger, schedule,
 fanout, level policy, public API, or composable read driver.
+An additive private three-run kernel now qualifies composition beyond the pair without choosing automatic policy.
+It accepts exactly three caller-selected adjacent descriptors, computes one checked exact output allocation, retains
+every version and tombstone, and builds an effect-free successor that replaces only that slice. The exhaustive TLA+
+lane covers the essential middle-tombstone case when the last selected run has no mutation for the key; its TLAPS
+kernel proves associative composition and read equivalence with retained older/newer runs and any later suffix.
+Three is qualification geometry, not a fanout, trigger, level, or capacity. Publication and public/composable
+selection of this wider slice remain later units.
 The formal cache boundary now binds every read, verified immutable entry, in-flight fetch, joined waiter, and result
 to one exact object generation. It proves that corruption and complete local loss cannot change durable authority or
 produce stale results, without selecting a cache capacity, eviction policy, disk layout, or operational Ada surface.

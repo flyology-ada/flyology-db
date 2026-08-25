@@ -256,6 +256,18 @@ binding, pre-read failure without publication, explicit same-identity retry, mer
 The abstract adjacent-merge algorithm is unchanged, so this execution-path unit does not claim a fresh TLA+ run or
 an Ada refinement theorem.
 
+The exact-three-run candidate adds a separate algorithm lane rather than widening pair publication policy. TLC
+exhausts 12,288/12,288 states at depth 3, the deliberately broken middle-tombstone-loss transition violates Safety,
+and the concrete first-Put/middle-Delete/last-empty/suffix-Put trace validates byte-for-byte. TLAPS proves all seven
+strict obligations for arbitrary nonempty key and value sets: associativity, last/middle mutation retention, middle
+tombstone retention, point and whole-view composition, and equality with retained older/newer runs plus any suffix.
+The private Ada kernel retains the stronger snapshot-safe representation of every version and tombstone in one exact
+checked allocation; deterministic tests bind three adjacent manifest descriptors, preserve retained neighbors, and
+reject retained-identity reuse and reordered sequence authority. Automatic selection, fanout, trigger, levels,
+publication, public API, and an Ada refinement theorem remain outside this candidate. The warning-strict selected
+SPARK boundary remains green at 1,090/1,090 checks with the maintained success sentinel; the dynamic runtime merger
+remains an executable boundary rather than a newly selected proof unit.
+
 ## TLA+ state-machine assurance
 
 `./scripts/check-tla.sh` is the authoritative distributed-state-machine gate. It is separate from the SPARK gate:

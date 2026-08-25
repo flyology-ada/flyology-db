@@ -303,6 +303,21 @@ selected-run equivalence, and equality after any suffix over retained older/newe
 run-selection condition, trigger, fanout, level size, schedule, resource capacity, publication protocol, or public
 API. It also claims no refinement to an operational Ada partial merger.
 
+`LSMThreeRunCompactionEquivalence.tla` qualifies associative composition across exactly three caller-selected
+consecutive runs without turning three into a compaction fanout or trigger. TLC exhausts 12,288 distinct states at
+depth 3 for one key and two values, including retained older/newer runs and a post-checkpoint suffix. It checks that
+the merged run keeps the newest selected mutation, that a middle tombstone survives when the last run has no
+mutation for that key, and that suffix bytes and transaction-identity authority transfer unchanged.
+`LSMThreeRunCompactionEquivalenceProbe.tla` drops that middle tombstone and must violate safety.
+`LSMThreeRunCompactionEquivalenceWitness.tla` plus its validator records the concrete first-Put, middle-Delete,
+last-empty, suffix-Put execution path.
+
+`LSMThreeRunCompactionEquivalenceSafetyProof.tla` proves seven strict obligations over arbitrary nonempty key and
+value sets: mutation associativity, last and middle mutation retention, middle tombstone retention, point-value and
+whole-view composition, and full equality with retained older/newer runs and any suffix. The fixed three-run slice
+is qualification geometry only. Selection, trigger, fanout, levels, allocation, publication, retention, progress,
+and Ada refinement remain separate.
+
 ## Immutable cache lane
 
 `ImmutableCache.tla` freezes the safety boundary for a disposable cache of verified immutable objects. Each read
