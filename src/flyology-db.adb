@@ -8162,7 +8162,7 @@ package body Flyology.DB is
             elsif Manifest_Count > 1
               and then (if Checkpoint_Manifests (Manifest_Count - 1)
                         then
-                          not Manifests.Valid_Checkpoint_Predecessor
+                          not Manifests.Valid_Checkpoint_Chain_Predecessor
                                 (Manifests_Seen (Manifest_Count - 1), Manifests_Seen (Manifest_Count))
                         else
                           not Manifests.Valid_Predecessor

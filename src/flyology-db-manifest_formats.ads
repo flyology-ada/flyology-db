@@ -169,6 +169,13 @@ is
    --  differs. This is persisted chain policy, not compaction policy.
    function Valid_Checkpoint_Predecessor (Current, Previous : Manifest) return Boolean;
 
+   --  Whether a manifest-v3 checkpoint carrier is a valid next chain object.
+   --  It may either preserve the exact registry for checkpoint/run evolution
+   --  or append exactly one higher-ID family while carrying the checkpoint
+   --  authority forward. The two accepted shapes are the existing persisted
+   --  predecessor policies; this predicate introduces no third transition.
+   function Valid_Checkpoint_Chain_Predecessor (Current, Previous : Manifest) return Boolean;
+
    --  Whether Candidate has a reachable manifest-bearing HEAD-v2 shape.
    function Manifest_Head_Structurally_Valid (Candidate : Head_Policy.Head_State) return Boolean;
 

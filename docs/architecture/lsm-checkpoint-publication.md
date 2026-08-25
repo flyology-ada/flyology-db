@@ -57,7 +57,8 @@ The exact offsets, widths, canonical ordering, and corruption rules are normativ
 
 Current manifest version 3 records:
 
-- its immutable predecessor and complete unchanged registry and limits;
+- its immutable predecessor and complete registry and limits; an ordinary checkpoint preserves the registry, while
+  a registry-change checkpoint may append exactly one higher-ID family without changing any prior record;
 - the exact family-to-L0-run mapping, appending new run IDs without rewriting an existing run;
 - the exact global replay-boundary sequence;
 - the exact admitted transaction/group identity authority through that boundary; and

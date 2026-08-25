@@ -383,6 +383,9 @@ is
       end;
    end Valid_Checkpoint_Predecessor;
 
+   function Valid_Checkpoint_Chain_Predecessor (Current, Previous : Manifest) return Boolean
+   is (Valid_Checkpoint_Predecessor (Current, Previous) or else Valid_Predecessor (Current, Previous));
+
    function Manifest_Head_Structurally_Valid (Candidate : Head_Policy.Head_State) return Boolean is
    begin
       return Candidate.Version = Manifest_Head_Format and then Head_Policy.Structurally_Valid_V2 (Candidate);

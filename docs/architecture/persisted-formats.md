@@ -175,6 +175,13 @@ family or database limit, and carries exact expected/publication HEAD identities
 ordinal gap from the predecessor manifest permits intervening metadata or writer-acquisition HEAD transitions under
 the same recurrence and epoch-gap rules as commit batches.
 
+A checkpoint-manifest carrier may use either of two existing base-manifest transitions: preserve the complete exact
+registry while changing checkpoint/run authority, or append exactly one higher-ID family while carrying the current
+checkpoint boundary forward. The latter is the dynamic-family bridge after compaction; it does not permit rename,
+drop, ID reuse, reordering, limit changes, or modification of an earlier family record. Cacheless recovery selects
+the carrier-aware predicate from the decoded object version rather than assuming every manifest-v3 object changes
+only runs.
+
 `Valid_Root_Publication` describes the initial manifest-bearing HEAD version 2. Three-way
 `Valid_Publication(Current, Candidate, Manifest)` additionally requires exact current expected identity, candidate
 publication identity, one ordinal step, and preservation of database, epoch, highest sequence, and latest batch.

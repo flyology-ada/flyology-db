@@ -30,6 +30,12 @@ qualification and dynamic append-only family changes remain prerequisites for ac
 owned-runtime closure is `c909c572`; the pooled TLA+ and manifest-publication models remain abstract assurance lanes
 rather than a claimed refinement proof.
 
+The persisted transition and cacheless-recovery prerequisite now admits a manifest-v3 checkpoint carrier that
+either preserves the exact registry or appends exactly one higher-ID family while leaving every prior record fixed.
+This prevents a later dynamic-family publication from discarding an already-compacted replay boundary. It does not
+yet expose or claim the public dynamic-family publication operation; that lifecycle, receipt, reconciliation, and
+activation slice remains part of Milestone 2.
+
 The immediate integration target is the [limited end-to-end profile](limited-profile.md). It freezes one coherent
 public workflow before broadening policy: fixed initial families, synchronous transactions, explicit Flush, complete
 process-local state loss, and authoritative reopen. Dynamic families, public compaction policy, replicas, TTL, and

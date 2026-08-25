@@ -14,6 +14,15 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
+The checkpoint-carried registry-append prerequisite adds the carrier-aware predecessor predicate to the selected
+`Manifest_Formats` proof boundary. The exact maintained campaign proves 1,091/1,091 checks: 167 by flow analysis and
+924 by provers, with zero warnings, unproved or justified checks, or `pragma Assume` statements. The deterministic
+corpus separately confirms that the carrier accepts both existing transition shapes, rejects mutation of a prior
+family, and leaves the strict same-registry checkpoint predicate unchanged for compaction builders. Cacheless
+recovery uses the carrier-aware predicate only after the object version identifies the current object as a checkpoint
+manifest. Provider I/O, dynamic-family publication, and local engine replacement remain executable-test boundaries,
+not claims made by this format proof.
+
 The provider-centric Object Storage migration at source
 `3455cde3158fd589480281beac39bea51305bb5e` reruns this maintained gate without changing the selected SPARK
 algorithms or their proof boundary. The exact campaign proves 1,090/1,090 selected checks: 166 by flow analysis and

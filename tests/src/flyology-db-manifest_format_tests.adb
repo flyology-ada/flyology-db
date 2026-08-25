@@ -900,6 +900,7 @@ package body Flyology.DB.Manifest_Format_Tests is
       --  with both identities and transition numbers.
       Previous      : constant Manifests.Manifest := Fixture;
       Current       : Manifests.Manifest := Fixture;
+      Checkpoint    : Manifests.Manifest := Fixture;
       Image         : Manifests.Manifest_Image;
       Corrupt       : Manifests.Manifest_Image;
       Length        : Natural;
@@ -1031,8 +1032,27 @@ package body Flyology.DB.Manifest_Format_Tests is
       if not Manifests.Valid_Predecessor (Current, Previous) then
          raise Program_Error with "direct append-only manifest successor rejected";
       end if;
+      if Manifests.Valid_Checkpoint_Predecessor (Current, Previous)
+        or else not Manifests.Valid_Checkpoint_Chain_Predecessor (Current, Previous)
+      then
+         raise Program_Error with "checkpoint carrier rejected append-only registry successor";
+      end if;
+      Checkpoint.Manifest_ID := ID (7);
+      Checkpoint.Previous_Manifest_ID := Previous.Manifest_ID;
+      Checkpoint.Expected_Transition_ID := Previous.Publication_Transition_ID;
+      Checkpoint.Expected_Transition_Number := Previous.Publication_Transition_Number;
+      Checkpoint.Publication_Transition_ID := ID (8);
+      Checkpoint.Publication_Transition_Number := 2;
+      Checkpoint.Registry_Revision := 2;
+      if not Manifests.Valid_Checkpoint_Predecessor (Checkpoint, Previous)
+        or else not Manifests.Valid_Checkpoint_Chain_Predecessor (Checkpoint, Previous)
+      then
+         raise Program_Error with "same-registry checkpoint successor rejected";
+      end if;
       Current.Families (1).Name (Current.Families (1).Name_Length + 1) := 1;
-      if Manifests.Valid_Predecessor (Current, Previous) then
+      if Manifests.Valid_Predecessor (Current, Previous)
+        or else Manifests.Valid_Checkpoint_Chain_Predecessor (Current, Previous)
+      then
          raise Program_Error with "noncanonical existing family accepted in predecessor chain";
       end if;
       Current.Families (1).Name (Current.Families (1).Name_Length + 1) := 0;

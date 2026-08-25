@@ -1,5 +1,29 @@
 # Review record
 
+## Accepted checkpoint-carried registry append prerequisite
+
+- Parent: limited end-to-end profile `d511de4`.
+- Problem and scope: an append-only family successor encoded only as the base manifest would stop carrying the
+  current checkpoint replay boundary. After compacted history is no longer available from sequence zero, cacheless
+  recovery could not soundly activate that graph. This unit changes no bytes, visible DB API, default, capacity,
+  allocation policy, task, retry, publication, or local-activation behavior.
+- Compatibility decision: a decoded manifest-v3 checkpoint carrier may use either existing predecessor shape: the
+  exact same registry for checkpoint/run evolution, or exactly one appended higher-ID family with every earlier
+  family and database limit unchanged. Ordinary checkpoint and merge builders retain the strict same-registry
+  predicate; only version-aware cacheless chain validation uses the carrier-aware union. Rename, drop, reorder, ID
+  reuse, prior-record mutation, and limit changes remain rejected.
+- Constants and ownership: no consequential value is added or changed. The new predicate composes the two already
+  documented persisted transition authorities and allocates, retains, borrows, publishes, or schedules nothing.
+- Verification: the maintained deterministic suite is green, including direct same-registry, one-family append, and
+  prior-family-mutation predicate oracles plus local/client/files recovery and the limited public profile. The full
+  TLA/TLAPS gate passes all maintained models, witnesses, and negative probes. Warning-strict GNATprove proves
+  1,091/1,091 selected checks (167 flow, 924 prover), with zero warnings, unproved/justified checks, or `Assume`; the
+  exact post-run formal-process audit is clean.
+- Findings cycle: review checked predicate dispatch, merge-builder strictness, version selection, compatibility,
+  constants, and claim scope. One P2 documentation gap failed to distinguish this format/recovery prerequisite from
+  the still-missing public dynamic-family operation; the milestone and proof record now state that boundary. Final
+  re-review finds no actionable P0, P1, or P2 finding.
+
 ## Accepted limited end-to-end public profile
 
 - Parent: provider-centric Object Storage migration `a81fdea`.
