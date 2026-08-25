@@ -1,5 +1,38 @@
 # Review record
 
+## Accepted composable GetObjectAttributes dependency qualification
+
+- Parent: composable ListObjectVersions dependency qualification commit `5557db0`.
+- Scope and provenance: fast-forward only the ignored clean Object Storage build clone from
+  `ae567d0ab97bd0e970ca869c5190967da6a0f569` to exact authoritative local main
+  `296b94f1ec7fd78c20838f2447d7dc4234e43c79`. The dirty author checkout remains read-only coordination state, the
+  root filesystem path pin is unchanged, indexed HTTP/QUIC remain unpinned at 0.1.3-dev, and no DB declaration,
+  persisted format, allocation limit, task, retry, metadata policy, or publication protocol changes.
+- Surface and ownership: Object Storage adds caller-owned `Get_Object_Attributes_Operation`, constructor and
+  same-client/same-token reusable `Start_Get_Object_Attributes`, typed `Finish`, and a synchronous parameter-record
+  overload that literally waits on the same operation. The parent owns the prepared request and XML-limit-bounded
+  response through terminal drain, retains no caller request borrow, drives one HTTP child, and creates no helper
+  task or replay path.
+- Response binding and certainty: complete response decoding is shared by blocking and composable forms. A modeled
+  success binds strict singleton metadata, exact requested opaque version echo, and Requester Pays admission to the
+  prepared request. Read-only failures preserve HTTP terminal kind, causal phase, bounded detail, and admission
+  diagnostics. Flyology.DB selects no attribute subset, pagination, polling, caching, retention, or retry policy in
+  this unit.
+- Constants and compatibility: the response extent derives from the maintained S3 XML decoder document limit and
+  the synchronous completion-set capacity derives from the attributes-parent/HTTP/transport owner stack. Region,
+  addressing, timeout, and cancellation defaults match the established synchronous API. Qualification introduces no
+  DB public constant, default, persisted value, or resource ceiling.
+- Verification: `./tests/scripts/test.sh` rebuilds the complete DB/Object Storage/XML/HTTP/QUIC closure at exact
+  `296b94f`, passes repository provenance, local engine, authenticated client-backed
+  create/commit/Flush/compaction/adjacent-merge/reopen, filesystem crash and cacheless recovery, all 32 comparative
+  tests, and pinned TidesDB 4/4. `./scripts/prove.sh` exits zero and proves 1,090/1,090 selected DB checks with its
+  maintained success sentinel; exact pre/post host audits are clean. Upstream's reported full tests and provider
+  matrix, GNATdoc, and 936/936 proof are corroborating evidence, not substitutes for the DB campaign.
+- Findings cycle: API compatibility, request-copy and response-buffer ownership, retained-owner restart rule,
+  cancellation/finalization drain, shared complete-response decoder, exact version/payer binding, admission
+  semantics, author-checkout isolation, constants, and unnecessary-surface review find no remaining P0, P1, P2, or
+  P3 issue.
+
 ## Accepted composable ListObjectVersions dependency qualification
 
 - Parent: owner-driven selected-run reader commit `b19e001`.

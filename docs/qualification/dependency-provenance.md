@@ -5,8 +5,8 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `ae567d0ab97bd0e970ca869c5190967da6a0f569`
-- Commit subject: `Problem: ListObjectVersions cannot compose retained-generation discovery`
+- Commit: `296b94f1ec7fd78c20838f2447d7dc4234e43c79`
+- Commit subject: `Problem: GetObjectAttributes cannot compose metadata discovery`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
@@ -63,6 +63,10 @@ prepared request and XML-limit-bounded response, retains no caller borrow, and b
 bucket, prefix, delimiter, maximum, encoding, Requester Pays admission, and paired key/version cursor. URL-encoded
 key markers must be decoded before an explicit later Start; version IDs remain opaque and independent pages are
 separate service snapshots. Its typed synchronous parameter-record overload literally waits on the same operation.
+GetObjectAttributes now has the same bounded owner-driven shape. The operation owns its prepared request and
+XML-limit-bounded response, retains no caller borrow, and binds a successful modeled response to the exact requested
+opaque version and Requester Pays admission with strict singleton metadata. Its typed synchronous parameter-record
+overload waits on that state machine; failure retains HTTP terminal kind, phase, detail, and admission diagnostics.
 Object Storage records no external HTTP/QUIC pin at this boundary; the generated DB solve likewise marks every
 HTTP/QUIC lock entry unpinned.
 
