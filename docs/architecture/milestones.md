@@ -70,8 +70,11 @@ combined key/value bytes bounded by persisted live-entry/live-state limits. Allo
 retention failure leaves the caller's previous result unchanged; Serializable predicates become visible only after
 complete materialization. The additive paged cursor uses an owned physical merge snapshot, and whole `Scan` now
 requests one complete page from that same private engine under the persisted live limits. Authenticated Object
-Storage initialization now reads the exact manifest run slice sequentially and builds that same cursor. Per-frame
-traversal during paging and a constant-memory claim remain later Milestone 4 work.
+Storage initialization now reads the exact manifest run slice sequentially and builds that same cursor. The private
+lazy-SST operation can now select one exact next snapshot-visible entry from a v2 authenticated index/frame or the
+required v1 whole-object fallback, with normalized start/upper bounds, conclusive tombstones, and failure-atomic token
+restoration. Composing that primitive into the multi-run cursor and removing retained whole-run images remain later
+Milestone 4 work; no constant-memory claim is made yet.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
@@ -127,7 +130,9 @@ and reopens a mixed v1/v2 checkpoint. TLC exhausts the replacement, allocation, 
 boundaries; two unsafe probes fail and TLAPS proves the arbitrary-generation/key/value action kernel. The original
 storage-free `Get`, `Scan`, `Start_Scan`, and `Next_Scan_Page` remain source-compatible. Additive buffer-owned
 `Get_Operation` and `Scan_Operation` paths opt into storage I/O without adding a cache, prefetch, automatic retry,
-or block-size policy. See
+or block-size policy. Its next-visible-entry purpose now shares one tested whole-table/index selector, returns an exact
+key plus value/tombstone, and releases index/frame state at typed Finish; this is the dependency for later
+frame-streamed scan composition, not the composition itself. See
 [`lazy-sst-reads.md`](lazy-sst-reads.md).
 
 The point-read path also owns an exact manifest run slice and

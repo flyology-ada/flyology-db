@@ -699,6 +699,34 @@ package body Flyology.DB.LSM_Format_Tests is
       Fixture_Index_Offset : constant := Runtime.SST_V2_Header_Length + Fixture_Frame_Bytes;
       Fixture_Index_Bytes : constant :=
         3 * Runtime.SST_V2_Index_Entry_Header_Length + 3 + Runtime.SST_V2_Index_Trailer_Length;
+
+      procedure Expect_Visible_Position
+        (Expected        : Natural;
+         Snapshot_At     : Interfaces.Unsigned_64;
+         Has_Start       : Boolean;
+         Start_Key       : Formats.Byte_Array;
+         Start_Inclusive : Boolean;
+         Has_Upper       : Boolean;
+         Upper_Key       : Formats.Byte_Array;
+         Context         : String)
+      is
+         Whole_Position : constant Natural :=
+           Runtime.Next_Visible_Position
+             (Table_Read.all, Snapshot_At, Has_Start, Start_Key, Start_Inclusive, Has_Upper, Upper_Key);
+         Index_Position : constant Natural :=
+           Runtime.Next_Visible_Position
+             (Table_Index.all, Snapshot_At, Has_Start, Start_Key, Start_Inclusive, Has_Upper, Upper_Key);
+      begin
+         if Whole_Position /= Expected or else Index_Position /= Expected then
+            raise Program_Error
+              with
+                Context
+                & ": whole="
+                & Natural'Image (Whole_Position)
+                & " index="
+                & Natural'Image (Index_Position);
+         end if;
+      end Expect_Visible_Position;
    begin
       Runtime.Create_Checkpoint_Manifest (1, 1, 2, Manifest_Value, Allocation);
       if Allocation /= Runtime.Allocated then
@@ -747,10 +775,8 @@ package body Flyology.DB.LSM_Format_Tests is
          Manifest_Head,
          Decode_Status);
       if Decode_Status /= Runtime.Decoded
-        or else Manifest_Head.Format_Version
-                /= Runtime.LSM.Previous_Checkpoint_Manifest_Format_Version
-        or else Manifest_Head.Header_Length
-                /= Runtime.LSM.Previous_Checkpoint_Manifest_Header_Length
+        or else Manifest_Head.Format_Version /= Runtime.LSM.Previous_Checkpoint_Manifest_Format_Version
+        or else Manifest_Head.Header_Length /= Runtime.LSM.Previous_Checkpoint_Manifest_Header_Length
         or else Manifest_Head.Maximum_Point_Reads_Per_Transaction /= 0
         or else Manifest_Head.Maximum_Scan_Ranges_Per_Transaction /= 0
       then
@@ -890,8 +916,7 @@ package body Flyology.DB.LSM_Format_Tests is
       then
          raise Program_Error with "runtime SST-v2 header admission mismatch";
       end if;
-      Runtime.Decode_SST_V2
-        (SST_V2_Golden, ID (1), 1, Descriptor, 8, 8, Table_Read, Decode_Status);
+      Runtime.Decode_SST_V2 (SST_V2_Golden, ID (1), 1, Descriptor, 8, 8, Table_Read, Decode_Status);
       if Decode_Status /= Runtime.Decoded
         or else not Runtime.Structurally_Valid (Table_Read.all)
         or else not Runtime.Descriptor_Matches (Table_Read.all, ID (1), 1, Descriptor)
@@ -899,9 +924,7 @@ package body Flyology.DB.LSM_Format_Tests is
          raise Program_Error with "runtime SST-v2 golden did not round-trip";
       end if;
       Runtime.Decode_SST_V2_Index
-        (SST_V2_Golden
-           (Table_Head.Index_Offset
-            .. Table_Head.Index_Offset + Table_Head.Index_Bytes - 1),
+        (SST_V2_Golden (Table_Head.Index_Offset .. Table_Head.Index_Offset + Table_Head.Index_Bytes - 1),
          Table_Head,
          ID (1),
          1,
@@ -918,54 +941,125 @@ package body Flyology.DB.LSM_Format_Tests is
         or else Table_Index.Frame_Offset /= Runtime.SST_V2_Header_Length
         or else Table_Index.Frame_Byte_Total /= Fixture_Frame_Bytes
         or else Table_Index.Keys
-                /= Formats.Byte_Array'
-                     [Character'Pos ('a'),
-                      Character'Pos ('a'),
-                      Character'Pos ('b')]
+                /= Formats.Byte_Array'[Character'Pos ('a'), Character'Pos ('a'), Character'Pos ('b')]
       then
-         raise Program_Error
-           with "runtime SST-v2 index range did not authenticate";
+         raise Program_Error with "runtime SST-v2 index range did not authenticate";
       end if;
+      --  The independent three-entry golden has a@2=value, a@1=tombstone,
+      --  then b@2=empty value. These cases prove snapshot fallback, tombstone
+      --  selection, strict/inclusive starts, and the exclusive upper bound in
+      --  both the v1 whole-table and v2 authenticated-index kernels.
+      Expect_Visible_Position
+        (1,
+         2,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         False,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         "unbounded newest selection");
+      Expect_Visible_Position
+        (2,
+         1,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         False,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         "snapshot tombstone fallback");
+      Expect_Visible_Position
+        (3,
+         2,
+         True,
+         Formats.Byte_Array'[1 => Character'Pos ('a')],
+         False,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         "strict start advances key");
+      Expect_Visible_Position
+        (0,
+         1,
+         True,
+         Formats.Byte_Array'[1 => Character'Pos ('a')],
+         False,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         "strict start excludes future successor");
+      Expect_Visible_Position
+        (2,
+         1,
+         True,
+         Formats.Byte_Array'[1 => Character'Pos ('a')],
+         True,
+         True,
+         Formats.Byte_Array'[1 => Character'Pos ('b')],
+         "inclusive bounded tombstone");
+      Expect_Visible_Position
+        (0,
+         2,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         False,
+         True,
+         Formats.Byte_Array'[1 => Character'Pos ('a')],
+         "exclusive upper rejects equality");
+      Expect_Visible_Position
+        (1,
+         2,
+         True,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         True,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         "inclusive empty start");
+      Expect_Visible_Position
+        (1,
+         2,
+         True,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         False,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         "strict empty start");
+      Expect_Visible_Position
+        (0,
+         2,
+         False,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         False,
+         True,
+         Formats.Byte_Array'(1 .. 0 => 0),
+         "exclusive empty upper");
       for Position in Table_Index.Entries'Range loop
          declare
-            Item : Runtime.SST_V2_Index_Entry renames
-              Table_Index.Entries (Position);
+            Item : Runtime.SST_V2_Index_Entry renames Table_Index.Entries (Position);
          begin
             Runtime.Decode_SST_V2_Frame
-              (SST_V2_Golden
-                 (Item.Frame_Offset
-                  .. Item.Frame_Offset + Item.Frame_Byte_Total - 1),
+              (SST_V2_Golden (Item.Frame_Offset .. Item.Frame_Offset + Item.Frame_Byte_Total - 1),
                Table_Index.all,
                Position,
                Table_Frame,
                Decode_Status);
             if Decode_Status /= Runtime.Decoded or else Table_Frame = null then
-               raise Program_Error
-                 with "runtime SST-v2 frame range did not authenticate";
+               raise Program_Error with "runtime SST-v2 frame range did not authenticate";
             elsif Position = 1
               and then (Table_Frame.Sequence /= 2
                         or else Table_Frame.Operation /= LSM.Put_Operation
                         or else Table_Frame.Payload
-                                /= Formats.Byte_Array'
-                                     [Character'Pos ('a'),
-                                      Character'Pos ('x')])
+                                /= Formats.Byte_Array'[Character'Pos ('a'), Character'Pos ('x')])
             then
                raise Program_Error with "runtime SST-v2 first frame mismatch";
             elsif Position = 2
               and then (Table_Frame.Sequence /= 1
                         or else Table_Frame.Operation /= LSM.Delete_Operation
-                        or else Table_Frame.Payload
-                                /= Formats.Byte_Array'
-                                     [1 => Character'Pos ('a')])
+                        or else Table_Frame.Payload /= Formats.Byte_Array'[1 => Character'Pos ('a')])
             then
                raise Program_Error with "runtime SST-v2 second frame mismatch";
             elsif Position = 3
               and then (Table_Frame.Sequence /= 2
                         or else Table_Frame.Operation /= LSM.Put_Operation
                         or else Table_Frame.Value_Byte_Total /= 0
-                        or else Table_Frame.Payload
-                                /= Formats.Byte_Array'
-                                     [1 => Character'Pos ('b')])
+                        or else Table_Frame.Payload /= Formats.Byte_Array'[1 => Character'Pos ('b')])
             then
                raise Program_Error with "runtime SST-v2 third frame mismatch";
             end if;
@@ -979,8 +1073,7 @@ package body Flyology.DB.LSM_Format_Tests is
          Shifted_Manifest       : constant Formats.Byte_Array (7 .. 7 + Manifest_Length - 1) :=
            Manifest_Golden;
          Shifted_SST            : constant Formats.Byte_Array (11 .. 11 + SST_Length - 1) := SST_Golden;
-         Shifted_SST_V2         : constant Formats.Byte_Array (13 .. 13 + SST_V2_Length - 1) :=
-           SST_V2_Golden;
+         Shifted_SST_V2         : constant Formats.Byte_Array (13 .. 13 + SST_V2_Length - 1) := SST_V2_Golden;
          Shifted_Manifest_Value : Runtime.Checkpoint_Manifest_Access;
          Shifted_Table_Value    : Runtime.SST_Access;
          Shifted_Table_V2_Value : Runtime.SST_Access;
@@ -995,14 +1088,7 @@ package body Flyology.DB.LSM_Format_Tests is
             raise Program_Error with "runtime SST rejected shifted lower bound";
          end if;
          Runtime.Decode_SST_V2
-           (Shifted_SST_V2,
-            ID (1),
-            1,
-            Descriptor,
-            8,
-            8,
-            Shifted_Table_V2_Value,
-            Decode_Status);
+           (Shifted_SST_V2, ID (1), 1, Descriptor, 8, 8, Shifted_Table_V2_Value, Decode_Status);
          if Decode_Status /= Runtime.Decoded then
             Runtime.Release (Shifted_Manifest_Value);
             Runtime.Release (Shifted_Table_Value);

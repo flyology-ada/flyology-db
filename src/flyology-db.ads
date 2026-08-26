@@ -1779,7 +1779,7 @@ private
    type Lazy_Checkpoint_Read_State_Access is access Lazy_Checkpoint_Read_State;
    type Lazy_SST_Entry_Disposition is
      (Lazy_Value_Found, Lazy_Tombstone_Found, Lazy_Key_Absent, Lazy_Read_Failed);
-   type Lazy_SST_Read_Purpose is (Lazy_Point_Entry, Lazy_Whole_Run);
+   type Lazy_SST_Read_Purpose is (Lazy_Point_Entry, Lazy_Next_Entry, Lazy_Whole_Run);
    type Lazy_SST_Run_Descriptor is record
       Run_ID                : Identifier := Zero_Identifier;
       Lowest_Sequence       : Sequence_Number := 0;
@@ -1866,9 +1866,10 @@ private
    --  @exclude
    overriding procedure Finalize (Item : in out Refresh_Operation);
 
-   --  Private engine operation for one generation-bound SST-v1/v2 point
-   --  lookup. Version 2 reads only header/index/one frame; version 1 uses the
-   --  frozen authenticated whole-object compatibility fallback.
+   --  Private engine operation for one generation-bound SST-v1/v2 point,
+   --  next-visible-entry, or whole-run read. Version 2 point/next reads only
+   --  header/index/one frame; version 1 uses the frozen authenticated
+   --  whole-object compatibility fallback.
    --  The retained borrows and moved token follow the public operation
    --  convention, but this type deliberately adds no public read contract.
    type Lazy_SST_Read_Operation
@@ -1888,6 +1889,7 @@ private
       Final_Result     : Outcome_Code := Invalid_State;
       Final_Disposition : Lazy_SST_Entry_Disposition := Lazy_Read_Failed;
       Final_Sequence   : Sequence_Number := 0;
+      Final_Key        : Flyology.Bytes.Unbounded_Bytes;
       Final_Value      : Flyology.Bytes.Unbounded_Bytes;
       Final_Table       : Lazy_SST_Table_Holder_Access := null;
       Final_Purpose     : Lazy_SST_Read_Purpose := Lazy_Point_Entry;
@@ -1911,10 +1913,45 @@ private
       Timeout              : Duration;
       Operation            : in out Lazy_SST_Read_Operation);
 
+   --  Read one exact next snapshot-visible entry from a single immutable run.
+   --  A present start is inclusive or strict as selected; a present upper
+   --  bound is exclusive. Version 2 authenticates its index and only the
+   --  selected frame, while frozen version 1 uses its required whole-object
+   --  compatibility path. No page, prefetch, or retry policy is selected.
+   procedure Read_Lazy_SST_Next_Entry
+     (Database_ID           : Database_Identifier;
+      Family                : Column_Family_Configuration;
+      Run_ID                : Identifier;
+      Lowest_Sequence       : Sequence_Number;
+      Highest_Sequence      : Sequence_Number;
+      Entry_Total           : Interfaces.Unsigned_32;
+      Logical_Payload_Bytes : Interfaces.Unsigned_64;
+      Snapshot_At           : Sequence_Number;
+      Has_Start             : Boolean;
+      Start_Key             : Byte_Array;
+      Start_Inclusive       : Boolean;
+      Has_Upper             : Boolean;
+      Upper_Key             : Byte_Array;
+      Payload_Buffer        : in out Flyology.Buffers.Unique_Buffer;
+      Timeout               : Duration;
+      Operation             : in out Lazy_SST_Read_Operation);
+
    procedure Finish_Lazy_SST_Read
      (Operation      : in out Lazy_SST_Read_Operation;
       Disposition    : out Lazy_SST_Entry_Disposition;
       Sequence       : out Sequence_Number;
+      Value          : out Flyology.Bytes.Unbounded_Bytes;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer);
+
+   --  Consume one terminal next-entry read, restore the exact moved scratch
+   --  token into any vacant same-pool handle, and move out only authenticated
+   --  key/value bytes. Tombstones return the exact key and no value.
+   procedure Finish_Lazy_SST_Next_Entry
+     (Operation      : in out Lazy_SST_Read_Operation;
+      Disposition    : out Lazy_SST_Entry_Disposition;
+      Sequence       : out Sequence_Number;
+      Item_Key       : out Flyology.Bytes.Unbounded_Bytes;
       Value          : out Flyology.Bytes.Unbounded_Bytes;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer);

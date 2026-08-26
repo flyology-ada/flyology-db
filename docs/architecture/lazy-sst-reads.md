@@ -35,6 +35,18 @@ selects the first snapshot-visible entry. Capacity rejection, generation or
 length mismatch, corruption, cancellation, and failure publish no value and
 do not fall through to an older run.
 
+The same private operation now has a next-visible-entry purpose for physical
+scan construction. Its caller supplies the fixed snapshot plus an optional
+inclusive or strict start and an optional exclusive upper bound. The operation
+selects the first canonical key whose first version no newer than the snapshot
+is admitted by those bounds. A tombstone is returned with its exact key and
+sequence so the later multi-source merge can suppress that key while advancing
+the run; complete absence returns no key. SST-v2 authenticates the index and
+only the selected frame. SST-v1 uses the required whole-object fallback. Typed
+Finish returns one owned key/value pair and releases the decoded index/frame;
+the operation retains no whole run after Finish and introduces no page size,
+prefetch, cache, retry, or run-selection policy.
+
 ## Why SST version 1 cannot stream safely
 
 SST version 1 is one variable-length entry stream followed by a single object CRC. Its header authenticates total
@@ -110,7 +122,8 @@ wrapper is introduced to evade that rule.
    header must equal the authoritative HEAD extent.
 4. Read the exact index range with the same `Expected_Entity_Tag`. Validate its exact
    range, length, canonical records, ordering, bounds, uniqueness, and index CRC before publication.
-5. Select an entry from that authenticated index. Read exactly its frame with the same required generation.
+5. Select an exact key for a point read, or the first snapshot-visible key/version admitted by the normalized scan
+   bounds. Read exactly its frame with the same required generation.
 6. Validate the frame CRC and every index-bound field and key byte before exposing a value or advancing a scan
    position. Delete frames expose absence/tombstone authority, never value bytes.
 7. A stale generation, malformed range, allocation failure, cancellation, or incomplete response leaves the prior
@@ -139,15 +152,29 @@ and cursor-preservation action kernel for arbitrary nonempty snapshot, key,
 value, and exact run-count domains; the finite model, not the kernel, owns the
 newest-visible-run calculation.
 
+`LazySSTNextEntry.tla` separately checks the within-run rule needed by a
+streaming physical cursor: descending-version fallback at one snapshot,
+inclusive and strict starts, an exclusive upper bound, conclusive tombstones,
+one selected frame, and failure atomicity. A negative probe deliberately skips
+the first visible entry. Its canonical witness selects the historical
+tombstone for key `a` under `[a,b)`. `LazySSTNextEntrySafetyProof.tla` proves
+the abstract request/selection/frame/output action kernel over arbitrary
+request, position, and value domains. The finite model owns the concrete
+three-entry ordering calculation; neither artifact is a byte-comparison,
+codec, provider, progress, Ada-refinement, or constant-memory proof.
+
 The formal geometry is not a format bound, cache size, request count, retry budget, or public default. The model does
 not prove CRC arithmetic, byte offsets, range arithmetic, the Ada codec, provider behavior, progress, concurrency,
 or refinement. The private whole-object codec covers independent v1/v2 goldens, v1 compatibility, every v2
 object truncation, exact extent checks, whole/index/frame CRCs, repaired-checksum index/frame binding, intact-frame
 substitution, shifted lower bounds, trailing bytes, persisted key/value limits, common-envelope identity/kind/flags
 rejection, hostile U64 extent overflow, and standalone index/frame truncation, CRC, geometry, ordering, binding, and
-shifted-bound cases. The executable operation covers typed start rollback and finish restoration, cancellation,
+shifted-bound cases. The three-entry golden also requires the whole-table and authenticated-index next-entry kernels
+to agree on newest-value, historical-tombstone, strict/inclusive-start, and exclusive-upper outcomes. The executable
+operation covers typed start rollback and finish restoration, cancellation, expired-deadline reuse,
 wrong-generation provider results, a found and absent key against the actual Flush output, and generation-bound
-header/index/frame execution. The composed client fixture uses three actual
+header/index/frame execution. Its next-entry purpose covers actual v2 output,
+the frozen v1 fallback, exact token restoration, and operation reuse. The composed client fixture uses three actual
 published runs to select newest and two historical snapshots, reject an
 invalid run order before I/O, and exhaust all runs for absence while preserving
 the exact moved token. It then converts the oldest run to frozen v1 and repeats

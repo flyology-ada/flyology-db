@@ -244,6 +244,19 @@ private package Flyology.DB.LSM_Runtime_Formats is
 
    procedure Release (Value : in out SST_V2_Index_Access);
 
+   --  Select the first canonical key/version admitted by the caller's exact
+   --  snapshot and normalized scan bounds. Zero is a runtime-only no-selection
+   --  sentinel; persisted positions remain one-based and are never encoded
+   --  through this interface.
+   function Next_Visible_Position
+     (Value           : SST_V2_Index;
+      Snapshot_At     : Interfaces.Unsigned_64;
+      Has_Start       : Boolean;
+      Start_Key       : Formats.Byte_Array;
+      Start_Inclusive : Boolean;
+      Has_Upper       : Boolean;
+      Upper_Key       : Formats.Byte_Array) return Natural;
+
    type SST_V2_Frame (Payload_Byte_Total : Natural) is record
       Sequence         : Interfaces.Unsigned_64 := 0;
       Operation        : Formats.Byte := 0;
@@ -300,6 +313,18 @@ private package Flyology.DB.LSM_Runtime_Formats is
    procedure Release (Value : in out SST_Access);
 
    function Structurally_Valid (Value : SST) return Boolean;
+
+   --  Apply the same next-visible-entry rule to a fully authenticated v1/v2
+   --  table. This is the required v1 fallback and the whole-object test oracle
+   --  for the v2 index selector above; zero has the same no-selection meaning.
+   function Next_Visible_Position
+     (Value           : SST;
+      Snapshot_At     : Interfaces.Unsigned_64;
+      Has_Start       : Boolean;
+      Start_Key       : Formats.Byte_Array;
+      Start_Inclusive : Boolean;
+      Has_Upper       : Boolean;
+      Upper_Key       : Formats.Byte_Array) return Natural;
 
    --  Coalesce two validated consecutive sequence ranges without pruning any
    --  version or tombstone. Exact output extents derive from the two inputs;

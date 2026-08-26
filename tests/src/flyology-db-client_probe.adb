@@ -802,6 +802,11 @@ procedure Flyology.DB.Client_Probe is
    end Test_Public_Scan;
 
    procedure Test_Lazy_SST_Read is
+      Stop           : aliased Flyology.Cancellation.Token;
+      Cancelled_Work :
+        Lazy_SST_Read_Operation
+          (Composable_Set'Access, Context'Access, Client'Access, Lazy_Pool'Access, Stop'Access);
+
       procedure Read_And_Expect
         (Source               : in out Flyology.Buffers.Unique_Buffer;
          Destination          : in out Flyology.Buffers.Unique_Buffer;
@@ -834,13 +839,7 @@ procedure Flyology.DB.Client_Probe is
             raise Program_Error with "lazy SST read did not move its scratch token";
          end if;
          Flyology.Operations.Wait_All (Composable_Set);
-         Finish_Lazy_SST_Read
-           (Lazy_Work,
-            Disposition,
-            Sequence,
-            Value,
-            Read_Result,
-            Destination);
+         Finish_Lazy_SST_Read (Lazy_Work, Disposition, Sequence, Value, Read_Result, Destination);
          Expect (Read_Result, Expected_Result, "client-backed lazy SST read failed");
          if Disposition /= Expected_Disposition
            or else Sequence /= Expected_Sequence
@@ -862,6 +861,63 @@ procedure Flyology.DB.Client_Probe is
                 & Boolean'Image (Flyology.Buffers.Has_Buffer (Destination));
          end if;
       end Read_And_Expect;
+
+      procedure Next_And_Expect
+        (Source               : in out Flyology.Buffers.Unique_Buffer;
+         Destination          : in out Flyology.Buffers.Unique_Buffer;
+         Snapshot             : Sequence_Number;
+         Has_Start            : Boolean;
+         Start_Key            : Byte_Array;
+         Start_Inclusive      : Boolean;
+         Has_Upper            : Boolean;
+         Upper_Key            : Byte_Array;
+         Expected_Disposition : Lazy_SST_Entry_Disposition;
+         Expected_Sequence    : Sequence_Number;
+         Expected_Key         : Byte_Array;
+         Expected_Value       : Byte_Array;
+         Expected_Result      : Outcome_Code;
+         Read_Timeout         : Duration := Test_Operation_Timeout)
+      is
+         Disposition : Lazy_SST_Entry_Disposition;
+         Sequence    : Sequence_Number;
+         Item_Key    : Flyology.Bytes.Unbounded_Bytes;
+         Value       : Flyology.Bytes.Unbounded_Bytes;
+         Read_Result : Outcome_Code;
+      begin
+         Read_Lazy_SST_Next_Entry
+           (Probe_Database_ID,
+            Families (Families'First),
+            Checkpoint_Run_ID,
+            Receipt_Sequence (Commit_Info),
+            Receipt_Sequence (Commit_Info),
+            1,
+            Interfaces.Unsigned_64 (Key_Data'Length + Value_Data'Length),
+            Snapshot,
+            Has_Start,
+            Start_Key,
+            Start_Inclusive,
+            Has_Upper,
+            Upper_Key,
+            Source,
+            Read_Timeout,
+            Lazy_Work);
+         if Flyology.Buffers.Has_Buffer (Source) then
+            raise Program_Error with "lazy SST next-entry read did not move its scratch token";
+         end if;
+         Flyology.Operations.Wait_All (Composable_Set);
+         Finish_Lazy_SST_Next_Entry
+           (Lazy_Work, Disposition, Sequence, Item_Key, Value, Read_Result, Destination);
+         Expect (Read_Result, Expected_Result, "client-backed lazy SST next-entry read failed");
+         if Disposition /= Expected_Disposition
+           or else Sequence /= Expected_Sequence
+           or else not Same (Item_Key, Expected_Key)
+           or else not Same (Value, Expected_Value)
+           or else not Flyology.Buffers.Has_Buffer (Destination)
+           or else Flyology.Buffers.Tag (Destination) /= Lazy_Token_Tag
+         then
+            raise Program_Error with "client-backed lazy SST next-entry read returned the wrong result";
+         end if;
+      end Next_And_Expect;
    begin
       Flyology.Buffers.Acquire (Lazy_Buffer);
       Flyology.Buffers.Set_Tag (Lazy_Buffer, Lazy_Token_Tag);
@@ -883,11 +939,164 @@ procedure Flyology.DB.Client_Probe is
          0,
          Bytes (""),
          Not_Found);
+      Next_And_Expect
+        (Lazy_Buffer,
+         Lazy_Restored_Buffer,
+         Receipt_Sequence (Commit_Info),
+         False,
+         Bytes ("ignored"),
+         False,
+         False,
+         Bytes ("ignored"),
+         Lazy_Value_Found,
+         Receipt_Sequence (Commit_Info),
+         Key_Data,
+         Value_Data,
+         Success);
+      Next_And_Expect
+        (Lazy_Restored_Buffer,
+         Lazy_Buffer,
+         Receipt_Sequence (Commit_Info),
+         True,
+         Key_Data,
+         True,
+         False,
+         Bytes ("ignored"),
+         Lazy_Value_Found,
+         Receipt_Sequence (Commit_Info),
+         Key_Data,
+         Value_Data,
+         Success);
+      Next_And_Expect
+        (Lazy_Buffer,
+         Lazy_Restored_Buffer,
+         Receipt_Sequence (Commit_Info),
+         True,
+         Key_Data,
+         False,
+         False,
+         Bytes ("ignored"),
+         Lazy_Key_Absent,
+         0,
+         Bytes (""),
+         Bytes (""),
+         Not_Found);
+      Next_And_Expect
+        (Lazy_Restored_Buffer,
+         Lazy_Buffer,
+         Receipt_Sequence (Commit_Info),
+         False,
+         Bytes ("ignored"),
+         False,
+         True,
+         Key_Data,
+         Lazy_Key_Absent,
+         0,
+         Bytes (""),
+         Bytes (""),
+         Not_Found);
+      Next_And_Expect
+        (Lazy_Buffer,
+         Lazy_Restored_Buffer,
+         Receipt_Sequence (Commit_Info) - 1,
+         False,
+         Bytes ("ignored"),
+         False,
+         False,
+         Bytes ("ignored"),
+         Lazy_Key_Absent,
+         0,
+         Bytes (""),
+         Bytes (""),
+         Not_Found);
+      Next_And_Expect
+        (Lazy_Restored_Buffer,
+         Lazy_Buffer,
+         Receipt_Sequence (Commit_Info),
+         True,
+         Key_Data,
+         True,
+         True,
+         Key_Data,
+         Lazy_Read_Failed,
+         0,
+         Bytes (""),
+         Bytes (""),
+         Invalid_State);
+      Next_And_Expect
+        (Lazy_Buffer,
+         Lazy_Restored_Buffer,
+         Receipt_Sequence (Commit_Info),
+         False,
+         Bytes ("ignored"),
+         False,
+         False,
+         Bytes ("ignored"),
+         Lazy_Read_Failed,
+         0,
+         Bytes (""),
+         Bytes (""),
+         Timed_Out,
+         0.0);
+      Next_And_Expect
+        (Lazy_Restored_Buffer,
+         Lazy_Buffer,
+         Receipt_Sequence (Commit_Info),
+         False,
+         Bytes ("ignored"),
+         False,
+         False,
+         Bytes ("ignored"),
+         Lazy_Value_Found,
+         Receipt_Sequence (Commit_Info),
+         Key_Data,
+         Value_Data,
+         Success);
+      Stop.Request;
+      declare
+         Disposition : Lazy_SST_Entry_Disposition;
+         Sequence    : Sequence_Number;
+         Item_Key    : Flyology.Bytes.Unbounded_Bytes;
+         Value       : Flyology.Bytes.Unbounded_Bytes;
+         Read_Result : Outcome_Code;
+      begin
+         Read_Lazy_SST_Next_Entry
+           (Probe_Database_ID,
+            Families (Families'First),
+            Checkpoint_Run_ID,
+            Receipt_Sequence (Commit_Info),
+            Receipt_Sequence (Commit_Info),
+            1,
+            Interfaces.Unsigned_64 (Key_Data'Length + Value_Data'Length),
+            Receipt_Sequence (Commit_Info),
+            False,
+            Bytes ("ignored"),
+            False,
+            False,
+            Bytes ("ignored"),
+            Lazy_Buffer,
+            Test_Operation_Timeout,
+            Cancelled_Work);
+         Flyology.Operations.Wait_All (Composable_Set);
+         Finish_Lazy_SST_Next_Entry
+           (Cancelled_Work, Disposition, Sequence, Item_Key, Value, Read_Result, Lazy_Restored_Buffer);
+         if Read_Result /= Cancelled
+           or else Disposition /= Lazy_Read_Failed
+           or else Sequence /= 0
+           or else Flyology.Bytes.Length (Item_Key) /= 0
+           or else Flyology.Bytes.Length (Value) /= 0
+           or else not Flyology.Buffers.Has_Buffer (Lazy_Restored_Buffer)
+           or else Flyology.Buffers.Tag (Lazy_Restored_Buffer) /= Lazy_Token_Tag
+         then
+            raise Program_Error with "lazy SST next-entry cancellation published data or lost its token";
+         end if;
+      end;
       --  Reusable operations retain their idle set slot after Finish. This
       --  focused fixture is done, so return that slot before later DB parents
       --  exercise the same bounded completion set.
       Flyology.Operations.Release (Lazy_Work);
-      Flyology.Buffers.Release (Lazy_Buffer);
+      Flyology.Operations.Release (Cancelled_Work);
+      Flyology.Buffers.Release (Lazy_Restored_Buffer);
    exception
       when others =>
          Flyology.Buffers.Release (Lazy_Buffer);
@@ -1064,8 +1273,50 @@ procedure Flyology.DB.Client_Probe is
          0,
          Bytes (""),
          Not_Found);
+      declare
+         V1_Work     :
+           Lazy_SST_Read_Operation
+             (Composable_Set'Access, Context'Access, Client'Access, Lazy_Pool'Access, null);
+         Disposition : Lazy_SST_Entry_Disposition;
+         Sequence    : Sequence_Number;
+         Item_Key    : Flyology.Bytes.Unbounded_Bytes;
+         Value       : Flyology.Bytes.Unbounded_Bytes;
+         Read_Result : Outcome_Code;
+      begin
+         Read_Lazy_SST_Next_Entry
+           (Probe_Database_ID,
+            Families (Families'First),
+            Compaction_Run_ID,
+            First_Sequence,
+            First_Sequence,
+            1,
+            Interfaces.Unsigned_64 (Key_Data'Length + Value_Data'Length),
+            First_Sequence,
+            False,
+            Bytes ("ignored"),
+            False,
+            False,
+            Bytes ("ignored"),
+            Lazy_Restored_Buffer,
+            Test_Operation_Timeout,
+            V1_Work);
+         Flyology.Operations.Wait_All (Composable_Set);
+         Finish_Lazy_SST_Next_Entry
+           (V1_Work, Disposition, Sequence, Item_Key, Value, Read_Result, Lazy_Buffer);
+         if Read_Result /= Success
+           or else Disposition /= Lazy_Value_Found
+           or else Sequence /= First_Sequence
+           or else not Same (Item_Key, Key_Data)
+           or else not Same (Value, Value_Data)
+           or else not Flyology.Buffers.Has_Buffer (Lazy_Buffer)
+           or else Flyology.Buffers.Tag (Lazy_Buffer) /= Lazy_Token_Tag
+         then
+            raise Program_Error with "frozen v1 lazy next-entry fallback returned the wrong result";
+         end if;
+         Flyology.Operations.Release (V1_Work);
+      end;
       Flyology.Operations.Release (Lazy_Checkpoint_Work);
-      Flyology.Buffers.Release (Lazy_Restored_Buffer);
+      Flyology.Buffers.Release (Lazy_Buffer);
    exception
       when others =>
          Flyology.Buffers.Release (Lazy_Buffer);

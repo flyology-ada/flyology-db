@@ -1255,6 +1255,30 @@ package body Flyology.DB.LSM_Runtime_Formats is
       return Key_Less (Data, Left_Offset, Left_Length, Data, Right_Offset, Right_Length);
    end Key_Less;
 
+   function Key_Admitted
+     (Data            : Formats.Byte_Array;
+      Key_Offset      : Natural;
+      Key_Length      : Natural;
+      Has_Start       : Boolean;
+      Start_Key       : Formats.Byte_Array;
+      Start_Inclusive : Boolean;
+      Has_Upper       : Boolean;
+      Upper_Key       : Formats.Byte_Array) return Boolean
+   is
+      Before_Start : constant Boolean :=
+        Has_Start and then Key_Less (Data, Key_Offset, Key_Length, Start_Key, 0, Start_Key'Length);
+      At_Start     : constant Boolean :=
+        Has_Start
+        and then not Before_Start
+        and then not Key_Less (Start_Key, 0, Start_Key'Length, Data, Key_Offset, Key_Length);
+      Before_Upper : constant Boolean :=
+        not Has_Upper or else Key_Less (Data, Key_Offset, Key_Length, Upper_Key, 0, Upper_Key'Length);
+   begin
+      return
+        (not Has_Start or else (not Before_Start and then (Start_Inclusive or else not At_Start)))
+        and then Before_Upper;
+   end Key_Admitted;
+
    function Valid_SST_V2_Index (Value : SST_V2_Index) return Boolean is
       Frame_Cursor      : Natural := Value.Frame_Offset;
       Key_Cursor        : Positive := 1;
@@ -1354,6 +1378,50 @@ package body Flyology.DB.LSM_Runtime_Formats is
         and then Highest = Value.Highest_Sequence
         and then Logical = Value.Logical_Payload_Bytes;
    end Valid_SST_V2_Index;
+
+   function Next_Visible_Position
+     (Value           : SST_V2_Index;
+      Snapshot_At     : Interfaces.Unsigned_64;
+      Has_Start       : Boolean;
+      Start_Key       : Formats.Byte_Array;
+      Start_Inclusive : Boolean;
+      Has_Upper       : Boolean;
+      Upper_Key       : Formats.Byte_Array) return Natural is
+   begin
+      if Snapshot_At = 0 or else not Valid_SST_V2_Index (Value) then
+         return 0;
+      end if;
+      for Position in Value.Entries'Range loop
+         declare
+            Item : SST_V2_Index_Entry renames Value.Entries (Position);
+         begin
+            if Has_Upper
+              and then not Key_Less
+                             (Value.Keys,
+                              Item.Key_Offset - 1,
+                              Item.Key_Byte_Total,
+                              Upper_Key,
+                              0,
+                              Upper_Key'Length)
+            then
+               return 0;
+            elsif Item.Sequence <= Snapshot_At
+              and then Key_Admitted
+                         (Value.Keys,
+                          Item.Key_Offset - 1,
+                          Item.Key_Byte_Total,
+                          Has_Start,
+                          Start_Key,
+                          Start_Inclusive,
+                          Has_Upper,
+                          Upper_Key)
+            then
+               return Position;
+            end if;
+         end;
+      end loop;
+      return 0;
+   end Next_Visible_Position;
 
    procedure Decode_SST_V2_Index
      (Image               : Formats.Byte_Array;
@@ -1744,6 +1812,50 @@ package body Flyology.DB.LSM_Runtime_Formats is
         and then Lowest = Value.Lowest_Sequence
         and then Highest = Value.Highest_Sequence;
    end Structurally_Valid;
+
+   function Next_Visible_Position
+     (Value           : SST;
+      Snapshot_At     : Interfaces.Unsigned_64;
+      Has_Start       : Boolean;
+      Start_Key       : Formats.Byte_Array;
+      Start_Inclusive : Boolean;
+      Has_Upper       : Boolean;
+      Upper_Key       : Formats.Byte_Array) return Natural is
+   begin
+      if Snapshot_At = 0 or else not Structurally_Valid (Value) then
+         return 0;
+      end if;
+      for Position in Value.Entries'Range loop
+         declare
+            Item : SST_Entry renames Value.Entries (Position);
+         begin
+            if Has_Upper
+              and then not Key_Less
+                             (Value.Payload,
+                              Item.Key_Offset - 1,
+                              Item.Key_Byte_Total,
+                              Upper_Key,
+                              0,
+                              Upper_Key'Length)
+            then
+               return 0;
+            elsif Item.Sequence <= Snapshot_At
+              and then Key_Admitted
+                         (Value.Payload,
+                          Item.Key_Offset - 1,
+                          Item.Key_Byte_Total,
+                          Has_Start,
+                          Start_Key,
+                          Start_Inclusive,
+                          Has_Upper,
+                          Upper_Key)
+            then
+               return Position;
+            end if;
+         end;
+      end loop;
+      return 0;
+   end Next_Visible_Position;
 
    procedure Merge_Consecutive_SSTs
      (Older         : SST;

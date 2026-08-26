@@ -1366,6 +1366,67 @@ check_trace "$temporary_root/lazy-sst-read-witness.json" LazySSTReadWitness
 grep -q 'All 41 obligations proved.' \
   "$temporary_root/tlaps-lazy-sst-read.log"
 
+#  Three canonical entries, two arbitrary-byte key ranks, two snapshots, and
+#  the finite normalized bound modes are model geometry only. They are not
+#  persisted limits, frame sizes, request budgets, or scan defaults.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 \
+  -metadir "$temporary_root/tlc-lazy-sst-next-entry-states" \
+  -config LazySSTNextEntry.cfg LazySSTNextEntry \
+  >"$temporary_root/tlc-lazy-sst-next-entry.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-lazy-sst-next-entry.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lazy-sst-next-entry.log"
+grep -q '75 states generated, 75 distinct states found, 0 states left on queue.' \
+  "$temporary_root/tlc-lazy-sst-next-entry.log"
+grep -q 'The depth of the complete state graph search is 5.' \
+  "$temporary_root/tlc-lazy-sst-next-entry.log"
+for action in BeginRequest SelectEntry ReadFrame PublishValue PublishTombstone \
+  PublishAbsent RejectSelection RejectFrame
+do
+  grep -Eq "^<$action .*: [1-9]" \
+    "$temporary_root/tlc-lazy-sst-next-entry.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-lazy-sst-next-entry-skip-probe-states" \
+  -config LazySSTNextEntrySkipProbe.cfg LazySSTNextEntrySkipProbe \
+  >"$temporary_root/tlc-lazy-sst-next-entry-skip-probe.log" 2>&1
+lazy_sst_next_entry_skip_probe_status=$?
+set -e
+test "$lazy_sst_next_entry_skip_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-lazy-sst-next-entry-skip-probe.log"
+! grep -q '^Warning:' \
+  "$temporary_root/tlc-lazy-sst-next-entry-skip-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-lazy-sst-next-entry-witness-states" \
+  -config LazySSTNextEntryWitness.cfg \
+  -dumpTrace json "$temporary_root/lazy-sst-next-entry-witness.json" \
+  LazySSTNextEntryWitness \
+  >"$temporary_root/tlc-lazy-sst-next-entry-witness.log" 2>&1
+lazy_sst_next_entry_witness_status=$?
+set -e
+test "$lazy_sst_next_entry_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-lazy-sst-next-entry-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lazy-sst-next-entry-witness.log"
+check_trace \
+  "$temporary_root/lazy-sst-next-entry-witness.json" \
+  LazySSTNextEntryWitness
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-lazy-sst-next-entry-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/LazySSTNextEntrySafetyProof.tla" \
+  >"$temporary_root/tlaps-lazy-sst-next-entry.log" 2>&1
+grep -q 'All 17 obligations proved.' \
+  "$temporary_root/tlaps-lazy-sst-next-entry.log"
+
 #  Three ordered runs, two keys, and four values are finite qualification
 #  geometry for newest-visible fixed-snapshot selection. They are not a run
 #  ceiling, key/value limit, request count, retry policy, or public default.
@@ -1488,6 +1549,10 @@ printf '%s\n' "  Owned merge/tombstone/concurrent trace canonical"
 printf '%s\n' "  Negative partial-advance and stale-winner probes detected"
 printf '%s\n' "  Lazy SST read TLC 16 distinct states, depth 6"
 printf '%s\n' "  Lazy SST read TLAPS 41/41 obligations"
+printf '%s\n' "  Lazy SST next-entry TLC 75 distinct states, depth 5"
+printf '%s\n' "  Lazy SST next-entry TLAPS 17/17 obligations"
+printf '%s\n' "  Historical tombstone selection trace canonical"
+printf '%s\n' "  Negative skipped-first-visible-entry probe detected"
 printf '%s\n' "  Lazy checkpoint selector TLC 37 distinct states, depth 6"
 printf '%s\n' "  Lazy checkpoint selector TLAPS 13/13 obligations"
 printf '%s\n' "  Generation-bound allocation/replacement trace canonical"

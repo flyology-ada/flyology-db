@@ -1,5 +1,52 @@
 # Review record
 
+## Lazy SST next-visible-entry candidate
+
+- Parent: authenticated whole-scan wait commit `aeeec3a`.
+- Scope: add one private purpose to the existing reusable lazy-SST operation. It selects the first canonical
+  snapshot-visible key/version inside one exact run under optional inclusive/strict start and exclusive upper bounds,
+  returns the exact key plus value or tombstone, and restores the caller's moved scratch token through typed Finish.
+  SST-v2 reads its authenticated index and one selected frame; frozen SST-v1 uses the required generation-bound
+  whole-object fallback. No public API, default, capacity, retry, task, cache, prefetch, or run-selection policy is
+  added. This is a dependency for later physical-cursor composition; it does not claim constant-memory paging.
+- Shared algorithm: the internal runtime format package owns one `Next_Visible_Position` rule for both a complete
+  authenticated table and an authenticated v2 index. The independent three-entry golden exercises a newer value,
+  older tombstone, following key, historical snapshot, inclusive/strict starts, and exclusive upper bound through
+  both representations. The provider-backed fixture covers actual v2 output, frozen-v1 fallback, timeout/reuse,
+  cancellation, exact key/value/result, and exact token restoration.
+- Formal boundary: `LazySSTNextEntry.tla` checks the finite ordering/publication state machine, its negative probe
+  skips the first visible position, and its witness selects a historical tombstone under `[a,b)`. The TLAPS kernel
+  proves request, selection, frame, output, and failure-atomicity preservation over arbitrary domains while treating
+  the finite ordering result as an input. Neither artifact proves byte comparison, codec/provider behavior, Ada
+  refinement, progress, or constant-memory traversal.
+- Findings cycle: the implementation sweep found and fixed one P1 failure-atomicity defect: an exception while
+  assembling a selected key/value could otherwise leave partial output retained behind a failed result. Terminal
+  completion now centrally clears key and value for failure/absence and clears value for a tombstone. It also found
+  and fixed two P2 gaps: the operation comment still described a point-only engine, and the selector corpus omitted
+  empty inclusive/strict starts and an empty exclusive upper bound even though DB keys are arbitrary bytes. Formal
+  calibration also found and fixed a P2 runner assertion: TLC attributes the existential start coverage to
+  `BeginRequest`, not its `Begin` wrapper. The exact main-model geometry is now frozen at 75 generated/distinct
+  states, zero queued, depth 5, with every required action nonzero. A direct strict-SMT TLAPS diagnostic then exposed
+  one P1 inductiveness defect in the arbitrary-domain kernel: `Safety` did not bind intermediate phases to their
+  only reachable result, so it admitted an impossible `Selected`/`ReadFailed` state from which frame processing could
+  resume without an exact selection. The finite model and proof kernel now both require the established phase/result
+  relation; no safety property was weakened and no assumption was added. The maintained deterministic suite,
+  project-aware GNATformat changed-line check, public GNATdoc generation, repository gate, and diff checks are green.
+  A retained strict-SMT diagnostic proves all 17/17 repaired-kernel obligations under its pre-existing constants
+  contract. The post-proof sweep removed two further P2 review obstacles: formatter churn that touched unrelated private
+  operation declarations, and a fail-closed repository oracle that still expected the previous 36 canonical traces
+  instead of the established 36 plus this slice's historical-tombstone witness. The resulting Ada diff contains only
+  this slice's semantic declarations and implementation, and the repository gate now explicitly requires every new
+  model, configuration, proof, and the derived 37-trace inventory. The full deterministic suite passes through its
+  authenticated object-storage lifecycle, crash/recovery, limited end-to-end, 32 adapter tests, and pinned TidesDB 4/4
+  sentinel. Update-mode and ordinary `./scripts/check-tla.sh` runs both pass: the 75-state depth-5 next-entry model,
+  17/17 TLAPS obligations, historical tombstone witness, negative skip probe, and all pre-existing lanes are green, and
+  the ordinary run confirms byte-stable canonical artifacts. `./scripts/prove.sh` proves 1,097/1,097 selected checks
+  warning-strict, with 168 flow and 929 prover checks, zero justified or unproved checks, zero warnings or
+  `pragma Assume`, and a clean post-run executable audit. P0 means data loss, authority, or safety failure; P1 means
+  incorrect selection, ownership, snapshot, bound, cancellation, or failure semantics; P2 means test, documentation,
+  maintainability, or unnecessary-surface weakness. The final findings sweep has no actionable P0/P1/P2 findings.
+
 ## Authenticated whole-scan wait candidate
 
 - Parent: authenticated physical scan initialization commit `14ff996c70bc6efcd0509c6c45f444cd24ec10ef`.

@@ -299,6 +299,22 @@ failure atomicity, exact successful output, and quiescence. The model proves no 
 allocation implementation, provider behavior, progress, public API, or refinement to Ada. Those remain codec and
 executable qualification boundaries documented in `docs/architecture/lazy-sst-reads.md`.
 
+`LazySSTNextEntry.tla` freezes selection of one next snapshot-visible entry
+inside a canonical SST. Its three-entry geometry contains `a@2=value`,
+`a@1=tombstone`, and `b@2=value`; TLC therefore exercises newest selection,
+historical tombstone fallback, strict/inclusive starts, the exclusive upper
+bound, one selected frame, complete absence, and failure atomicity. The
+skipped-first negative probe must violate `Safety`. The canonical witness
+selects `a@1` under snapshot 1 and `[a,b)`, authenticates that frame, and
+publishes NotFound from the tombstone.
+
+`LazySSTNextEntrySafetyProof.tla` is the arbitrary-domain action-preservation
+kernel. It assumes the finite model's already-established `ExpectedPosition`
+function and proves exact request, selected-position, frame-position, terminal
+output, and failure-atomicity preservation. Neither model proves byte ordering,
+CRC/format parsing, provider behavior, allocation, progress, Ada execution,
+refinement, or constant-memory paging.
+
 `LazyCheckpointRead.tla` composes the one-run result across one exact
 oldest-to-newest run slice at a fixed snapshot. TLC exhausts 37 distinct states
 at depth 6 with nonzero coverage for future-run skipping, authenticated

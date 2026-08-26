@@ -32,6 +32,14 @@ test -x scripts/setup-tla.sh
 test -x scripts/check-tla.sh
 test -f formal/tla/CommitPublication.tla
 test -f formal/tla/PublicationSafetyProof.tla
+test -f formal/tla/LazySSTNextEntry.tla
+test -f formal/tla/LazySSTNextEntry.cfg
+test -f formal/tla/LazySSTNextEntrySkipProbe.tla
+test -f formal/tla/LazySSTNextEntrySkipProbe.cfg
+test -f formal/tla/LazySSTNextEntryWitness.tla
+test -f formal/tla/LazySSTNextEntryWitness.cfg
+test -f formal/tla/LazySSTNextEntrySafetyProof.tla
+test -f formal/tla/traces/LazySSTNextEntryWitness.trace.json
 test -x oracles/adapters/tidesdb/adapter.py
 test -x oracles/adapters/tidesdb/run_workload.py
 test -x oracles/adapters/tidesdb/scripts/build.sh
@@ -84,7 +92,9 @@ grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' alire.toml
 grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' tests/alire.toml
 ! grep -Eq '^flyology_tla = \{ (path|url)=' alire.toml
 ! grep -Eq '^flyology_tla = \{ (path|url)=' tests/alire.toml
-test "$(find formal/tla/traces -type f -name '*.trace.json' | wc -l | tr -d ' ')" -eq 36
+# The canonical trace/2 inventory is the established 36-artifact harness plus
+# the LazySSTNextEntry historical-tombstone witness added by this slice.
+test "$(find formal/tla/traces -type f -name '*.trace.json' | wc -l | tr -d ' ')" -eq 37
 for trace in formal/tla/traces/*.trace.json
 do
   grep -q '"format":"flyology[.]tla[.]trace/2"' "$trace"
