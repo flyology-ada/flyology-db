@@ -1,5 +1,7 @@
 with Ada.Command_Line;
 with Ada.Streams;
+with Ada.Strings;
+with Ada.Strings.Fixed;
 with Ada.Text_IO;
 with Flyology.Buffers;
 with Flyology.Bytes;
@@ -7,11 +9,13 @@ with Flyology.Cancellation;
 with Flyology.DB.Object_Storage;
 with Flyology.HTTP;
 with Flyology.HTTP.Client;
+with Flyology.IO.Sockets;
 with Flyology.IO.Timers;
 with Flyology.Object_Storage.Client.Buckets;
 with Flyology.Object_Storage.Client.Low_Level;
 with Flyology.Operations;
 with Interfaces;
+with Refresh_Proxy_Testing;
 
 procedure Flyology.DB.Client_Probe is
    package Binding renames Flyology.DB.Object_Storage;
@@ -19,6 +23,7 @@ procedure Flyology.DB.Client_Probe is
    package HTTP renames Flyology.HTTP;
    package HTTP_Client renames Flyology.HTTP.Client;
    package Low_Level renames Flyology.Object_Storage.Client.Low_Level;
+   package Sockets renames Flyology.IO.Sockets;
    package Timers renames Flyology.IO.Timers;
 
    use type Buckets.Create_Outcome_Kind;
@@ -63,8 +68,7 @@ procedure Flyology.DB.Client_Probe is
    end Same;
 
    function Same
-     (Left  : Flyology.Buffers.Unique_Buffer;
-      Right : Ada.Streams.Stream_Element_Array) return Boolean
+     (Left : Flyology.Buffers.Unique_Buffer; Right : Ada.Streams.Stream_Element_Array) return Boolean
    is
       Matches : Boolean := False;
 
@@ -79,70 +83,89 @@ procedure Flyology.DB.Client_Probe is
 
    function Required_Argument (Index : Positive) return String is
    begin
-      if Ada.Command_Line.Argument_Count /= 4 then
-         raise Program_Error with "usage: flyology-db-client-probe ENDPOINT BUCKET ACCESS_KEY SECRET_KEY";
+      if Ada.Command_Line.Argument_Count not in 4 .. 5 then
+         raise Program_Error
+           with "usage: flyology-db-client-probe ENDPOINT BUCKET ACCESS_KEY SECRET_KEY [UPSTREAM_PORT]";
       end if;
       return Ada.Command_Line.Argument (Index);
    end Required_Argument;
 
-   Endpoint               : constant String := Required_Argument (1);
-   Bucket                 : constant String := Required_Argument (2);
-   Access_Key             : constant String := Required_Argument (3);
-   Secret_Key             : constant String := Required_Argument (4);
-   Origin                 : constant HTTP.Origin := HTTP.Parse_Origin (Endpoint);
+   function Decimal (Value : Sockets.Port) return String
+   is (Ada.Strings.Fixed.Trim (Sockets.Port'Image (Value), Ada.Strings.Both));
+
+   function Proxy_Upstream_Port return Sockets.Port is
+   begin
+      if Ada.Command_Line.Argument_Count = 5 then
+         return Sockets.Port'Value (Ada.Command_Line.Argument (5));
+      else
+         return Sockets.Any_Port;
+      end if;
+   end Proxy_Upstream_Port;
+
+   Endpoint                              : constant String := Required_Argument (1);
+   Bucket                                : constant String := Required_Argument (2);
+   Access_Key                            : constant String := Required_Argument (3);
+   Secret_Key                            : constant String := Required_Argument (4);
+   Proxy_Enabled                         : constant Boolean := Ada.Command_Line.Argument_Count = 5;
+   Upstream_Port                         : constant Sockets.Port := Proxy_Upstream_Port;
+   Origin                                : HTTP.Origin := HTTP.Parse_Origin (Endpoint);
    --  Ten seconds is the local authenticated black-box stability budget for
    --  each serial operation. It is not a DB default, retry budget, or
    --  persisted workload policy.
-   Test_Operation_Timeout : constant Duration := 10.0;
+   Test_Operation_Timeout                : constant Duration := 10.0;
+   --  Two seconds is the focused local blocked-child deadline oracle. The
+   --  proxy confirms the selected request is blocked before the deadline is
+   --  observed, so this is test timing rather than a DB or provider default.
+   Blocked_Deadline_Timeout              : constant Duration := 2.0;
    --  Four concurrent HTTP leases cover this serial black-box probe while
    --  matching the pinned client's already-qualified default geometry. This
    --  is test capacity, not a DB pool or connection default.
-   Client                 : aliased HTTP_Client.Client (Capacity => 4);
-   Identity               : aliased Low_Level.Credentials :=
+   Client                                : aliased HTTP_Client.Client (Capacity => 4);
+   Identity                              : aliased Low_Level.Credentials :=
      Low_Level.Make_Credentials (Access_Key, Secret_Key);
-   Context                : aliased Storage_Context;
-   Created                : aliased Database;
-   Replica                : aliased Database;
-   Reopened               : Database;
-   Txn                    : Transaction;
-   Reader                 : Transaction;
+   Context                               : aliased Storage_Context;
+   Created                               : aliased Database;
+   Replica                               : aliased Database;
+   Reopened                              : Database;
+   Txn                                   : Transaction;
+   Reader                                : Transaction;
    Family, Audit_Family, Metadata_Family : Column_Family;
-   Receipt                : Create_Receipt;
-   Family_Info            : Column_Family_Receipt;
-   Commit_Info            : Commit_Receipt;
-   Flush_Info             : Flush_Receipt;
-   Action                 : L0_Checkpoint_Action;
-   Requirement            : L0_Checkpoint_Requirement;
-   Data                   : Flyology.Bytes.Unbounded_Bytes;
-   Result                 : Outcome_Code;
-   Close_Result           : Outcome_Code;
-   Bucket_Result          : Buckets.Create_Outcome;
+   Receipt                               : Create_Receipt;
+   Family_Info                           : Column_Family_Receipt;
+   Commit_Info                           : Commit_Receipt;
+   Flush_Info                            : Flush_Receipt;
+   Action                                : L0_Checkpoint_Action;
+   Requirement                           : L0_Checkpoint_Requirement;
+   Data                                  : Flyology.Bytes.Unbounded_Bytes;
+   Result                                : Outcome_Code;
+   Close_Result                          : Outcome_Code;
+   Bucket_Result                         : Buckets.Create_Outcome;
 
    --  The remote fixture starts with one family, then appends two independently
    --  bounded families after its first checkpoint. Nine manifest-history slots
    --  admit exactly root, first checkpoint, two registry appends, two complete
    --  replacements, second and third additive checkpoints, and one adjacent merge.
    --  These are persisted fixture authority, not API defaults.
-   Limits                   : constant Database_Limits :=
-     (Maximum_Column_Families           => 3,
-      Maximum_Manifest_History          => 9,
-      Maximum_Batch_History             => 4,
-      Maximum_Transactions_Per_Batch    => 1,
-      Maximum_Mutations_Per_Transaction => 4,
-      Maximum_Mutations_Per_Batch       => 4,
-      Maximum_Live_Entries              => 4,
-      Maximum_Transaction_Payload_Bytes => 1_024,
-      Maximum_Batch_Payload_Bytes       => 2_048,
-      Maximum_Live_State_Bytes          => 4_096,
-      Maximum_Total_L0_Runs             => 4,
+   Limits                       : constant Database_Limits :=
+     (Maximum_Column_Families             => 3,
+      Maximum_Manifest_History            => 9,
+      Maximum_Batch_History               => 4,
+      Maximum_Transactions_Per_Batch      => 1,
+      Maximum_Mutations_Per_Transaction   => 4,
+      Maximum_Mutations_Per_Batch         => 4,
+      Maximum_Live_Entries                => 4,
+      Maximum_Transaction_Payload_Bytes   => 1_024,
+      Maximum_Batch_Payload_Bytes         => 2_048,
+      Maximum_Live_State_Bytes            => 4_096,
+      Maximum_Total_L0_Runs               => 4,
       --  Twenty slots extend the prior sixteen-role fixture with the final
       --  compaction's two output, manifest, and transition identities. This
       --  is exact corpus geometry, not a DB or production default.
-      Maximum_Checkpoint_Identities     => 20,
+      Maximum_Checkpoint_Identities       => 20,
       --  Maintained serializable remote-fixture counts, not DB defaults.
       Maximum_Point_Reads_Per_Transaction => 8,
       Maximum_Scan_Ranges_Per_Transaction => 4);
-   Families                 : constant Column_Family_Configuration_Array :=
+   Families                     : constant Column_Family_Configuration_Array :=
      [Configure_Column_Family
         (1,
          Bytes ("primary"),
@@ -154,7 +177,7 @@ procedure Flyology.DB.Client_Probe is
    --  The appended family supplies a distinct exact byte/value and memtable/L0
    --  policy. It is caller authority persisted by Add_Column_Family, not a
    --  value derived from the initial family or selected by the DB.
-   Appended_Family          : constant Column_Family_Configuration :=
+   Appended_Family              : constant Column_Family_Configuration :=
      Configure_Column_Family
        (2,
         Bytes ("audit"),
@@ -165,7 +188,7 @@ procedure Flyology.DB.Client_Probe is
         Maximum_L0_Runs      => 1);
    --  The second appended family supplies another exact caller policy and
    --  remains empty to prove registry preservation does not invent an SST.
-   Metadata_Family_Config   : constant Column_Family_Configuration :=
+   Metadata_Family_Config       : constant Column_Family_Configuration :=
      Configure_Column_Family
        (3,
         Bytes ("metadata"),
@@ -186,42 +209,42 @@ procedure Flyology.DB.Client_Probe is
    --  legacy full-map entry for an empty family; it never names an attempted
    --  object. These values isolate fixture roles and are not ID-generation
    --  policy or tags.
-   Probe_Database_ID        : constant Database_Identifier := Database_Identifier (Numbered_ID (1));
-   Root_Manifest_ID         : constant Identifier := Numbered_ID (2);
-   Root_Transition_ID       : constant Identifier := Numbered_ID (3);
-   Transaction_ID           : constant Transaction_Identifier := Transaction_Identifier (Numbered_ID (4));
-   Reader_ID                : constant Transaction_Identifier := Transaction_Identifier (Numbered_ID (5));
-   Checkpoint_Run_ID        : constant Identifier := Numbered_ID (6);
-   Checkpoint_Manifest_ID   : constant Identifier := Numbered_ID (7);
-   Checkpoint_Transition_ID : constant Identifier := Numbered_ID (8);
-   Family_Manifest_ID       : constant Identifier := Numbered_ID (9);
-   Family_Transition_ID     : constant Identifier := Numbered_ID (10);
-   Metadata_Manifest_ID     : constant Identifier := Numbered_ID (11);
-   Metadata_Transition_ID   : constant Identifier := Numbered_ID (12);
-   Compaction_Run_ID        : constant Identifier := Numbered_ID (13);
-   Compaction_Manifest_ID   : constant Identifier := Numbered_ID (14);
-   Compaction_Transition_ID : constant Identifier := Numbered_ID (15);
-   Later_Transaction_ID     : constant Transaction_Identifier :=
+   Probe_Database_ID            : constant Database_Identifier := Database_Identifier (Numbered_ID (1));
+   Root_Manifest_ID             : constant Identifier := Numbered_ID (2);
+   Root_Transition_ID           : constant Identifier := Numbered_ID (3);
+   Transaction_ID               : constant Transaction_Identifier := Transaction_Identifier (Numbered_ID (4));
+   Reader_ID                    : constant Transaction_Identifier := Transaction_Identifier (Numbered_ID (5));
+   Checkpoint_Run_ID            : constant Identifier := Numbered_ID (6);
+   Checkpoint_Manifest_ID       : constant Identifier := Numbered_ID (7);
+   Checkpoint_Transition_ID     : constant Identifier := Numbered_ID (8);
+   Family_Manifest_ID           : constant Identifier := Numbered_ID (9);
+   Family_Transition_ID         : constant Identifier := Numbered_ID (10);
+   Metadata_Manifest_ID         : constant Identifier := Numbered_ID (11);
+   Metadata_Transition_ID       : constant Identifier := Numbered_ID (12);
+   Compaction_Run_ID            : constant Identifier := Numbered_ID (13);
+   Compaction_Manifest_ID       : constant Identifier := Numbered_ID (14);
+   Compaction_Transition_ID     : constant Identifier := Numbered_ID (15);
+   Later_Transaction_ID         : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (16));
-   Later_Run_ID             : constant Identifier := Numbered_ID (17);
+   Later_Run_ID                 : constant Identifier := Numbered_ID (17);
    --  The audit run deliberately reuses a value previously supplied for an
    --  empty family in the legacy full compaction map. Successful publication
    --  proves that ignored no-work entries do not reserve identities.
-   Audit_Run_ID             : constant Identifier := Numbered_ID (32);
-   Later_Manifest_ID        : constant Identifier := Numbered_ID (19);
-   Later_Transition_ID      : constant Identifier := Numbered_ID (20);
-   Third_Transaction_ID     : constant Transaction_Identifier :=
+   Audit_Run_ID                 : constant Identifier := Numbered_ID (32);
+   Later_Manifest_ID            : constant Identifier := Numbered_ID (19);
+   Later_Transition_ID          : constant Identifier := Numbered_ID (20);
+   Third_Transaction_ID         : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (21));
-   Third_Run_ID             : constant Identifier := Numbered_ID (22);
-   Third_Manifest_ID        : constant Identifier := Numbered_ID (23);
-   Third_Transition_ID      : constant Identifier := Numbered_ID (24);
-   Merged_Run_ID            : constant Identifier := Numbered_ID (25);
-   Merged_Manifest_ID       : constant Identifier := Numbered_ID (26);
-   Merged_Transition_ID     : constant Identifier := Numbered_ID (27);
-   Final_Primary_Run_ID      : constant Identifier := Numbered_ID (28);
-   Final_Audit_Run_ID        : constant Identifier := Numbered_ID (29);
-   Final_Manifest_ID         : constant Identifier := Numbered_ID (30);
-   Final_Transition_ID       : constant Identifier := Numbered_ID (31);
+   Third_Run_ID                 : constant Identifier := Numbered_ID (22);
+   Third_Manifest_ID            : constant Identifier := Numbered_ID (23);
+   Third_Transition_ID          : constant Identifier := Numbered_ID (24);
+   Merged_Run_ID                : constant Identifier := Numbered_ID (25);
+   Merged_Manifest_ID           : constant Identifier := Numbered_ID (26);
+   Merged_Transition_ID         : constant Identifier := Numbered_ID (27);
+   Final_Primary_Run_ID         : constant Identifier := Numbered_ID (28);
+   Final_Audit_Run_ID           : constant Identifier := Numbered_ID (29);
+   Final_Manifest_ID            : constant Identifier := Numbered_ID (30);
+   Final_Transition_ID          : constant Identifier := Numbered_ID (31);
    --  This compatibility-fixture identity is ignored because family 3 is
    --  empty at the first complete replacement. It is not a production
    --  placeholder convention or allocation policy.
@@ -229,61 +252,60 @@ procedure Flyology.DB.Client_Probe is
    --  IDs 38 and 39 identify the fixture's read-only transactions immediately
    --  before and after its one caller-triggered replica refresh. They are
    --  transaction-test geometry, not replica cadence or identity policy.
-   Replica_Initial_Reader_ID : constant Transaction_Identifier :=
+   Replica_Initial_Reader_ID    : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (38));
-   Replica_Refreshed_Reader_ID : constant Transaction_Identifier :=
+   Replica_Refreshed_Reader_ID  : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (39));
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
-   Flush_Token_Tag          : constant Interfaces.Unsigned_64 := 16#F105#;
-   Checkpoint_Runs          : constant Checkpoint_Run_Identity_Array :=
+   Flush_Token_Tag              : constant Interfaces.Unsigned_64 := 16#F105#;
+   Checkpoint_Runs              : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Checkpoint_Run_ID)];
    --  A legacy full-family map remains accepted. The empty-family entries are
    --  retained in the receipt but neither published nor identity-reserved.
-   Compaction_Runs          : constant Checkpoint_Run_Identity_Array :=
+   Compaction_Runs              : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Compaction_Run_ID),
       Configure_Checkpoint_Run (2, Audit_Run_ID),
       Configure_Checkpoint_Run (3, Legacy_Empty_Metadata_Run_ID)];
-   Later_Runs               : constant Checkpoint_Run_Identity_Array :=
-     [Configure_Checkpoint_Run (1, Later_Run_ID),
-      Configure_Checkpoint_Run (2, Audit_Run_ID)];
-   Third_Runs               : constant Checkpoint_Run_Identity_Array :=
+   Later_Runs                   : constant Checkpoint_Run_Identity_Array :=
+     [Configure_Checkpoint_Run (1, Later_Run_ID), Configure_Checkpoint_Run (2, Audit_Run_ID)];
+   Third_Runs                   : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Third_Run_ID)];
-   Final_Compaction_Runs    : constant Checkpoint_Run_Identity_Array :=
-     [Configure_Checkpoint_Run (1, Final_Primary_Run_ID),
-      Configure_Checkpoint_Run (2, Final_Audit_Run_ID)];
-   Key_Data                 : constant Byte_Array := Bytes ("client-key");
-   Value_Data               : constant Byte_Array := Bytes ("client-value");
-   Later_Value_Data         : constant Byte_Array := Bytes ("client-value-later");
-   Third_Value_Data         : constant Byte_Array := Bytes ("client-value-third");
-   Audit_Key_Data           : constant Byte_Array := Bytes ("event-1");
-   Audit_Value_Data         : constant Byte_Array := Bytes ("remote-append");
-   --  One visible DB parent, one Object Storage child, its HTTP exchange, and
-   --  its single transport child are the exact owner-stack slot geometry of
-   --  this serial probe. It is test capacity, not a DB completion-set default.
-   Composable_Set            : aliased Flyology.Operations.Completion_Set (4);
+   Final_Compaction_Runs        : constant Checkpoint_Run_Identity_Array :=
+     [Configure_Checkpoint_Run (1, Final_Primary_Run_ID), Configure_Checkpoint_Run (2, Final_Audit_Run_ID)];
+   Key_Data                     : constant Byte_Array := Bytes ("client-key");
+   Value_Data                   : constant Byte_Array := Bytes ("client-value");
+   Later_Value_Data             : constant Byte_Array := Bytes ("client-value-later");
+   Third_Value_Data             : constant Byte_Array := Bytes ("client-value-third");
+   Audit_Key_Data               : constant Byte_Array := Bytes ("event-1");
+   Audit_Value_Data             : constant Byte_Array := Bytes ("remote-append");
+   --  One DB parent, one Object Storage child, its HTTP exchange, and the
+   --  cold H1 connection plus transport children are the observed five-slot
+   --  owner stack of this serial proxy corpus. This is dependency-qualified
+   --  test geometry, not a DB completion-set or connection-pool default.
+   Composable_Set               : aliased Flyology.Operations.Completion_Set (5);
    --  The fixture selects its persisted live-state byte budget as the scratch
    --  block capacity and one token as serial operation geometry. Production
    --  callers select capacity from their own persisted family/database limits.
-   Flush_Pool                : aliased Flyology.Buffers.Pool
-     (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
-   Flush_Buffer              : Flyology.Buffers.Unique_Buffer (Flush_Pool'Access);
-   Restored_Buffer           : Flyology.Buffers.Unique_Buffer (Flush_Pool'Access);
-   Flush_Work                : Flush_Operation
-     (Composable_Set'Access,
-      Created'Access,
-      Context'Access,
-      Client'Access,
-      Flush_Pool'Access,
-      null);
-   Refresh_Work              : Refresh_Operation
-     (Composable_Set'Access,
-      Replica'Access,
-      Context'Access,
-      Client'Access,
-      Flush_Pool'Access,
-      null);
+   Flush_Pool                   :
+     aliased Flyology.Buffers.Pool (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
+   Flush_Buffer                 : Flyology.Buffers.Unique_Buffer (Flush_Pool'Access);
+   Restored_Buffer              : Flyology.Buffers.Unique_Buffer (Flush_Pool'Access);
+   Flush_Work                   :
+     Flush_Operation
+       (Composable_Set'Access, Created'Access, Context'Access, Client'Access, Flush_Pool'Access, null);
+   Refresh_Work                 :
+     Refresh_Operation
+       (Composable_Set'Access, Replica'Access, Context'Access, Client'Access, Flush_Pool'Access, null);
 begin
+   if Proxy_Enabled then
+      declare
+         Proxy_Port : Sockets.Port;
+      begin
+         Refresh_Proxy_Testing.Start (Upstream_Port, Test_Operation_Timeout, Proxy_Port);
+         Origin := HTTP.Parse_Origin ("http://127.0.0.1:" & Decimal (Proxy_Port));
+      end;
+   end if;
    HTTP_Client.Configure (Client, Origin);
    Bucket_Result :=
      Buckets.Create
@@ -359,13 +381,9 @@ begin
       Rollback_Set    : aliased Flyology.Operations.Completion_Set (1);
       Rollback_Pool   : aliased Flyology.Buffers.Pool (Block_Size => 3, Capacity => 1);
       Rollback_Buffer : Flyology.Buffers.Unique_Buffer (Rollback_Pool'Access);
-      Rollback_Work   : Flush_Operation
-        (Rollback_Set'Access,
-         Created'Access,
-         Context'Access,
-         Client'Access,
-         Rollback_Pool'Access,
-         null);
+      Rollback_Work   :
+        Flush_Operation
+          (Rollback_Set'Access, Created'Access, Context'Access, Client'Access, Rollback_Pool'Access, null);
       Busy            : Timers.Timer_Operation :=
         Timers.Sleep_For (Rollback_Set'Access, Test_Operation_Timeout);
       Marker          : constant Ada.Streams.Stream_Element_Array := [16#A5#, 16#5A#, 16#C3#];
@@ -414,16 +432,12 @@ begin
    --  definite, token-restoring, and publication-free so the same identities
    --  remain safe for the following adequately sized attempt.
    declare
-      Tiny_Pool     : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
-      Tiny_Buffer   : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
-      Tiny_Work     : Flush_Operation
-        (Composable_Set'Access,
-         Created'Access,
-         Context'Access,
-         Client'Access,
-         Tiny_Pool'Access,
-         null);
-      Tiny_Receipt  : Flush_Receipt;
+      Tiny_Pool    : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
+      Tiny_Buffer  : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
+      Tiny_Work    :
+        Flush_Operation
+          (Composable_Set'Access, Created'Access, Context'Access, Client'Access, Tiny_Pool'Access, null);
+      Tiny_Receipt : Flush_Receipt;
    begin
       Flyology.Buffers.Acquire (Tiny_Buffer);
       Start_Flush
@@ -448,16 +462,13 @@ begin
    --  definitely pre-admission and must surface as typed DB backpressure.
    declare
       Child_Set     : aliased Flyology.Operations.Completion_Set (1);
-      Child_Pool    : aliased Flyology.Buffers.Pool
-        (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
+      Child_Pool    :
+        aliased Flyology.Buffers.Pool
+                  (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
       Child_Buffer  : Flyology.Buffers.Unique_Buffer (Child_Pool'Access);
-      Child_Work    : Flush_Operation
-        (Child_Set'Access,
-         Created'Access,
-         Context'Access,
-         Client'Access,
-         Child_Pool'Access,
-         null);
+      Child_Work    :
+        Flush_Operation
+          (Child_Set'Access, Created'Access, Context'Access, Client'Access, Child_Pool'Access, null);
       Child_Receipt : Flush_Receipt;
    begin
       Flyology.Buffers.Acquire (Child_Buffer);
@@ -487,13 +498,9 @@ begin
    begin
       declare
          Abandon_Buffer : Flyology.Buffers.Unique_Buffer (Abandon_Pool'Access);
-         Abandon_Work   : Flush_Operation
-           (Abandon_Set'Access,
-            Created'Access,
-            Context'Access,
-            Client'Access,
-            Abandon_Pool'Access,
-            null);
+         Abandon_Work   :
+           Flush_Operation
+             (Abandon_Set'Access, Created'Access, Context'Access, Client'Access, Abandon_Pool'Access, null);
       begin
          Flyology.Buffers.Acquire (Abandon_Buffer);
          Start_Flush
@@ -602,16 +609,12 @@ begin
    --  caller-selected scratch requirement. A one-byte token is rejected before
    --  provider entry, restored exactly, and leaves the identities reusable.
    declare
-      Tiny_Pool    : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
-      Tiny_Buffer  : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
-      Tiny_Work    : Flush_Operation
-        (Composable_Set'Access,
-         Created'Access,
-         Context'Access,
-         Client'Access,
-         Tiny_Pool'Access,
-         null);
-      Tiny_Family  : Column_Family_Receipt;
+      Tiny_Pool   : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
+      Tiny_Buffer : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
+      Tiny_Work   :
+        Flush_Operation
+          (Composable_Set'Access, Created'Access, Context'Access, Client'Access, Tiny_Pool'Access, null);
+      Tiny_Family : Column_Family_Receipt;
    begin
       Flyology.Buffers.Acquire (Tiny_Buffer);
       Add_Column_Family
@@ -690,8 +693,7 @@ begin
    then
       raise Program_Error with "composable family append lost exact token or receipt authority";
    end if;
-   Resolve_Add_Column_Family
-     (Created, Family_Info, Test_Operation_Timeout, Result => Result);
+   Resolve_Add_Column_Family (Created, Family_Info, Test_Operation_Timeout, Result => Result);
    Expect (Result, Success, "client-backed family append reconciliation failed");
    Open_Column_Family (Created, Appended_Family.ID, Audit_Family, Result);
    Expect (Result, Success, "client-backed appended family open failed");
@@ -904,16 +906,12 @@ begin
       declare
          Rollback_Set    : aliased Flyology.Operations.Completion_Set (1);
          Marker          : constant Ada.Streams.Stream_Element_Array := [16#A5#, 16#5A#, 16#C3#];
-         Rollback_Pool   : aliased Flyology.Buffers.Pool
-           (Block_Size => Positive (Marker'Length), Capacity => 1);
+         Rollback_Pool   :
+           aliased Flyology.Buffers.Pool (Block_Size => Positive (Marker'Length), Capacity => 1);
          Rollback_Buffer : Flyology.Buffers.Unique_Buffer (Rollback_Pool'Access);
-         Rollback_Work   : Refresh_Operation
-           (Rollback_Set'Access,
-            Replica'Access,
-            Context'Access,
-            Client'Access,
-            Rollback_Pool'Access,
-            null);
+         Rollback_Work   :
+           Refresh_Operation
+             (Rollback_Set'Access, Replica'Access, Context'Access, Client'Access, Rollback_Pool'Access, null);
          Busy            : Timers.Timer_Operation :=
            Timers.Sleep_For (Rollback_Set'Access, Test_Operation_Timeout);
          Rejected        : Boolean := False;
@@ -953,13 +951,9 @@ begin
       declare
          Tiny_Pool   : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
          Tiny_Buffer : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
-         Tiny_Work   : Refresh_Operation
-           (Composable_Set'Access,
-            Replica'Access,
-            Context'Access,
-            Client'Access,
-            Tiny_Pool'Access,
-            null);
+         Tiny_Work   :
+           Refresh_Operation
+             (Composable_Set'Access, Replica'Access, Context'Access, Client'Access, Tiny_Pool'Access, null);
       begin
          Flyology.Buffers.Acquire (Tiny_Buffer);
          Refresh_Replica (Tiny_Buffer, Test_Operation_Timeout, Tiny_Work);
@@ -977,13 +971,14 @@ begin
       --  proves cancellation returned the lifecycle to Opened.
       declare
          Stop        : aliased Flyology.Cancellation.Token;
-         Cancel_Work : Refresh_Operation
-           (Composable_Set'Access,
-            Replica'Access,
-            Context'Access,
-            Client'Access,
-            Flush_Pool'Access,
-            Stop'Access);
+         Cancel_Work :
+           Refresh_Operation
+             (Composable_Set'Access,
+              Replica'Access,
+              Context'Access,
+              Client'Access,
+              Flush_Pool'Access,
+              Stop'Access);
       begin
          Stop.Request;
          Refresh_Replica (Flush_Buffer, Test_Operation_Timeout, Cancel_Work);
@@ -1014,13 +1009,14 @@ begin
          Stop.Request;
          declare
             Abandon_Buffer : Flyology.Buffers.Unique_Buffer (Abandon_Pool'Access);
-            Abandon_Work   : Refresh_Operation
-              (Abandon_Set'Access,
-               Replica'Access,
-               Context'Access,
-               Client'Access,
-               Abandon_Pool'Access,
-               Stop'Access);
+            Abandon_Work   :
+              Refresh_Operation
+                (Abandon_Set'Access,
+                 Replica'Access,
+                 Context'Access,
+                 Client'Access,
+                 Abandon_Pool'Access,
+                 Stop'Access);
          begin
             Flyology.Buffers.Acquire (Abandon_Buffer);
             Refresh_Replica (Abandon_Buffer, Test_Operation_Timeout, Abandon_Work);
@@ -1030,14 +1026,130 @@ begin
             end if;
          end;
          declare
-            Snapshot : constant Flyology.Buffers.Pool_Snapshot :=
-              Flyology.Buffers.Current (Abandon_Pool);
+            Snapshot : constant Flyology.Buffers.Pool_Snapshot := Flyology.Buffers.Current (Abandon_Pool);
          begin
             if Snapshot.Available /= 1 or else Snapshot.Outstanding /= 0 then
                raise Program_Error with "abandoned composable refresh did not release its token";
             end if;
          end;
       end;
+
+      if Proxy_Enabled then
+         declare
+            function Phase_Name (Phase : Refresh_Proxy_Testing.Refresh_Request_Phase) return String
+            is (case Phase is
+                  when Refresh_Proxy_Testing.Whole_Get_Request => "whole Get",
+                  when Refresh_Proxy_Testing.Head_Request      => "HeadObject",
+                  when Refresh_Proxy_Testing.Range_Get_Request => "range Get");
+
+            procedure Check_Restored_Token (Context : String) is
+            begin
+               if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+                 or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+                 or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+               then
+                  raise Program_Error with Context & " did not restore its exact token";
+               end if;
+               Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+            end Check_Restored_Token;
+
+            procedure Require_Blocked_Cancellation (Phase : Refresh_Proxy_Testing.Refresh_Request_Phase) is
+               Stop : aliased Flyology.Cancellation.Token;
+               Work :
+                 Refresh_Operation
+                   (Composable_Set'Access,
+                    Replica'Access,
+                    Context'Access,
+                    Client'Access,
+                    Flush_Pool'Access,
+                    Stop'Access);
+
+               task Cancel_When_Blocked is
+                  pragma Task_Info (Flyology.Native_Task);
+               end Cancel_When_Blocked;
+
+               task body Cancel_When_Blocked is
+               begin
+                  Refresh_Proxy_Testing.Wait_Blocked (Phase, Test_Operation_Timeout);
+                  Stop.Request;
+               end Cancel_When_Blocked;
+            begin
+               Refresh_Proxy_Testing.Arm (Phase);
+               Refresh_Replica (Flush_Buffer, Test_Operation_Timeout, Work);
+               Flyology.Operations.Wait_All (Composable_Set);
+               Finish (Work, Result, Restored_Buffer);
+               if Result /= Cancelled then
+                  Refresh_Proxy_Testing.Release_Blocked;
+                  raise Program_Error
+                    with
+                      "blocked "
+                      & Phase_Name (Phase)
+                      & " cancellation completed as "
+                      & Outcome_Code'Image (Result);
+               end if;
+               Refresh_Proxy_Testing.Wait_Blocked (Phase, Test_Operation_Timeout);
+               Refresh_Proxy_Testing.Release_Blocked;
+               Check_Restored_Token ("blocked " & Phase_Name (Phase) & " cancellation");
+            exception
+               when others =>
+                  Refresh_Proxy_Testing.Release_Blocked;
+                  raise;
+            end Require_Blocked_Cancellation;
+
+            procedure Require_Blocked_Deadline (Phase : Refresh_Proxy_Testing.Refresh_Request_Phase) is
+               Work :
+                 Refresh_Operation
+                   (Composable_Set'Access,
+                    Replica'Access,
+                    Context'Access,
+                    Client'Access,
+                    Flush_Pool'Access,
+                    null);
+            begin
+               Refresh_Proxy_Testing.Arm (Phase);
+               Refresh_Replica (Flush_Buffer, Blocked_Deadline_Timeout, Work);
+               Flyology.Operations.Wait_All (Composable_Set);
+               Finish (Work, Result, Restored_Buffer);
+               if Result /= Timed_Out then
+                  Refresh_Proxy_Testing.Release_Blocked;
+                  raise Program_Error
+                    with
+                      "blocked "
+                      & Phase_Name (Phase)
+                      & " deadline completed as "
+                      & Outcome_Code'Image (Result);
+               end if;
+               Refresh_Proxy_Testing.Wait_Blocked (Phase, Test_Operation_Timeout);
+               Refresh_Proxy_Testing.Release_Blocked;
+               Check_Restored_Token ("blocked " & Phase_Name (Phase) & " deadline");
+            exception
+               when others =>
+                  Refresh_Proxy_Testing.Release_Blocked;
+                  raise;
+            end Require_Blocked_Deadline;
+         begin
+            --  Each request is held after it reaches the TCP peer. Cancellation
+            --  and the one absolute refresh deadline must terminate the parent,
+            --  drain the exact provider child, restore the moved token, and
+            --  leave the stale replica open without installing partial state.
+            for Phase in Refresh_Proxy_Testing.Refresh_Request_Phase loop
+               Require_Blocked_Cancellation (Phase);
+               Require_Blocked_Deadline (Phase);
+            end loop;
+
+            Open_Column_Family (Replica, 1, Replica_Family, Result);
+            Expect (Result, Success, "cancelled refresh family lookup failed");
+            Begin_Transaction (Replica, Replica_Initial_Reader_ID, Reader, Result);
+            Expect (Result, Success, "cancelled refresh reader begin failed");
+            Get (Replica, Reader, Replica_Family, Key_Data, Data, Result);
+            Expect (Result, Success, "cancelled refresh stale read failed");
+            if not Same (Data, Value_Data) then
+               raise Program_Error with "cancelled refresh installed partial remote state";
+            end if;
+            Rollback (Reader, Result);
+            Expect (Result, Success, "cancelled refresh reader rollback failed");
+         end;
+      end if;
 
       --  The caller-composable path moves the exact tagged scratch token and
       --  restores it through an arbitrary vacant same-pool handle. Its first
@@ -1112,10 +1224,17 @@ begin
    Expect (Result, Success, "client-backed reader rollback failed");
    Close (Reopened, Close_Result);
    Expect (Close_Result, Success, "reopened client-backed close failed");
-   Ada.Text_IO.Put_Line
-     ("Flyology.DB client-backed create/commit/Flush/compaction/refresh/reopen passed");
+   Refresh_Proxy_Testing.Stop;
+   Ada.Text_IO.Put_Line ("Flyology.DB client-backed create/commit/Flush/compaction/refresh/reopen passed");
 exception
    when others =>
+      begin
+         Refresh_Proxy_Testing.Release_Blocked;
+         Refresh_Proxy_Testing.Stop;
+      exception
+         when others =>
+            null;
+      end;
       Close (Created, Close_Result);
       Close (Replica, Close_Result);
       Close (Reopened, Close_Result);

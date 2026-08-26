@@ -1,5 +1,36 @@
 # Review record
 
+## Accepted blocked-child replica-refresh qualification
+
+- Parent: accepted caller-composable replica-refresh commit `9ea30f0` plus focused dependency-evidence commit
+  `4f198a0`.
+- Scope: add a test-only bounded TCP proxy driven by one native Ada task. The authenticated local client fixture can
+  route through it while every existing four-argument provider-matrix invocation remains unchanged. The proxy
+  derives its request/response-head bound from `Flyology.HTTP.Server.Max_Header_Bytes`, uses the maintained Object
+  Storage raw-socket relay chunk, rejects chunked/pipelined fixture traffic, rewrites only hop-by-hop Connection
+  fields, and bounds every socket/coordination wait. No production task, API, retry, storage request, persisted value,
+  or publication rule changes.
+- Coverage: for the first active whole Get, HeadObject, and generation-bound range Get, one case requests cancellation
+  from an Ada task after the proxy confirms the request is blocked and another lets the refresh's one absolute
+  deadline expire. Every case requires its exact terminal result, typed restoration of the moved tagged token, and
+  preservation of the stale replica view. The existing final unblocked refresh/restart then proves lifecycle reopening
+  and complete monotonic installation.
+- Findings cycle: the first execution exposed that the prior four-slot fixture described only a warm H1 path. Forcing
+  one request per connection requires the cold connect child, so the exact caller-owned test geometry is five slots;
+  this is documented beside the fixture and is not a DB default. A second harness finding showed that relaying until
+  upstream close could hide a completed response behind a reusable connection. The proxy now relays the exact bounded
+  Content-Length body and forces `Connection: close` in both directions. Unused public test surface was removed and the
+  dynamically allocated task object is released after its joined terminal result. The repeated API, task lifetime,
+  socket ownership, framing, cancellation, deadline, token restoration, lifecycle, capacity, constants-authority,
+  documentation, and unnecessary-surface sweep finds no remaining actionable P0/P1/P2 finding.
+- Verification: `./tests/scripts/test.sh` passes the exact deterministic tree, including all six blocked-child cases,
+  client-backed create/commit/Flush/compaction/refresh/reopen, files crash recovery, the limited end-to-end profile,
+  32 comparative cases, and pinned TidesDB 4/4. `./scripts/check-tla.sh` passes every maintained lane, including the
+  1,460-state replica-refresh model and 11/11 obligations; `./scripts/prove.sh` proves 1,097/1,097 warning-strict
+  checks. The serial formal campaign's pre/post host audits are clean. Project-aware GNATformat 26 accepts the three
+  changed Ada sources. `./tests/scripts/test-s3-matrix.sh` passes all 18 RustFS, SeaweedFS, MinIO, and Flyology
+  memory/files/SQLite lanes against exact Object Storage `99706cceaef0add2578f3665e48af37cd52bafdc`.
+
 ## Accepted caller-composable replica-refresh candidate
 
 - Parent: shared recovery-controller commit `630fc4f`.

@@ -107,6 +107,10 @@ owner-stack coverage exercises completion-slot rollback, undersized-token reject
 scope abandonment, a newer install, equal-head restart, typed Finish into a different same-pool handle, and
 cacheless reopen. The authenticated provider matrix refreshes a deliberately stale replica through the
 generation-bound checkpoint and batch path with no retry or mutation replay. Synchronous client refresh and the
-composable path consume the same request/consume machine; memory and files retain blocking transport adapters.
-Cancellation while each distinct provider child is actively blocked and deadline expiry at each read phase remain
-explicit expansion work rather than part of this first limited acceptance claim.
+composable path consume the same request/consume machine; memory and files retain blocking transport adapters. A
+bounded test-only TCP proxy uses one Ada task to hold the first active whole Get, HeadObject, and generation-bound
+range Get independently. For each provider-child shape, separate cases request cancellation or let the one absolute
+deadline expire only after the proxy confirms the request is blocked. Typed Finish restores the exact moved token,
+the old replica view remains installed after every terminal result, and a following unblocked refresh still installs
+the complete newer graph. The proxy forces one request per connection, so the cold H1 connect child is exercised
+inside the caller-owned completion set rather than hidden by a warm pooled connection.

@@ -70,7 +70,8 @@ client_bucket="flyology-db-client-$$"
   "http://127.0.0.1:$client_port" \
   "$client_bucket" \
   "$client_access_key" \
-  "$client_secret_key"
+  "$client_secret_key" \
+  "$client_port"
 kill -TERM "$client_server_pid"
 wait "$client_server_pid"
 client_server_pid=""
