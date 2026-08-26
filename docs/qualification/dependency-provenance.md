@@ -5,9 +5,9 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `4401e0ecdc413668160078611c61e8434700cf74`
+- Commit: `99706cceaef0add2578f3665e48af37cd52bafdc`
 - Published constraint: `flyology_object_storage = "=0.1.0-dev"`
-- Flyology Alire index: `4f7124b277e3eb6dd1922c35c065f2e510bcdc99`
+- Flyology Alire index: `91cc2b504e0bcf2ec33f4132ff97adb8baf52ece`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
