@@ -105,10 +105,13 @@ remains incomplete.
 The fixed-snapshot paged-scan contract now has an additive Ada cursor plus maintained formal and executable evidence.
 Caller-supplied row/byte budgets, maximal contiguous pages, empty-view completion, atomic capacity/allocation
 rejection, own-mutation invalidation, one-time Serializable predicate retention, and checkpoint-plus-suffix reopen
-are qualified across the deterministic suite and all provider lanes. The implementation deliberately reuses bounded
-source capture and repeated traversal, so it remains paged materialization rather than a physical merge iterator.
-Removing that repeated work remains part of the unfinished streaming/physical-scan milestone. See
-[`paged-scans.md`](paged-scans.md).
+are qualified across the deterministic suite and all provider lanes. The next private physical execution contract is
+also frozen: an owned immutable source snapshot advances every equal-key head and selects own writes, then suffix
+batches newest-to-oldest, then checkpoint, with tombstone suppression and atomic allocation rejection. Its finite
+TLC model, two negative probes, checked witness, and abstract TLAPS kernel are green, but the Ada implementation still
+uses repeated bounded source capture and global sorting. Physical merge implementation, Object Storage streaming,
+automatic run selection, and constant-memory claims remain unfinished. See [`paged-scans.md`](paged-scans.md) and
+[`physical-scan-merge.md`](physical-scan-merge.md).
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
 pins, lagging-replica pins, required predecessor reachability, and unresolved publication attempts each retain exact

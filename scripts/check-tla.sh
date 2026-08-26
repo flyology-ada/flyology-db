@@ -1177,6 +1177,80 @@ grep -q 'Invariant WitnessPending is violated.' \
 #  24-obligation total; this count changes only with the proof kernel.
 grep -q 'All 24 obligations proved.' "$temporary_root/tlaps-paged-scan.log"
 
+#  Three ordered keys and four already-sorted sources are finite qualification
+#  geometry for an owned physical merge cursor. They are not run-count,
+#  history, key/value, or page-size policy.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-physical-scan-merge-states" \
+  -config PhysicalScanMerge.cfg PhysicalScanMerge \
+  >"$temporary_root/tlc-physical-scan-merge.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-physical-scan-merge.log"
+! grep -q '^Warning:' "$temporary_root/tlc-physical-scan-merge.log"
+grep -q '21 distinct states found' \
+  "$temporary_root/tlc-physical-scan-merge.log"
+grep -q 'The depth of the complete state graph search is 6.' \
+  "$temporary_root/tlc-physical-scan-merge.log"
+for action in Begin ConcurrentChange AdvanceVisible AdvanceTombstone \
+  RejectAllocation
+do
+  grep -Eq "^<$action .*: [1-9]" \
+    "$temporary_root/tlc-physical-scan-merge.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-physical-scan-merge-probe-states" \
+  -config PhysicalScanMergeProbe.cfg PhysicalScanMergeProbe \
+  >"$temporary_root/tlc-physical-scan-merge-probe.log" 2>&1
+physical_scan_merge_probe_status=$?
+set -e
+test "$physical_scan_merge_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-physical-scan-merge-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-physical-scan-merge-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-physical-scan-merge-winner-probe-states" \
+  -config PhysicalScanMergeWinnerProbe.cfg PhysicalScanMergeWinnerProbe \
+  >"$temporary_root/tlc-physical-scan-merge-winner-probe.log" 2>&1
+physical_scan_merge_winner_probe_status=$?
+set -e
+test "$physical_scan_merge_winner_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-physical-scan-merge-winner-probe.log"
+! grep -q '^Warning:' \
+  "$temporary_root/tlc-physical-scan-merge-winner-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-physical-scan-merge-witness-states" \
+  -config PhysicalScanMergeWitness.cfg \
+  -dumpTrace json "$temporary_root/physical-scan-merge-witness.json" \
+  PhysicalScanMergeWitness \
+  >"$temporary_root/tlc-physical-scan-merge-witness.log" 2>&1
+physical_scan_merge_witness_status=$?
+set -e
+test "$physical_scan_merge_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-physical-scan-merge-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-physical-scan-merge-witness.log"
+"$model_root/validate_physical_scan_merge_witness.py" \
+  "$temporary_root/physical-scan-merge-witness.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-physical-scan-merge-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/PhysicalScanMergeSafetyProof.tla" \
+  >"$temporary_root/tlaps-physical-scan-merge.log" 2>&1
+#  Initialization, merge advance, allocation rejection, and quiescence prove
+#  the reviewed 18-obligation abstract position/output kernel.
+grep -q 'All 18 obligations proved.' \
+  "$temporary_root/tlaps-physical-scan-merge.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -1253,3 +1327,7 @@ printf '%s\n' "  Paged scan TLAPS 24/24 obligations"
 printf '%s\n' "  Frozen-page/capacity/allocation/concurrent witness validated"
 printf '%s\n' "  Negative skipped-key page probe detected"
 printf '%s\n' "  Negative nonmaximal page probe detected"
+printf '%s\n' "  Physical scan merge TLC 21 distinct states, depth 6"
+printf '%s\n' "  Physical scan merge TLAPS 18/18 obligations"
+printf '%s\n' "  Owned merge/tombstone/concurrent witness validated"
+printf '%s\n' "  Negative partial-advance and stale-winner probes detected"

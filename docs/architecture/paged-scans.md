@@ -69,5 +69,6 @@ The model dimensions are qualification geometry, not product defaults. The forma
 comparison, transaction mutation-version validation, allocation, source capture, concurrency, progress, the Ada
 implementation, or refinement. The current Ada implementation shares the established whole-scan materialization
 kernel and rescans bounded in-memory source descriptors for each page. It is paged materialization, not a physical
-streaming or merge cursor; a later slice must remove that remaining source capture and repeated traversal before
-making such a claim.
+streaming or merge cursor. The accepted next-step ownership and merge contract is documented in
+[`physical-scan-merge.md`](physical-scan-merge.md); its Ada implementation must still remove that remaining source
+capture and repeated traversal before making such a claim.

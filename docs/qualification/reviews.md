@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted owned physical scan merge formal candidate
+
+- Parent: fixed-snapshot paged-scan implementation commit `3737a28`.
+- Scope: specify the private physical cursor that will replace repeated whole-source capture and global sorting
+  behind the established `Scan_Cursor` API. The candidate owns one immutable ordered descriptor view per checkpoint,
+  visible suffix batch, and transaction mutation source, retains every referenced immutable image, and advances one
+  position per source. It introduces no Ada declaration, persisted field, page default, storage request, retry,
+  helper task, automatic compaction choice, or compatibility promise.
+- Merge contract: the lowest head key is selected, every equal-key head advances atomically, and the newest authority
+  wins in the order own mutation, newest-to-oldest suffix batch, then checkpoint. A winning tombstone emits nothing.
+  Allocation rejection preserves all positions and output. A concurrent replacement of current engine authority
+  cannot change the already owned source snapshot.
+- Boundary and authority: three keys and four sources are finite qualification geometry, not product limits. The
+  model assumes that each source is already sorted and contains one effective entry per key. The abstract TLAPS
+  kernel assumes an exact next-position/output-prefix relation. Source construction, image reference counting, byte
+  ordering, allocation, concurrency, progress, Ada implementation, and refinement remain executable boundaries.
+- Findings cycle: the first executable pass corrected a TLA+ precedence parse error without changing the reviewed
+  contract. The deliberate assurance sweep then found one P1 issue: the partial-advance probe set a dedicated bad
+  flag, allowing safety to fail independently of the position invariant it was intended to test; completion was also
+  stated only in one direction. The marker was removed from the finite model and abstract proof, completion is now an
+  equivalence, and the partial-advance and stale-winner probes independently fail the exact position and output
+  properties. Repeated ownership, precedence, tombstone, failure-atomicity, constants-authority, formal-boundary, and
+  unnecessary-surface review finds no remaining actionable P0/P1/P2 finding.
+- Verification: `./scripts/check-tla.sh` passes the exact tree. TLC exhausts 21 distinct physical-merge states at
+  depth 6 with nonzero coverage of every normal action; both negative probes are detected; the seven-state owned
+  merge/tombstone/concurrent-change witness passes its independent validator; and strict TLAPS proves 18/18
+  obligations. The post-run host audit is clean and the exclusive formal lane is released.
+
 ## Accepted fixed-snapshot paged-scan implementation candidate
 
 - Parent: formal contract commit `549c377`.

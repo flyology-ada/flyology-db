@@ -14,6 +14,14 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
+The owned physical scan merge formal candidate changes no selected SPARK unit, so it does not claim or require a new
+GNATprove result. Its maintained TLA/TLC/TLAPS lane exhausts 21 distinct states to depth 6, detects independent
+partial-equal-head-advance and stale-winner probes, validates the owned merge/tombstone/concurrent-authority witness,
+and proves 18/18 abstract position/output obligations. The finite model assumes sorted, per-source effective entries;
+the abstract proof assumes the exact next-position and output-prefix relation. Source preparation, immutable-image
+ownership, byte comparison, allocation, the planned Ada cursor, concurrency, and refinement remain outside this
+formal claim.
+
 The fixed-snapshot paged-scan implementation candidate preserves the exact warning-strict selected-unit boundary at
 1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or `pragma Assume` statements. The new
 cursor, mutation-version witness, source sorting, repeated page materialization, allocation rollback, and controlled
