@@ -14,23 +14,23 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
-The owned physical scan merge formal candidate changes no selected SPARK unit, so it does not claim or require a new
-GNATprove result. Its maintained TLA/TLC/TLAPS lane exhausts 21 distinct states to depth 6, detects independent
+The owned physical scan merge implementation changes no selected SPARK unit and preserves the exact warning-strict
+campaign at 1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or `pragma Assume`
+statements. Its maintained TLA/TLC/TLAPS lane exhausts 21 distinct states to depth 6, detects independent
 partial-equal-head-advance and stale-winner probes, validates the owned merge/tombstone/concurrent-authority witness,
 and proves 18/18 abstract position/output obligations. The finite model assumes sorted, per-source effective entries;
 the abstract proof assumes the exact next-position and output-prefix relation. Source preparation, immutable-image
-ownership, byte comparison, allocation, the planned Ada cursor, concurrency, and refinement remain outside this
-formal claim.
+ownership, byte comparison, allocation, concurrency, the Ada cursor implementation, and refinement remain executable
+boundaries outside this formal claim.
 
-The fixed-snapshot paged-scan implementation candidate preserves the exact warning-strict selected-unit boundary at
-1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or `pragma Assume` statements. The new
-cursor, mutation-version witness, source sorting, repeated page materialization, allocation rollback, and controlled
+The fixed-snapshot paged-scan public contract remains within that selected-unit boundary. The cursor,
+mutation-version witness, owned source capture, per-source merge positions, allocation rollback, and controlled
 ownership live outside the selected SPARK units and are executable integration boundaries rather than new proof
-claims. Their matching maintained TLA/TLAPS lane explores 341 distinct states to depth 6, detects skipped-key and
+claims. The maintained paged-scan TLA/TLAPS lane explores 341 distinct states to depth 6, detects skipped-key and
 nonmaximal-page negative probes, validates the frozen-page/capacity/allocation/concurrent witness, and proves 24/24
 obligations. The deterministic and 18-lane provider suites qualify exact runtime ordering, fixed-snapshot behavior,
-own-write invalidation, Serializable predicate retention, and checkpoint-plus-suffix reopen. No refinement proof
-between the Ada materializer and the model is claimed.
+own-write invalidation, Serializable predicate retention, retained-image checkpoint replacement, and
+checkpoint-plus-suffix reopen. No refinement proof between the Ada merge cursor and either model is claimed.
 
 The caller-composable replica-refresh candidate preserves the exact warning-strict selected-unit boundary at
 1,097/1,097 proved checks. The owner-stack recovery driver, retained lifecycle wake, provider-owned Head/range/whole

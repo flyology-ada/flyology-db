@@ -7501,6 +7501,14 @@ package body Flyology.DB.Engine_Tests is
          Scan_Result_State_Allocation,
          Scan_Result_Rows_Allocation,
          Scan_Result_Payload_Allocation];
+      --  These three test-only positions cover the transient capture and both
+      --  exact retained merge arrays built by Start_Scan. They add no product
+      --  capacity or allocation policy.
+      Cursor_Capture_Faults : constant array (Positive range 1 .. 3) of
+        Internal_Allocation_Fault_Point :=
+          [Scan_Source_Allocation,
+           Scan_Cursor_Entry_Allocation,
+           Scan_Cursor_Source_Allocation];
       --  Eight entries cover the complete scan corpus through the later suffix;
       --  2,560 bytes derives from 8 * family one's persisted (64 + 256) maximum
       --  entry extent. These are checkpoint-fixture authorities, not defaults.
@@ -7603,6 +7611,11 @@ package body Flyology.DB.Engine_Tests is
       Set_Test_Allocation_Fault (Scan_Cursor_Upper_Allocation);
       Start_Scan (Item, Reader, 1, True, Key_B, True, Key_C, Cursor, Result);
       Expect (Result, Capacity_Exceeded, "cursor upper failure was misclassified");
+      for Point of Cursor_Capture_Faults loop
+         Set_Test_Allocation_Fault (Point);
+         Start_Scan (Item, Reader, 1, True, Key_B, True, Key_C, Cursor, Result);
+         Expect (Result, Capacity_Exceeded, "cursor source-capture failure was misclassified");
+      end loop;
 
       Commit_Write (62_004, Key_B, To_Value ([13]));
       Commit_Write (62_005, Key_C, To_Value ([]), Delete_Item => True);
@@ -7673,6 +7686,14 @@ package body Flyology.DB.Engine_Tests is
       Put (Item, Reader, 1, Key_D, To_Value ([24]), Result);
       Expect (Result, Success, "scan local insertion failed");
 
+      Start_Scan (Item, Reader, 1, False, Key_A, False, Key_D, Cursor, Result);
+      Expect (Result, Success, "own-write capture cursor start failed");
+      Set_Test_Allocation_Fault (Scan_Cursor_Owned_Bytes_Allocation);
+      Start_Scan (Item, Reader, 1, True, Key_B, True, Key_C, Cursor, Result);
+      Expect (Result, Capacity_Exceeded, "cursor own-payload failure was misclassified");
+      Next_Scan_Page (Item, Reader, Cursor, 1, 2, Rows, Done, Result);
+      Expect (Result, Success, "cursor own-payload rollback page failed");
+      Expect_Scan_Row (Rows, 1, Empty_Key, To_Value ([1]), "cursor own-payload rollback range");
       Start_Scan (Item, Reader, 1, False, Key_A, False, Key_D, Cursor, Result);
       Expect (Result, Success, "own-write version cursor start failed");
       --  Replacing an existing arena slot leaves its count unchanged. The
@@ -7784,6 +7805,11 @@ package body Flyology.DB.Engine_Tests is
       Rollback (Reader, Result);
       Expect (Result, Success, "scan conflict consumed reader");
 
+      Begin_Transaction (Item, Numbered_TX_ID (62_009), Reader, Result);
+      Expect (Result, Success, "pre-checkpoint physical reader begin failed");
+      Start_Scan (Item, Reader, 1, False, Key_A, False, Key_D, Cursor, Result);
+      Expect (Result, Success, "pre-checkpoint physical cursor start failed");
+
       declare
          Flush_Info : Flush_Receipt;
          --  One stable run identity per persisted fixture family is required
@@ -7809,17 +7835,39 @@ package body Flyology.DB.Engine_Tests is
             Result  => Result);
          Expect (Result, Success, "scan checkpoint publication failed");
       end;
+      Next_Scan_Page
+        (Item,
+         Reader,
+         Cursor,
+         8,
+         Interfaces.Unsigned_64 (8 * (Maximum_Key_Bytes + Maximum_Value_Bytes)),
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Success, "retained pre-checkpoint physical page failed");
+      if not Done then
+         raise Program_Error with "retained pre-checkpoint physical page did not complete";
+      end if;
+      Expect_Count (7, "retained pre-checkpoint physical page");
+      Expect_Scan_Row (Rows, 1, Empty_Key, To_Value ([1]), "retained pre-checkpoint empty key");
+      Expect_Scan_Row (Rows, 5, Key_C, To_Value ([26]), "retained pre-checkpoint replacement");
+      Rollback (Reader, Result);
+      Expect (Result, Success, "pre-checkpoint physical reader rollback failed");
       Commit_Write (62_032, Marker, To_Value ([27]));
+      Commit_Write (62_034, Key_A, To_Value ([]), Delete_Item => True);
+      Commit_Write (62_035, Key_C, To_Value ([28]));
       Close (Item, Result);
       Expect (Result, Success, "scan checkpoint database close failed");
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "scan checkpoint database reopen failed");
-      Begin_Transaction (Item, Numbered_TX_ID (62_033), Reader, Result);
+      Begin_Transaction (Item, Numbered_TX_ID (62_036), Reader, Result);
       Expect (Result, Success, "reopened scan reader begin failed");
       Start_Scan (Item, Reader, 1, False, Key_A, False, Key_D, Cursor, Result);
       Expect (Result, Success, "reopened page cursor start failed");
       --  Three rows and three maximum family entry extents are test geometry
-      --  for 3/3/2 page reconstruction, derived from persisted fixture widths.
+      --  for 3/3/1 reconstruction across a checkpoint plus three suffix
+      --  sources. The suffix tombstone and replacement establish precedence;
+      --  these page sizes derive from persisted fixture widths, not defaults.
       Next_Scan_Page
         (Item,
          Reader,
@@ -7835,8 +7883,8 @@ package body Flyology.DB.Engine_Tests is
       end if;
       Expect_Count (3, "reopened first page");
       Expect_Scan_Row (Rows, 1, Empty_Key, To_Value ([1]), "reopened page empty key");
-      Expect_Scan_Row (Rows, 2, Key_A, To_Value ([2]), "reopened page A");
-      Expect_Scan_Row (Rows, 3, Key_B, To_Value ([13]), "reopened page B");
+      Expect_Scan_Row (Rows, 2, Key_B, To_Value ([13]), "reopened page B");
+      Expect_Scan_Row (Rows, 3, Key_B_Extended, To_Value ([4]), "reopened page prefix key");
       Next_Scan_Page
         (Item,
          Reader,
@@ -7851,9 +7899,9 @@ package body Flyology.DB.Engine_Tests is
          raise Program_Error with "reopened middle page completed early";
       end if;
       Expect_Count (3, "reopened middle page");
-      Expect_Scan_Row (Rows, 1, Key_B_Extended, To_Value ([4]), "reopened page prefix key");
-      Expect_Scan_Row (Rows, 2, Key_C, To_Value ([26]), "reopened page C");
-      Expect_Scan_Row (Rows, 3, Key_D, To_Value ([14]), "reopened page D");
+      Expect_Scan_Row (Rows, 1, Key_C, To_Value ([28]), "reopened suffix replacement C");
+      Expect_Scan_Row (Rows, 2, Key_D, To_Value ([14]), "reopened page D");
+      Expect_Scan_Row (Rows, 3, Marker, To_Value ([27]), "reopened page marker");
       Next_Scan_Page
         (Item,
          Reader,
@@ -7867,19 +7915,18 @@ package body Flyology.DB.Engine_Tests is
       if not Done then
          raise Program_Error with "reopened final page did not complete";
       end if;
-      Expect_Count (2, "reopened final page");
-      Expect_Scan_Row (Rows, 1, Marker, To_Value ([27]), "reopened page marker");
-      Expect_Scan_Row (Rows, 2, High_Key, To_Value ([6]), "reopened page high key");
+      Expect_Count (1, "reopened final page");
+      Expect_Scan_Row (Rows, 1, High_Key, To_Value ([6]), "reopened page high key");
       Scan (Item, Reader, 1, False, Key_A, False, Key_D, Rows, Result);
       Expect (Result, Success, "checkpoint-plus-suffix scan failed");
-      Expect_Count (8, "checkpoint-plus-suffix scan");
+      Expect_Count (7, "checkpoint-plus-suffix scan");
       Expect_Scan_Row (Rows, 1, Empty_Key, To_Value ([1]), "checkpoint empty key");
-      Expect_Scan_Row (Rows, 3, Key_B, To_Value ([13]), "checkpoint replacement");
-      Expect_Scan_Row (Rows, 4, Key_B_Extended, To_Value ([4]), "checkpoint prefix key");
-      Expect_Scan_Row (Rows, 5, Key_C, To_Value ([26]), "checkpoint restored key");
-      Expect_Scan_Row (Rows, 6, Key_D, To_Value ([14]), "checkpoint inserted key");
-      Expect_Scan_Row (Rows, 7, Marker, To_Value ([27]), "post-checkpoint suffix key");
-      Expect_Scan_Row (Rows, 8, High_Key, To_Value ([6]), "checkpoint high-bit key");
+      Expect_Scan_Row (Rows, 2, Key_B, To_Value ([13]), "checkpoint replacement");
+      Expect_Scan_Row (Rows, 3, Key_B_Extended, To_Value ([4]), "checkpoint prefix key");
+      Expect_Scan_Row (Rows, 4, Key_C, To_Value ([28]), "post-checkpoint replacement");
+      Expect_Scan_Row (Rows, 5, Key_D, To_Value ([14]), "checkpoint inserted key");
+      Expect_Scan_Row (Rows, 6, Marker, To_Value ([27]), "post-checkpoint suffix key");
+      Expect_Scan_Row (Rows, 7, High_Key, To_Value ([6]), "checkpoint high-bit key");
       Rollback (Reader, Result);
       Expect (Result, Success, "reopened scan reader rollback failed");
 

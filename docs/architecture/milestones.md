@@ -9,7 +9,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local/client paths and six-provider matrix operational; broader acceptance pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Limited owned sync/composable spine and remote matrix operational; broader acceptance pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
-| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0 and public complete-view replacement operational; partial compaction and streaming scans pending |
+| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, complete-view replacement, and owned physical paged merge operational; partial compaction and Object Storage streaming pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete, exact-two-run, and exact-three-run replacement operational and deletion safety proved; automatic/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
@@ -64,11 +64,12 @@ retain normalized same-family components lazily under the persisted range count,
 without retention. Overlap, endpoint contact, and transitive bridges become exact unions; cross-family components
 remain distinct. Allocation or count failure publishes no partial predicate. Admission and prepublication checks reject
 post-Begin writes in `[Lower, Upper)`, including open and whole-family forms, for singleton and grouped commits.
-Public `Scan` now materializes the complete selected half-open interval at the transaction's fixed snapshot, merges
-own Put/Delete mutations, and sorts by unsigned-byte lexicographic key. Its controlled result owns exact descriptors
-and combined key/value bytes bounded by persisted live-entry/live-state limits. Allocation, validation, or predicate
+Public `Scan` materializes the complete selected half-open interval at the transaction's fixed snapshot, merges own
+Put/Delete mutations, and sorts by unsigned-byte lexicographic key. Its controlled result owns exact descriptors and
+combined key/value bytes bounded by persisted live-entry/live-state limits. Allocation, validation, or predicate
 retention failure leaves the caller's previous result unchanged; Serializable predicates become visible only after
-complete materialization. Pagination, streaming scans, and physical merge iteration remain later Milestone 4 work.
+complete materialization. The additive paged cursor now uses an owned physical merge snapshot; Object Storage
+streaming and conversion of whole `Scan` to the same private cursor remain later Milestone 4 work.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
@@ -105,13 +106,13 @@ remains incomplete.
 The fixed-snapshot paged-scan contract now has an additive Ada cursor plus maintained formal and executable evidence.
 Caller-supplied row/byte budgets, maximal contiguous pages, empty-view completion, atomic capacity/allocation
 rejection, own-mutation invalidation, one-time Serializable predicate retention, and checkpoint-plus-suffix reopen
-are qualified across the deterministic suite and all provider lanes. The next private physical execution contract is
-also frozen: an owned immutable source snapshot advances every equal-key head and selects own writes, then suffix
-batches newest-to-oldest, then checkpoint, with tombstone suppression and atomic allocation rejection. Its finite
-TLC model, two negative probes, checked witness, and abstract TLAPS kernel are green, but the Ada implementation still
-uses repeated bounded source capture and global sorting. Physical merge implementation, Object Storage streaming,
-automatic run selection, and constant-memory claims remain unfinished. See [`paged-scans.md`](paged-scans.md) and
-[`physical-scan-merge.md`](physical-scan-merge.md).
+are qualified across the deterministic suite and all provider lanes. The private physical execution now captures one
+owned immutable source snapshot, advances every equal-key head, and selects own writes, then suffix batches
+newest-to-oldest, then checkpoint, with tombstone suppression and atomic allocation rejection. Its finite TLC model,
+two negative probes, checked witness, and abstract TLAPS kernel are green. The Ada cursor retains exact immutable
+image leases and copied transaction-local mutations across engine replacement, eliminating repeated page capture and
+global sorting. Object Storage streaming, automatic run selection, and constant-memory claims remain unfinished. See
+[`paged-scans.md`](paged-scans.md) and [`physical-scan-merge.md`](physical-scan-merge.md).
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
 pins, lagging-replica pins, required predecessor reachability, and unresolved publication attempts each retain exact

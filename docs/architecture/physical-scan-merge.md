@@ -1,15 +1,15 @@
 # Owned physical scan merge
 
-The next scan slice replaces repeated whole-source capture and global sorting behind the established `Scan_Cursor`
-API. It changes private execution and ownership only. `Start_Scan`, `Next_Scan_Page`, the explicit caller page
-budgets, fixed-snapshot semantics, `Scan_Result`, and every outcome remain unchanged. No persisted format, provider
-request, task, retry, default, automatic compaction choice, or page-size policy is introduced.
+The owned physical scan slice replaces repeated whole-source capture and global sorting behind the established
+`Scan_Cursor` API. It changes private execution and ownership only. `Start_Scan`, `Next_Scan_Page`, the explicit
+caller page budgets, fixed-snapshot semantics, `Scan_Result`, and every outcome remain unchanged. No persisted
+format, provider request, task, retry, default, automatic compaction choice, or page-size policy is introduced.
 
 ## Owned source snapshot
 
-A cursor cannot retain raw coordinator, database, transaction, checkpoint, batch, or family pointers between calls.
+A cursor does not retain raw coordinator, database, transaction, checkpoint, batch, or family pointers between calls.
 Close, replica refresh, checkpoint activation, and compaction may replace and reclaim the engine after a page call
-releases its lifecycle lease. The physical cursor must instead own a complete immutable merge snapshot:
+releases its lifecycle lease. The physical cursor instead owns a complete immutable merge snapshot:
 
 - one copied ordered descriptor/index view for the checkpoint base;
 - one copied, key-ordered, newest-per-key descriptor/index view for each visible suffix batch;
@@ -43,8 +43,8 @@ and the page publish together. Tombstones may advance candidate positions while 
 those advances become authoritative only with a successful page or successful empty completion.
 
 Transaction own-mutation version validation and one-time Serializable predicate retention remain exactly as defined
-by [`paged-scans.md`](paged-scans.md). Whole `Scan` may initially continue to use complete materialization; changing
-it to drain the same private cursor is an implementation choice only after exact result/failure compatibility is
+by [`paged-scans.md`](paged-scans.md). Whole `Scan` continues to use complete materialization; changing it to drain
+the same private cursor remains a separate implementation choice after exact result/failure compatibility is
 demonstrated.
 
 ## Formal and qualification boundary

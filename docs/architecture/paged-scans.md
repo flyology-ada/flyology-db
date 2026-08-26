@@ -8,10 +8,11 @@ It is a stepping stone toward physical merge iteration, not a claim that source 
 ## Public contract candidate
 
 `Scan_Cursor` is a limited owned value colocated in `Flyology.DB`. `Start_Scan` validates one family and canonical
-range, copies every present endpoint, and atomically replaces the cursor only on success. The cursor retains database
-identity, database incarnation, transaction identity, snapshot sequence, family authority, a runtime-only
-transaction mutation version, and the last emitted key. It retains no access value or borrow of the database,
-transaction, family handle, or caller endpoint arrays.
+range, captures one immutable ordered physical source snapshot, copies every present endpoint, and atomically
+replaces the cursor only on success. The cursor retains database identity, database incarnation, transaction
+identity, snapshot sequence, family authority, a runtime-only transaction mutation version, retained immutable
+image leases, copied transaction-local mutation bytes, per-source positions, and the last emitted key. It retains no
+access value or borrow of the database, transaction, family handle, arena, coordinator, or caller endpoint arrays.
 
 `Next_Scan_Page` receives the database, transaction, cursor, an explicit maximum row count, an explicit maximum
 combined key-plus-value byte count, an existing `Scan_Result`, and returns `Done` plus `Outcome_Code`. Neither budget
@@ -24,7 +25,8 @@ slot whose mutation count is unchanged. The next page then returns `Invalid_Stat
 result, or predicate authority. Version exhaustion is classified before mutation publication as
 `Capacity_Exceeded`; the value is runtime-only representational authority, not a persisted or normal-use resource
 limit. A consumed transaction, wrong database/incarnation/transaction, or changed family authority is rejected the
-same way. This guard preserves one logical read view without copying the transaction arena into a second owner.
+same way. The cursor owns only the exact in-range effective transaction-local mutations, while this guard preserves
+the established rule that later own writes invalidate rather than mix transaction views.
 
 ## Page selection and atomicity
 
@@ -46,10 +48,11 @@ value lengths. No native image, pointer, enumeration position, or cursor state i
 
 ## Isolation and concurrency
 
-The committed portion of every page is selected at the transaction's fixed Begin sequence, so later transactions may
-replace, insert, or delete keys without changing the cursor's rows. The cursor itself retains no lifecycle lease
-between calls. Each `Next_Scan_Page` reacquires and validates one coherent database view, and only the cursor/result
-swap is published after complete page construction.
+The committed portion of every page comes from the immutable source snapshot captured at the transaction's fixed
+Begin sequence, so later transactions may replace, insert, delete, checkpoint, or compact keys without changing the
+cursor's rows. The cursor retains exact immutable image leases but no database lifecycle lease between calls. Each
+`Next_Scan_Page` reacquires the database only to validate lifecycle, identity, fencing, and family authority; the
+page is built from cursor-owned sources and only the cursor/result swap is published after complete construction.
 
 Snapshot isolation retains no scan predicate. In Serializable mode, the first successful page atomically records the
 complete original range through the established normalization operation; this includes a successful empty view.
@@ -67,8 +70,8 @@ executable witness reconstructs one frozen view after concurrent replacement, re
 
 The model dimensions are qualification geometry, not product defaults. The formal lane does not prove endpoint byte
 comparison, transaction mutation-version validation, allocation, source capture, concurrency, progress, the Ada
-implementation, or refinement. The current Ada implementation shares the established whole-scan materialization
-kernel and rescans bounded in-memory source descriptors for each page. It is paged materialization, not a physical
-streaming or merge cursor. The accepted next-step ownership and merge contract is documented in
-[`physical-scan-merge.md`](physical-scan-merge.md); its Ada implementation must still remove that remaining source
-capture and repeated traversal before making such a claim.
+implementation, or refinement. The current Ada implementation captures one bounded in-memory physical source
+snapshot at `Start_Scan` and advances retained per-source positions without recapturing or globally sorting sources
+per page. It is an owned physical merge cursor, but it does not stream SST or batch objects from Object Storage and
+does not claim memory independent of retained descriptors. The exact ownership and merge boundary is documented in
+[`physical-scan-merge.md`](physical-scan-merge.md).

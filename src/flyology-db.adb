@@ -108,6 +108,10 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Scan_Result_State, Scan_Result_State_Access);
    procedure Free_Scan_Cursor_Bytes is new
      Ada.Unchecked_Deallocation (Byte_Array, Scan_Cursor_Byte_Array_Access);
+   procedure Free_Physical_Scan_Entries is new
+     Ada.Unchecked_Deallocation (Physical_Scan_Entry_Array, Physical_Scan_Entry_Array_Access);
+   procedure Free_Physical_Scan_Sources is new
+     Ada.Unchecked_Deallocation (Physical_Scan_Source_Array, Physical_Scan_Source_Array_Access);
    procedure Free_Scan_Cursor_State is new
      Ada.Unchecked_Deallocation (Scan_Cursor_State, Scan_Cursor_State_Access);
    procedure Free_L0_Checkpoint_Families is new
@@ -286,6 +290,8 @@ package body Flyology.DB is
          Free_Scan_Cursor_Bytes (State.Lower);
          Free_Scan_Cursor_Bytes (State.Upper);
          Free_Scan_Cursor_Bytes (State.Last_Key);
+         Free_Physical_Scan_Entries (State.Entries);
+         Free_Physical_Scan_Sources (State.Sources);
          Free_Scan_Cursor_State (State);
       end if;
    end Release_Scan_Cursor;
@@ -2044,6 +2050,13 @@ package body Flyology.DB is
       Key_Offset            : Natural := 0;
       Key_Length            : Natural := 0;
       Arena_Index           : Natural := 0;
+      --  Runtime authority ordinals derive from source order: checkpoint is
+      --  one, history batch N is N + 1, and own writes are max + 1. They are
+      --  never persisted; changing the order changes snapshot visibility.
+      Authority             : Natural := 0;
+      Version               : Sequence_Number := 0;
+      Order                 : Natural := 0;
+      Operation             : Mutation_Kind := Put_Mutation;
       Selected              : Boolean := False;
       Selected_Image        : Shared_Image_Access := null;
       Selected_Value_Offset : Natural := 0;
@@ -2506,6 +2519,7 @@ package body Flyology.DB is
      (Batch       : Runtime_Batch;
       Family      : Column_Family_ID;
       Snapshot_At : Sequence_Number;
+      Authority   : Natural;
       Sources     : Scan_Source_Array_Access;
       Captured    : in out Natural;
       Result      : out Outcome_Code)
@@ -2517,7 +2531,8 @@ package body Flyology.DB is
          return Batch.Image /= null and then Offset <= Image_Length and then Length <= Image_Length - Offset;
       end Valid_Slice;
 
-      procedure Add_Source (Mutation : Runtime_Mutation) is
+      procedure Add_Source
+        (Mutation : Runtime_Mutation; Version : Sequence_Number; Order : Positive) is
       begin
          if Captured = Natural'Last or else (Sources /= null and then Captured = Sources'Length) then
             Result := Capacity_Exceeded;
@@ -2526,10 +2541,17 @@ package body Flyology.DB is
          Captured := Captured + 1;
          if Sources /= null then
             Sources (Captured) :=
-              (Key_Image  => Batch.Image,
-               Key_Offset => Mutation.Key_Offset,
-               Key_Length => Mutation.Key_Length,
-               others     => <>);
+              (Key_Image             => Batch.Image,
+               Key_Offset            => Mutation.Key_Offset,
+               Key_Length            => Mutation.Key_Length,
+               Authority             => Authority,
+               Version               => Version,
+               Order                 => Order,
+               Operation             => Mutation.Operation,
+               Selected_Image        => Batch.Image,
+               Selected_Value_Offset => Mutation.Value_Offset,
+               Selected_Value_Length => Mutation.Value_Length,
+               others                => <>);
          end if;
       end Add_Source;
    begin
@@ -2579,7 +2601,8 @@ package body Flyology.DB is
                  .. Transaction.First_Mutation + Transaction.Mutation_Count - 1
                loop
                   if Batch.Mutations (Mutation_Index).Family = Family then
-                     Add_Source (Batch.Mutations (Mutation_Index));
+                     Add_Source
+                       (Batch.Mutations (Mutation_Index), Transaction.Sequence, Mutation_Index);
                      if Result /= Success then
                         return;
                      end if;
@@ -2632,10 +2655,17 @@ package body Flyology.DB is
                Captured := Captured + 1;
                if Sources /= null then
                   Sources (Captured) :=
-                    (Key_Image  => Checkpoint_Base (Index).Image,
-                     Key_Offset => Checkpoint_Base (Index).Key_Offset,
-                     Key_Length => Checkpoint_Base (Index).Key_Length,
-                     others     => <>);
+                    (Key_Image             => Checkpoint_Base (Index).Image,
+                     Key_Offset            => Checkpoint_Base (Index).Key_Offset,
+                     Key_Length            => Checkpoint_Base (Index).Key_Length,
+                     Authority             => 1,
+                     Version               => Checkpoint_Base (Index).Sequence,
+                     Order                 => Index,
+                     Operation             => Put_Mutation,
+                     Selected_Image        => Checkpoint_Base (Index).Image,
+                     Selected_Value_Offset => Checkpoint_Base (Index).Value_Offset,
+                     Selected_Value_Length => Checkpoint_Base (Index).Value_Length,
+                     others                => <>);
                end if;
             end if;
          end loop;
@@ -4217,7 +4247,13 @@ package body Flyology.DB is
          end if;
          for Batch_Index in Positive range 1 .. History_Count loop
             Visit_Scan_Batch
-              (History_Batches (Batch_Index), Family, Snapshot_At, null, Source_Count, Result);
+              (History_Batches (Batch_Index),
+               Family,
+               Snapshot_At,
+               Batch_Index + 1,
+               null,
+               Source_Count,
+               Result);
             if Result /= Success then
                return;
             end if;
@@ -4248,7 +4284,13 @@ package body Flyology.DB is
          end if;
          for Batch_Index in Positive range 1 .. History_Count loop
             Visit_Scan_Batch
-              (History_Batches (Batch_Index), Family, Snapshot_At, Sources, Captured, Result);
+              (History_Batches (Batch_Index),
+               Family,
+               Snapshot_At,
+               Batch_Index + 1,
+               Sources,
+               Captured,
+               Result);
             if Result /= Success then
                return;
             end if;
@@ -11291,6 +11333,276 @@ package body Flyology.DB is
       Fenced        : Boolean;
       Configuration : Column_Family_Configuration;
       Candidate     : Scan_Cursor_State_Access := null;
+
+      procedure Build_Physical_Snapshot is
+         Captured          : Natural := 0;
+         Raw_Count         : Natural := 0;
+         Own_Count         : Natural := 0;
+         Entry_Total       : Natural := 0;
+         Source_Total      : Natural := 0;
+         Raw               : Scan_Source_Array_Access := null;
+         Maximum_Rows      : Interfaces.Unsigned_32 := 0;
+         Maximum_Bytes     : Interfaces.Unsigned_64 := 0;
+         Maximum_Authority : Natural := 0;
+         Own_Authority     : Natural := 0;
+
+         function Key_Byte (Source : Scan_Source; Offset : Natural) return Byte is
+         begin
+            if Source.Arena_Index = 0 then
+               return Byte (Flyology.Bytes.Element (Source.Key_Image.Data, Source.Key_Offset + Offset + 1));
+            else
+               return
+                 Byte
+                   (Flyology.Bytes.Element
+                      (Txn.Owner.Arena.Mutations (Source.Arena_Index).Payload, Offset + 1));
+            end if;
+         end Key_Byte;
+
+         function Same_Key (Left, Right : Scan_Source) return Boolean is
+         begin
+            if Left.Key_Length /= Right.Key_Length then
+               return False;
+            end if;
+            if Left.Key_Length > 0 then
+               for Offset in Natural range 0 .. Left.Key_Length - 1 loop
+                  if Key_Byte (Left, Offset) /= Key_Byte (Right, Offset) then
+                     return False;
+                  end if;
+               end loop;
+            end if;
+            return True;
+         end Same_Key;
+
+         function Key_Less (Left, Right : Scan_Source) return Boolean is
+            Common : constant Natural := Natural'Min (Left.Key_Length, Right.Key_Length);
+         begin
+            if Common > 0 then
+               for Offset in Natural range 0 .. Common - 1 loop
+                  if Key_Byte (Left, Offset) < Key_Byte (Right, Offset) then
+                     return True;
+                  elsif Key_Byte (Left, Offset) > Key_Byte (Right, Offset) then
+                     return False;
+                  end if;
+               end loop;
+            end if;
+            return Left.Key_Length < Right.Key_Length;
+         end Key_Less;
+
+         function Before_Bound (Source : Scan_Source; Bound : Byte_Array) return Boolean is
+            Common : constant Natural := Natural'Min (Source.Key_Length, Bound'Length);
+         begin
+            if Common > 0 then
+               for Offset in Natural range 0 .. Common - 1 loop
+                  if Key_Byte (Source, Offset) < Bound (Bound'First + Offset) then
+                     return True;
+                  elsif Key_Byte (Source, Offset) > Bound (Bound'First + Offset) then
+                     return False;
+                  end if;
+               end loop;
+            end if;
+            return Source.Key_Length < Bound'Length;
+         end Before_Bound;
+
+         function In_Range (Source : Scan_Source) return Boolean
+         is ((not Has_Lower or else not Before_Bound (Source, Lower))
+             and then (not Has_Upper or else Before_Bound (Source, Upper)));
+
+         function Comes_Before (Left, Right : Scan_Source) return Boolean is
+         begin
+            if Left.Authority /= Right.Authority then
+               return Left.Authority < Right.Authority;
+            elsif Key_Less (Left, Right) then
+               return True;
+            elsif Key_Less (Left => Right, Right => Left) then
+               return False;
+            elsif Left.Version /= Right.Version then
+               return Left.Version < Right.Version;
+            else
+               return Left.Order < Right.Order;
+            end if;
+         end Comes_Before;
+
+         function Last_For_Key (Index : Positive) return Boolean
+         is (Index = Raw'Last
+             or else Raw (Index).Authority /= Raw (Index + 1).Authority
+             or else not Same_Key (Raw (Index), Raw (Index + 1)));
+
+         procedure Release_Raw is
+         begin
+            Free_Scan_Sources (Raw);
+         end Release_Raw;
+      begin
+         for Index in Positive range 1 .. Txn.Owner.Arena.Count loop
+            if Txn.Owner.Arena.Mutations (Index).Family = Configuration.ID then
+               if Own_Count = Natural'Last then
+                  Result := Capacity_Exceeded;
+                  return;
+               end if;
+               Own_Count := Own_Count + 1;
+            end if;
+         end loop;
+         Lease.State.Gate.Scan_Source_Requirements
+           (Configuration.ID,
+            Txn.Snapshot_At,
+            Lease.State.Checkpoint_Base,
+            Own_Count,
+            Raw_Count,
+            Maximum_Rows,
+            Maximum_Bytes,
+            Result);
+         if Result /= Success then
+            return;
+         end if;
+         Candidate.Maximum_Rows := Maximum_Rows;
+         Candidate.Maximum_Bytes := Maximum_Bytes;
+         if Raw_Count = 0 then
+            Result := Success;
+            return;
+         end if;
+         Allocation_Faults.Check (Scan_Source_Allocation);
+         Raw := new Scan_Source_Array (1 .. Raw_Count);
+         Lease.State.Gate.Copy_Scan_Sources
+           (Configuration.ID, Txn.Snapshot_At, Lease.State.Checkpoint_Base, Raw, Captured, Result);
+         if Result /= Success then
+            Release_Raw;
+            return;
+         end if;
+         for Index in Positive range 1 .. Captured loop
+            Maximum_Authority := Natural'Max (Maximum_Authority, Raw (Index).Authority);
+         end loop;
+         if Own_Count > 0 then
+            if Maximum_Authority = Natural'Last then
+               Release_Raw;
+               Result := Capacity_Exceeded;
+               return;
+            end if;
+            Own_Authority := Maximum_Authority + 1;
+            for Mutation_Index in Positive range 1 .. Txn.Owner.Arena.Count loop
+               if Txn.Owner.Arena.Mutations (Mutation_Index).Family = Configuration.ID then
+                  if Captured = Raw'Length then
+                     Release_Raw;
+                     Result := Capacity_Exceeded;
+                     return;
+                  end if;
+                  Captured := Captured + 1;
+                  Raw (Captured) :=
+                    (Key_Length            => Txn.Owner.Arena.Mutations (Mutation_Index).Key_Length,
+                     Arena_Index           => Mutation_Index,
+                     Authority             => Own_Authority,
+                     Version               => Txn.Snapshot_At,
+                     Order                 => Mutation_Index,
+                     Operation             => Txn.Owner.Arena.Mutations (Mutation_Index).Operation,
+                     Selected_Value_Length => Txn.Owner.Arena.Mutations (Mutation_Index).Value_Length,
+                     others                => <>);
+               end if;
+            end loop;
+         end if;
+         if Captured /= Raw_Count then
+            Release_Raw;
+            Result := Corrupt;
+            return;
+         end if;
+         for Index in Positive range Raw'First + 1 .. Raw'Last loop
+            declare
+               Value    : constant Scan_Source := Raw (Index);
+               Position : Positive := Index;
+            begin
+               while Position > Raw'First and then Comes_Before (Value, Raw (Position - 1)) loop
+                  Raw (Position) := Raw (Position - 1);
+                  Position := Position - 1;
+               end loop;
+               Raw (Position) := Value;
+            end;
+         end loop;
+         declare
+            Prior_Kept_Authority : Natural := 0;
+         begin
+            for Index in Raw'Range loop
+               if In_Range (Raw (Index)) and then Last_For_Key (Index) then
+                  if Entry_Total = Natural'Last then
+                     Release_Raw;
+                     Result := Capacity_Exceeded;
+                     return;
+                  end if;
+                  Entry_Total := Entry_Total + 1;
+                  if Raw (Index).Authority /= Prior_Kept_Authority then
+                     Source_Total := Source_Total + 1;
+                     Prior_Kept_Authority := Raw (Index).Authority;
+                  end if;
+               end if;
+            end loop;
+         end;
+         if Entry_Total = 0 then
+            Release_Raw;
+            Result := Success;
+            return;
+         end if;
+         Allocation_Faults.Check (Scan_Cursor_Entry_Allocation);
+         Candidate.Entries := new Physical_Scan_Entry_Array (1 .. Entry_Total);
+         Allocation_Faults.Check (Scan_Cursor_Source_Allocation);
+         Candidate.Sources := new Physical_Scan_Source_Array (1 .. Source_Total);
+         declare
+            Entry_Index     : Natural := 0;
+            Source_Index    : Natural := 0;
+            Prior_Authority : Natural := 0;
+         begin
+            for Index in Raw'Range loop
+               if In_Range (Raw (Index)) and then Last_For_Key (Index) then
+                  Entry_Index := Entry_Index + 1;
+                  if Source_Index = 0 or else Raw (Index).Authority /= Prior_Authority then
+                     if Source_Index > 0 then
+                        Candidate.Sources (Source_Index).Last := Entry_Index - 1;
+                     end if;
+                     Source_Index := Source_Index + 1;
+                     Candidate.Sources (Source_Index).First := Entry_Index;
+                     Candidate.Sources (Source_Index).Position := Entry_Index;
+                     Candidate.Sources (Source_Index).Candidate_Position := Entry_Index;
+                     Candidate.Sources (Source_Index).Build_Position := Entry_Index;
+                     Prior_Authority := Raw (Index).Authority;
+                  end if;
+                  Candidate.Entries (Entry_Index).Key_Length := Raw (Index).Key_Length;
+                  Candidate.Entries (Entry_Index).Value_Length := Raw (Index).Selected_Value_Length;
+                  Candidate.Entries (Entry_Index).Operation := Raw (Index).Operation;
+                  if Raw (Index).Arena_Index = 0 then
+                     Raw (Index).Key_Image.References.Retain;
+                     Candidate.Entries (Entry_Index).Image.Image := Raw (Index).Key_Image;
+                     Candidate.Entries (Entry_Index).Key_Offset := Raw (Index).Key_Offset;
+                     Candidate.Entries (Entry_Index).Value_Offset := Raw (Index).Selected_Value_Offset;
+                  else
+                     declare
+                        Mutation : Owned_Mutation renames Txn.Owner.Arena.Mutations (Raw (Index).Arena_Index);
+                     begin
+                        if Mutation.Key_Length > Natural'Last - Mutation.Value_Length then
+                           Release_Raw;
+                           Result := Capacity_Exceeded;
+                           return;
+                        end if;
+                        Allocation_Faults.Check (Scan_Cursor_Owned_Bytes_Allocation);
+                        Flyology.Bytes.Reserve_Capacity
+                          (Candidate.Entries (Entry_Index).Owned,
+                           Mutation.Key_Length + Mutation.Value_Length);
+                        for Offset in Positive range 1 .. Mutation.Key_Length + Mutation.Value_Length loop
+                           Flyology.Bytes.Append
+                             (Candidate.Entries (Entry_Index).Owned,
+                              Flyology.Bytes.Element (Mutation.Payload, Offset));
+                        end loop;
+                        Candidate.Entries (Entry_Index).Value_Offset := Mutation.Key_Length;
+                     end;
+                  end if;
+               end if;
+            end loop;
+            Candidate.Sources (Source_Index).Last := Entry_Index;
+         end;
+         Release_Raw;
+         Result := Success;
+      exception
+         when Storage_Error =>
+            Release_Raw;
+            Result := Capacity_Exceeded;
+         when others =>
+            Release_Raw;
+            raise;
+      end Build_Physical_Snapshot;
    begin
       if not Txn.Active or else Txn.Owner.Arena = null then
          Result := Invalid_State;
@@ -11301,8 +11613,7 @@ package body Flyology.DB is
          return;
       end if;
       Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
-      if Txn.Database_ID /= Head.Database_ID
-        or else Txn.Incarnation /= Lease.State.Gate.Current_Incarnation
+      if Txn.Database_ID /= Head.Database_ID or else Txn.Incarnation /= Lease.State.Gate.Current_Incarnation
       then
          Result := Invalid_State;
          return;
@@ -11345,6 +11656,11 @@ package body Flyology.DB is
       Candidate.Family := Configuration;
       Candidate.Has_Lower := Has_Lower;
       Candidate.Has_Upper := Has_Upper;
+      Build_Physical_Snapshot;
+      if Result /= Success then
+         Release_Scan_Cursor (Candidate);
+         return;
+      end if;
       declare
          Previous : constant Scan_Cursor_State_Access := Cursor.Owner.State;
       begin
@@ -11357,6 +11673,9 @@ package body Flyology.DB is
       when Storage_Error =>
          Release_Scan_Cursor (Candidate);
          Result := Capacity_Exceeded;
+      when others =>
+         Release_Scan_Cursor (Candidate);
+         raise;
    end Start_Scan;
 
    procedure Materialize_Scan
@@ -11844,6 +12163,356 @@ package body Flyology.DB is
          Result             => Result);
    end Scan;
 
+   procedure Materialize_Physical_Scan_Page
+     (Item          : in out Database;
+      Txn           : in out Transaction;
+      State         : not null Scan_Cursor_State_Access;
+      Maximum_Rows  : Interfaces.Unsigned_32;
+      Maximum_Bytes : Interfaces.Unsigned_64;
+      Rows          : in out Scan_Result;
+      Done          : out Boolean;
+      Result        : out Outcome_Code)
+   is
+      type Position_View is (Candidate_View, Build_View);
+
+      Lease          : Lifecycle_Lease;
+      Head           : Head_Snapshot;
+      Generation     : Generation_Value;
+      Uncertain      : Boolean;
+      Fenced         : Boolean;
+      Configuration  : Column_Family_Configuration;
+      Family         : Column_Family;
+      Selected_Count : Natural := 0;
+      Selected_Bytes : Interfaces.Unsigned_64 := 0;
+      More_Rows      : Boolean := False;
+      Candidate      : Scan_Result_State_Access := null;
+      Candidate_Last : Scan_Cursor_Byte_Array_Access := null;
+      Row_Limit      : constant Interfaces.Unsigned_32 :=
+        Interfaces.Unsigned_32'Min (Maximum_Rows, State.Maximum_Rows);
+      Byte_Limit     : constant Interfaces.Unsigned_64 :=
+        Interfaces.Unsigned_64'Min (Maximum_Bytes, State.Maximum_Bytes);
+
+      function Position_Of (Source : Physical_Scan_Source; View : Position_View) return Natural
+      is (if View = Candidate_View then Source.Candidate_Position else Source.Build_Position);
+
+      function Key_Byte (Value : Physical_Scan_Entry; Offset : Natural) return Byte is
+      begin
+         if Value.Image.Image /= null then
+            return Byte (Flyology.Bytes.Element (Value.Image.Image.Data, Value.Key_Offset + Offset + 1));
+         else
+            return Byte (Flyology.Bytes.Element (Value.Owned, Value.Key_Offset + Offset + 1));
+         end if;
+      end Key_Byte;
+
+      function Value_Byte (Value : Physical_Scan_Entry; Offset : Natural) return Ada.Streams.Stream_Element is
+      begin
+         if Value.Image.Image /= null then
+            return Flyology.Bytes.Element (Value.Image.Image.Data, Value.Value_Offset + Offset + 1);
+         else
+            return Flyology.Bytes.Element (Value.Owned, Value.Value_Offset + Offset + 1);
+         end if;
+      end Value_Byte;
+
+      function Same_Key (Left, Right : Physical_Scan_Entry) return Boolean is
+      begin
+         if Left.Key_Length /= Right.Key_Length then
+            return False;
+         end if;
+         if Left.Key_Length > 0 then
+            for Offset in Natural range 0 .. Left.Key_Length - 1 loop
+               if Key_Byte (Left, Offset) /= Key_Byte (Right, Offset) then
+                  return False;
+               end if;
+            end loop;
+         end if;
+         return True;
+      end Same_Key;
+
+      function Key_Less (Left, Right : Physical_Scan_Entry) return Boolean is
+         Common : constant Natural := Natural'Min (Left.Key_Length, Right.Key_Length);
+      begin
+         if Common > 0 then
+            for Offset in Natural range 0 .. Common - 1 loop
+               if Key_Byte (Left, Offset) < Key_Byte (Right, Offset) then
+                  return True;
+               elsif Key_Byte (Left, Offset) > Key_Byte (Right, Offset) then
+                  return False;
+               end if;
+            end loop;
+         end if;
+         return Left.Key_Length < Right.Key_Length;
+      end Key_Less;
+
+      procedure Reset_Working_Positions is
+      begin
+         if State.Sources /= null then
+            for Source of State.Sources.all loop
+               Source.Candidate_Position := Source.Position;
+               Source.Build_Position := Source.Position;
+            end loop;
+         end if;
+      end Reset_Working_Positions;
+
+      function Positions_Match return Boolean is
+      begin
+         if State.Sources /= null then
+            for Source of State.Sources.all loop
+               if Source.Build_Position /= Source.Candidate_Position then
+                  return False;
+               end if;
+            end loop;
+         end if;
+         return True;
+      end Positions_Match;
+
+      function Lowest_Source (View : Position_View) return Natural is
+         Lowest : Natural := 0;
+      begin
+         if State.Sources /= null then
+            for Index in State.Sources'Range loop
+               if Position_Of (State.Sources (Index), View) /= 0
+                 and then (Lowest = 0
+                           or else Key_Less
+                                     (State.Entries (Position_Of (State.Sources (Index), View)),
+                                      State.Entries (Position_Of (State.Sources (Lowest), View))))
+               then
+                  Lowest := Index;
+               end if;
+            end loop;
+         end if;
+         return Lowest;
+      end Lowest_Source;
+
+      function Winning_Source (Lowest : Positive; View : Position_View) return Positive is
+         Winner : Positive := Lowest;
+      begin
+         for Index in State.Sources'Range loop
+            if Position_Of (State.Sources (Index), View) /= 0
+              and then Same_Key
+                         (State.Entries (Position_Of (State.Sources (Lowest), View)),
+                          State.Entries (Position_Of (State.Sources (Index), View)))
+            then
+               Winner := Index;
+            end if;
+         end loop;
+         return Winner;
+      end Winning_Source;
+
+      procedure Advance_Matching (Lowest : Positive; View : Position_View) is
+         Lowest_Entry : Physical_Scan_Entry renames
+           State.Entries (Position_Of (State.Sources (Lowest), View));
+      begin
+         for Index in State.Sources'Range loop
+            declare
+               Position : constant Natural := Position_Of (State.Sources (Index), View);
+            begin
+               if Position /= 0 and then Same_Key (Lowest_Entry, State.Entries (Position)) then
+                  if View = Candidate_View then
+                     State.Sources (Index).Candidate_Position :=
+                       (if Position = State.Sources (Index).Last then 0 else Position + 1);
+                  else
+                     State.Sources (Index).Build_Position :=
+                       (if Position = State.Sources (Index).Last then 0 else Position + 1);
+                  end if;
+               end if;
+            end;
+         end loop;
+      end Advance_Matching;
+
+      procedure Release_Work is
+      begin
+         Reset_Working_Positions;
+         Release_Scan_Result (Candidate);
+         Free_Scan_Cursor_Bytes (Candidate_Last);
+      end Release_Work;
+
+      procedure Retain_Predicate is
+         Empty_Key : constant Byte_Array (1 .. 0) := [];
+      begin
+         if Txn.Isolation /= Serializable or else State.Predicate_Recorded then
+            Result := Success;
+         elsif State.Has_Lower then
+            if State.Has_Upper then
+               Record_Scan_Range (Txn, State.Family.ID, True, State.Lower.all, True, State.Upper.all, Result);
+            else
+               Record_Scan_Range (Txn, State.Family.ID, True, State.Lower.all, False, Empty_Key, Result);
+            end if;
+         elsif State.Has_Upper then
+            Record_Scan_Range (Txn, State.Family.ID, False, Empty_Key, True, State.Upper.all, Result);
+         else
+            Record_Scan_Range (Txn, State.Family.ID, False, Empty_Key, False, Empty_Key, Result);
+         end if;
+      end Retain_Predicate;
+   begin
+      Done := False;
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Txn.Database_ID /= Head.Database_ID or else Txn.Incarnation /= Lease.State.Gate.Current_Incarnation
+      then
+         Result := Invalid_State;
+         return;
+      elsif Uncertain then
+         Result := Outcome_Unknown;
+         return;
+      elsif Fenced then
+         Result := Stale_Writer;
+         return;
+      end if;
+      Family :=
+        (Valid         => True,
+         Database_ID   => State.Database_ID,
+         Incarnation   => State.Incarnation,
+         Configuration => State.Family);
+      Lease.State.Gate.Validate_Family (Family, Configuration, Result);
+      if Result /= Success or else Configuration /= State.Family then
+         if Result = Success then
+            Result := Invalid_State;
+         end if;
+         return;
+      end if;
+      Reset_Working_Positions;
+      loop
+         declare
+            Lowest : constant Natural := Lowest_Source (Candidate_View);
+         begin
+            if Lowest = 0 then
+               exit;
+            end if;
+            declare
+               Winner : constant Positive := Winning_Source (Positive (Lowest), Candidate_View);
+               Value  : Physical_Scan_Entry renames State.Entries (State.Sources (Winner).Candidate_Position);
+               Amount : Interfaces.Unsigned_64 := Interfaces.Unsigned_64 (Value.Key_Length);
+            begin
+               if Value.Operation = Delete_Mutation then
+                  Advance_Matching (Positive (Lowest), Candidate_View);
+               else
+                  if Interfaces.Unsigned_64 (Value.Value_Length) > Interfaces.Unsigned_64'Last - Amount then
+                     Release_Work;
+                     Result := Capacity_Exceeded;
+                     return;
+                  end if;
+                  Amount := Amount + Interfaces.Unsigned_64 (Value.Value_Length);
+                  if Interfaces.Unsigned_64 (Selected_Count) >= Interfaces.Unsigned_64 (Row_Limit)
+                    or else Amount > Byte_Limit
+                    or else Selected_Bytes > Byte_Limit - Amount
+                  then
+                     if Selected_Count = 0 then
+                        Release_Work;
+                        Result := Capacity_Exceeded;
+                        return;
+                     end if;
+                     More_Rows := True;
+                     exit;
+                  end if;
+                  Advance_Matching (Positive (Lowest), Candidate_View);
+                  Selected_Count := Selected_Count + 1;
+                  Selected_Bytes := Selected_Bytes + Amount;
+               end if;
+            end;
+         end;
+      end loop;
+      if Selected_Count > 0 then
+         if Selected_Bytes > Interfaces.Unsigned_64 (Natural'Last) then
+            Release_Work;
+            Result := Capacity_Exceeded;
+            return;
+         end if;
+         Allocation_Faults.Check (Scan_Result_State_Allocation);
+         Candidate := new Scan_Result_State;
+         Allocation_Faults.Check (Scan_Result_Rows_Allocation);
+         Candidate.Rows := new Scan_Row_Descriptor_Array (1 .. Selected_Count);
+         Candidate.Count := Selected_Count;
+         Allocation_Faults.Check (Scan_Result_Payload_Allocation);
+         Flyology.Bytes.Reserve_Capacity (Candidate.Payload, Natural (Selected_Bytes));
+         declare
+            Row : Natural := 0;
+         begin
+            while not Positions_Match loop
+               declare
+                  Lowest : constant Positive := Positive (Lowest_Source (Build_View));
+                  Winner : constant Positive := Winning_Source (Lowest, Build_View);
+                  Value  : Physical_Scan_Entry renames State.Entries (State.Sources (Winner).Build_Position);
+               begin
+                  if Value.Operation = Put_Mutation then
+                     Row := Row + 1;
+                     Candidate.Rows (Row).Key_Offset := Flyology.Bytes.Length (Candidate.Payload);
+                     Candidate.Rows (Row).Key_Length := Value.Key_Length;
+                     for Offset in Positive range 1 .. Value.Key_Length loop
+                        Flyology.Bytes.Append
+                          (Candidate.Payload, Ada.Streams.Stream_Element (Key_Byte (Value, Offset - 1)));
+                     end loop;
+                     Candidate.Rows (Row).Value_Offset := Flyology.Bytes.Length (Candidate.Payload);
+                     Candidate.Rows (Row).Value_Length := Value.Value_Length;
+                     for Offset in Positive range 1 .. Value.Value_Length loop
+                        Flyology.Bytes.Append (Candidate.Payload, Value_Byte (Value, Offset - 1));
+                     end loop;
+                  end if;
+                  Advance_Matching (Lowest, Build_View);
+               end;
+            end loop;
+            if Row /= Selected_Count then
+               Release_Work;
+               Result := Corrupt;
+               return;
+            end if;
+         end;
+         declare
+            Last_Row : Scan_Row_Descriptor renames Candidate.Rows (Candidate.Count);
+         begin
+            Allocation_Faults.Check (Scan_Cursor_Last_Key_Allocation);
+            Candidate_Last := new Byte_Array (1 .. Last_Row.Key_Length);
+            for Offset in Positive range 1 .. Last_Row.Key_Length loop
+               Candidate_Last (Offset) :=
+                 Byte (Flyology.Bytes.Element (Candidate.Payload, Last_Row.Key_Offset + Offset));
+            end loop;
+         end;
+      end if;
+      Retain_Predicate;
+      if Result /= Success then
+         Release_Work;
+         return;
+      end if;
+      declare
+         Previous : constant Scan_Result_State_Access := Rows.Owner.State;
+      begin
+         Rows.Owner.State := Candidate;
+         Candidate := Previous;
+      end;
+      if State.Sources /= null then
+         for Source of State.Sources.all loop
+            Source.Position := Source.Candidate_Position;
+            Source.Build_Position := Source.Position;
+         end loop;
+      end if;
+      if Selected_Count > 0 then
+         declare
+            Previous : constant Scan_Cursor_Byte_Array_Access := State.Last_Key;
+         begin
+            State.Last_Key := Candidate_Last;
+            Candidate_Last := Previous;
+         end;
+         State.Has_Last := True;
+      end if;
+      if Txn.Isolation = Serializable then
+         State.Predicate_Recorded := True;
+      end if;
+      State.Done := not More_Rows;
+      Done := State.Done;
+      Release_Scan_Result (Candidate);
+      Free_Scan_Cursor_Bytes (Candidate_Last);
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Release_Work;
+         Result := Capacity_Exceeded;
+      when others =>
+         Release_Work;
+         raise;
+   end Materialize_Physical_Scan_Page;
+
    procedure Next_Scan_Page
      (Item          : in out Database;
       Txn           : in out Transaction;
@@ -11854,54 +12523,7 @@ package body Flyology.DB is
       Done          : out Boolean;
       Result        : out Outcome_Code)
    is
-      State     : constant Scan_Cursor_State_Access := Cursor.Owner.State;
-      Empty_Key : constant Byte_Array (1 .. 0) := [];
-      Family    : Column_Family;
-
-      procedure Run_With_Bounds (Lower_Value, Upper_Value : Byte_Array) is
-      begin
-         if State.Has_Last then
-            Materialize_Scan
-              (Item,
-               Txn,
-               Family,
-               State.Has_Lower,
-               Lower_Value,
-               State.Has_Upper,
-               Upper_Value,
-               Has_After          => True,
-               After_Key          => State.Last_Key.all,
-               Page_Mode          => True,
-               Page_Maximum_Rows  => Maximum_Rows,
-               Page_Maximum_Bytes => Maximum_Bytes,
-               Record_Predicate   =>
-                 Txn.Isolation = Serializable and then not State.Predicate_Recorded,
-               Cursor_State       => State,
-               Rows               => Rows,
-               Done               => Done,
-               Result             => Result);
-         else
-            Materialize_Scan
-              (Item,
-               Txn,
-               Family,
-               State.Has_Lower,
-               Lower_Value,
-               State.Has_Upper,
-               Upper_Value,
-               Has_After          => False,
-               After_Key          => Empty_Key,
-               Page_Mode          => True,
-               Page_Maximum_Rows  => Maximum_Rows,
-               Page_Maximum_Bytes => Maximum_Bytes,
-               Record_Predicate   =>
-                 Txn.Isolation = Serializable and then not State.Predicate_Recorded,
-               Cursor_State       => State,
-               Rows               => Rows,
-               Done               => Done,
-               Result             => Result);
-         end if;
-      end Run_With_Bounds;
+      State : constant Scan_Cursor_State_Access := Cursor.Owner.State;
    begin
       Done := False;
       if State = null
@@ -11910,6 +12532,7 @@ package body Flyology.DB is
         or else (State.Has_Lower and then State.Lower = null)
         or else (State.Has_Upper and then State.Upper = null)
         or else (State.Has_Last and then State.Last_Key = null)
+        or else ((State.Entries = null) /= (State.Sources = null))
         or else not Txn.Active
         or else Txn.Owner.Arena = null
         or else Txn.Database_ID /= State.Database_ID
@@ -11921,22 +12544,7 @@ package body Flyology.DB is
          Result := Invalid_State;
          return;
       end if;
-      Family :=
-        (Valid         => True,
-         Database_ID   => State.Database_ID,
-         Incarnation   => State.Incarnation,
-         Configuration => State.Family);
-      if State.Has_Lower then
-         if State.Has_Upper then
-            Run_With_Bounds (State.Lower.all, State.Upper.all);
-         else
-            Run_With_Bounds (State.Lower.all, Empty_Key);
-         end if;
-      elsif State.Has_Upper then
-         Run_With_Bounds (Empty_Key, State.Upper.all);
-      else
-         Run_With_Bounds (Empty_Key, Empty_Key);
-      end if;
+      Materialize_Physical_Scan_Page (Item, Txn, State, Maximum_Rows, Maximum_Bytes, Rows, Done, Result);
    end Next_Scan_Page;
 
    function Scan_Row_Count (Item : Scan_Result) return Natural

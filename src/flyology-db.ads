@@ -538,12 +538,13 @@ package Flyology.DB is
       Result    : out Outcome_Code);
 
    --  Start or restart one fixed-snapshot paged scan. Endpoint rules and
-   --  family validation are identical to Scan. Present endpoints are copied
-   --  before Success; failure preserves the prior Cursor exactly. The cursor
-   --  binds Txn's fixed committed snapshot and current own-mutation version.
-   --  A later successful Put/Delete invalidates subsequent page calls instead
-   --  of mixing transaction views. This call reads no rows and records no
-   --  Serializable predicate.
+   --  family validation are identical to Scan. Before Success the cursor owns
+   --  exact ordered descriptors, retained immutable image leases, copied own
+   --  mutations, and present endpoints; failure preserves the prior Cursor
+   --  exactly. The cursor binds Txn's fixed committed snapshot and current
+   --  own-mutation version. A later successful Put/Delete invalidates
+   --  subsequent page calls instead of mixing transaction views. This call
+   --  materializes no result rows and records no Serializable predicate.
    --  @param Item Open database that owns fixed-snapshot state
    --  @param Txn Active transaction whose snapshot and own writes are fixed
    --  @param Family Valid handle selecting persisted family limits and identity
@@ -1152,11 +1153,15 @@ private
       Scan_Result_Rows_Allocation,
       Scan_Result_Payload_Allocation,
       --  Cursor faults distinguish the owned state and exact endpoint/last-key
-      --  copies. They are test-only positions, not product allocation policy.
+      --  copies plus the private retained source/entry arrays. They are
+      --  test-only positions, not product allocation policy or stable ABI.
       Scan_Cursor_State_Allocation,
       Scan_Cursor_Lower_Allocation,
       Scan_Cursor_Upper_Allocation,
       Scan_Cursor_Last_Key_Allocation,
+      Scan_Cursor_Source_Allocation,
+      Scan_Cursor_Entry_Allocation,
+      Scan_Cursor_Owned_Bytes_Allocation,
       Batch_Descriptor_Allocation,
       Storage_Sink_Allocation,
       Recovery_History_Allocation,
@@ -1315,6 +1320,35 @@ private
    end record;
 
    type Scan_Cursor_Byte_Array_Access is access Byte_Array;
+   --  One cursor-owned immutable merge entry. Image-backed entries retain an
+   --  exact engine image lease; transaction-local entries instead own the
+   --  exact key/value payload copied at Start_Scan. Offsets and zero lengths
+   --  are derived runtime descriptors and are never persisted.
+   type Physical_Scan_Entry is record
+      Image        : Shared_Image_Lease;
+      Owned        : Flyology.Bytes.Unbounded_Bytes;
+      Key_Offset   : Natural := 0;
+      Key_Length   : Natural := 0;
+      Value_Offset : Natural := 0;
+      Value_Length : Natural := 0;
+      Operation    : Mutation_Kind := Put_Mutation;
+   end record;
+   type Physical_Scan_Entry_Array is array (Positive range <>) of Physical_Scan_Entry;
+   type Physical_Scan_Entry_Array_Access is access Physical_Scan_Entry_Array;
+
+   --  Each source owns one exact contiguous key-ordered entry interval.
+   --  Source array order is oldest to newest authority. Zero position is the
+   --  runtime exhausted sentinel; it is neither persisted nor product policy.
+   type Physical_Scan_Source is record
+      First              : Positive := Positive'First;
+      Last               : Positive := Positive'First;
+      Position           : Natural := 0;
+      Candidate_Position : Natural := 0;
+      Build_Position     : Natural := 0;
+   end record;
+   type Physical_Scan_Source_Array is array (Positive range <>) of Physical_Scan_Source;
+   type Physical_Scan_Source_Array_Access is access Physical_Scan_Source_Array;
+
    type Scan_Cursor_State is record
       Active             : Boolean := False;
       Done               : Boolean := False;
@@ -1331,6 +1365,10 @@ private
       Upper              : Scan_Cursor_Byte_Array_Access := null;
       Has_Last           : Boolean := False;
       Last_Key           : Scan_Cursor_Byte_Array_Access := null;
+      Entries            : Physical_Scan_Entry_Array_Access := null;
+      Sources            : Physical_Scan_Source_Array_Access := null;
+      Maximum_Rows       : Interfaces.Unsigned_32 := 0;
+      Maximum_Bytes      : Interfaces.Unsigned_64 := 0;
    end record;
    type Scan_Cursor_State_Access is access Scan_Cursor_State;
    --  One swappable pointer gives Start_Scan atomic replacement and makes all

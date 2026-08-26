@@ -1,5 +1,47 @@
 # Review record
 
+## Accepted owned physical scan merge implementation candidate
+
+- Parent: accepted owned physical scan merge formal commit `2082515`.
+- Scope and compatibility: replace repeated whole-source capture and global sorting inside the established
+  `Scan_Cursor` with one private cursor-owned physical snapshot. Public declarations, caller-supplied page budgets,
+  outcomes, persisted formats, provider calls, retries, task topology, whole `Scan`, and automatic compaction policy
+  remain unchanged. `Start_Scan` now performs the documented source capture and can classify corruption or safe
+  allocation failure before publishing a cursor.
+- Ownership: the cursor retains one lease for each exact immutable engine image and copies only effective in-range
+  transaction-local key/value bytes. It retains no database, coordinator, checkpoint, batch, transaction arena,
+  family handle, or caller endpoint borrow. Source arrays own exact contiguous oldest-to-newest authority intervals;
+  controlled finalization releases image leases after close, checkpoint replacement, compaction, or cursor restart.
+- Merge and atomicity: each page selects the lowest head, lets the newest matching source win, and advances every
+  equal-key head together. A winning tombstone suppresses output. Candidate/build positions, result rows, payload,
+  last key, and one-time Serializable predicate retention publish as one boundary; an undersized first row,
+  allocation failure, validation failure, or unexpected exception leaves committed positions and prior result
+  unchanged.
+- Bounds and authority: raw descriptors are allocated lazily from exact protected source requirements; final entry
+  and source arrays are exact-sized from persisted `Database_Limits`, per-family limits, retained history, and the
+  transaction arena. Caller page budgets are intersected with persisted row/byte authorities. Zero remains only the
+  private exhausted-position sentinel. The three new allocation-fault positions are test-only and explicitly not
+  product policy, persisted representation, or stable ABI.
+- Findings cycle: the implementation/ownership sweep found one P1 cleanup defect: a non-`Storage_Error` exception
+  while building the candidate released retained cursor entries but could leak the transient raw descriptor array.
+  The nested builder now releases that sole raw owner before reraising, while outer `Start_Scan` releases the partial
+  candidate. Repeated API, ownership/finalization, equal-head/tombstone, byte ordering, capacity arithmetic,
+  Serializable atomicity, constants-authority, compatibility, and unnecessary-surface review finds no remaining
+  actionable P0/P1/P2 finding.
+- Formatting: project-aware GNATformat 26 loaded the root dependency graph, but both whole-file and `--gitdiff HEAD`
+  modes proposed identical multi-thousand-line legacy baseline churn; the nested test project is rejected because it
+  has global preprocessor symbols. No mass-format change was accepted. Every changed handwritten Ada line is at most
+  110 columns, both projects compile, and `git diff --check` is clean.
+- Verification: root and nested builds, the targeted engine executable, `./tests/scripts/test.sh`, repository checks,
+  and the limited end-to-end profile pass. Tests cover exact source/entry/own-byte allocation rollback, restart
+  preservation, prefix/empty/tombstone/duplicate ordering, own-write invalidation, Serializable retention, whole-scan
+  parity, checkpoint replacement while a cursor retains its prior view, compaction, reopen, and close. All 18 RustFS,
+  SeaweedFS, MinIO, and Flyology memory/files/SQLite lanes pass against Object Storage
+  `99706cceaef0add2578f3665e48af37cd52bafdc`. The maintained formal gate passes every model, including 21 physical
+  merge states, both negative probes, the checked witness, and 18/18 TLAPS obligations. GNATprove proves 1,097/1,097
+  selected checks warning-strict; runtime cursor code remains an executable boundary with no refinement claim. The
+  post-run host audit is clean and the exclusive formal lane is released.
+
 ## Accepted owned physical scan merge formal candidate
 
 - Parent: fixed-snapshot paged-scan implementation commit `3737a28`.
