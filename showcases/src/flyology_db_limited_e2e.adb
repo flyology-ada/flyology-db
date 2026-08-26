@@ -120,13 +120,13 @@ procedure Flyology_DB_Limited_E2E is
    Operation_Timeout : constant Duration := 10.0;
 
    --  The persisted limits admit exactly this one-family root, one appended
-   --  family, two Flush checkpoints, and one adjacent-compaction successor
-   --  with bounded headroom for commit batches and owned scan materialization.
-   --  They are explicit database creation authority, never implicit product
-   --  defaults.
+   --  family, three additive Flush checkpoints, one adjacent compaction, and
+   --  one complete replacement. Nine identity slots cover the fixture's six
+   --  singleton and three group/batch identities exactly. These are explicit
+   --  database creation authority, never implicit product defaults.
    Limits   : constant DB.Database_Limits :=
      (Maximum_Column_Families             => 2,
-      Maximum_Manifest_History            => 5,
+      Maximum_Manifest_History            => 7,
       Maximum_Batch_History               => 4,
       Maximum_Transactions_Per_Batch      => 2,
       Maximum_Mutations_Per_Transaction   => 2,
@@ -136,7 +136,7 @@ procedure Flyology_DB_Limited_E2E is
       Maximum_Batch_Payload_Bytes         => 512,
       Maximum_Live_State_Bytes            => 4_096,
       Maximum_Total_L0_Runs               => 4,
-      Maximum_Checkpoint_Identities       => 8,
+      Maximum_Checkpoint_Identities       => 9,
       Maximum_Point_Reads_Per_Transaction => 8,
       Maximum_Scan_Ranges_Per_Transaction => 2);
    --  The root family admits the fixture's short account bytes, four live
@@ -180,6 +180,15 @@ procedure Flyology_DB_Limited_E2E is
    Merged_Run_ID        : constant DB.Identifier := Numbered_ID (20);
    Merged_Manifest_ID   : constant DB.Identifier := Numbered_ID (21);
    Merged_Transition_ID : constant DB.Identifier := Numbered_ID (22);
+   --  IDs 25 through 33 carry two explicit post-merge transactions, the
+   --  intervening sparse Flush, and the exact two-family replacement. They
+   --  extend fixture identity geometry and do not define allocation policy.
+   Third_Run_ID          : constant DB.Identifier := Numbered_ID (26);
+   Third_Runs            : constant DB.Checkpoint_Run_Identity_Array :=
+     [DB.Configure_Checkpoint_Run (1, Third_Run_ID)];
+   Final_Runs            : constant DB.Checkpoint_Run_Identity_Array :=
+     [DB.Configure_Checkpoint_Run (1, Numbered_ID (30)),
+      DB.Configure_Checkpoint_Run (2, Numbered_ID (31))];
 
    procedure Verify_Recovered_State (Item : in out DB.Database; Reader_ID : DB.Transaction_Identifier) is
       Reader           : DB.Transaction;
@@ -206,7 +215,7 @@ procedure Flyology_DB_Limited_E2E is
       Expect (Local_Result, DB.Not_Found, "deleted account became visible");
       DB.Get (Item, Reader, Accounts_View, Bytes ("bob"), Data, Local_Result);
       Expect (Local_Result, DB.Success, "surviving account read failed");
-      Require (Same (Data, Bytes ("250")), "surviving account has wrong bytes");
+      Require (Same (Data, Bytes ("300")), "surviving account has wrong bytes");
 
       DB.Scan
         (Item, Reader, Accounts_View, False, Ignored_Endpoint, False, Ignored_Endpoint, Rows, Local_Result);
@@ -215,7 +224,7 @@ procedure Flyology_DB_Limited_E2E is
       DB.Read_Scan_Row (Rows, 1, Row_Key, Row_Value, Local_Result);
       Expect (Local_Result, DB.Success, "accounts scan row read failed");
       Require
-        (Same (Row_Key, Bytes ("bob")) and then Same (Row_Value, Bytes ("250")),
+        (Same (Row_Key, Bytes ("bob")) and then Same (Row_Value, Bytes ("300")),
          "accounts scan returned wrong bytes");
 
       DB.Scan
@@ -235,9 +244,9 @@ procedure Flyology_DB_Limited_E2E is
 
       DB.Highest_Visible (Item, Visible, Local_Result);
       Expect (Local_Result, DB.Success, "highest-visible query failed");
-      --  Two initial singletons, a two-member group, one delete, and one later
-      --  singleton assign the canonical six committed transaction sequences.
-      Require (Visible = 6, "highest-visible sequence is not six");
+      --  Two initial singletons, a two-member group, one delete, and three
+      --  later singletons assign the canonical eight committed sequences.
+      Require (Visible = 8, "highest-visible sequence is not eight");
       DB.Rollback (Reader, Local_Result);
       Expect (Local_Result, DB.Success, "reader rollback failed");
    exception
@@ -393,7 +402,58 @@ procedure Flyology_DB_Limited_E2E is
          and then DB.Flush_Receipt_Transition_ID (Flush_Info) = Merged_Transition_ID,
          "adjacent compaction receipt lost exact authority");
 
-      Verify_Recovered_State (Created, Transaction_ID (23));
+      DB.Begin_Transaction (Created, Transaction_ID (25), DB.Snapshot, Txn, Result);
+      Expect (Result, DB.Success, "post-merge transaction begin failed");
+      DB.Put (Created, Txn, Accounts, Bytes ("bob"), Bytes ("275"), Result);
+      Expect (Result, DB.Success, "post-merge account update failed");
+      DB.Commit (Created, Txn, Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, DB.Success, "post-merge commit failed");
+      Expect_Checkpoint_Requirement
+        (Created, DB.Additive_Flush_Required, 1, "post-merge checkpoint action");
+      DB.Flush
+        (Created,
+         Third_Runs,
+         Numbered_ID (27),
+         Numbered_ID (28),
+         Operation_Timeout,
+         Receipt => Flush_Info,
+         Result  => Result);
+      Expect (Result, DB.Success, "post-merge sparse Flush failed");
+      Require
+        (DB.Flush_Receipt_Run_Total (Flush_Info) = Third_Runs'Length,
+         "post-merge Flush did not retain its sparse family map");
+      Expect_Checkpoint_Requirement
+        (Created, DB.No_L0_Checkpoint_Work, 0, "post-merge checkpoint completion");
+
+      DB.Begin_Transaction (Created, Transaction_ID (29), DB.Snapshot, Txn, Result);
+      Expect (Result, DB.Success, "capacity-edge transaction begin failed");
+      DB.Put (Created, Txn, Accounts, Bytes ("bob"), Bytes ("300"), Result);
+      Expect (Result, DB.Success, "capacity-edge account update failed");
+      DB.Commit (Created, Txn, Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, DB.Success, "capacity-edge commit failed");
+      Expect_Checkpoint_Requirement
+        (Created, DB.Complete_Compaction_Required, 2, "complete checkpoint action");
+      DB.Compact
+        (Created,
+         Final_Runs,
+         Numbered_ID (32),
+         Numbered_ID (33),
+         Operation_Timeout,
+         Token   => null,
+         Receipt => Flush_Info,
+         Result  => Result);
+      Expect (Result, DB.Success, "complete replacement failed");
+      Require
+        (DB.Flush_Receipt_Run_Total (Flush_Info) = Final_Runs'Length
+         and then DB.Flush_Receipt_Run (Flush_Info, 1) = Final_Runs (1)
+         and then DB.Flush_Receipt_Run (Flush_Info, 2) = Final_Runs (2)
+         and then DB.Flush_Receipt_Manifest_ID (Flush_Info) = Numbered_ID (32)
+         and then DB.Flush_Receipt_Transition_ID (Flush_Info) = Numbered_ID (33),
+         "complete replacement receipt lost exact authority");
+      Expect_Checkpoint_Requirement
+        (Created, DB.No_L0_Checkpoint_Work, 0, "complete checkpoint completion");
+
+      Verify_Recovered_State (Created, Transaction_ID (34));
       DB.Close (Created, Close_Result);
       Expect (Close_Result, DB.Success, "created database close failed");
    exception
@@ -416,7 +476,7 @@ procedure Flyology_DB_Limited_E2E is
       Binding.Bind (Context, Store'Access, Bucket, Prefix);
       DB.Open (Reopened, Context'Access, Database_ID (1), Operation_Timeout, Result => Result);
       Expect (Result, DB.Success, "authoritative reopen failed");
-      Verify_Recovered_State (Reopened, Transaction_ID (24));
+      Verify_Recovered_State (Reopened, Transaction_ID (35));
       DB.Close (Reopened, Close_Result);
       Expect (Close_Result, DB.Success, "reopened database close failed");
    exception

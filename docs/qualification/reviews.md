@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted complete-compaction limited-profile integration candidate
+
+- Parent: sparse checkpoint-map execution commit `ed2fb6a6d9a919ac1a26295389e1fa0ebdaca071`.
+- Scope and behavior: extend only the maintained public Files-backed acceptance executable and its architecture
+  narrative. After exact adjacent compaction, the fixture commits one later update, executes the observed sparse
+  additive Flush, commits again at the persisted L0 ceiling, observes the exact two-family complete-compaction
+  requirement, and passes that projection to the existing complete `Compact`. It verifies no remaining work, closes
+  every process-local owner, and recovers the final bytes, deletion, scan order, family handles, and sequence from
+  object storage alone. No library implementation, API, scheduler, retry, provider policy, or identity generator is
+  added.
+- Constants and compatibility: the fixture's persisted manifest-history limit increases from five to seven for the
+  exact root/Flush/family-append/Flush/adjacent/sparse-Flush/complete manifest chain. Its checkpoint identity limit
+  increases from eight to nine for the exact six singleton transaction identities plus two grouped members and one
+  group batch identity. IDs 25 through 33 name only the new fixture transactions and immutable publications. Adjacent
+  comments record that authority and its persisted fixture impact; no product default or inferred ceiling changes.
+- Verification: `./tests/scripts/test.sh` passes the root/test builds, repository gate, deterministic memory/files
+  suite, expanded Files showcase, crash/recovery corpus, authenticated client probe, 32 comparative cases, and pinned
+  TidesDB 4/4. `./scripts/check-tla.sh` passes every maintained model, including 2,240 L0-selection states and 8/8
+  obligations with its complete-compaction witness. `./scripts/prove.sh` proves 1,097/1,097 warning-strict checks and
+  the post-run formal audit is clean. The six-provider matrix passes all 18 RustFS, SeaweedFS, MinIO, and Flyology
+  memory/files/SQLite lanes against Object Storage `179b16c…` and HTTP/QUIC `eb09a80…`. Repository, diff, and
+  handwritten-Ada line-width checks are clean. GNATformat and GNATdoc are absent from the selected toolchain, so no
+  formatter or generated-site claim is made.
+- Findings cycle: the first sweep found one P2 oracle weakness because complete compaction checked only receipt
+  arity. The corrected showcase checks both exact family/run entries plus manifest and transition identities before
+  reopen. Repeated behavior, recovery, identity, persisted-capacity, constants-authority, documentation,
+  compatibility, test, formal-boundary, and unnecessary-surface review finds no actionable P0/P1/P2 finding.
+
 ## Accepted sparse checkpoint-map execution candidate
 
 - Parent: owned exact-family checkpoint-requirement commit `1b8190175553fa2f1e34ff5a4ac731a42407f571`.

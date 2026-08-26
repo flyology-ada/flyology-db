@@ -20,7 +20,8 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - An owned `L0_Checkpoint_Requirement` observation that carries the exact changed or nonempty family IDs from that
   same view in stable registry order, without retaining the database or reserving publication authority.
 - Exact caller-selected two- or three-consecutive-run `Compact`, retaining every version/tombstone and all
-  surrounding runs. The maintained Files acceptance scenario selects the two-run form.
+  surrounding runs. The maintained Files acceptance scenario selects the two-run form, then crosses the persisted
+  L0 ceiling and executes the exact complete-view replacement selected by `Observe_L0_Checkpoint_Requirement`.
 - Synchronous and caller-composable `Add_Column_Family` at an exact checkpoint boundary, with exact
   manifest/transition identities and same-receipt resolution of immutable or HEAD uncertainty.
 - `Outcome_Unknown` receipts resolved only through the original identity; no application transaction or mutation is
@@ -47,7 +48,9 @@ One maintained executable must perform the following sequence using only public 
    one key, verify ordered half-open scanning, require the additive action, and Flush the suffix without changing
    prior run identity; observe no remaining checkpoint work afterward.
 6. Compact the exact adjacent root-family pair under caller-supplied output, manifest, and transition identities,
-   then verify that the second family and complete logical view remain unchanged.
+   then commit and sparsely Flush one later root-family update. Commit once more, require a complete-compaction
+   action at the persisted L0 ceiling, and Compact the exact returned two-family projection under fresh
+   caller-supplied identities; observe no remaining checkpoint work.
 7. Close the database, discard every process-local DB object and buffer, construct a fresh database value, and Open
    it from the same object-store prefix.
 8. Verify the exact surviving bytes, deletion, canonical scan order, highest visible sequence, and persisted family
@@ -57,9 +60,10 @@ One maintained executable must perform the following sequence using only public 
 The authenticated provider matrix directly exercises checkpoint-bound family append, lost-HEAD-response
 reconciliation through the original receipt, cross-family commit and Flush, compaction, close, and cacheless reopen
 against RustFS, SeaweedFS, MinIO, and Flyology memory, files, and SQLite. The public Files showcase remains the exact
-complete-local-loss acceptance workflow; the matrix is a provider qualification of the same family-registry and
-recovery spine, not a claim that its transport harness is the showcase executable unchanged. S3, HTTP, signing,
-retry, and endpoint policy remain outside Flyology.DB.
+complete-local-loss acceptance workflow and directly drives both additive and complete checkpoint requirements
+before reopen. The matrix is a provider qualification of the same family-registry and recovery spine, not a claim
+that its transport harness is the showcase executable unchanged. S3, HTTP, signing, retry, and endpoint policy
+remain outside Flyology.DB.
 
 ## Explicit exclusions
 

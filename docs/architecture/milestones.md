@@ -41,10 +41,11 @@ run and cacheless reopen. The client-backed synchronous overload waits on the sa
 used by the operation-last composable form. Broader family lifecycle remains pending Milestone 2 work.
 
 The immediate integration target is the [limited end-to-end profile](limited-profile.md). It freezes one coherent
-public workflow before broadening policy: fixed initial families, synchronous transactions, explicit Flush, complete
+public workflow before broadening policy: fixed initial families, synchronous transactions, explicit sparse Flush,
+caller-selected adjacent compaction, an observed exact complete replacement at persisted L0 capacity, complete
 process-local state loss, one exact-checkpoint append-only family change, and authoritative reopen. Family
-rename/drop/reconfiguration, public compaction policy, replicas, TTL, and automatic maintenance remain outside that
-acceptance claim.
+rename/drop/reconfiguration, automatic compaction policy, replicas, TTL, and automatic maintenance remain outside
+that acceptance claim.
 
 Milestone 3 now has a formal-first and operational write/write validation boundary. A transaction captures the global
 sequence at Begin and must prove every written key unchanged since that snapshot from retained exact history.

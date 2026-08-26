@@ -12,8 +12,8 @@ This repository is under active development. The current acceptance state and re
 [the milestone plan](docs/architecture/milestones.md). No production qualification or performance claim is made.
 The current usable boundary is the deliberately narrow
 [limited end-to-end profile](docs/architecture/limited-profile.md): one writer, one checkpoint-bound append-only
-family change, synchronous transactions, Flush, caller-selected adjacent compaction, exact close/local-loss/reopen
-recovery, and no automatic maintenance or retry policy.
+family change, synchronous transactions, Flush, caller-selected adjacent and complete compaction, exact
+close/local-loss/reopen recovery, and no automatic maintenance or retry policy.
 The current operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v3 roots with explicit
 LSM limits, stable column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/
 database limits. Public synchronous `Flush` publishes and reconciles a complete checkpoint; later calls append one
@@ -27,8 +27,9 @@ literal wait over that state machine. It derives all
 allocation extents from persisted database and family limits; fresh-root and unflushed-suffix calls reject before
 publication because no caller-owned SST identity may be invented. The public files showcase observes additive work,
 checkpoints one root family, confirms the clean boundary, appends a second, writes and observes additive work for
-both, Flushes and confirms the clean boundary, compacts the exact adjacent root-family pair, discards all local
-state, and recovers both families from object storage alone. An
+both, Flushes and confirms the clean boundary, compacts the exact adjacent root-family pair, crosses the persisted
+L0 ceiling, executes the exact observed two-family complete replacement, discards all local state, and recovers
+both families from object storage alone. An
 additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a bounded completion
 set, moving one caller-sized unique-buffer token until typed `Finish`. Client-bound synchronous `Flush` is a literal
 owner-driven wait over that operation; memory/files retain the backend-neutral synchronous publisher. Neither path
