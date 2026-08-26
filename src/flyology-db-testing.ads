@@ -106,6 +106,8 @@ private package Flyology.DB.Testing is
       Run_ID    : Identifier;
       Family_ID : Column_Family_ID;
       Result    : out Outcome_Code);
+   procedure Convert_Run_To_V1
+     (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code);
    procedure Rewrite_Manifest
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;
@@ -163,6 +165,8 @@ private package Flyology.DB.Testing is
       Item_Key  : Byte_Array;
       Sequence  : out Sequence_Number;
       Result    : out Outcome_Code);
+   procedure Checkpoint_Buffer_Capacity
+     (Item : in out Database; Maximum : out Natural; Result : out Outcome_Code);
    procedure Build_First_SST
      (Item             : in out Database;
       Family_ID        : Column_Family_ID;

@@ -1536,6 +1536,10 @@ private
    type Flush_Driver_State_Access is access Flush_Driver_State;
    type Refresh_Driver_State;
    type Refresh_Driver_State_Access is access Refresh_Driver_State;
+   type Lazy_SST_Read_State;
+   type Lazy_SST_Read_State_Access is access Lazy_SST_Read_State;
+   type Lazy_SST_Entry_Disposition is
+     (Lazy_Value_Found, Lazy_Tombstone_Found, Lazy_Key_Absent, Lazy_Read_Failed);
    type Whole_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Whole_Get_Operation;
    type Range_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Range_Get_Operation;
    type Head_Operation_Access is access Flyology.Object_Storage.Client.Objects.Head_Operation;
@@ -1614,6 +1618,59 @@ private
    --  @exclude
    overriding procedure Finalize (Item : in out Refresh_Operation);
 
+   --  Private engine operation for one generation-bound SST-v2 point lookup.
+   --  The retained borrows and moved token follow the public operation
+   --  convention, but this type deliberately adds no public read contract.
+   type Lazy_SST_Read_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation (Set) with record
+      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Range_Child      : Range_Get_Operation_Access := null;
+      Head_Child       : Head_Operation_Access := null;
+      Driver_State     : Lazy_SST_Read_State_Access := null;
+      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      HTTP_Deadline    : Flyology.HTTP.Client.Monotonic_Deadline;
+      Final_Result     : Outcome_Code := Invalid_State;
+      Final_Disposition : Lazy_SST_Entry_Disposition := Lazy_Read_Failed;
+      Final_Sequence   : Sequence_Number := 0;
+      Final_Value      : Flyology.Bytes.Unbounded_Bytes;
+      Has_Final_Result : Boolean := False;
+      Has_Saved_Error  : Boolean := False;
+      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+   end record;
+
+   procedure Read_Lazy_SST_Entry
+     (Database_ID          : Database_Identifier;
+      Family               : Column_Family_Configuration;
+      Run_ID               : Identifier;
+      Lowest_Sequence      : Sequence_Number;
+      Highest_Sequence     : Sequence_Number;
+      Entry_Total          : Interfaces.Unsigned_32;
+      Logical_Payload_Bytes : Interfaces.Unsigned_64;
+      Snapshot_At          : Sequence_Number;
+      Item_Key             : Byte_Array;
+      Payload_Buffer       : in out Flyology.Buffers.Unique_Buffer;
+      Timeout              : Duration;
+      Operation            : in out Lazy_SST_Read_Operation);
+
+   procedure Finish_Lazy_SST_Read
+     (Operation      : in out Lazy_SST_Read_Operation;
+      Disposition    : out Lazy_SST_Entry_Disposition;
+      Sequence       : out Sequence_Number;
+      Value          : out Flyology.Bytes.Unbounded_Bytes;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer);
+
+   overriding procedure Drive
+     (Item : in out Lazy_SST_Read_Operation;
+      Event : Flyology.Operations.Driver_Event);
+   overriding procedure Request_Cancellation (Item : in out Lazy_SST_Read_Operation);
+   overriding procedure Finalize (Item : in out Lazy_SST_Read_Operation);
+
    type Storage_Fault_Point is
      (Before_Batch_Put,
       After_Batch_Put,
@@ -1680,6 +1737,8 @@ private
         Flyology.Object_Storage.Client.Low_Level.Path_Style;
       Test_Control          : Storage_Test_Control;
    end record;
+
+   function Run_Key (Storage : Storage_Context; Run_ID : Identifier) return String;
 
    type Engine_State (<>);
    type Engine_State_Access is access Engine_State;
@@ -1781,6 +1840,8 @@ private
       Run_ID    : Identifier;
       Family_ID : Column_Family_ID;
       Result    : out Outcome_Code);
+   procedure Convert_Test_Run_To_V1
+     (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code);
    procedure Rewrite_Test_Manifest
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;
@@ -1833,6 +1894,8 @@ private
       Item_Key  : Byte_Array;
       Sequence  : out Sequence_Number;
       Result    : out Outcome_Code);
+   procedure Read_Test_Checkpoint_Buffer_Capacity
+     (Item : in out Database; Maximum : out Natural; Result : out Outcome_Code);
    procedure Build_Test_First_SST
      (Item             : in out Database;
       Family_ID        : Column_Family_ID;

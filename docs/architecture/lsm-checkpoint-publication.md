@@ -1,8 +1,9 @@
 # LSM checkpoint publication design
 
 This document freezes the semantic checkpoint-publication decision. The format layer defines current manifest-v3,
-readable predecessor manifest-v2, and exact SST-v1 bytes, plus a private SPARK reference decoder and a byte-identical
-dynamically sized operational codec. The codec is the allocation and validation boundary. New Create operations
+readable predecessor manifest-v2, and exact SST-v1/v2 bytes, plus a private SPARK reference decoder and dynamically
+sized operational codecs. New run publication selects v2; recovery admits v1, v2, and mixed manifests without
+rewriting immutable objects. The codec is the allocation and validation boundary. New Create operations
 publish an empty manifest-v3 root carrying the explicit LSM policy. Cacheless Open now admits a complete nonempty
 first checkpoint, reconstructs its exact state and
 identity partition, and replays only later batches. The internal checkpoint planner assembles an exact successor and

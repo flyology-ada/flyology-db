@@ -2,17 +2,15 @@
 
 This document is normative for HEAD versions 1 and 2 and the independent version-1 commit-batch and
 column-family-manifest encodings. Each object kind advances its own version constant: the HEAD kind accepts versions
-1 and 2, batch accepts version 1, manifest accepts versions 1 through 3, and operational recovery accepts SST version
-1. The private operational codec also freezes additive SST version 2 without activating it. All multibyte integers
-are unsigned big-endian.
+1 and 2, batch accepts version 1, manifest accepts versions 1 through 3, and operational recovery accepts SST versions
+1 and 2. New run publication selects SST version 2. All multibyte integers are unsigned big-endian.
 Byte strings are length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is
 persisted.
 
 The first-LSM format unit freezes current manifest version 3, readable predecessor version 2, and operational SST
-version 1 below. Its private generic codec remains the bounded reference/proof implementation. A byte-identical
-operational codec admits headers before whole-object allocation and retains exact dynamically sized run, identity,
-entry, key, and value extents. The private SST-v2 whole-object codec extends that operational boundary without
-selecting it for publication or recovery. See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
+versions 1 and 2 below. Its private generic codec remains the bounded reference/proof implementation. Operational
+codecs admit headers before whole-object allocation and retain exact dynamically sized run, identity, entry, key,
+and value extents. See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
 
 ## Common envelope
 
@@ -383,9 +381,11 @@ The private operational codec is gated by an independently generated 323-byte go
 decoding, every truncation, trailing bytes, whole/index/frame checksum corruption, repaired-checksum index/frame
 mismatch, intact-frame substitution, malformed extents, unsupported version, and persisted key/value-limit
 rejection, common-envelope identity/kind/flags rejection, and hostile U64 extent overflow. This freezes the v2 wire
-representation without activating it for durable writes. The operational writer, manifest recovery, and compaction
-output remain v1 until a later focused change adds generation-bound range reads, mixed-version recovery,
-complete-loss recovery, and provider qualification.
+representation. Flush and compaction now encode every newly published run as v2. Recovery first authenticates the
+persisted version selector and dispatches v1 to its whole-object decoder or v2 to its whole-object decoder; one
+manifest may name both. The private lazy point-read path accepts only v2 because v1 has no independently authenticated
+frame. Complete-loss recovery, mixed-version recovery, and authenticated provider execution are covered by the
+maintained deterministic corpus; the public transaction read path is not yet connected to lazy storage I/O.
 
 ## Evolution
 
@@ -394,7 +394,7 @@ remains readable. Manifest version 2 remains readable as the first-LSM predecess
 observation authority. New databases use manifest version 3 from their root: the root has replay boundary zero, no
 runs, and no checkpoint identities, while persisting every explicit LSM and serializable-tracking limit. A nonempty
 current manifest is a later checkpoint successor and never rewrites or implicitly migrates a reachable older
-manifest. SST begins at version 1 under its independent kind. The private version-2 codec is additive but is not yet
-selected by the writer or recovery path. Activating it requires an explicit compatibility change rather than an
-implicit rewrite of reachable v1 runs. Golden byte fixtures and explicit corruption cases gate each supported
-version. Migration never rewrites a reachable immutable object in place.
+manifest. SST begins at version 1 under its independent kind. New run publication selects version 2, while recovery
+continues to read frozen version 1 and accepts mixed manifests. Activation never rewrites a reachable immutable
+object in place; a normal later compaction may replace current inputs with a fresh immutable v2 output under a new
+identity. Golden byte fixtures and explicit corruption cases gate each supported version.

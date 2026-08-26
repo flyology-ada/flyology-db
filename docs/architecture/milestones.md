@@ -114,14 +114,16 @@ image leases and copied transaction-local mutations across engine replacement, e
 global sorting. Object Storage streaming, automatic run selection, and constant-memory claims remain unfinished. See
 [`paged-scans.md`](paged-scans.md) and [`physical-scan-merge.md`](physical-scan-merge.md).
 
-Generation-bound lazy immutable-run reads now have a formal and initial codec prerequisite. SST v1 remains the
-active whole-object integrity format. The additive private SST-v2 whole-object codec independently frames each entry,
-authenticates a trailing key/offset index, and freezes exact v2 bytes through an independent golden and corruption
-corpus. TLC exhausts the replacement, allocation, stale-generation, and corruption boundaries; two unsafe probes fail
-and TLAPS proves the arbitrary-generation/key/value action kernel. No v2 writer/recovery activation, public read
-operation, cache, prefetch, automatic retry, or block-size policy exists yet. Private header/index/frame slice
-decoders are now operational; an explicit caller-driven generation-bound storage-I/O operation is the next Milestone
-4 unit. See
+Generation-bound lazy immutable-run point reads now have a private caller-driven execution path. New Flush and
+compaction outputs use SST-v2; cacheless recovery and selected-run compaction admit mixed manifests containing
+frozen SST-v1 whole objects and SST-v2 objects without rewriting either. The private operation drives Head, exact-
+generation header/index/frame ranges, checked slice decoding, cancellation, and typed sole-restoration of its moved
+buffer through one caller-owned completion set and absolute deadline. The authenticated client fixture reads a value
+and an absent key from the actual v2 run published by Flush, while the recovery corpus converts one current run to v1
+and reopens a mixed v1/v2 checkpoint. TLC exhausts the replacement, allocation, stale-generation, and corruption
+boundaries; two unsafe probes fail and TLAPS proves the arbitrary-generation/key/value action kernel. Public `Get`,
+`Scan`, and `Next_Scan_Page` still perform no storage I/O; no cache, prefetch, automatic retry, or block-size policy
+exists yet. See
 [`lazy-sst-reads.md`](lazy-sst-reads.md).
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot

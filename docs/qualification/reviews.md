@@ -1,5 +1,41 @@
 # Review record
 
+## Accepted operational SST-v2 and private lazy-read candidate
+
+- Parent: accepted private SST-v2 slice codec commit `7032d62`.
+- Scope and compatibility: publish new Flush and compaction runs as frozen SST-v2, retain whole-object v1/v2 recovery
+  and mixed-manifest compatibility, and add one private caller-driven lazy point-read operation. Public `Get`, `Scan`,
+  and `Next_Scan_Page` keep their no-storage-I/O contract. No cache, prefetch, retry, block geometry, helper task,
+  public declaration, or new key/value/default capacity is introduced.
+- Ownership and certainty: Start validates the descriptor, family limits, pool compatibility, and completion slot
+  before moving the caller's exact token. One absolute deadline and cancellation token govern provider-owned Head and
+  generation-bound header/index/frame ranges. Typed Finish is the sole restoration authority into any vacant same-
+  pool handle; abandonment drains children before the detached token returns to its pool. No operation retains the
+  original caller handle, and no read or mutation is automatically replayed.
+- Integrity and compatibility: v2 header, index, and selected frame are each authenticated before output publication,
+  and every range is bound to the opaque generation observed by Head. Cacheless recovery and selected-run compaction
+  dispatch from the persisted version and accept short v1 objects as well as v2. The test-only compatibility fixture
+  converts one current run to byte-equivalent v1 after publication, so the maintained recovery, allocation-failure,
+  compaction, and reopen campaign operates on one manifest naming both versions. Production immutable objects are
+  never rewritten in place.
+- Findings cycle: the implementation sweep fixed three P1 defects: the final value move initially used reversed source
+  and target arguments, recovery incorrectly required every v1 header range to contain the full 128-byte v2 prefix,
+  and the synchronous checkpoint scratch calculation still used v1 geometry after v2 writer activation. The bound
+  now includes v2 frame/index overhead and worst-case duplicated key bytes under checked persisted authority. The sweep
+  also fixed checked requested-range retention, high-offset arithmetic, empty-key iteration, v2 short-object rejection,
+  pre-admission descriptor validation, exceptional Finish output atomicity, operation-slot release in the reusable
+  client fixture, and the version-aware CRC in an older corruption helper. Repeated format, concurrency,
+  ownership, certainty, allocation, constants-authority, compatibility, test, proof-boundary, and unnecessary-surface
+  review finds no remaining actionable P0/P1/P2 finding.
+- Verification: root and nested builds, repository integrity, the authenticated client-backed
+  create/commit/Flush/compaction/refresh/reopen path, files crash/recovery, limited end-to-end profile, 32 comparative
+  tests, and pinned TidesDB 4/4 pass against Object Storage
+  `99706cceaef0add2578f3665e48af37cd52bafdc`. The maintained TLA/TLC/TLAPS gate passes every lane, including Lazy SST
+  Read at 16 states/depth 6 and 41/41 obligations with both negative probes detected. GNATprove proves 1,097/1,097
+  selected checks under the warning-strict wrapper, and the corrected exact executable-name/argument post-run audit is
+  clean. Project-aware GNATformat is unavailable in this host toolchain; all changed handwritten Ada lines are at
+  most 110 columns, and repository/diff checks pass.
+
 ## Accepted private SST-v2 slice codec candidate
 
 - Parent: accepted private whole-object SST-v2 codec commit `3b7f459`.

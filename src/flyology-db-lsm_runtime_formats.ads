@@ -386,8 +386,8 @@ private package Flyology.DB.LSM_Runtime_Formats is
 
    procedure Encode_SST (Value : SST; Image : out Image_Access; Status : out Encode_Status);
 
-   --  Encode the additive SST-v2 entry-frame/index layout. Encode_SST remains
-   --  the v1 compatibility encoder until the operational writer migration.
+   --  Encode the active SST-v2 entry-frame/index layout. Encode_SST remains
+   --  the v1 compatibility encoder for golden and mixed-recovery fixtures.
    procedure Encode_SST_V2 (Value : SST; Image : out Image_Access; Status : out Encode_Status);
 
    procedure Decode_SST

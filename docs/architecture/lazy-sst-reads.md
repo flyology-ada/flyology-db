@@ -1,14 +1,15 @@
 # Generation-bound lazy SST reads
 
-The next LSM storage slice makes immutable runs range-readable without weakening persisted integrity or silently
-adding storage I/O to the established local `Get`, `Scan`, and `Next_Scan_Page` contracts. SST version 1 remains
-readable through its existing generation-bound whole-object decoder. New writers will eventually emit an additive
-SST version 2 whose exact entry frames can be authenticated independently after one authority observation, one
+The private LSM storage slice makes immutable SST-v2 runs range-readable without weakening persisted integrity or
+silently adding storage I/O to the established public `Get`, `Scan`, and `Next_Scan_Page` contracts. SST version 1
+remains readable through its generation-bound whole-object decoder. New Flush and compaction outputs use additive
+SST version 2, whose exact entry frames can be authenticated independently after one authority observation, one
 header range, and one index range.
 
-This is a format and certainty prerequisite, not an automatic cache, block-size, prefetch, timeout, retry, or
-compaction policy. The existing APIs that promise no storage I/O remain unchanged until a separately reviewed
-caller-driven operation supplies explicit deadline, cancellation, buffer ownership, and completion-set authority.
+This is a format and certainty mechanism, not an automatic cache, block-size, prefetch, timeout, retry, or
+compaction-selection policy. The private caller-driven operation supplies explicit deadline, cancellation, moved
+buffer ownership, and completion-set authority. Existing public APIs that promise no storage I/O remain unchanged
+until a later public execution decision composes this mechanism into them.
 
 ## Why SST version 1 cannot stream safely
 
@@ -41,16 +42,16 @@ Frame and index extents derive by checked arithmetic from exact admitted entry/k
 database and column-family limits. The index may be retained or cached only under separately admitted byte authority;
 allocation failure is typed backpressure and publishes no partial read state.
 
-The exact wire offsets, widths, version/magic bytes, and golden image are now frozen in the private whole-object codec
-and documented adjacent to their declarations and in `persisted-formats.md`. This does not activate v2 durable writes
-or expose a range-read operation; those remain separate compatibility and execution changes.
+The exact wire offsets, widths, version/magic bytes, and golden image are frozen in the private whole-object codec
+and documented adjacent to their declarations and in `persisted-formats.md`. Durable run publication and private
+range-read execution are active; no public lazy-read overload is exposed.
 
-The private range-local codec now also consumes the exact index and frame slices described below. Index decoding
+The private range-local codec consumes the exact index and frame slices described below. Index decoding
 authenticates the complete index CRC before parsing any record, validates canonical contiguous frame geometry and key
 ordering, and retains exact descriptor/key authority in one lazily allocated value. Frame decoding accepts one exact
 index-selected extent, authenticates its CRC, and binds sequence, operation, lengths, and every key byte before
 allocating output. These routines perform no Object Storage call and therefore do not themselves establish that the
-slices came from one provider generation; that authority belongs to the caller-driven protocol operation.
+slices came from one provider generation; the private caller-driven operation establishes that authority.
 
 ## Range-read protocol
 
@@ -84,9 +85,12 @@ candidate state and must fail through the generation-bound Object Storage range 
 
 The formal geometry is not a format bound, cache size, request count, retry budget, or public default. The model does
 not prove CRC arithmetic, byte offsets, range arithmetic, the Ada codec, provider behavior, progress, concurrency,
-or refinement. The private whole-object codec now covers independent v1/v2 goldens, v1 compatibility, every v2
+or refinement. The private whole-object codec covers independent v1/v2 goldens, v1 compatibility, every v2
 object truncation, exact extent checks, whole/index/frame CRCs, repaired-checksum index/frame binding, intact-frame
 substitution, shifted lower bounds, trailing bytes, persisted key/value limits, common-envelope identity/kind/flags
 rejection, hostile U64 extent overflow, and standalone index/frame truncation, CRC, geometry, ordering, binding, and
-shifted-bound cases. Activation additionally requires wrong-generation provider results, mixed-version manifests,
-generation-bound range execution, complete local loss, and all maintained providers.
+shifted-bound cases. The executable operation covers typed start rollback and finish restoration, cancellation,
+wrong-generation provider results, a found and absent key against the actual Flush output, and generation-bound
+header/index/frame execution. Recovery covers complete local loss and an actual mixed-version manifest. Broad
+provider qualification of this private path remains a later campaign; the maintained authenticated client fixture
+is the current provider seam.

@@ -8,6 +8,7 @@ with Flyology.Bytes;
 with Flyology.DB.Batch_Format_Tests;
 with Flyology.DB.Formats;
 with Flyology.DB.LSM_Formats;
+with Flyology.DB.LSM_Runtime_Formats;
 with Flyology.DB.Object_Storage;
 with Flyology.DB.Testing;
 with Flyology.HTTP;
@@ -26,6 +27,7 @@ package body Flyology.DB.Engine_Tests is
    package Batch_Tests renames Flyology.DB.Batch_Format_Tests;
    package Formats renames Flyology.DB.Formats;
    package LSM renames Flyology.DB.LSM_Formats;
+   package LSM_Runtime renames Flyology.DB.LSM_Runtime_Formats;
    package Root_DB renames Flyology.DB;
    package Testing renames Flyology.DB.Testing;
    package HTTP renames Flyology.HTTP;
@@ -1577,6 +1579,28 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "multi-family manifest create failed");
       Expect_Live_LSM_Authority (Item, 0, "create activation");
       declare
+         Scratch  : Natural;
+         --  Independent lower-bound oracle for the current SST-v2 writer:
+         --  header + index CRC + object CRC + every frame/index prefix plus
+         --  two complete live-state extents (payload and duplicated keys).
+         Required : constant Interfaces.Unsigned_64 :=
+           Interfaces.Unsigned_64
+             (LSM_Runtime.SST_V2_Header_Length
+              + LSM_Runtime.SST_V2_Index_Trailer_Length
+              + LSM.Object_Trailer_Length)
+           + Interfaces.Unsigned_64 (Limits.Maximum_Live_Entries)
+             * Interfaces.Unsigned_64
+                 (LSM_Runtime.SST_V2_Frame_Header_Length
+                  + LSM_Runtime.SST_V2_Frame_Trailer_Length
+                  + LSM_Runtime.SST_V2_Index_Entry_Header_Length)
+           + 2 * Limits.Maximum_Live_State_Bytes;
+      begin
+         Testing.Checkpoint_Buffer_Capacity (Item, Scratch, Result);
+         if Result /= Success or else Interfaces.Unsigned_64 (Scratch) < Required then
+            raise Program_Error with "synchronous checkpoint scratch retained obsolete SST-v1 geometry";
+         end if;
+      end;
+      declare
          --  Family 2's fixture authority is exactly one maximum 2+3-byte
          --  memtable entry and two accumulated L0 runs for this corpus.
          Total_Runs, Identity_Total, Point_Reads, Scan_Ranges      : Interfaces.Unsigned_32;
@@ -1855,6 +1879,11 @@ package body Flyology.DB.Engine_Tests is
       Stale_Family := Family_By_ID;
       Close (Item, Result);
       Expect (Result, Success, "checkpointed database close failed");
+      --  Convert one of the two current runs to the frozen v1 wire layout.
+      --  The manifest then drives every recovery and allocation-failure pass
+      --  through an actual mixed v1/v2 checkpoint, not only codec fixtures.
+      Testing.Convert_Run_To_V1 (Context, First_Run_ID, Result);
+      Expect (Result, Success, "mixed-version checkpoint fixture conversion failed");
       declare
          --  These six sites cover the exact header, whole-object, engine-owned
          --  payload, and exact live-entry descriptor allocations introduced by
@@ -1872,7 +1901,10 @@ package body Flyology.DB.Engine_Tests is
             Testing.Fail_Next_Allocation (Point);
             Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
             Expect
-              (Result, Capacity_Exceeded, "checkpoint recovery allocation failure was not typed capacity");
+              (Result,
+               Capacity_Exceeded,
+               "checkpoint recovery allocation failure was not typed capacity at "
+               & Testing.Allocation_Fault_Point'Image (Point));
          end loop;
       end;
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);

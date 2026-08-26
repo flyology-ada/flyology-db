@@ -200,6 +200,12 @@ package body Flyology.DB.Testing is
       Rewrite_Test_Run_Family (Item, Run_ID, Family_ID, Result);
    end Rewrite_Run_Family;
 
+   procedure Convert_Run_To_V1
+     (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code) is
+   begin
+      Convert_Test_Run_To_V1 (Item, Run_ID, Result);
+   end Convert_Run_To_V1;
+
    procedure Rewrite_Manifest
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;
@@ -317,6 +323,12 @@ package body Flyology.DB.Testing is
    begin
       Read_Test_Live_Entry_Sequence (Item, Family_ID, Item_Key, Sequence, Result);
    end Live_Entry_Sequence;
+
+   procedure Checkpoint_Buffer_Capacity
+     (Item : in out Database; Maximum : out Natural; Result : out Outcome_Code) is
+   begin
+      Read_Test_Checkpoint_Buffer_Capacity (Item, Maximum, Result);
+   end Checkpoint_Buffer_Capacity;
 
    procedure Build_First_SST
      (Item             : in out Database;

@@ -291,12 +291,118 @@ procedure Flyology.DB.Client_Probe is
      aliased Flyology.Buffers.Pool (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
    Flush_Buffer                 : Flyology.Buffers.Unique_Buffer (Flush_Pool'Access);
    Restored_Buffer              : Flyology.Buffers.Unique_Buffer (Flush_Pool'Access);
+   --  The lazy-read fixture derives its one-token scratch capacity from the
+   --  persisted live-state byte budget, exactly as the serial flush fixture.
+   Lazy_Pool                    :
+     aliased Flyology.Buffers.Pool (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
+   Lazy_Buffer                  : Flyology.Buffers.Unique_Buffer (Lazy_Pool'Access);
+   Lazy_Restored_Buffer         : Flyology.Buffers.Unique_Buffer (Lazy_Pool'Access);
+   --  Arbitrary nonzero test metadata proves typed Finish restores the moved
+   --  token, rather than silently substituting another same-pool token.
+   Lazy_Token_Tag               : constant Interfaces.Unsigned_64 := 16#1A2E#;
    Flush_Work                   :
      Flush_Operation
        (Composable_Set'Access, Created'Access, Context'Access, Client'Access, Flush_Pool'Access, null);
    Refresh_Work                 :
      Refresh_Operation
        (Composable_Set'Access, Replica'Access, Context'Access, Client'Access, Flush_Pool'Access, null);
+   Lazy_Work                    :
+     Lazy_SST_Read_Operation
+       (Composable_Set'Access, Context'Access, Client'Access, Lazy_Pool'Access, null);
+
+   procedure Test_Lazy_SST_Read is
+      procedure Read_And_Expect
+        (Source               : in out Flyology.Buffers.Unique_Buffer;
+         Destination          : in out Flyology.Buffers.Unique_Buffer;
+         Key                  : Byte_Array;
+         Snapshot             : Sequence_Number;
+         Expected_Disposition : Lazy_SST_Entry_Disposition;
+         Expected_Sequence    : Sequence_Number;
+         Expected_Value       : Byte_Array;
+         Expected_Result      : Outcome_Code)
+      is
+         Disposition : Lazy_SST_Entry_Disposition;
+         Sequence    : Sequence_Number;
+         Value       : Flyology.Bytes.Unbounded_Bytes;
+         Read_Result : Outcome_Code;
+      begin
+         Read_Lazy_SST_Entry
+           (Probe_Database_ID,
+            Families (Families'First),
+            Checkpoint_Run_ID,
+            Receipt_Sequence (Commit_Info),
+            Receipt_Sequence (Commit_Info),
+            1,
+            Interfaces.Unsigned_64 (Key_Data'Length + Value_Data'Length),
+            Snapshot,
+            Key,
+            Source,
+            Test_Operation_Timeout,
+            Lazy_Work);
+         if Flyology.Buffers.Has_Buffer (Source) then
+            raise Program_Error with "lazy SST read did not move its scratch token";
+         end if;
+         Flyology.Operations.Wait_All (Composable_Set);
+         Finish_Lazy_SST_Read
+           (Lazy_Work,
+            Disposition,
+            Sequence,
+            Value,
+            Read_Result,
+            Destination);
+         Expect (Read_Result, Expected_Result, "client-backed lazy SST read failed");
+         if Disposition /= Expected_Disposition
+           or else Sequence /= Expected_Sequence
+           or else not Same (Value, Expected_Value)
+           or else not Flyology.Buffers.Has_Buffer (Destination)
+           or else Flyology.Buffers.Tag (Destination) /= Lazy_Token_Tag
+         then
+            raise Program_Error
+              with
+                "client-backed lazy SST read returned the wrong entry: disposition="
+                & Lazy_SST_Entry_Disposition'Image (Disposition)
+                & " sequence="
+                & Sequence_Number'Image (Sequence)
+                & " value_length="
+                & Natural'Image (Flyology.Bytes.Length (Value))
+                & " result="
+                & Outcome_Code'Image (Read_Result)
+                & " token="
+                & Boolean'Image (Flyology.Buffers.Has_Buffer (Destination));
+         end if;
+      end Read_And_Expect;
+   begin
+      Flyology.Buffers.Acquire (Lazy_Buffer);
+      Flyology.Buffers.Set_Tag (Lazy_Buffer, Lazy_Token_Tag);
+      Read_And_Expect
+        (Lazy_Buffer,
+         Lazy_Restored_Buffer,
+         Key_Data,
+         Receipt_Sequence (Commit_Info),
+         Lazy_Value_Found,
+         Receipt_Sequence (Commit_Info),
+         Value_Data,
+         Success);
+      Read_And_Expect
+        (Lazy_Restored_Buffer,
+         Lazy_Buffer,
+         Bytes ("z"),
+         Receipt_Sequence (Commit_Info),
+         Lazy_Key_Absent,
+         0,
+         Bytes (""),
+         Not_Found);
+      --  Reusable operations retain their idle set slot after Finish. This
+      --  focused fixture is done, so return that slot before later DB parents
+      --  exercise the same bounded completion set.
+      Flyology.Operations.Release (Lazy_Work);
+      Flyology.Buffers.Release (Lazy_Buffer);
+   exception
+      when others =>
+         Flyology.Buffers.Release (Lazy_Buffer);
+         Flyology.Buffers.Release (Lazy_Restored_Buffer);
+         raise;
+   end Test_Lazy_SST_Read;
 begin
    if Proxy_Enabled then
       declare
@@ -597,6 +703,11 @@ begin
    then
       raise Program_Error with "client-backed Flush receipt lost exact authority";
    end if;
+
+   --  The actual checkpoint just published an SST-v2 run. Read its exact
+   --  generation through Head, header, index, and one selected frame without
+   --  retaining the whole object; then reuse the same operation for absence.
+   Test_Lazy_SST_Read;
 
    --  Capture one caller-designated read-only handle at the first checkpoint.
    --  It remains deliberately stale while the writer appends families, Flushes,

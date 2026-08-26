@@ -14,15 +14,15 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
-The generation-bound lazy-SST-read design and private whole-object plus slice-local SST-v2 codecs change no selected
-SPARK unit. The runtime codecs remain executable boundaries qualified by the independent golden and fail-closed
-whole-object/index/frame corruption corpus. The maintained finite TLA+ lane exhausts
+The generation-bound lazy-SST-read design, private whole-object plus slice-local SST-v2 codecs, and private
+caller-driven read operation change no selected SPARK unit. The runtime codecs and owner-stack operation remain
+executable boundaries qualified by the independent golden, fail-closed corruption, ownership, and provider corpus.
+The maintained finite TLA+ lane exhausts
 16 distinct states to depth 6 with nonzero coverage for every normal and rejection action, detects stale-generation
 and frame-swap unsafe probes, and validates the allocation-rejection/provider-replacement witness. Its arbitrary-set
 TLAPS kernel proves 41/41 obligations for request typing, exact generation/frame binding, prepublication and failure
 atomicity, exact successful output, and quiescence. CRC arithmetic, byte-range arithmetic, refinement of the runtime
-codec to this model, allocation, Object Storage behavior, and the eventual owner-driven Ada read operation remain
-outside this claim.
+codec and operation to this model, allocation, and Object Storage behavior remain outside this claim.
 
 The exact SST-v2 whole-object and additive index/frame slice decoder trees each preserve the warning-strict
 selected-unit result at 1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or
@@ -30,6 +30,15 @@ selected-unit result at 1,097/1,097 proved checks, with zero warnings, unproved 
 Neither rerun turns the dynamic runtime codecs into selected SPARK units; checked U64/Natural geometry, checksum
 ordering, failure atomicity, and persisted-limit enforcement are qualified by the independent generator and
 executable corruption corpus.
+
+The operational SST-v2 publication, mixed v1/v2 recovery, and private lazy point-read candidate preserves the same
+warning-strict 1,097/1,097 selected checks with zero warnings, unproved or justified checks, or `pragma Assume`
+statements. The preliminary representation-information phase retains the established partial-data notice outside
+selected-unit analysis. The exact-tree post-run host audit found no GNATprove, Why3, SMT, TLC, TLAPS, or Apalache
+process. Executable evidence covers actual v2 Flush output, generation-bound Head/header/index/frame reads, found and
+absent keys, moved-token restoration, cancellation, short v1 headers, and one current manifest containing both v1
+and v2 runs through recovery allocation faults, compaction, and reopen. This is integration evidence, not a SPARK
+refinement proof of the dynamic codec, ownership state machine, or provider.
 
 The owned physical scan merge implementation changes no selected SPARK unit and preserves the exact warning-strict
 campaign at 1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or `pragma Assume`
