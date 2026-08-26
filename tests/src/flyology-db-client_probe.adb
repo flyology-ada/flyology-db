@@ -735,6 +735,60 @@ procedure Flyology.DB.Client_Probe is
       if Scan_Row_Count (Rows) /= 1 or else not Done then
          raise Program_Error with "blocking authenticated scan returned the wrong page";
       end if;
+
+      --  The whole-result overload waits on that same authenticated cursor
+      --  initializer and then requests one complete page under persisted live
+      --  limits; it does not rebuild visibility through the local checkpoint.
+      Scan
+        (Created,
+         Scan_Txn,
+         Family,
+         False,
+         Bytes (""),
+         False,
+         Bytes (""),
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Rows,
+         Result);
+      Expect (Result, Success, "whole authenticated scan failed");
+      if Scan_Row_Count (Rows) /= 1 then
+         raise Program_Error with "whole authenticated scan returned the wrong row count";
+      end if;
+      Read_Scan_Row (Rows, 1, Item_Key, Item_Value, Result);
+      Expect (Result, Success, "whole authenticated scan row read failed");
+      if not Same (Item_Key, Key_Data) or else not Same (Item_Value, Third_Value_Data) then
+         raise Program_Error with "whole authenticated scan returned the wrong fixed-snapshot bytes";
+      end if;
+
+      --  Initialization failure preserves both the exact caller token and the
+      --  prior complete result instead of publishing an empty or partial set.
+      Scan
+        (Created,
+         Scan_Txn,
+         Family,
+         False,
+         Bytes (""),
+         False,
+         Bytes (""),
+         Scan_Buffer,
+         0.0,
+         null,
+         Rows,
+         Result);
+      Expect (Result, Timed_Out, "whole authenticated scan ignored expired deadline");
+      if not Flyology.Buffers.Has_Buffer (Scan_Buffer)
+        or else Flyology.Buffers.Tag (Scan_Buffer) /= Scan_Tag
+        or else Scan_Row_Count (Rows) /= 1
+      then
+         raise Program_Error with "failed whole authenticated scan lost result or token authority";
+      end if;
+      Read_Scan_Row (Rows, 1, Item_Key, Item_Value, Result);
+      Expect (Result, Success, "preserved whole authenticated scan row read failed");
+      if not Same (Item_Key, Key_Data) or else not Same (Item_Value, Third_Value_Data) then
+         raise Program_Error with "failed whole authenticated scan changed prior row bytes";
+      end if;
       Flyology.Operations.Release (Work);
       Flyology.Operations.Release (Cancelled_Work);
       Rollback (Scan_Txn, Result);

@@ -17487,6 +17487,59 @@ package body Flyology.DB is
       Flyology.Operations.Release (Operation);
    end Start_Scan;
 
+   procedure Scan
+     (Item           : in out Database;
+      Txn            : aliased in out Transaction;
+      Family         : Column_Family;
+      Has_Lower      : Boolean;
+      Lower          : Byte_Array;
+      Has_Upper      : Boolean;
+      Upper          : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Rows           : in out Scan_Result;
+      Result         : out Outcome_Code)
+   is
+      Cursor : Scan_Cursor;
+      Done   : Boolean;
+   begin
+      Start_Scan
+        (Item,
+         Txn,
+         Family,
+         Has_Lower,
+         Lower,
+         Has_Upper,
+         Upper,
+         Payload_Buffer,
+         Timeout,
+         Token,
+         Cursor,
+         Result);
+      if Result /= Success then
+         return;
+      end if;
+      declare
+         State : constant Scan_Cursor_State_Access := Cursor.Owner.State;
+      begin
+         if State = null then
+            Result := Corrupt;
+            return;
+         end if;
+         Continue_Scan_Page
+           (Item,
+            Txn,
+            Cursor,
+            State.Maximum_Rows,
+            State.Maximum_Bytes,
+            Require_Complete => True,
+            Rows             => Rows,
+            Done             => Done,
+            Result           => Result);
+      end;
+   end Scan;
+
    overriding
    procedure Finalize (Item : in out Scan_Operation) is
    begin

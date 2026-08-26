@@ -35,6 +35,10 @@ There is no helper task, provider retry, prefetch, run-count default, or cache. 
 restoration and cursor-publication authority; it accepts any vacant handle from the original pool. Failure,
 cancellation, timeout, corruption, or allocation rejection preserves the caller's prior cursor exactly.
 
+The buffer-owned whole `Scan` overload is a literal blocking composition of that initialization and one complete
+page request using the cursor's persisted live-row and live-byte bounds. It adds no second storage reader or merge
+algorithm; page materialization retains the same atomic row and Serializable-predicate publication boundary.
+
 This is a deliberately limited end-to-end path. The caller buffer bounds each object transfer, while the completed
 cursor retains decoded immutable images for the selected run slice. Per-frame lazy scan traversal and a
 constant-memory claim remain later work; no hidden capacity or eviction policy is inferred from this implementation.

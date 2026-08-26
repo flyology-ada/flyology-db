@@ -1,5 +1,26 @@
 # Review record
 
+## Authenticated whole-scan wait candidate
+
+- Parent: authenticated physical scan initialization commit `14ff996c70bc6efcd0509c6c45f444cd24ec10ef`.
+- API decision: add one buffer-owned whole `Scan` overload beside the established storage-free whole call. It accepts
+  the already-authorized mandatory scratch buffer and timeout plus the established optional cancellation token; no
+  public default, limit, retry, task, cache, or provider policy is added.
+- Semantic reuse: the overload waits the same `Scan_Operation` as blocking cursor initialization, then requests one
+  complete page from that cursor using its exact persisted live-row and live-byte bounds. It therefore shares the
+  authenticated manifest-run reader, physical merge, row publication, and Serializable predicate boundary instead
+  of creating a third visibility path. Initialization or complete-page failure preserves the caller's prior rows,
+  and the exact scratch token is restored before local page materialization begins.
+- Findings cycle: P0 denotes data-loss, authority, or safety defects; P1 denotes wrong API, ownership, snapshot,
+  isolation, or failure semantics; and P2 denotes maintainability, documentation, or test weakness. API, ownership,
+  constants, merge, failure-atomicity, and unnecessary-surface review found no P0 or P1. It found and fixed two P2s:
+  the first test asserted only the row count, so it now reads and compares the exact fixed-snapshot key/value bytes;
+  it also omitted the wrapper-level failure-atomicity promise, so an expired-deadline case now verifies exact prior
+  row bytes and scratch-token restoration. The repeated sweep found no remaining actionable P0, P1, or P2 finding.
+- Verification boundary: root/nested builds, full maintained deterministic tests, repository and GNATdoc gates,
+  `git diff --check`, the maintained TLA/TLC/TLAPS gate, warning-strict GNATprove, and a coordinated clean formal
+  process audit are required on the frozen source tree.
+
 ## Authenticated physical scan initialization candidate
 
 - Parent: shared TLA harness migration commit `d13c1a1`.

@@ -107,3 +107,10 @@ token. The maintained authenticated client fixture exercises suffix and checkpoi
 cancellation, timeout, Serializable observation, and exact token restoration. This does not replace or silently
 change the provider-neutral storage-free `Get` used by the Files acceptance showcase; direct memory/files lazy reads
 remain a separate execution decision.
+
+Authenticated scans use the same additive pattern. `Scan_Operation` initializes the established physical cursor
+from the exact manifest run slice under one caller scratch token and deadline. Its blocking `Start_Scan` waits that
+operation, while the buffer-owned whole `Scan` overload immediately requests one complete page from the same cursor
+under persisted live-state limits. Neither form adds a second visibility engine, retry, helper task, page default,
+run cap, or cache. The cursor currently retains decoded run images, so frame-streamed paging and constant-memory
+claims remain outside the accepted boundary.

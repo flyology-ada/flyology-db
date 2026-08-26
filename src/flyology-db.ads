@@ -748,6 +748,42 @@ package Flyology.DB is
      Pre  => Flyology.Buffers.Has_Buffer (Payload_Buffer),
      Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
+   --  Materialize a complete authenticated fixed-snapshot interval by
+   --  waiting on the same Scan_Operation used by caller-composable cursor
+   --  initialization, then requesting one complete page from that cursor's
+   --  established physical merge engine. Persisted live-row and live-byte
+   --  limits are the complete-page budgets; no page default, second storage
+   --  path, helper task, retry, or additional capacity is introduced. Rows is
+   --  replaced only on Success, and Payload_Buffer is always restored.
+   --  @param Item Open client-bound database owning the fixed snapshot
+   --  @param Txn Active transaction retained for the duration of the call
+   --  @param Family Valid handle selecting persisted family limits and identity
+   --  @param Has_Lower True when Lower is the inclusive endpoint
+   --  @param Lower Inclusive endpoint bytes, ignored when Has_Lower is false
+   --  @param Has_Upper True when Upper is the exclusive endpoint
+   --  @param Upper Exclusive endpoint bytes, ignored when Has_Upper is false
+   --  @param Payload_Buffer Acquired caller scratch token restored before return
+   --  @param Timeout Caller-selected duration for authenticated initialization
+   --  @param Token Optional caller-owned cancellation token
+   --  @param Rows Controlled owned result replaced only on Success
+   --  @param Result Success or the exact validation, capacity, storage, or lifecycle outcome
+   procedure Scan
+     (Item           : in out Database;
+      Txn            : aliased in out Transaction;
+      Family         : Column_Family;
+      Has_Lower      : Boolean;
+      Lower          : Byte_Array;
+      Has_Upper      : Boolean;
+      Upper          : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Rows           : in out Scan_Result;
+      Result         : out Outcome_Code)
+   with
+     Pre  => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
    --  Materialize the maximal next contiguous page that fits both explicit
    --  caller budgets. Maximum_Rows and Maximum_Bytes have no defaults and are
    --  per-call backpressure, not persisted or library-selected policy. When a
