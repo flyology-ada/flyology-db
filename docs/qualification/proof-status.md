@@ -14,6 +14,16 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
+The fixed-snapshot paged-scan implementation candidate preserves the exact warning-strict selected-unit boundary at
+1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or `pragma Assume` statements. The new
+cursor, mutation-version witness, source sorting, repeated page materialization, allocation rollback, and controlled
+ownership live outside the selected SPARK units and are executable integration boundaries rather than new proof
+claims. Their matching maintained TLA/TLAPS lane explores 341 distinct states to depth 6, detects skipped-key and
+nonmaximal-page negative probes, validates the frozen-page/capacity/allocation/concurrent witness, and proves 24/24
+obligations. The deterministic and 18-lane provider suites qualify exact runtime ordering, fixed-snapshot behavior,
+own-write invalidation, Serializable predicate retention, and checkpoint-plus-suffix reopen. No refinement proof
+between the Ada materializer and the model is claimed.
+
 The caller-composable replica-refresh candidate preserves the exact warning-strict selected-unit boundary at
 1,097/1,097 proved checks. The owner-stack recovery driver, retained lifecycle wake, provider-owned Head/range/whole
 children, moved-buffer restoration, and monotonic engine installation remain executable integration boundaries rather

@@ -102,11 +102,13 @@ and drives the equivalent backend-neutral publisher for memory/files. Streaming/
 run pruning, and retention/GC policy remain later focused units, so Milestone 4
 remains incomplete.
 
-The fixed-snapshot paged-scan contract is now formalized before implementation: caller-supplied row/byte budgets,
-maximal contiguous pages, empty-view completion, and atomic capacity/allocation rejection have a maintained
-TLC/TLAPS lane and executable witness. The additive Ada cursor and its deterministic/provider qualification remain
-pending, and the first bounded page implementation will not be described as a physical merge iterator until source
-capture and repeated traversal are removed. See [`paged-scans.md`](paged-scans.md).
+The fixed-snapshot paged-scan contract now has an additive Ada cursor plus maintained formal and executable evidence.
+Caller-supplied row/byte budgets, maximal contiguous pages, empty-view completion, atomic capacity/allocation
+rejection, own-mutation invalidation, one-time Serializable predicate retention, and checkpoint-plus-suffix reopen
+are qualified across the deterministic suite and all provider lanes. The implementation deliberately reuses bounded
+source capture and repeated traversal, so it remains paged materialization rather than a physical merge iterator.
+Removing that repeated work remains part of the unfinished streaming/physical-scan milestone. See
+[`paged-scans.md`](paged-scans.md).
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
 pins, lagging-replica pins, required predecessor reachability, and unresolved publication attempts each retain exact

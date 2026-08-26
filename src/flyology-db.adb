@@ -106,6 +106,10 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Scan_Row_Descriptor_Array, Scan_Row_Descriptor_Array_Access);
    procedure Free_Scan_Result_State is new
      Ada.Unchecked_Deallocation (Scan_Result_State, Scan_Result_State_Access);
+   procedure Free_Scan_Cursor_Bytes is new
+     Ada.Unchecked_Deallocation (Byte_Array, Scan_Cursor_Byte_Array_Access);
+   procedure Free_Scan_Cursor_State is new
+     Ada.Unchecked_Deallocation (Scan_Cursor_State, Scan_Cursor_State_Access);
    procedure Free_L0_Checkpoint_Families is new
      Ada.Unchecked_Deallocation (L0_Checkpoint_Family_Array, L0_Checkpoint_Family_Array_Access);
    procedure Free_Transaction_Arena is new
@@ -274,6 +278,22 @@ package body Flyology.DB is
    procedure Finalize (Item : in out Scan_Result_Owner) is
    begin
       Release_Scan_Result (Item.State);
+   end Finalize;
+
+   procedure Release_Scan_Cursor (State : in out Scan_Cursor_State_Access) is
+   begin
+      if State /= null then
+         Free_Scan_Cursor_Bytes (State.Lower);
+         Free_Scan_Cursor_Bytes (State.Upper);
+         Free_Scan_Cursor_Bytes (State.Last_Key);
+         Free_Scan_Cursor_State (State);
+      end if;
+   end Release_Scan_Cursor;
+
+   overriding
+   procedure Finalize (Item : in out Scan_Cursor_Owner) is
+   begin
+      Release_Scan_Cursor (Item.State);
    end Finalize;
 
    overriding
@@ -11057,6 +11077,9 @@ package body Flyology.DB is
          Result);
       if Result /= Success then
          return;
+      elsif Txn.Owner.Arena.Mutation_Version = Interfaces.Unsigned_64'Last then
+         Result := Capacity_Exceeded;
+         return;
       end if;
 
       Allocation_Faults.Check (Transaction_Payload_Allocation);
@@ -11083,6 +11106,7 @@ package body Flyology.DB is
          Flyology.Bytes.Move (Mutation.Payload, Candidate);
       end;
       Txn.Owner.Arena.Bytes_Used := Txn.Owner.Arena.Bytes_Used - Old_Bytes + New_Bytes;
+      Txn.Owner.Arena.Mutation_Version := Txn.Owner.Arena.Mutation_Version + 1;
       Image_Accounting.Record_Transaction_Copy (Natural (New_Bytes));
       Result := Success;
    exception
@@ -11249,7 +11273,7 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
    end Observe_Range;
 
-   procedure Scan
+   procedure Start_Scan
      (Item      : in out Database;
       Txn       : in out Transaction;
       Family    : Column_Family;
@@ -11257,24 +11281,122 @@ package body Flyology.DB is
       Lower     : Byte_Array;
       Has_Upper : Boolean;
       Upper     : Byte_Array;
-      Rows      : in out Scan_Result;
+      Cursor    : in out Scan_Cursor;
       Result    : out Outcome_Code)
    is
-      Lease          : Lifecycle_Lease;
-      Head           : Head_Snapshot;
-      Generation     : Generation_Value;
-      Uncertain      : Boolean;
-      Fenced         : Boolean;
-      Configuration  : Column_Family_Configuration;
-      Sources        : Scan_Source_Array_Access := null;
-      Source_Count   : Natural := 0;
-      Captured       : Natural := 0;
-      Own_Count      : Natural := 0;
-      Maximum_Rows   : Interfaces.Unsigned_32 := 0;
-      Maximum_Bytes  : Interfaces.Unsigned_64 := 0;
-      Selected_Count : Natural := 0;
-      Selected_Bytes : Interfaces.Unsigned_64 := 0;
-      Candidate      : Scan_Result_State_Access := null;
+      Lease         : Lifecycle_Lease;
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Uncertain     : Boolean;
+      Fenced        : Boolean;
+      Configuration : Column_Family_Configuration;
+      Candidate     : Scan_Cursor_State_Access := null;
+   begin
+      if not Txn.Active or else Txn.Owner.Arena = null then
+         Result := Invalid_State;
+         return;
+      end if;
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Txn.Database_ID /= Head.Database_ID
+        or else Txn.Incarnation /= Lease.State.Gate.Current_Incarnation
+      then
+         Result := Invalid_State;
+         return;
+      elsif Uncertain then
+         Result := Outcome_Unknown;
+         return;
+      elsif Fenced then
+         Result := Stale_Writer;
+         return;
+      end if;
+      Lease.State.Gate.Validate_Family (Family, Configuration, Result);
+      if Result /= Success then
+         return;
+      elsif (Has_Lower and then Interfaces.Unsigned_64 (Lower'Length) > Configuration.Max_Key_Bytes)
+        or else (Has_Upper and then Interfaces.Unsigned_64 (Upper'Length) > Configuration.Max_Key_Bytes)
+      then
+         Result := Capacity_Exceeded;
+         return;
+      elsif Has_Lower and then Has_Upper and then Compare_Bytes (Lower, Upper) /= Before then
+         Result := Invalid_State;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Scan_Cursor_State_Allocation);
+      Candidate := new Scan_Cursor_State;
+      if Has_Lower then
+         Allocation_Faults.Check (Scan_Cursor_Lower_Allocation);
+         Candidate.Lower := new Byte_Array'(Lower);
+      end if;
+      if Has_Upper then
+         Allocation_Faults.Check (Scan_Cursor_Upper_Allocation);
+         Candidate.Upper := new Byte_Array'(Upper);
+      end if;
+      Candidate.Active := True;
+      Candidate.Database_ID := Txn.Database_ID;
+      Candidate.Incarnation := Txn.Incarnation;
+      Candidate.Transaction_ID := Txn.Transaction_ID;
+      Candidate.Snapshot_At := Txn.Snapshot_At;
+      Candidate.Mutation_Version := Txn.Owner.Arena.Mutation_Version;
+      Candidate.Family := Configuration;
+      Candidate.Has_Lower := Has_Lower;
+      Candidate.Has_Upper := Has_Upper;
+      declare
+         Previous : constant Scan_Cursor_State_Access := Cursor.Owner.State;
+      begin
+         Cursor.Owner.State := Candidate;
+         Candidate := Previous;
+      end;
+      Release_Scan_Cursor (Candidate);
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Release_Scan_Cursor (Candidate);
+         Result := Capacity_Exceeded;
+   end Start_Scan;
+
+   procedure Materialize_Scan
+     (Item               : in out Database;
+      Txn                : in out Transaction;
+      Family             : Column_Family;
+      Has_Lower          : Boolean;
+      Lower              : Byte_Array;
+      Has_Upper          : Boolean;
+      Upper              : Byte_Array;
+      Has_After          : Boolean;
+      After_Key          : Byte_Array;
+      Page_Mode          : Boolean;
+      Page_Maximum_Rows  : Interfaces.Unsigned_32;
+      Page_Maximum_Bytes : Interfaces.Unsigned_64;
+      Record_Predicate   : Boolean;
+      Cursor_State       : Scan_Cursor_State_Access;
+      Rows               : in out Scan_Result;
+      Done               : out Boolean;
+      Result             : out Outcome_Code)
+   is
+      Lease                  : Lifecycle_Lease;
+      Head                   : Head_Snapshot;
+      Generation             : Generation_Value;
+      Uncertain              : Boolean;
+      Fenced                 : Boolean;
+      Configuration          : Column_Family_Configuration;
+      Sources                : Scan_Source_Array_Access := null;
+      Source_Count           : Natural := 0;
+      Captured               : Natural := 0;
+      Own_Count              : Natural := 0;
+      Persisted_Maximum_Rows : Interfaces.Unsigned_32 := 0;
+      Persisted_Maximum_Bytes : Interfaces.Unsigned_64 := 0;
+      Maximum_Rows           : Interfaces.Unsigned_32 := 0;
+      Maximum_Bytes          : Interfaces.Unsigned_64 := 0;
+      Selected_Count         : Natural := 0;
+      Selected_Bytes         : Interfaces.Unsigned_64 := 0;
+      More_Rows              : Boolean := False;
+      Candidate              : Scan_Result_State_Access := null;
+      Candidate_Last         : Scan_Cursor_Byte_Array_Access := null;
 
       function Key_Byte (Source : Scan_Source; Offset : Natural) return Byte is
       begin
@@ -11333,47 +11455,52 @@ package body Flyology.DB is
          return Source.Key_Length < Bound'Length;
       end Key_Before_Bound;
 
-      function In_Range (Source : Scan_Source) return Boolean
-      is ((not Has_Lower or else not Key_Before_Bound (Source, Lower))
-          and then (not Has_Upper or else Key_Before_Bound (Source, Upper)));
-
-      function Already_Seen (Index : Positive) return Boolean is
+      function Key_After_Bound (Source : Scan_Source; Bound : Byte_Array) return Boolean is
+         Common : constant Natural := Natural'Min (Source.Key_Length, Bound'Length);
       begin
-         if Index > Sources'First then
-            for Previous in Sources'First .. Index - 1 loop
-               if Same_Key (Sources (Previous), Sources (Index)) then
+         if Common > 0 then
+            for Offset in Natural range 0 .. Common - 1 loop
+               if Key_Byte (Source, Offset) > Bound (Bound'First + Offset) then
                   return True;
+               elsif Key_Byte (Source, Offset) < Bound (Bound'First + Offset) then
+                  return False;
                end if;
             end loop;
          end if;
-         return False;
-      end Already_Seen;
+         return Source.Key_Length > Bound'Length;
+      end Key_After_Bound;
 
-      function Add_Selected_Bytes (Key_Length, Value_Length : Natural) return Boolean is
-         Amount : Interfaces.Unsigned_64;
+      function Key_Less (Left, Right : Scan_Source) return Boolean is
+         Common : constant Natural := Natural'Min (Left.Key_Length, Right.Key_Length);
       begin
-         --  Each operand is at most signed Natural'Last, so their sum fits
-         --  Unsigned_64 on every supported GNAT target. The persisted database
-         --  byte limit below remains the authority for admission.
-         Amount := Interfaces.Unsigned_64 (Key_Length) + Interfaces.Unsigned_64 (Value_Length);
-         if Interfaces.Unsigned_64 (Selected_Count) >= Interfaces.Unsigned_64 (Maximum_Rows)
-           or else Amount > Maximum_Bytes
-           or else Selected_Bytes > Maximum_Bytes - Amount
-         then
-            return False;
+         if Common > 0 then
+            for Offset in Natural range 0 .. Common - 1 loop
+               if Key_Byte (Left, Offset) < Key_Byte (Right, Offset) then
+                  return True;
+               elsif Key_Byte (Left, Offset) > Key_Byte (Right, Offset) then
+                  return False;
+               end if;
+            end loop;
          end if;
-         Selected_Count := Selected_Count + 1;
-         Selected_Bytes := Selected_Bytes + Amount;
-         return True;
-      end Add_Selected_Bytes;
+         return Left.Key_Length < Right.Key_Length;
+      end Key_Less;
 
-      procedure Select_Source (Index : Positive) is
+      function In_Range (Source : Scan_Source) return Boolean
+      is ((not Has_Lower or else not Key_Before_Bound (Source, Lower))
+          and then (not Has_Upper or else Key_Before_Bound (Source, Upper))
+          and then (not Has_After or else Key_After_Bound (Source, After_Key)));
+
+      procedure Resolve_Source
+        (Index : Positive; Live : out Boolean; Amount : out Interfaces.Unsigned_64)
+      is
          Own_Index    : Natural := 0;
          Image        : Shared_Image_Access;
          Value_Offset : Natural;
          Value_Length : Natural;
          Lookup       : Outcome_Code;
       begin
+         Live := False;
+         Amount := 0;
          for Mutation_Index in reverse Positive range 1 .. Txn.Owner.Arena.Count loop
             if Txn.Owner.Arena.Mutations (Mutation_Index).Family = Family.Configuration.ID
               and then Same_Mutation_Key (Sources (Index), Txn.Owner.Arena.Mutations (Mutation_Index))
@@ -11385,15 +11512,14 @@ package body Flyology.DB is
          if Own_Index > 0 then
             if Txn.Owner.Arena.Mutations (Own_Index).Operation = Delete_Mutation then
                return;
-            elsif not Add_Selected_Bytes
-                        (Sources (Index).Key_Length, Txn.Owner.Arena.Mutations (Own_Index).Value_Length)
-            then
-               Result := Capacity_Exceeded;
-               return;
             end if;
+            Amount :=
+              Interfaces.Unsigned_64 (Sources (Index).Key_Length)
+              + Interfaces.Unsigned_64 (Txn.Owner.Arena.Mutations (Own_Index).Value_Length);
             Sources (Index).Selected := True;
             Sources (Index).Selected_Value_Length := Txn.Owner.Arena.Mutations (Own_Index).Value_Length;
             Sources (Index).Selected_Arena_Index := Own_Index;
+            Live := True;
             return;
          end if;
          declare
@@ -11419,44 +11545,24 @@ package body Flyology.DB is
          elsif Lookup /= Success then
             Result := Lookup;
             return;
-         elsif not Add_Selected_Bytes (Sources (Index).Key_Length, Value_Length) then
-            Result := Capacity_Exceeded;
-            return;
          end if;
+         Amount :=
+           Interfaces.Unsigned_64 (Sources (Index).Key_Length) + Interfaces.Unsigned_64 (Value_Length);
          Sources (Index).Selected := True;
          Sources (Index).Selected_Image := Image;
          Sources (Index).Selected_Value_Offset := Value_Offset;
          Sources (Index).Selected_Value_Length := Value_Length;
-      end Select_Source;
-
-      function Row_Key_Less (Left, Right : Scan_Row_Descriptor) return Boolean is
-         Common : constant Natural := Natural'Min (Left.Key_Length, Right.Key_Length);
-      begin
-         if Common > 0 then
-            for Offset in Natural range 0 .. Common - 1 loop
-               declare
-                  Left_Byte  : constant Ada.Streams.Stream_Element :=
-                    Flyology.Bytes.Element (Candidate.Payload, Left.Key_Offset + Offset + 1);
-                  Right_Byte : constant Ada.Streams.Stream_Element :=
-                    Flyology.Bytes.Element (Candidate.Payload, Right.Key_Offset + Offset + 1);
-               begin
-                  if Left_Byte < Right_Byte then
-                     return True;
-                  elsif Left_Byte > Right_Byte then
-                     return False;
-                  end if;
-               end;
-            end loop;
-         end if;
-         return Left.Key_Length < Right.Key_Length;
-      end Row_Key_Less;
+         Live := True;
+      end Resolve_Source;
 
       procedure Release_Work is
       begin
          Free_Scan_Sources (Sources);
          Release_Scan_Result (Candidate);
+         Free_Scan_Cursor_Bytes (Candidate_Last);
       end Release_Work;
    begin
+      Done := False;
       if not Txn.Active or else Txn.Owner.Arena = null then
          Result := Invalid_State;
          return;
@@ -11500,12 +11606,20 @@ package body Flyology.DB is
          Lease.State.Checkpoint_Base,
          Own_Count,
          Source_Count,
-         Maximum_Rows,
-         Maximum_Bytes,
+         Persisted_Maximum_Rows,
+         Persisted_Maximum_Bytes,
          Result);
       if Result /= Success then
          return;
       end if;
+      Maximum_Rows :=
+        (if Page_Mode
+         then Interfaces.Unsigned_32'Min (Page_Maximum_Rows, Persisted_Maximum_Rows)
+         else Persisted_Maximum_Rows);
+      Maximum_Bytes :=
+        (if Page_Mode
+         then Interfaces.Unsigned_64'Min (Page_Maximum_Bytes, Persisted_Maximum_Bytes)
+         else Persisted_Maximum_Bytes);
       if Source_Count > 0 then
          Allocation_Faults.Check (Scan_Source_Allocation);
          Sources := new Scan_Source_Array (1 .. Source_Count);
@@ -11538,10 +11652,53 @@ package body Flyology.DB is
          return;
       end if;
       if Sources /= null then
+         for Index in Positive range Sources'First + 1 .. Sources'Last loop
+            declare
+               Value    : constant Scan_Source := Sources (Index);
+               Position : Positive := Index;
+            begin
+               while Position > Sources'First
+                 and then Key_Less (Value, Sources (Position - 1))
+               loop
+                  Sources (Position) := Sources (Position - 1);
+                  Position := Position - 1;
+               end loop;
+               Sources (Position) := Value;
+            end;
+         end loop;
          for Index in Sources'Range loop
-            if In_Range (Sources (Index)) and then not Already_Seen (Index) then
-               Result := Success;
-               Select_Source (Index);
+            if In_Range (Sources (Index))
+              and then (Index = Sources'First or else not Same_Key (Sources (Index - 1), Sources (Index)))
+            then
+               declare
+                  Live   : Boolean;
+                  Amount : Interfaces.Unsigned_64;
+               begin
+                  Result := Success;
+                  Resolve_Source (Index, Live, Amount);
+                  if Result /= Success then
+                     Release_Work;
+                     return;
+                  elsif Live
+                    and then
+                      (Interfaces.Unsigned_64 (Selected_Count) >= Interfaces.Unsigned_64 (Maximum_Rows)
+                       or else Amount > Maximum_Bytes
+                       or else Selected_Bytes > Maximum_Bytes - Amount)
+                  then
+                     Sources (Index).Selected := False;
+                     if Page_Mode and then Selected_Count > 0 then
+                        More_Rows := True;
+                        exit;
+                     else
+                        Release_Work;
+                        Result := Capacity_Exceeded;
+                        return;
+                     end if;
+                  elsif Live then
+                     Selected_Count := Selected_Count + 1;
+                     Selected_Bytes := Selected_Bytes + Amount;
+                  end if;
+               end;
                if Result /= Success then
                   Release_Work;
                   return;
@@ -11599,22 +11756,20 @@ package body Flyology.DB is
                end if;
             end loop;
          end;
-         for Index in Positive range 2 .. Candidate.Count loop
+         if Page_Mode then
             declare
-               Value    : constant Scan_Row_Descriptor := Candidate.Rows (Index);
-               Position : Positive := Index;
+               Last_Row : Scan_Row_Descriptor renames Candidate.Rows (Candidate.Count);
             begin
-               while Position > Candidate.Rows'First
-                 and then Row_Key_Less (Value, Candidate.Rows (Position - 1))
-               loop
-                  Candidate.Rows (Position) := Candidate.Rows (Position - 1);
-                  Position := Position - 1;
+               Allocation_Faults.Check (Scan_Cursor_Last_Key_Allocation);
+               Candidate_Last := new Byte_Array (1 .. Last_Row.Key_Length);
+               for Offset in Positive range 1 .. Last_Row.Key_Length loop
+                  Candidate_Last (Offset) :=
+                    Byte (Flyology.Bytes.Element (Candidate.Payload, Last_Row.Key_Offset + Offset));
                end loop;
-               Candidate.Rows (Position) := Value;
             end;
-         end loop;
+         end if;
       end if;
-      if Txn.Isolation = Serializable then
+      if Record_Predicate and then Txn.Isolation = Serializable then
          Record_Scan_Range (Txn, Family.Configuration.ID, Has_Lower, Lower, Has_Upper, Upper, Result);
          if Result /= Success then
             Release_Work;
@@ -11628,13 +11783,161 @@ package body Flyology.DB is
          Rows.Owner.State := Candidate;
          Candidate := Previous;
       end;
+      if Page_Mode then
+         if Selected_Count > 0 then
+            declare
+               Previous : constant Scan_Cursor_Byte_Array_Access := Cursor_State.Last_Key;
+            begin
+               Cursor_State.Last_Key := Candidate_Last;
+               Candidate_Last := Previous;
+            end;
+            Cursor_State.Has_Last := True;
+         end if;
+         if Record_Predicate and then Txn.Isolation = Serializable then
+            Cursor_State.Predicate_Recorded := True;
+         end if;
+         Cursor_State.Done := not More_Rows;
+         Done := Cursor_State.Done;
+      else
+         Done := True;
+      end if;
       Release_Scan_Result (Candidate);
+      Free_Scan_Cursor_Bytes (Candidate_Last);
       Result := Success;
    exception
       when Storage_Error =>
          Release_Work;
          Result := Capacity_Exceeded;
+   end Materialize_Scan;
+
+   procedure Scan
+     (Item      : in out Database;
+      Txn       : in out Transaction;
+      Family    : Column_Family;
+      Has_Lower : Boolean;
+      Lower     : Byte_Array;
+      Has_Upper : Boolean;
+      Upper     : Byte_Array;
+      Rows      : in out Scan_Result;
+      Result    : out Outcome_Code)
+   is
+      Empty_Key : constant Byte_Array (1 .. 0) := [];
+      Done      : Boolean;
+   begin
+      Materialize_Scan
+        (Item,
+         Txn,
+         Family,
+         Has_Lower,
+         Lower,
+         Has_Upper,
+         Upper,
+         Has_After          => False,
+         After_Key          => Empty_Key,
+         Page_Mode          => False,
+         Page_Maximum_Rows  => 0,
+         Page_Maximum_Bytes => 0,
+         Record_Predicate   => True,
+         Cursor_State       => null,
+         Rows               => Rows,
+         Done               => Done,
+         Result             => Result);
    end Scan;
+
+   procedure Next_Scan_Page
+     (Item          : in out Database;
+      Txn           : in out Transaction;
+      Cursor        : in out Scan_Cursor;
+      Maximum_Rows  : Interfaces.Unsigned_32;
+      Maximum_Bytes : Interfaces.Unsigned_64;
+      Rows          : in out Scan_Result;
+      Done          : out Boolean;
+      Result        : out Outcome_Code)
+   is
+      State     : constant Scan_Cursor_State_Access := Cursor.Owner.State;
+      Empty_Key : constant Byte_Array (1 .. 0) := [];
+      Family    : Column_Family;
+
+      procedure Run_With_Bounds (Lower_Value, Upper_Value : Byte_Array) is
+      begin
+         if State.Has_Last then
+            Materialize_Scan
+              (Item,
+               Txn,
+               Family,
+               State.Has_Lower,
+               Lower_Value,
+               State.Has_Upper,
+               Upper_Value,
+               Has_After          => True,
+               After_Key          => State.Last_Key.all,
+               Page_Mode          => True,
+               Page_Maximum_Rows  => Maximum_Rows,
+               Page_Maximum_Bytes => Maximum_Bytes,
+               Record_Predicate   =>
+                 Txn.Isolation = Serializable and then not State.Predicate_Recorded,
+               Cursor_State       => State,
+               Rows               => Rows,
+               Done               => Done,
+               Result             => Result);
+         else
+            Materialize_Scan
+              (Item,
+               Txn,
+               Family,
+               State.Has_Lower,
+               Lower_Value,
+               State.Has_Upper,
+               Upper_Value,
+               Has_After          => False,
+               After_Key          => Empty_Key,
+               Page_Mode          => True,
+               Page_Maximum_Rows  => Maximum_Rows,
+               Page_Maximum_Bytes => Maximum_Bytes,
+               Record_Predicate   =>
+                 Txn.Isolation = Serializable and then not State.Predicate_Recorded,
+               Cursor_State       => State,
+               Rows               => Rows,
+               Done               => Done,
+               Result             => Result);
+         end if;
+      end Run_With_Bounds;
+   begin
+      Done := False;
+      if State = null
+        or else not State.Active
+        or else State.Done
+        or else (State.Has_Lower and then State.Lower = null)
+        or else (State.Has_Upper and then State.Upper = null)
+        or else (State.Has_Last and then State.Last_Key = null)
+        or else not Txn.Active
+        or else Txn.Owner.Arena = null
+        or else Txn.Database_ID /= State.Database_ID
+        or else Txn.Incarnation /= State.Incarnation
+        or else Txn.Transaction_ID /= State.Transaction_ID
+        or else Txn.Snapshot_At /= State.Snapshot_At
+        or else Txn.Owner.Arena.Mutation_Version /= State.Mutation_Version
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+      Family :=
+        (Valid         => True,
+         Database_ID   => State.Database_ID,
+         Incarnation   => State.Incarnation,
+         Configuration => State.Family);
+      if State.Has_Lower then
+         if State.Has_Upper then
+            Run_With_Bounds (State.Lower.all, State.Upper.all);
+         else
+            Run_With_Bounds (State.Lower.all, Empty_Key);
+         end if;
+      elsif State.Has_Upper then
+         Run_With_Bounds (Empty_Key, State.Upper.all);
+      else
+         Run_With_Bounds (Empty_Key, Empty_Key);
+      end if;
+   end Next_Scan_Page;
 
    function Scan_Row_Count (Item : Scan_Result) return Natural
    is (if Item.Owner.State = null then 0 else Item.Owner.State.Count);

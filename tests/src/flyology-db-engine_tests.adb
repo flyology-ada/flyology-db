@@ -384,6 +384,48 @@ package body Flyology.DB.Engine_Tests is
       end if;
    end Scan;
 
+   procedure Start_Scan
+     (Item      : in out Database;
+      Txn       : in out Transaction;
+      Family    : Column_Family_ID;
+      Has_Lower : Boolean;
+      Lower     : Key;
+      Has_Upper : Boolean;
+      Upper     : Key;
+      Cursor    : in out Scan_Cursor;
+      Result    : out Outcome_Code)
+   is
+      Handle : Column_Family;
+   begin
+      Open_Column_Family (Item, Family, Handle, Result);
+      if Result = Success then
+         Root_DB.Start_Scan
+           (Item,
+            Txn,
+            Handle,
+            Has_Lower,
+            Key_Data (Lower),
+            Has_Upper,
+            Key_Data (Upper),
+            Cursor,
+            Result);
+      end if;
+   end Start_Scan;
+
+   procedure Next_Scan_Page
+     (Item          : in out Database;
+      Txn           : in out Transaction;
+      Cursor        : in out Scan_Cursor;
+      Maximum_Rows  : Interfaces.Unsigned_32;
+      Maximum_Bytes : Interfaces.Unsigned_64;
+      Rows          : in out Scan_Result;
+      Done          : out Boolean;
+      Result        : out Outcome_Code) is
+   begin
+      Root_DB.Next_Scan_Page
+        (Item, Txn, Cursor, Maximum_Rows, Maximum_Bytes, Rows, Done, Result);
+   end Next_Scan_Page;
+
    procedure Expect_Scan_Row
      (Rows : Scan_Result; Position : Positive; Expected_Key : Key; Expected : Value; Context : String)
    is
@@ -7425,12 +7467,14 @@ package body Flyology.DB.Engine_Tests is
       Reader         : aliased Transaction;
       Writer         : aliased Transaction;
       Rows           : Scan_Result;
+      Cursor         : Scan_Cursor;
       Receipt        : Commit_Receipt;
       Create_Info    : Create_Receipt;
       Result         : Outcome_Code;
       Family         : Column_Family;
       Actual_Key     : Flyology.Bytes.Unbounded_Bytes;
       Actual_Data    : Flyology.Bytes.Unbounded_Bytes;
+      Done           : Boolean;
       --  Identity namespace 62_000..62_033 and one-byte value tags isolate
       --  this deterministic scan campaign. They are witnesses only, not
       --  persisted format tags or application identity/value policy.
@@ -7527,9 +7571,85 @@ package body Flyology.DB.Engine_Tests is
 
       Begin_Transaction (Item, Numbered_TX_ID (62_003), Reader, Result);
       Expect (Result, Success, "fixed scan reader begin failed");
+
+      --  [Marker, High_Key) is a valid interval with no visible row before
+      --  the later suffix write. Zero budgets therefore publish the canonical
+      --  empty final page; these values are boundary inputs, not page defaults.
+      Start_Scan (Item, Reader, 1, True, Marker, True, High_Key, Cursor, Result);
+      Expect (Result, Success, "empty-view cursor start failed");
+      Next_Scan_Page (Item, Reader, Cursor, 0, 0, Rows, Done, Result);
+      Expect (Result, Success, "empty-view zero-budget page failed");
+      if not Done then
+         raise Program_Error with "empty-view page did not complete";
+      end if;
+      Expect_Count (0, "empty-view page");
+      Next_Scan_Page (Item, Reader, Cursor, 1, 1, Rows, Done, Result);
+      Expect (Result, Invalid_State, "completed scan cursor restarted implicitly");
+      if Done then
+         raise Program_Error with "failed completed-cursor call returned Done";
+      end if;
+
+      Start_Scan (Item, Reader, 1, False, Key_A, False, Key_D, Cursor, Result);
+      Expect (Result, Success, "fixed page cursor start failed");
+      --  These three test-only faults cover the owned cursor state and each
+      --  present endpoint copy. Every failed restart must preserve the prior
+      --  unbounded cursor; no product allocation budget is selected here.
+      Set_Test_Allocation_Fault (Scan_Cursor_State_Allocation);
+      Start_Scan (Item, Reader, 1, True, Key_B, True, Key_C, Cursor, Result);
+      Expect (Result, Capacity_Exceeded, "cursor state failure was misclassified");
+      Set_Test_Allocation_Fault (Scan_Cursor_Lower_Allocation);
+      Start_Scan (Item, Reader, 1, True, Key_B, True, Key_C, Cursor, Result);
+      Expect (Result, Capacity_Exceeded, "cursor lower failure was misclassified");
+      Set_Test_Allocation_Fault (Scan_Cursor_Upper_Allocation);
+      Start_Scan (Item, Reader, 1, True, Key_B, True, Key_C, Cursor, Result);
+      Expect (Result, Capacity_Exceeded, "cursor upper failure was misclassified");
+
       Commit_Write (62_004, Key_B, To_Value ([13]));
       Commit_Write (62_005, Key_C, To_Value ([]), Delete_Item => True);
       Commit_Write (62_006, Key_D, To_Value ([14]));
+
+      --  Two rows/three bytes exactly admit empty-key and Key_A. Subsequent
+      --  budgets exercise an indivisible-row rejection, last-key allocation
+      --  rollback, and maximal continuation over the frozen pre-write view.
+      Next_Scan_Page (Item, Reader, Cursor, 2, 3, Rows, Done, Result);
+      Expect (Result, Success, "fixed first page failed");
+      if Done then
+         raise Program_Error with "fixed first page completed early";
+      end if;
+      Expect_Count (2, "fixed first page");
+      Expect_Scan_Row (Rows, 1, Empty_Key, To_Value ([1]), "fixed first-page empty key");
+      Expect_Scan_Row (Rows, 2, Key_A, To_Value ([2]), "fixed first-page A");
+      Next_Scan_Page (Item, Reader, Cursor, 1, 1, Rows, Done, Result);
+      Expect (Result, Capacity_Exceeded, "undersized next-row page was admitted");
+      if Done then
+         raise Program_Error with "capacity-rejected page returned Done";
+      end if;
+      Expect_Count (2, "capacity-rejected page atomicity");
+      Expect_Scan_Row (Rows, 2, Key_A, To_Value ([2]), "capacity-rejected page bytes");
+      Set_Test_Allocation_Fault (Scan_Cursor_Last_Key_Allocation);
+      Next_Scan_Page (Item, Reader, Cursor, 2, 5, Rows, Done, Result);
+      Expect (Result, Capacity_Exceeded, "last-key allocation failure was misclassified");
+      Expect_Count (2, "last-key allocation atomicity");
+      Next_Scan_Page (Item, Reader, Cursor, 2, 5, Rows, Done, Result);
+      Expect (Result, Success, "fixed middle page failed");
+      if Done then
+         raise Program_Error with "fixed middle page completed early";
+      end if;
+      Expect_Count (2, "fixed middle page");
+      Expect_Scan_Row (Rows, 1, Key_B, To_Value ([3]), "fixed replacement page");
+      Expect_Scan_Row (Rows, 2, Key_B_Extended, To_Value ([4]), "fixed prefix page");
+      Next_Scan_Page (Item, Reader, Cursor, 2, 4, Rows, Done, Result);
+      Expect (Result, Success, "fixed final page failed");
+      if not Done then
+         raise Program_Error with "fixed final page did not complete";
+      end if;
+      Expect_Count (2, "fixed final page");
+      Expect_Scan_Row (Rows, 1, Key_C, To_Value ([5]), "fixed deletion page");
+      Expect_Scan_Row (Rows, 2, High_Key, To_Value ([6]), "fixed high-key page");
+      Next_Scan_Page (Item, Reader, Cursor, 2, 4, Rows, Done, Result);
+      Expect (Result, Invalid_State, "completed nonempty cursor restarted implicitly");
+      Expect_Count (2, "completed cursor page preservation");
+
       Scan (Item, Reader, 1, False, Key_A, False, Key_D, Rows, Result);
       Expect (Result, Success, "fixed-snapshot whole scan failed");
       Expect_Count (6, "fixed-snapshot whole scan");
@@ -7552,6 +7672,26 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "scan local delete failed");
       Put (Item, Reader, 1, Key_D, To_Value ([24]), Result);
       Expect (Result, Success, "scan local insertion failed");
+
+      Start_Scan (Item, Reader, 1, False, Key_A, False, Key_D, Cursor, Result);
+      Expect (Result, Success, "own-write version cursor start failed");
+      --  Replacing an existing arena slot leaves its count unchanged. The
+      --  private mutation version must still invalidate the captured cursor;
+      --  the repeated value changes no logical fixture expectation.
+      Put (Item, Reader, 1, Key_B, To_Value ([23]), Result);
+      Expect (Result, Success, "in-place own-write replacement failed");
+      Next_Scan_Page (Item, Reader, Cursor, 1, 2, Rows, Done, Result);
+      Expect (Result, Invalid_State, "own-write replacement did not invalidate cursor");
+      if Done then
+         raise Program_Error with "invalidated own-write cursor returned Done";
+      end if;
+      Start_Scan (Item, Reader, 1, False, Key_A, False, Key_D, Cursor, Result);
+      Expect (Result, Success, "own-write cursor restart failed");
+      Next_Scan_Page (Item, Reader, Cursor, 1, 2, Rows, Done, Result);
+      Expect (Result, Success, "own-write cursor restart page failed");
+      Expect_Count (1, "own-write cursor restart page");
+      Expect_Scan_Row (Rows, 1, Empty_Key, To_Value ([1]), "own-write restart first row");
+
       Scan (Item, Reader, 1, False, Key_A, False, Key_D, Rows, Result);
       Expect (Result, Success, "scan with local mutations failed");
       Expect_Count (6, "scan with local mutations");
@@ -7587,10 +7727,55 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "fixed scan reader rollback failed");
       Begin_Transaction (Item, Numbered_TX_ID (62_007), Serializable, Reader, Result);
       Expect (Result, Success, "serializable scan reader begin failed");
-      Scan (Item, Reader, 1, True, Key_B, True, Key_D, Rows, Result);
+      Start_Scan (Item, Reader, 1, True, Key_B, True, Key_D, Cursor, Result);
+      Expect (Result, Success, "serializable page cursor start failed");
+      Next_Scan_Page
+        (Item,
+         Reader,
+         Cursor,
+         1,
+         Interfaces.Unsigned_64 (Maximum_Key_Bytes + Maximum_Value_Bytes),
+         Rows,
+         Done,
+         Result);
       Expect (Result, Capacity_Exceeded, "snapshot scan consumed predicate allocation fault");
-      Scan (Item, Reader, 1, True, Key_B, True, Key_D, Rows, Result);
-      Expect (Result, Success, "serializable scan retry failed");
+      Expect_Count (2, "serializable first-page predicate rollback");
+      Next_Scan_Page
+        (Item,
+         Reader,
+         Cursor,
+         1,
+         Interfaces.Unsigned_64 (Maximum_Key_Bytes + Maximum_Value_Bytes),
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Success, "serializable first page retry failed");
+      if Done then
+         raise Program_Error with "serializable first page completed early";
+      end if;
+      Expect_Count (1, "serializable first page");
+      Expect_Scan_Row (Rows, 1, Key_B, To_Value ([13]), "serializable first page B");
+      --  Once the complete original predicate is retained, a later page must
+      --  not allocate a second range component. Rearming the fault proves the
+      --  second page leaves it pending for the disjoint Observe_Range below.
+      Set_Test_Allocation_Fault (Scan_Range_Node_Allocation);
+      Next_Scan_Page
+        (Item,
+         Reader,
+         Cursor,
+         1,
+         Interfaces.Unsigned_64 (Maximum_Key_Bytes + Maximum_Value_Bytes),
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Success, "serializable final page failed");
+      if not Done then
+         raise Program_Error with "serializable final page did not complete";
+      end if;
+      Expect_Count (1, "serializable final page");
+      Expect_Scan_Row (Rows, 1, Key_B_Extended, To_Value ([4]), "serializable final page prefix");
+      Observe_Range (Item, Reader, 1, True, Marker, True, High_Key, Result);
+      Expect (Result, Capacity_Exceeded, "serializable paging retained the predicate twice");
       Put (Item, Reader, 1, Marker, To_Value ([25]), Result);
       Expect (Result, Success, "serializable scan marker failed");
       Commit_Write (62_008, Key_C, To_Value ([26]));
@@ -7631,6 +7816,60 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "scan checkpoint database reopen failed");
       Begin_Transaction (Item, Numbered_TX_ID (62_033), Reader, Result);
       Expect (Result, Success, "reopened scan reader begin failed");
+      Start_Scan (Item, Reader, 1, False, Key_A, False, Key_D, Cursor, Result);
+      Expect (Result, Success, "reopened page cursor start failed");
+      --  Three rows and three maximum family entry extents are test geometry
+      --  for 3/3/2 page reconstruction, derived from persisted fixture widths.
+      Next_Scan_Page
+        (Item,
+         Reader,
+         Cursor,
+         3,
+         Interfaces.Unsigned_64 (3 * (Maximum_Key_Bytes + Maximum_Value_Bytes)),
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Success, "reopened first page failed");
+      if Done then
+         raise Program_Error with "reopened first page completed early";
+      end if;
+      Expect_Count (3, "reopened first page");
+      Expect_Scan_Row (Rows, 1, Empty_Key, To_Value ([1]), "reopened page empty key");
+      Expect_Scan_Row (Rows, 2, Key_A, To_Value ([2]), "reopened page A");
+      Expect_Scan_Row (Rows, 3, Key_B, To_Value ([13]), "reopened page B");
+      Next_Scan_Page
+        (Item,
+         Reader,
+         Cursor,
+         3,
+         Interfaces.Unsigned_64 (3 * (Maximum_Key_Bytes + Maximum_Value_Bytes)),
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Success, "reopened middle page failed");
+      if Done then
+         raise Program_Error with "reopened middle page completed early";
+      end if;
+      Expect_Count (3, "reopened middle page");
+      Expect_Scan_Row (Rows, 1, Key_B_Extended, To_Value ([4]), "reopened page prefix key");
+      Expect_Scan_Row (Rows, 2, Key_C, To_Value ([26]), "reopened page C");
+      Expect_Scan_Row (Rows, 3, Key_D, To_Value ([14]), "reopened page D");
+      Next_Scan_Page
+        (Item,
+         Reader,
+         Cursor,
+         3,
+         Interfaces.Unsigned_64 (3 * (Maximum_Key_Bytes + Maximum_Value_Bytes)),
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Success, "reopened final page failed");
+      if not Done then
+         raise Program_Error with "reopened final page did not complete";
+      end if;
+      Expect_Count (2, "reopened final page");
+      Expect_Scan_Row (Rows, 1, Marker, To_Value ([27]), "reopened page marker");
+      Expect_Scan_Row (Rows, 2, High_Key, To_Value ([6]), "reopened page high key");
       Scan (Item, Reader, 1, False, Key_A, False, Key_D, Rows, Result);
       Expect (Result, Success, "checkpoint-plus-suffix scan failed");
       Expect_Count (8, "checkpoint-plus-suffix scan");

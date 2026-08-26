@@ -141,6 +141,10 @@ package Flyology.DB is
    --  storage is bounded only by persisted database/family authorities and is
    --  reclaimed automatically; the type introduces no copy or default limit.
    type Scan_Result is limited private;
+   --  Limited owned fixed-snapshot page position. It copies range endpoints
+   --  and retains identity/version facts only; no Database, Transaction,
+   --  Column_Family, or caller-array access value survives Start_Scan.
+   type Scan_Cursor is limited private;
    type Create_Receipt is private;
    --  Self-contained exact family-registry publication and reconciliation
    --  authority. Its retained immutable bytes are reclaimed automatically.
@@ -532,6 +536,63 @@ package Flyology.DB is
       Upper     : Byte_Array;
       Rows      : in out Scan_Result;
       Result    : out Outcome_Code);
+
+   --  Start or restart one fixed-snapshot paged scan. Endpoint rules and
+   --  family validation are identical to Scan. Present endpoints are copied
+   --  before Success; failure preserves the prior Cursor exactly. The cursor
+   --  binds Txn's fixed committed snapshot and current own-mutation version.
+   --  A later successful Put/Delete invalidates subsequent page calls instead
+   --  of mixing transaction views. This call reads no rows and records no
+   --  Serializable predicate.
+   --  @param Item Open database that owns fixed-snapshot state
+   --  @param Txn Active transaction whose snapshot and own writes are fixed
+   --  @param Family Valid handle selecting persisted family limits and identity
+   --  @param Has_Lower True when Lower is the inclusive endpoint
+   --  @param Lower Inclusive endpoint bytes, ignored when Has_Lower is false
+   --  @param Has_Upper True when Upper is the exclusive endpoint
+   --  @param Upper Exclusive endpoint bytes, ignored when Has_Upper is false
+   --  @param Cursor Owned page position replaced only on Success
+   --  @param Result Success or the exact validation, capacity, or lifecycle outcome
+   procedure Start_Scan
+     (Item      : in out Database;
+      Txn       : in out Transaction;
+      Family    : Column_Family;
+      Has_Lower : Boolean;
+      Lower     : Byte_Array;
+      Has_Upper : Boolean;
+      Upper     : Byte_Array;
+      Cursor    : in out Scan_Cursor;
+      Result    : out Outcome_Code);
+
+   --  Materialize the maximal next contiguous page that fits both explicit
+   --  caller budgets. Maximum_Rows and Maximum_Bytes have no defaults and are
+   --  per-call backpressure, not persisted or library-selected policy. When a
+   --  following row does not fit, the maximal nonempty prefix succeeds and
+   --  remains resumable. When the first remaining indivisible row cannot fit
+   --  an empty page, Capacity_Exceeded preserves Cursor and Rows exactly.
+   --  Allocation and validation failure have the same atomic boundary. A
+   --  valid empty view succeeds with an empty Rows and Done true,
+   --  including for zero budgets. The final nonempty page also sets Done true;
+   --  a later call returns Invalid_State. Done is false on every failure.
+   --  Serializable mode records the complete original range atomically with
+   --  the first successful page and never consumes another range component.
+   --  @param Item Exact open database bound by Cursor
+   --  @param Txn Exact active transaction and own-mutation version bound by Cursor
+   --  @param Cursor Owned fixed-snapshot page position advanced only on Success
+   --  @param Maximum_Rows Caller-selected maximum rows for this page
+   --  @param Maximum_Bytes Caller-selected maximum key-plus-value bytes for this page
+   --  @param Rows Controlled owned page replaced only on Success
+   --  @param Done True only when this successful page completes the range
+   --  @param Result Success or the exact validation, capacity, conflict, or lifecycle outcome
+   procedure Next_Scan_Page
+     (Item          : in out Database;
+      Txn           : in out Transaction;
+      Cursor        : in out Scan_Cursor;
+      Maximum_Rows  : Interfaces.Unsigned_32;
+      Maximum_Bytes : Interfaces.Unsigned_64;
+      Rows          : in out Scan_Result;
+      Done          : out Boolean;
+      Result        : out Outcome_Code);
 
    --  Number of live rows retained by Item, including zero for a fresh or
    --  successfully empty result.
@@ -1090,6 +1151,12 @@ private
       Scan_Result_State_Allocation,
       Scan_Result_Rows_Allocation,
       Scan_Result_Payload_Allocation,
+      --  Cursor faults distinguish the owned state and exact endpoint/last-key
+      --  copies. They are test-only positions, not product allocation policy.
+      Scan_Cursor_State_Allocation,
+      Scan_Cursor_Lower_Allocation,
+      Scan_Cursor_Upper_Allocation,
+      Scan_Cursor_Last_Key_Allocation,
       Batch_Descriptor_Allocation,
       Storage_Sink_Allocation,
       Recovery_History_Allocation,
@@ -1204,6 +1271,11 @@ private
       Point_Read_Count : Interfaces.Unsigned_32 := 0;
       Scan_Ranges      : Owned_Scan_Range_Access := null;
       Scan_Range_Count : Interfaces.Unsigned_32 := 0;
+      --  Runtime-only fixed-view witness. It increments after every successful
+      --  Put/Delete, including in-place replacement, and is never persisted.
+      --  Unsigned_64 exhaustion is representational failure classified before
+      --  mutation publication; it is not a database limit or normal-use budget.
+      Mutation_Version : Interfaces.Unsigned_64 := 0;
    end record;
    type Transaction_Arena_Access is access Transaction_Arena;
 
@@ -1240,6 +1312,39 @@ private
 
    type Scan_Result is limited record
       Owner : Scan_Result_Owner;
+   end record;
+
+   type Scan_Cursor_Byte_Array_Access is access Byte_Array;
+   type Scan_Cursor_State is record
+      Active             : Boolean := False;
+      Done               : Boolean := False;
+      Predicate_Recorded : Boolean := False;
+      Database_ID        : Database_Identifier := Zero_Database_ID;
+      Incarnation        : Engine_Incarnation := No_Incarnation;
+      Transaction_ID     : Transaction_Identifier := Zero_Transaction_ID;
+      Snapshot_At        : Sequence_Number := 0;
+      Mutation_Version   : Interfaces.Unsigned_64 := 0;
+      Family             : Column_Family_Configuration;
+      Has_Lower          : Boolean := False;
+      Lower              : Scan_Cursor_Byte_Array_Access := null;
+      Has_Upper          : Boolean := False;
+      Upper              : Scan_Cursor_Byte_Array_Access := null;
+      Has_Last           : Boolean := False;
+      Last_Key           : Scan_Cursor_Byte_Array_Access := null;
+   end record;
+   type Scan_Cursor_State_Access is access Scan_Cursor_State;
+   --  One swappable pointer gives Start_Scan atomic replacement and makes all
+   --  endpoint/position storage cursor-owned. Null is the vacant inactive
+   --  state, not a page default or persisted sentinel.
+   type Scan_Cursor_Owner is new Ada.Finalization.Limited_Controlled with record
+      State : Scan_Cursor_State_Access := null;
+   end record;
+
+   overriding
+   procedure Finalize (Item : in out Scan_Cursor_Owner);
+
+   type Scan_Cursor is limited record
+      Owner : Scan_Cursor_Owner;
    end record;
 
    type L0_Checkpoint_Family_Array is array (Positive range <>) of Column_Family_ID;

@@ -1,5 +1,41 @@
 # Review record
 
+## Accepted fixed-snapshot paged-scan implementation candidate
+
+- Parent: formal contract commit `549c377`.
+- API: add limited owned `Scan_Cursor`, `Start_Scan`, and `Next_Scan_Page` directly in `Flyology.DB`. Page row and
+  byte budgets are required caller inputs with no public default or library-selected ceiling. `Start_Scan` copies
+  present endpoints and atomically replaces only on success; the cursor retains identity, incarnation, transaction,
+  snapshot, family, mutation-version, predicate, and last-key facts but no database, transaction, family-handle, or
+  caller-array borrow.
+- Execution: whole and paged scans share one materialization kernel. Each page sorts bounded captured sources by
+  unsigned byte key, resolves own writes before the fixed committed snapshot, returns the maximal fitting live
+  prefix, and advances only after complete result and last-key construction. A first indivisible row that cannot fit
+  returns `Capacity_Exceeded`; a later nonfitting row ends a successful resumable page. Empty views complete even at
+  zero budgets. This is paged materialization with repeated source capture, not a physical streaming claim.
+- Isolation and ownership: every successful `Put` or `Delete`, including in-place arena replacement, advances a
+  private runtime-only mutation version. A later page on an older cursor is rejected before reading. Serializable
+  mode records the complete original predicate with the first successful page and never consumes another range
+  component. Cursor and page storage are controlled owners; validation, capacity, allocation, and predicate failure
+  preserve both exactly.
+- Constants and compatibility: no persisted byte, format version, page default, task, provider call, retry, or
+  compatibility promise changes. Cursor allocation faults are test-only positions. `Unsigned_64` mutation-version
+  exhaustion is representational failure rejected before mutation publication, not a normal-use database limit.
+  Existing whole `Scan` remains source-compatible and uses the same ordering/visibility kernel.
+- Findings cycle: the implementation review found one P2 documentation mismatch that described every nonfitting
+  following row as failure even though a maximal nonempty prefix succeeds; the API and architecture wording now
+  distinguish that case from an undersized empty page. The API, ownership, allocation, fixed-snapshot, sorting,
+  tombstone, prefix-key, Serializable, constants-authority, compatibility, and unnecessary-surface resweep finds no
+  remaining actionable P0/P1/P2 finding.
+- Verification: root and nested builds, the targeted engine executable, repository and diff checks, and the full
+  maintained deterministic suite pass, including allocation rollback, concurrent replacement/deletion/insertion,
+  in-place own-write invalidation, whole-scan equivalence, Serializable retry/one-time predicate retention, and
+  three-page checkpoint-plus-suffix reopen. All 18 RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite lanes
+  pass against Object Storage `99706cceaef0add2578f3665e48af37cd52bafdc`. The maintained TLA/TLC/TLAPS gate
+  passes, including 341 paged-scan states, two negative probes, the checked witness, and 24/24 obligations.
+  GNATprove proves 1,097/1,097 selected checks warning-strict; runtime cursor code remains an executable boundary.
+  The post-run host audit is clean and the exclusive formal lane is released.
+
 ## Accepted fixed-snapshot paged-scan formal candidate
 
 - Scope: add a finite TLA+ model, negative probe, checked execution witness, and abstract TLAPS kernel for the first
@@ -10,8 +46,9 @@
   endpoint remains outside the model and retains the existing `Invalid_State` rule. Capacity and allocation failure
   preserve cursor, prior page, and pre-success predicate state exactly.
 - Authority: four keys, three modeled value extents, zero-to-two rows, and zero-to-five bytes are finite qualification
-  geometry, not public or persisted policy. The planned Ada cursor introduces no default and retains the transaction
-  mutation count so a later own write is rejected rather than mixed into the fixed page view.
+  geometry, not public or persisted policy. The planned Ada cursor introduces no default and retains a transaction
+  mutation version so a later own write, including in-place replacement, is rejected rather than mixed into the
+  fixed page view.
 - Findings cycle: the first sweep removed arbitrary per-key concurrent mutation choices that inflated the graph
   without adding cursor behavior. The second found that successful empty completion was unreachable and added an
   explicit valid empty view. The third renamed that state from empty interval so the formal vocabulary cannot imply

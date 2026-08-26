@@ -9,26 +9,29 @@ It is a stepping stone toward physical merge iteration, not a claim that source 
 
 `Scan_Cursor` is a limited owned value colocated in `Flyology.DB`. `Start_Scan` validates one family and canonical
 range, copies every present endpoint, and atomically replaces the cursor only on success. The cursor retains database
-identity, database incarnation, transaction identity, snapshot sequence, family authority, the transaction mutation
-count, and the last emitted key. It retains no access value or borrow of the database, transaction, family handle, or
-caller endpoint arrays.
+identity, database incarnation, transaction identity, snapshot sequence, family authority, a runtime-only
+transaction mutation version, and the last emitted key. It retains no access value or borrow of the database,
+transaction, family handle, or caller endpoint arrays.
 
 `Next_Scan_Page` receives the database, transaction, cursor, an explicit maximum row count, an explicit maximum
 combined key-plus-value byte count, an existing `Scan_Result`, and returns `Done` plus `Outcome_Code`. Neither budget
 has a default. They are caller backpressure for one call, not persisted database limits or a promised page size.
 Persisted database and family limits remain independent upper admission authorities.
 
-The cursor fixes the transaction's own-write prefix by retaining the arena mutation count observed by `Start_Scan`.
-Any later successful `Put` or `Delete` changes that count; the next page then returns `Invalid_State` without changing
-the cursor, result, or predicate authority. A consumed transaction, wrong database/incarnation/transaction, or
-changed family authority is rejected the same way. This guard preserves one logical read view without copying the
-transaction arena into a second owner.
+The cursor fixes the transaction's own-write prefix by retaining the arena mutation version observed by
+`Start_Scan`. Every successful `Put` or `Delete` advances that version, including replacement of an existing arena
+slot whose mutation count is unchanged. The next page then returns `Invalid_State` without changing the cursor,
+result, or predicate authority. Version exhaustion is classified before mutation publication as
+`Capacity_Exceeded`; the value is runtime-only representational authority, not a persisted or normal-use resource
+limit. A consumed transaction, wrong database/incarnation/transaction, or changed family authority is rejected the
+same way. This guard preserves one logical read view without copying the transaction arena into a second owner.
 
 ## Page selection and atomicity
 
 For a valid active cursor, a successful page is the maximal next contiguous prefix in canonical key order that fits
-both caller budgets. Every row is indivisible. If rows remain and the next row cannot fit either budget, the call
-returns `Capacity_Exceeded`; it does not advance the cursor, replace the prior result, or retain a new Serializable
+both caller budgets. Every row is indivisible. Once a nonempty prefix is selected, a following row that does not fit
+ends that successful resumable page. If the first remaining row cannot fit an empty page, the call returns
+`Capacity_Exceeded`; it does not advance the cursor, replace the prior result, or retain a new Serializable
 predicate. Allocation failure has the same atomic boundary and classification. The caller may retry with larger
 budgets and receives the same next row.
 
@@ -63,7 +66,8 @@ executable witness reconstructs one frozen view after concurrent replacement, re
 `PagedScanSafetyProof.tla` proves the abstract prefix, completion, and failure-atomicity kernel.
 
 The model dimensions are qualification geometry, not product defaults. The formal lane does not prove endpoint byte
-comparison, transaction mutation-count validation, allocation, source capture, concurrency, progress, the Ada
-implementation, or refinement. The first Ada implementation may rescan bounded in-memory source descriptors for each
-page; it must be described as paged materialization until a later physical merge cursor removes that remaining source
-capture and repeated traversal.
+comparison, transaction mutation-version validation, allocation, source capture, concurrency, progress, the Ada
+implementation, or refinement. The current Ada implementation shares the established whole-scan materialization
+kernel and rescans bounded in-memory source descriptors for each page. It is paged materialization, not a physical
+streaming or merge cursor; a later slice must remove that remaining source capture and repeated traversal before
+making such a claim.
