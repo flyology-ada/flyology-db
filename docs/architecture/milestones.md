@@ -112,8 +112,9 @@ Public `Refresh_Replica` can now refresh one caller-designated read-only-use han
 existing lifecycle, validates a complete cacheless recovery graph, and installs only a strictly newer
 transition-ordinal/writer-epoch pair. Same/older observations and safe allocation failure retain the prior engine; a
 fenced writer is not implicitly promoted. The public call reuses the already-qualified implementation and selects
-only one caller budget. Composable refresh, enforced replica roles, polling, leases, registration and retention pins,
-and explicit promotion remain pending Milestone 8 decisions.
+only one caller budget. The composable API and shared recovery-reader ownership are now frozen in
+[`replica-refresh.md`](replica-refresh.md); implementation remains pending. Enforced replica roles, polling, leases,
+registration and retention pins, and explicit promotion remain pending Milestone 8 decisions.
 
 The LSM read-equivalence lane now exhausts all two-key/two-value captured views and later mutation maps, validates a
 concrete delete/put execution witness, rejects a replacement that omits one live key, and proves the arbitrary-key/

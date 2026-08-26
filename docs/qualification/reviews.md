@@ -1,5 +1,31 @@
 # Review record
 
+## Accepted composable replica-refresh architecture candidate
+
+- Parent: complete-compaction limited-profile integration commit `b487c9b`.
+- API and scope: colocate private-completion-state `Refresh_Operation`, same-name operation-last
+  `Refresh_Replica`, and typed `Finish` directly in `Flyology.DB`. The existing synchronous overload remains exact.
+  The new operation carries caller-owned completion-set, database, client-bound storage, HTTP client, buffer-pool,
+  and optional cancellation owners. One acquired same-pool buffer moves only after slot reservation and lifecycle
+  admission; typed Finish is its sole handle restoration authority. No limited-root function, child namespace,
+  compatibility wrapper, public constant, default, role flag, or persisted field is introduced.
+- Execution design: extract one explicit recovery request/consume machine from the blocking traversal. Blocking
+  storage adapters execute its requests synchronously; the composable adapter drives provider-owned range/whole
+  children serially in the caller's owner stack. Both validate the same HEAD, manifest predecessor chain,
+  generation-bound SSTs, replay anchor, and batch predecessor chain, and return only one complete owned graph. One
+  deadline covers quiescence and every read. No helper task, provider retry, or second recovery algorithm exists.
+- Safety and failure: all allocations remain lazy, checked, and derived from persisted database/family limits and
+  authenticated object lengths. Cancellation consumes a terminal child before classification; otherwise it drains
+  the active child, releases the partial graph, cancels resolution admission, and preserves the old engine. Equal or
+  older valid graphs are discarded; only a complete strictly newer graph installs. Abandonment drains first, then
+  releases recovery owners and the operation token to its pool without retaining the original caller handle.
+- Findings cycle: the first API sweep found one P2 naming/order inconsistency in the draft `Start_Refresh_Replica`
+  signature. Replacing it with the provider-centric same-name operation-last overload avoids a second naming
+  convention. Repeated API, ownership, lifecycle, cancellation, deadline, allocation, compatibility,
+  constants-authority, documentation, and unnecessary-surface review finds no actionable P0/P1/P2 finding. This is
+  an architecture freeze only; implementation and its deterministic/formal/provider evidence remain explicitly
+  pending and no runtime qualification is claimed by this record.
+
 ## Accepted complete-compaction limited-profile integration candidate
 
 - Parent: sparse checkpoint-map execution commit `ed2fb6a6d9a919ac1a26295389e1fa0ebdaca071`.
