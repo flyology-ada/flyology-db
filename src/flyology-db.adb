@@ -7429,53 +7429,30 @@ package body Flyology.DB is
       end case;
    end Read_Failure_Outcome;
 
-   procedure Read_Leading_Manifest
-     (Storage           : in out Storage_Context;
-      Manifest_ID       : Identifier;
+   type Manifest_Read_Admission is record
+      Object_Length : Natural := 0;
+      Generation    : Generation_Value;
+      Is_Checkpoint : Boolean := False;
+      Checkpoint    : LSM_Runtime.Checkpoint_Header_Admission;
+   end record;
+
+   procedure Inspect_Leading_Manifest_Header
+     (Header_Data       : Flyology.Bytes.Unbounded_Bytes;
+      Object_Length     : Natural;
+      Header_Generation : Generation_Value;
       Expected_Database : Database_Identifier;
-      Deadline          : Ada.Real_Time.Time;
-      Token             : access Flyology.Cancellation.Token;
-      Value             : out Manifests.Manifest;
-      LSM_Authority     : out Engine_LSM_Authority;
-      Checkpoint        : out LSM_Runtime.Checkpoint_Manifest_Access;
+      Admission         : out Manifest_Read_Admission;
       Result            : out Outcome_Code)
    is
-      --  The initial range is the current manifest-v3 header width. A v2
-      --  header is its exact prefix and remains readable through version
-      --  dispatch before whole-object allocation.
-      Header_Length     : constant Natural := LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length;
-      Header_Data       : Flyology.Bytes.Unbounded_Bytes;
-      Whole_Data        : Flyology.Bytes.Unbounded_Bytes;
-      Object_Length     : Natural;
-      Whole_Length      : Natural;
-      Header_Generation : Generation_Value;
-      Whole_Generation  : Generation_Value;
-      Read_Result       : Read_Outcome;
-      Admission         : LSM_Runtime.Checkpoint_Header_Admission;
-      Decode_Status     : LSM_Runtime.Decode_Status;
-      Manifest_Status   : Manifests.Decode_Status;
-      Image             : LSM_Runtime.Image_Access := null;
+      --  The frozen checkpoint-manifest header width is the exact first read.
+      --  A v2 header is its prefix-compatible predecessor; changing this
+      --  range changes the persisted-format admission boundary.
+      Header_Length : constant Natural := LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length;
+      Decode_Status : LSM_Runtime.Decode_Status;
+      Image         : LSM_Runtime.Image_Access := null;
    begin
-      Value := Manifests.Empty_Manifest;
-      LSM_Authority := No_LSM_Authority;
-      Checkpoint := null;
-      Storage_Port.Get_Selected
-        (Storage,
-         Manifest_Key (Storage, Manifest_ID),
-         Manifest_Object,
-         (Kind => OS.Bounded_Range, First => 0, Last => OS.Byte_Count (Header_Length - 1), Count => 0),
-         (others => <>),
-         Deadline,
-         Token,
-         Header_Data,
-         Object_Length,
-         Header_Generation,
-         Read_Result,
-         Header_Length);
-      if Read_Result /= Object_Read then
-         Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
-         return;
-      elsif Flyology.Bytes.Length (Header_Data) /= Header_Length
+      Admission := (others => <>);
+      if Flyology.Bytes.Length (Header_Data) /= Header_Length
         or else Object_Length < Header_Length + LSM_Runtime.LSM.Object_Trailer_Length
       then
          Result := Corrupt;
@@ -7487,58 +7464,81 @@ package body Flyology.DB is
       for Index in Natural range 0 .. Header_Length - 1 loop
          Image (Index) := Byte (Flyology.Bytes.Element (Header_Data, Index + 1));
       end loop;
-      if Image (Common_Version_High_Offset) = 0
+      Admission.Object_Length := Object_Length;
+      Admission.Generation := Header_Generation;
+      Admission.Is_Checkpoint :=
+        Image (Common_Version_High_Offset) = 0
         and then Image (Common_Version_Low_Offset)
-                 in Byte (LSM_Runtime.LSM.Previous_Checkpoint_Manifest_Format_Version)
-                    | Byte (LSM_Runtime.LSM.Checkpoint_Manifest_Format_Version)
-      then
+                   in Byte (LSM_Runtime.LSM.Previous_Checkpoint_Manifest_Format_Version)
+                      | Byte (LSM_Runtime.LSM.Checkpoint_Manifest_Format_Version);
+      if Admission.Is_Checkpoint then
          LSM_Runtime.Inspect_Checkpoint_Manifest_Header
            (Image.all,
             To_Head_ID (Expected_Database),
             Interfaces.Unsigned_64 (Object_Length),
-            Admission,
+            Admission.Checkpoint,
             Decode_Status);
          LSM_Runtime.Release (Image);
-         if Decode_Status /= LSM_Runtime.Decoded then
-            Result :=
-              (if Decode_Status
+         if Decode_Status = LSM_Runtime.Decoded then
+            Admission.Object_Length := Admission.Checkpoint.Object_Length;
+         end if;
+         Result :=
+           (if Decode_Status = LSM_Runtime.Decoded
+            then Success
+            elsif Decode_Status
                   in LSM_Runtime.Limit_Exceeded
                    | LSM_Runtime.Allocation_Failed
                    | LSM_Runtime.Runtime_Incompatible
-               then Capacity_Exceeded
-               elsif Decode_Status = LSM_Runtime.Unsupported_Version
-               then Unsupported_Format
-               else Corrupt);
-            return;
-         end if;
-         Storage_Port.Get_Selected
-           (Storage,
-            Manifest_Key (Storage, Manifest_ID),
-            Manifest_Object,
-            OS.Whole_Object,
-            Header_Generation,
-            Deadline,
-            Token,
-            Whole_Data,
-            Whole_Length,
-            Whole_Generation,
-            Read_Result,
-            Admission.Object_Length);
-         if Read_Result /= Object_Read then
-            Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
-            return;
-         elsif Whole_Length /= Admission.Object_Length
-           or else Flyology.Bytes.Length (Whole_Data) /= Admission.Object_Length
-           or else Whole_Generation /= Header_Generation
-         then
-            Result := Corrupt;
-            return;
-         end if;
-         Allocation_Faults.Check (Recovery_Manifest_Image_Allocation);
-         Image := new Formats.Byte_Array'(0 .. Admission.Object_Length - 1 => 0);
-         for Index in Natural range 0 .. Admission.Object_Length - 1 loop
-            Image (Index) := Byte (Flyology.Bytes.Element (Whole_Data, Index + 1));
-         end loop;
+            then Capacity_Exceeded
+            elsif Decode_Status = LSM_Runtime.Unsupported_Version
+            then Unsupported_Format
+            else Corrupt);
+      else
+         LSM_Runtime.Release (Image);
+         Result :=
+           (if Object_Length <= Small_Metadata_Buffer'Length then Success else Capacity_Exceeded);
+      end if;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Image);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Image);
+         raise;
+   end Inspect_Leading_Manifest_Header;
+
+   procedure Decode_Leading_Manifest_Body
+     (Whole_Data        : Flyology.Bytes.Unbounded_Bytes;
+      Whole_Length      : Natural;
+      Whole_Generation  : Generation_Value;
+      Expected_Database : Database_Identifier;
+      Admission         : Manifest_Read_Admission;
+      Value             : out Manifests.Manifest;
+      LSM_Authority     : out Engine_LSM_Authority;
+      Checkpoint        : out LSM_Runtime.Checkpoint_Manifest_Access;
+      Result            : out Outcome_Code)
+   is
+      Decode_Status   : LSM_Runtime.Decode_Status;
+      Manifest_Status : Manifests.Decode_Status;
+      Image           : LSM_Runtime.Image_Access := null;
+   begin
+      Value := Manifests.Empty_Manifest;
+      LSM_Authority := No_LSM_Authority;
+      Checkpoint := null;
+      if Whole_Length /= Admission.Object_Length
+        or else Flyology.Bytes.Length (Whole_Data) /= Admission.Object_Length
+        or else Whole_Generation /= Admission.Generation
+      then
+         Result := Corrupt;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Recovery_Manifest_Image_Allocation);
+      Image := new Formats.Byte_Array'(0 .. Admission.Object_Length - 1 => 0);
+      for Index in Natural range 0 .. Admission.Object_Length - 1 loop
+         Image (Index) := Byte (Flyology.Bytes.Element (Whole_Data, Index + 1));
+      end loop;
+      if Admission.Is_Checkpoint then
          LSM_Runtime.Decode_Checkpoint_Manifest
            (Image.all, To_Head_ID (Expected_Database), Checkpoint, Decode_Status);
          LSM_Runtime.Release (Image);
@@ -7560,53 +7560,19 @@ package body Flyology.DB is
             LSM_Runtime.Release (Checkpoint);
             Result := Corrupt;
          end if;
-         return;
+      else
+         Manifests.Decode_Manifest
+           (Image.all, To_Head_ID (Expected_Database), Manifests.Default_Reader_Caps, Value, Manifest_Status);
+         LSM_Runtime.Release (Image);
+         Result :=
+           (if Manifest_Status = Manifests.Decoded
+            then Success
+            elsif Manifest_Status = Manifests.Limit_Exceeded
+            then Capacity_Exceeded
+            elsif Manifest_Status = Manifests.Unsupported_Version
+            then Unsupported_Format
+            else Corrupt);
       end if;
-
-      LSM_Runtime.Release (Image);
-      if Object_Length > Small_Metadata_Buffer'Length then
-         Result := Capacity_Exceeded;
-         return;
-      end if;
-      Storage_Port.Get_Selected
-        (Storage,
-         Manifest_Key (Storage, Manifest_ID),
-         Manifest_Object,
-         OS.Whole_Object,
-         Header_Generation,
-         Deadline,
-         Token,
-         Whole_Data,
-         Whole_Length,
-         Whole_Generation,
-         Read_Result,
-         Object_Length);
-      if Read_Result /= Object_Read then
-         Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
-         return;
-      elsif Whole_Length /= Object_Length
-        or else Flyology.Bytes.Length (Whole_Data) /= Object_Length
-        or else Whole_Generation /= Header_Generation
-      then
-         Result := Corrupt;
-         return;
-      end if;
-      Allocation_Faults.Check (Recovery_Manifest_Image_Allocation);
-      Image := new Formats.Byte_Array'(0 .. Object_Length - 1 => 0);
-      for Index in Natural range 0 .. Object_Length - 1 loop
-         Image (Index) := Byte (Flyology.Bytes.Element (Whole_Data, Index + 1));
-      end loop;
-      Manifests.Decode_Manifest
-        (Image.all, To_Head_ID (Expected_Database), Manifests.Default_Reader_Caps, Value, Manifest_Status);
-      LSM_Runtime.Release (Image);
-      Result :=
-        (if Manifest_Status = Manifests.Decoded
-         then Success
-         elsif Manifest_Status = Manifests.Limit_Exceeded
-         then Capacity_Exceeded
-         elsif Manifest_Status = Manifests.Unsupported_Version
-         then Unsupported_Format
-         else Corrupt);
    exception
       when Storage_Error =>
          LSM_Runtime.Release (Image);
@@ -7616,7 +7582,223 @@ package body Flyology.DB is
          LSM_Runtime.Release (Image);
          LSM_Runtime.Release (Checkpoint);
          raise;
+   end Decode_Leading_Manifest_Body;
+
+   procedure Read_Leading_Manifest
+     (Storage           : in out Storage_Context;
+      Manifest_ID       : Identifier;
+      Expected_Database : Database_Identifier;
+      Deadline          : Ada.Real_Time.Time;
+      Token             : access Flyology.Cancellation.Token;
+      Value             : out Manifests.Manifest;
+      LSM_Authority     : out Engine_LSM_Authority;
+      Checkpoint        : out LSM_Runtime.Checkpoint_Manifest_Access;
+      Result            : out Outcome_Code)
+   is
+      --  The header range is derived from the persisted checkpoint format and
+      --  is consumed by Inspect_Leading_Manifest_Header above.
+      Header_Length     : constant Natural := LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length;
+      Header_Data       : Flyology.Bytes.Unbounded_Bytes;
+      Whole_Data        : Flyology.Bytes.Unbounded_Bytes;
+      Object_Length     : Natural;
+      Whole_Length      : Natural;
+      Header_Generation : Generation_Value;
+      Whole_Generation  : Generation_Value;
+      Read_Result       : Read_Outcome;
+      Admission         : Manifest_Read_Admission;
+   begin
+      Value := Manifests.Empty_Manifest;
+      LSM_Authority := No_LSM_Authority;
+      Checkpoint := null;
+      Storage_Port.Get_Selected
+        (Storage,
+         Manifest_Key (Storage, Manifest_ID),
+         Manifest_Object,
+         (Kind => OS.Bounded_Range, First => 0, Last => OS.Byte_Count (Header_Length - 1), Count => 0),
+         (others => <>),
+         Deadline,
+         Token,
+         Header_Data,
+         Object_Length,
+         Header_Generation,
+         Read_Result,
+         Header_Length);
+      if Read_Result /= Object_Read then
+         Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
+         return;
+      end if;
+      Inspect_Leading_Manifest_Header
+        (Header_Data,
+         Object_Length,
+         Header_Generation,
+         Expected_Database,
+         Admission,
+         Result);
+      if Result /= Success then
+         return;
+      end if;
+      Storage_Port.Get_Selected
+        (Storage,
+         Manifest_Key (Storage, Manifest_ID),
+         Manifest_Object,
+         OS.Whole_Object,
+         Admission.Generation,
+         Deadline,
+         Token,
+         Whole_Data,
+         Whole_Length,
+         Whole_Generation,
+         Read_Result,
+         Admission.Object_Length);
+      if Read_Result /= Object_Read then
+         Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
+         return;
+      end if;
+      Decode_Leading_Manifest_Body
+        (Whole_Data,
+         Whole_Length,
+         Whole_Generation,
+         Expected_Database,
+         Admission,
+         Value,
+         LSM_Authority,
+         Checkpoint,
+         Result);
    end Read_Leading_Manifest;
+
+   type SST_Read_Admission is record
+      Object_Length : Natural := 0;
+      Generation    : Generation_Value;
+      Header        : LSM_Runtime.SST_Header_Admission;
+   end record;
+
+   procedure Inspect_Recovery_SST_Header
+     (Header_Data       : Flyology.Bytes.Unbounded_Bytes;
+      Object_Length     : Natural;
+      Header_Generation : Generation_Value;
+      Manifest          : not null LSM_Runtime.Checkpoint_Manifest_Access;
+      Family_Index      : Positive;
+      Descriptor        : LSM_Runtime.Run_Descriptor;
+      Admission         : out SST_Read_Admission;
+      Result            : out Outcome_Code)
+   is
+      --  SST-v1 fixes this exact header prefix as the allocation-admission
+      --  boundary. Changing its width is persisted-format incompatible.
+      Header_Length : constant Natural := LSM_Runtime.LSM.SST_Header_Length;
+      Decode_Status : LSM_Runtime.Decode_Status;
+      Image         : LSM_Runtime.Image_Access := null;
+   begin
+      Admission := (others => <>);
+      if Family_Index not in Manifest.Families'Range
+        or else Flyology.Bytes.Length (Header_Data) /= Header_Length
+        or else Object_Length < Header_Length + LSM_Runtime.LSM.Object_Trailer_Length
+      then
+         Result := Corrupt;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Recovery_SST_Header_Allocation);
+      Image := new Formats.Byte_Array'(0 .. Header_Length - 1 => 0);
+      for Index in Natural range 0 .. Header_Length - 1 loop
+         Image (Index) := Byte (Flyology.Bytes.Element (Header_Data, Index + 1));
+      end loop;
+      Admission.Object_Length := Object_Length;
+      Admission.Generation := Header_Generation;
+      LSM_Runtime.Inspect_SST_Header
+        (Image.all,
+         Manifest.Base.Database_ID,
+         Manifest.Base.Families (Family_Index).ID,
+         Descriptor,
+         Interfaces.Unsigned_64 (Object_Length),
+         Admission.Header,
+         Decode_Status);
+      LSM_Runtime.Release (Image);
+      if Decode_Status = LSM_Runtime.Decoded then
+         Admission.Object_Length := Admission.Header.Object_Length;
+      end if;
+      Result :=
+        (if Decode_Status = LSM_Runtime.Decoded
+         then Success
+         elsif Decode_Status
+               in LSM_Runtime.Limit_Exceeded
+                | LSM_Runtime.Allocation_Failed
+                | LSM_Runtime.Runtime_Incompatible
+         then Capacity_Exceeded
+         elsif Decode_Status = LSM_Runtime.Unsupported_Version
+         then Unsupported_Format
+         else Corrupt);
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Image);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Image);
+         raise;
+   end Inspect_Recovery_SST_Header;
+
+   procedure Decode_Recovery_SST_Body
+     (Whole_Data       : Flyology.Bytes.Unbounded_Bytes;
+      Whole_Length     : Natural;
+      Whole_Generation : Generation_Value;
+      Manifest         : not null LSM_Runtime.Checkpoint_Manifest_Access;
+      Family_Index     : Positive;
+      Descriptor       : LSM_Runtime.Run_Descriptor;
+      Admission        : SST_Read_Admission;
+      Value            : out LSM_Runtime.SST_Access;
+      Result           : out Outcome_Code)
+   is
+      Decode_Status : LSM_Runtime.Decode_Status;
+      Image         : LSM_Runtime.Image_Access := null;
+   begin
+      Value := null;
+      if Family_Index not in Manifest.Families'Range
+        or else Whole_Length /= Admission.Object_Length
+        or else Flyology.Bytes.Length (Whole_Data) /= Admission.Object_Length
+        or else Whole_Generation /= Admission.Generation
+      then
+         Result := Corrupt;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Recovery_SST_Image_Allocation);
+      Image := new Formats.Byte_Array'(0 .. Admission.Object_Length - 1 => 0);
+      for Index in Natural range 0 .. Admission.Object_Length - 1 loop
+         Image (Index) := Byte (Flyology.Bytes.Element (Whole_Data, Index + 1));
+      end loop;
+      LSM_Runtime.Decode_SST
+        (Image.all,
+         Manifest.Base.Database_ID,
+         Manifest.Base.Families (Family_Index).ID,
+         Descriptor,
+         Manifest.Base.Families (Family_Index).Max_Key_Bytes,
+         Manifest.Base.Families (Family_Index).Max_Value_Bytes,
+         Value,
+         Decode_Status);
+      LSM_Runtime.Release (Image);
+      Result :=
+        (if Decode_Status = LSM_Runtime.Decoded
+         then Success
+         elsif Decode_Status
+               in LSM_Runtime.Limit_Exceeded
+                | LSM_Runtime.Allocation_Failed
+                | LSM_Runtime.Runtime_Incompatible
+         then Capacity_Exceeded
+         elsif Decode_Status = LSM_Runtime.Unsupported_Version
+         then Unsupported_Format
+         else Corrupt);
+      if Result /= Success then
+         LSM_Runtime.Release (Value);
+      end if;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Image);
+         LSM_Runtime.Release (Value);
+         Result := Capacity_Exceeded;
+      when others =>
+         LSM_Runtime.Release (Image);
+         LSM_Runtime.Release (Value);
+         raise;
+   end Decode_Recovery_SST_Body;
 
    procedure Read_Checkpoint_SSTs
      (Storage  : in out Storage_Context;
@@ -7653,9 +7835,7 @@ package body Flyology.DB is
                      Header_Generation : Generation_Value;
                      Whole_Generation  : Generation_Value;
                      Read_Result       : Read_Outcome;
-                     Admission         : LSM_Runtime.SST_Header_Admission;
-                     Decode_Status     : LSM_Runtime.Decode_Status;
-                     Image             : LSM_Runtime.Image_Access := null;
+                     Admission         : SST_Read_Admission;
                   begin
                      Storage_Port.Get_Selected
                        (Storage,
@@ -7676,36 +7856,17 @@ package body Flyology.DB is
                      if Read_Result /= Object_Read then
                         Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
                         return;
-                     elsif Flyology.Bytes.Length (Header_Data) /= Header_Length
-                       or else Object_Length < Header_Length + LSM_Runtime.LSM.Object_Trailer_Length
-                     then
-                        Result := Corrupt;
-                        return;
                      end if;
-                     Allocation_Faults.Check (Recovery_SST_Header_Allocation);
-                     Image := new Formats.Byte_Array'(0 .. Header_Length - 1 => 0);
-                     for Index in Natural range 0 .. Header_Length - 1 loop
-                        Image (Index) := Byte (Flyology.Bytes.Element (Header_Data, Index + 1));
-                     end loop;
-                     LSM_Runtime.Inspect_SST_Header
-                       (Image.all,
-                        Plan.Manifest.Base.Database_ID,
-                        Plan.Manifest.Base.Families (Family_Index).ID,
+                     Inspect_Recovery_SST_Header
+                       (Header_Data,
+                        Object_Length,
+                        Header_Generation,
+                        Plan.Manifest,
+                        Family_Index,
                         Descriptor,
-                        Interfaces.Unsigned_64 (Object_Length),
                         Admission,
-                        Decode_Status);
-                     LSM_Runtime.Release (Image);
-                     if Decode_Status /= LSM_Runtime.Decoded then
-                        Result :=
-                          (if Decode_Status
-                              in LSM_Runtime.Limit_Exceeded
-                               | LSM_Runtime.Allocation_Failed
-                               | LSM_Runtime.Runtime_Incompatible
-                           then Capacity_Exceeded
-                           elsif Decode_Status = LSM_Runtime.Unsupported_Version
-                           then Unsupported_Format
-                           else Corrupt);
+                        Result);
+                     if Result /= Success then
                         return;
                      end if;
                      Storage_Port.Get_Selected
@@ -7713,7 +7874,7 @@ package body Flyology.DB is
                         Run_Key (Storage, To_Identifier (Descriptor.Run_ID)),
                         Run_Object,
                         OS.Whole_Object,
-                        Header_Generation,
+                        Admission.Generation,
                         Deadline,
                         Token,
                         Whole_Data,
@@ -7724,52 +7885,20 @@ package body Flyology.DB is
                      if Read_Result /= Object_Read then
                         Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
                         return;
-                     elsif Whole_Length /= Admission.Object_Length
-                       or else Flyology.Bytes.Length (Whole_Data) /= Admission.Object_Length
-                       or else Whole_Generation /= Header_Generation
-                     then
-                        Result := Corrupt;
-                        return;
                      end if;
-                     Allocation_Faults.Check (Recovery_SST_Image_Allocation);
-                     Image := new Formats.Byte_Array'(0 .. Admission.Object_Length - 1 => 0);
-                     for Index in Natural range 0 .. Admission.Object_Length - 1 loop
-                        Image (Index) := Byte (Flyology.Bytes.Element (Whole_Data, Index + 1));
-                     end loop;
-                     LSM_Runtime.Decode_SST
-                       (Image.all,
-                        Plan.Manifest.Base.Database_ID,
-                        Plan.Manifest.Base.Families (Family_Index).ID,
+                     Decode_Recovery_SST_Body
+                       (Whole_Data,
+                        Whole_Length,
+                        Whole_Generation,
+                        Plan.Manifest,
+                        Family_Index,
                         Descriptor,
-                        Plan.Manifest.Base.Families (Family_Index).Max_Key_Bytes,
-                        Plan.Manifest.Base.Families (Family_Index).Max_Value_Bytes,
+                        Admission,
                         Plan.Recovered_SSTs (Run_Index),
-                        Decode_Status);
-                     LSM_Runtime.Release (Image);
-                     if Decode_Status = LSM_Runtime.Decoded then
-                        null;
-                     elsif Decode_Status
-                           in LSM_Runtime.Limit_Exceeded
-                            | LSM_Runtime.Allocation_Failed
-                            | LSM_Runtime.Runtime_Incompatible
-                     then
-                        Result := Capacity_Exceeded;
-                        return;
-                     elsif Decode_Status = LSM_Runtime.Unsupported_Version then
-                        Result := Unsupported_Format;
-                        return;
-                     else
-                        Result := Corrupt;
+                        Result);
+                     if Result /= Success then
                         return;
                      end if;
-                  exception
-                     when Storage_Error =>
-                        LSM_Runtime.Release (Image);
-                        Result := Capacity_Exceeded;
-                        return;
-                     when others =>
-                        LSM_Runtime.Release (Image);
-                        raise;
                   end;
                end loop;
             end if;

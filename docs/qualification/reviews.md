@@ -1,5 +1,30 @@
 # Review record
 
+## Accepted generation-bound recovery-consumer extraction candidate
+
+- Parent: composable replica-refresh architecture commit `2f4eadb`.
+- Scope: extract body-private manifest and SST header/body consumers from the existing blocking recovery path. The
+  manifest and SST readers still issue the same bounded range followed by the same generation-bound whole read, then
+  invoke the extracted consumers. No public declaration, lifecycle mode, storage request, timeout, task, retry,
+  allocation limit, or persisted field changes in this stage.
+- Authority and failure: header inspection retains the decoder-admitted object length rather than trusting only the
+  provider-reported length. Whole-body decode requires that exact length and the header response's opaque generation.
+  Allocation remains lazy and checked at the established manifest-header, manifest-image, SST-header, and SST-image
+  fault points. Decode status maps to the same Capacity_Exceeded, Unsupported_Format, or Corrupt outcomes, and every
+  partially allocated image/checkpoint/SST is released on typed failure or exception.
+- Verification: the root/test builds and `./tests/scripts/test.sh` pass, including deterministic memory/files
+  recovery, complete-compaction close/local-loss/reopen, corruption and allocation-fault cases, the authenticated
+  client-backed refresh/reopen probe, 32 comparative cases, and pinned TidesDB 4/4. The exact-tree TLA/TLC/TLAPS
+  gate passes every maintained lane, including the 1,460-state replica-refresh model and 3,145,728-state partial
+  merge. `./scripts/prove.sh` proves 1,097/1,097 warning-strict checks and the post-run formal-process audit is
+  clean. The provider matrix passes all six implementations three times each. Repository, diff, and 110-column
+  checks are green.
+- Findings cycle: the first sweep found one P1 authority drift where the extracted records kept the raw
+  provider-reported length instead of the stronger decoder-admitted length used by the prior code. Both manifest and
+  SST consumers now retain the decoder result exactly. Repeated generation, length, decode, allocation, cleanup,
+  exception, compatibility, constants-authority, documentation, and unnecessary-surface review finds no remaining
+  actionable P0/P1/P2 finding.
+
 ## Accepted composable replica-refresh architecture candidate
 
 - Parent: complete-compaction limited-profile integration commit `b487c9b`.
