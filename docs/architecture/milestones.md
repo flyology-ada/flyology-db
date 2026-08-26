@@ -102,6 +102,12 @@ and drives the equivalent backend-neutral publisher for memory/files. Streaming/
 run pruning, and retention/GC policy remain later focused units, so Milestone 4
 remains incomplete.
 
+The fixed-snapshot paged-scan contract is now formalized before implementation: caller-supplied row/byte budgets,
+maximal contiguous pages, empty-view completion, and atomic capacity/allocation rejection have a maintained
+TLC/TLAPS lane and executable witness. The additive Ada cursor and its deterministic/provider qualification remain
+pending, and the first bounded page implementation will not be described as a physical merge iterator until source
+capture and repeated traversal are removed. See [`paged-scans.md`](paged-scans.md).
+
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
 pins, lagging-replica pins, required predecessor reachability, and unresolved publication attempts each retain exact
 immutable identities. A listed object becomes deletable only after an explicit age decision and a live protection

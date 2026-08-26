@@ -1,5 +1,29 @@
 # Review record
 
+## Accepted fixed-snapshot paged-scan formal candidate
+
+- Scope: add a finite TLA+ model, negative probe, checked execution witness, and abstract TLAPS kernel for the first
+  bounded paged-scan contract. No Ada declaration, persisted field, allocation ceiling, page default, task, provider
+  request, retry, or compatibility promise changes in this unit.
+- Contract: every successful page is the maximal next contiguous prefix from one captured view that fits both
+  caller-selected budgets. A valid empty view succeeds and records the full predicate; an invalid equal/reversed
+  endpoint remains outside the model and retains the existing `Invalid_State` rule. Capacity and allocation failure
+  preserve cursor, prior page, and pre-success predicate state exactly.
+- Authority: four keys, three modeled value extents, zero-to-two rows, and zero-to-five bytes are finite qualification
+  geometry, not public or persisted policy. The planned Ada cursor introduces no default and retains the transaction
+  mutation count so a later own write is rejected rather than mixed into the fixed page view.
+- Findings cycle: the first sweep removed arbitrary per-key concurrent mutation choices that inflated the graph
+  without adding cursor behavior. The second found that successful empty completion was unreachable and added an
+  explicit valid empty view. The third renamed that state from empty interval so the formal vocabulary cannot imply
+  weakening the established endpoint rule. The staged review found a P1 assurance gap: maximal selection existed
+  only in the transition, so a smaller ordered prefix could evade the invariants. A dedicated maximal-page invariant
+  and strict-prefix negative probe close it. Repeated safety, witness, constants-authority, API-boundary, and
+  unnecessary-surface review finds no remaining actionable P0/P1/P2 finding in the formal unit.
+- Verification: the maintained runner exhausts 341 distinct states at depth 6 with nonzero coverage of all six
+  semantic actions; the skipped-key and nonmaximal-page probes each fail `Safety`; the eight-state JSON witness passes
+  its independent validator; and strict TLAPS proves 24/24 obligations. No Ada implementation or refinement claim is
+  made by this accepted formal candidate.
+
 ## Accepted blocked-child replica-refresh qualification
 
 - Parent: accepted caller-composable replica-refresh commit `9ea30f0` plus focused dependency-evidence commit

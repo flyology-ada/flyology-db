@@ -248,6 +248,31 @@ attributing recursive finite-cardinality reasoning to the SMT proof. The pure-no
 proof boundary: concrete endpoint ordering is checked by TLC, not derived by TLAPS. Neither lane proves byte storage,
 allocation implementation, list ownership, concurrency, progress, or refinement to production Ada.
 
+## Fixed-snapshot paged-scan lane
+
+`PagedScan.tla` freezes caller-bounded page selection before the additive Ada cursor is implemented. Every successful
+page is the maximal next contiguous prefix from one captured logical view that fits both an explicit row budget and
+an explicit combined key-plus-value byte budget. Tombstones mask older values. Later replacement, resurrection, and
+deletion in current authority cannot alter the captured rows. When rows remain but the next indivisible row does not
+fit, capacity rejection preserves the exact cursor and prior page; modeled allocation rejection has the same atomic
+boundary. A valid range with no visible rows succeeds with an empty final page and records the predicate.
+
+The finite model's four ordered one-byte keys, three value extents, zero-to-two row budgets, and zero-to-five byte
+budgets are qualification geometry only. They are not key/value limits, persisted fields, page defaults, or retention
+policy. TLC exhausts 341 distinct states at depth 6 with nonzero coverage for Begin, concurrent authority change,
+ordinary page publication, empty-view completion, capacity rejection, and allocation rejection. The skipped-key
+and nonmaximal-page negative probes must each violate `Safety`. The independently validated eight-state witness emits
+the frozen first row, changes current authority, observes both atomic rejection paths, and then emits the original
+remaining rows exactly.
+
+`PagedScanSafetyProof.tla` is an unbounded action-preservation kernel over an arbitrary frozen row sequence and
+arbitrary nonempty budget set. Its explicit `PageFor` boundary requires every selected page to be the exact next
+prefix. TLAPS proves 24 obligations for initialization, successful nonempty publication, successful empty completion,
+capacity rejection, allocation rejection, and quiescence. The kernel does not prove maximal-prefix arithmetic,
+tombstone semantics, endpoint comparison, allocation, transaction-local mutation stability, progress, concurrency,
+the public Ada contract, or refinement. TLC owns the first two finite rules; the remaining operational boundaries
+must be covered by the Ada implementation and deterministic tests.
+
 ## Witness projection
 
 `CommitPublicationWitness.tla` adds a deliberate invariant violation that asks TLC for one useful path. The
@@ -411,3 +436,7 @@ fixed-snapshot read lane adds 7,530 states at depth 14, three validated witnesse
 strict TLAPS obligations. The serializable lane adds 44,244 states at depth 13, four validated witnesses, one
 negative probe, full semantic-action coverage, and 10 of 10 strict TLAPS obligations. Larger state spaces belong to
 qualification campaigns and must not replace this fast per-change gate.
+The range-normalization lane adds 3,419 states at depth 4, one validated bridge/cross-family/rollback witness, one
+negative probe, and 19 of 19 strict TLAPS obligations. The paged-scan lane adds 341 states at depth 6, one validated
+fixed-view/backpressure witness, skipped-key and nonmaximal-page negative probes, full semantic-action coverage, and
+24 of 24 strict TLAPS obligations.

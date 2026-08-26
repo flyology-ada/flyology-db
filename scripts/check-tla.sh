@@ -1105,6 +1105,78 @@ grep -q 'Invariant WitnessPending is violated.' \
 #  quiescence proofs establish the reviewed 19-obligation total.
 grep -q 'All 19 obligations proved.' "$temporary_root/tlaps-range-normalization.log"
 
+#  Four ordered one-byte keys, zero-to-two rows, and zero-to-five bytes are
+#  finite qualification geometry for fixed-snapshot paging. They are not
+#  database key/value limits or page defaults. The pinned graph also admits a
+#  valid interval with no visible rows so successful empty completion is
+#  nonvacuous without weakening endpoint validation.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-paged-scan-states" \
+  -config PagedScan.cfg PagedScan \
+  >"$temporary_root/tlc-paged-scan.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-paged-scan.log"
+! grep -q '^Warning:' "$temporary_root/tlc-paged-scan.log"
+grep -q '341 distinct states found' "$temporary_root/tlc-paged-scan.log"
+grep -q 'The depth of the complete state graph search is 6.' \
+  "$temporary_root/tlc-paged-scan.log"
+for action in Begin ConcurrentAdvance ProducePage CompleteEmpty RejectCapacity \
+  RejectAllocation
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-paged-scan.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-paged-scan-probe-states" \
+  -config PagedScanProbe.cfg PagedScanProbe \
+  >"$temporary_root/tlc-paged-scan-probe.log" 2>&1
+paged_scan_probe_status=$?
+set -e
+test "$paged_scan_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-paged-scan-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-paged-scan-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-paged-scan-short-page-probe-states" \
+  -config PagedScanShortPageProbe.cfg PagedScanShortPageProbe \
+  >"$temporary_root/tlc-paged-scan-short-page-probe.log" 2>&1
+paged_scan_short_page_probe_status=$?
+set -e
+test "$paged_scan_short_page_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-paged-scan-short-page-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-paged-scan-short-page-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-paged-scan-witness-states" \
+  -config PagedScanWitness.cfg \
+  -dumpTrace json "$temporary_root/paged-scan-witness.json" \
+  PagedScanWitness \
+  >"$temporary_root/tlc-paged-scan-witness.log" 2>&1
+paged_scan_witness_status=$?
+set -e
+test "$paged_scan_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-paged-scan-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-paged-scan-witness.log"
+"$model_root/validate_paged_scan_witness.py" \
+  "$temporary_root/paged-scan-witness.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-paged-scan-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/PagedScanSafetyProof.tla" \
+  >"$temporary_root/tlaps-paged-scan.log" 2>&1
+#  Initialization, four action families, and quiescence establish the reviewed
+#  24-obligation total; this count changes only with the proof kernel.
+grep -q 'All 24 obligations proved.' "$temporary_root/tlaps-paged-scan.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -1176,3 +1248,8 @@ printf '%s\n' "  Range normalization TLC 3419 distinct states, depth 4"
 printf '%s\n' "  Range normalization TLAPS 19/19 obligations"
 printf '%s\n' "  Bridge/cross-family/capacity/allocation witness validated"
 printf '%s\n' "  Negative incomplete-bridge normalization probe detected"
+printf '%s\n' "  Paged scan TLC 341 distinct states, depth 6"
+printf '%s\n' "  Paged scan TLAPS 24/24 obligations"
+printf '%s\n' "  Frozen-page/capacity/allocation/concurrent witness validated"
+printf '%s\n' "  Negative skipped-key page probe detected"
+printf '%s\n' "  Negative nonmaximal page probe detected"

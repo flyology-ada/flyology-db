@@ -492,6 +492,15 @@ remain executable boundaries rather than newly selected proof units.
   atomic rejection. The TLAPS kernel assumes a pure normalizer and an abstract range-count function; TLC checks the
   concrete finite endpoint algorithm. Byte storage, list ownership, allocation implementation, concurrency,
   progress, and refinement to Ada remain outside this formal boundary.
+- The fixed-snapshot paged-scan model exhausts 341 states at depth 6. It checks maximal contiguous page selection,
+  row/byte backpressure, tombstone masking, concurrent authority change after capture, successful empty-view
+  completion, and atomic capacity/allocation rejection with nonzero coverage for every action. Its independently
+  validated eight-state witness reconstructs the exact frozen rows after both failure paths and a current-view
+  replacement/resurrection/deletion; pages that skip the first visible key or stop before the maximal fitting prefix
+  must violate safety. The arbitrary-row action kernel proves 24/24 strict TLAPS obligations for exact prefixes,
+  exact completion, and rejection atomicity. Maximal-prefix arithmetic and tombstone behavior remain finite TLC
+  claims. Endpoint comparison, transaction-local mutation stability, allocation, concurrency, progress, the
+  additive Ada cursor, and refinement remain outside this formal boundary.
 
 The TLAPS kernel is a batch-atomic abstraction assigning every batch an arbitrary nonempty transaction set, with
 pairwise-disjoint ownership between batches. It proves publication-epoch monotonicity, acknowledged whole-batch
