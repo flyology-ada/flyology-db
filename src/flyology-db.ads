@@ -158,6 +158,10 @@ package Flyology.DB is
      (No_L0_Checkpoint_Work,
       Additive_Flush_Required,
       Complete_Compaction_Required);
+   --  Owned exact-family projection of one checkpoint-action observation.
+   --  Dynamic storage is derived from the observed persisted registry and is
+   --  reclaimed automatically; the type retains no Database borrow.
+   type L0_Checkpoint_Requirement is limited private;
    --  Caller-composable checkpoint and family-registry publication. The discriminants are
    --  retained borrows: Set, Item, Storage, HTTP, Payload_Pool, and
    --  Cancellation must outlive terminal Finish or scope-abandonment drain.
@@ -914,6 +918,37 @@ package Flyology.DB is
       Action : out L0_Checkpoint_Action;
       Result : out Outcome_Code);
 
+   --  Atomically replace Requirement with the action and exact affected
+   --  family IDs from one quiescent writer observation. Additive_Flush_Required
+   --  carries every suffix-changed family; Complete_Compaction_Required carries
+   --  every complete-view nonempty family; No_L0_Checkpoint_Work carries none.
+   --  Failure preserves the prior Requirement. The result reserves no identity
+   --  and a later commit may invalidate it before publication admission.
+   --  @param Item Open writer database whose current L0 requirement is inspected
+   --  @param Requirement Owned observation replaced only after complete success
+   --  @param Result Success or a definite local state/capacity classification
+   procedure Observe_L0_Checkpoint_Requirement
+     (Item        : in out Database;
+      Requirement : in out L0_Checkpoint_Requirement;
+      Result      : out Outcome_Code);
+
+   --  @param Item Successfully observed checkpoint requirement
+   --  @return Action captured by the observation
+   function Checkpoint_Requirement_Action
+     (Item : L0_Checkpoint_Requirement) return L0_Checkpoint_Action;
+
+   --  @param Item Successfully observed checkpoint requirement
+   --  @return Number of exact affected families carried by Item
+   function Checkpoint_Requirement_Family_Total (Item : L0_Checkpoint_Requirement) return Natural;
+
+   --  Return one exact affected family in stable registry order.
+   --  @param Item Successfully observed checkpoint requirement
+   --  @param Index One-based affected-family position
+   --  @return Exact stable column-family ID
+   --  @exception Constraint_Error Index is outside the retained family set
+   function Checkpoint_Requirement_Family
+     (Item : L0_Checkpoint_Requirement; Index : Positive) return Column_Family_ID;
+
 private
 
    --  Bounded synchronous coordinator policy: eight visible operation slots
@@ -1003,6 +1038,9 @@ private
       Engine_State_Allocation,
       Identity_Table_Allocation,
       Projection_Scratch_Allocation,
+      --  Test-only failure before publishing an exact owned checkpoint-family
+      --  projection. This position is neither persisted nor product policy.
+      Checkpoint_Requirement_Family_Allocation,
       Root_Checkpoint_State_Allocation,
       Root_Checkpoint_Image_Allocation,
       Root_Manifest_Retention_Allocation,
@@ -1144,6 +1182,22 @@ private
 
    type Scan_Result is limited record
       Owner : Scan_Result_Owner;
+   end record;
+
+   type L0_Checkpoint_Family_Array is array (Positive range <>) of Column_Family_ID;
+   type L0_Checkpoint_Family_Array_Access is access L0_Checkpoint_Family_Array;
+   --  Null is the canonical fresh/no-work family set. Non-null arrays have the
+   --  exact observed count; no spare capacity or hidden ceiling is selected.
+   type L0_Checkpoint_Requirement_State is new Ada.Finalization.Limited_Controlled with record
+      Action   : L0_Checkpoint_Action := No_L0_Checkpoint_Work;
+      Families : L0_Checkpoint_Family_Array_Access := null;
+   end record;
+
+   overriding
+   procedure Finalize (Item : in out L0_Checkpoint_Requirement_State);
+
+   type L0_Checkpoint_Requirement is limited record
+      State : L0_Checkpoint_Requirement_State;
    end record;
 
    type Transaction is limited record

@@ -3001,6 +3001,7 @@ package body Flyology.DB.Engine_Tests is
          Commit_Info : Commit_Receipt;
          Result      : Outcome_Code;
          Action      : L0_Checkpoint_Action;
+         Requirement : L0_Checkpoint_Requirement;
          --  Two nonempty families cannot be represented by the persisted
          --  database-wide one-run ceiling even after complete replacement.
          --  This deliberately inconsistent workload/limit fixture proves a
@@ -3034,6 +3035,13 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, "no-admissible-checkpoint second Put failed");
          Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
          Expect (Result, Success, "no-admissible-checkpoint commit failed");
+         Observe_L0_Checkpoint_Requirement (Item, Requirement, Result);
+         Expect (Result, Capacity_Exceeded, "impossible owned requirement capacity was not reported");
+         if Checkpoint_Requirement_Action (Requirement) /= No_L0_Checkpoint_Work
+           or else Checkpoint_Requirement_Family_Total (Requirement) /= 0
+         then
+            raise Program_Error with "failed impossible observation replaced its prior requirement";
+         end if;
          Required_L0_Checkpoint_Action (Item, Action, Result);
          Expect (Result, Capacity_Exceeded, "impossible replacement capacity was not reported");
          Close (Item, Result);
@@ -3055,10 +3063,29 @@ package body Flyology.DB.Engine_Tests is
          Flush_Info                                                 : Flush_Receipt;
          Result                                                     : Outcome_Code;
          Action                                                     : L0_Checkpoint_Action;
+         Requirement                                                : L0_Checkpoint_Requirement;
          First_Runs, Second_Runs                                    :
            Checkpoint_Run_Identity_Array (1 .. Families'Length);
          Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
          After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
+
+         procedure Expect_Requirement
+           (Expected_Action : L0_Checkpoint_Action; Expected_Total : Natural; Stage : String)
+         is
+         begin
+            Observe_L0_Checkpoint_Requirement (Item, Requirement, Result);
+            Expect (Result, Success, Context_Text & " " & Stage & " owned checkpoint query failed");
+            if Checkpoint_Requirement_Action (Requirement) /= Expected_Action
+              or else Checkpoint_Requirement_Family_Total (Requirement) /= Expected_Total
+            then
+               raise Program_Error with Context_Text & " " & Stage & " owned checkpoint shape mismatch";
+            end if;
+            for Index in Positive range 1 .. Expected_Total loop
+               if Checkpoint_Requirement_Family (Requirement, Index) /= Column_Family_ID (Index) then
+                  raise Program_Error with Context_Text & " " & Stage & " checkpoint family mismatch";
+               end if;
+            end loop;
+         end Expect_Requirement;
       begin
          Bind_Context (Context, Backend, Prefix);
          Create
@@ -3073,6 +3100,16 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Create_Info,
             Result  => Result);
          Expect (Result, Success, Context_Text & " create failed");
+         Expect_Requirement (No_L0_Checkpoint_Work, 0, "initial");
+         declare
+            Ignored : Column_Family_ID;
+         begin
+            Ignored := Checkpoint_Requirement_Family (Requirement, 1);
+            raise Program_Error with Context_Text & " accepted an absent checkpoint family";
+         exception
+            when Constraint_Error =>
+               null;
+         end;
          Required_L0_Checkpoint_Action (Item, Action, Result);
          Expect (Result, Success, Context_Text & " initial checkpoint query failed");
          if Action /= No_L0_Checkpoint_Work then
@@ -3092,6 +3129,22 @@ package body Flyology.DB.Engine_Tests is
          end loop;
          Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
          Expect (Result, Success, Context_Text & " first commit failed");
+         Expect_Requirement (Additive_Flush_Required, Families'Length, "additive");
+         Testing.Fail_Next_Allocation (Testing.Checkpoint_Requirement_Families);
+         Observe_L0_Checkpoint_Requirement (Item, Requirement, Result);
+         Expect
+           (Result, Capacity_Exceeded, Context_Text & " owned checkpoint allocation fault was not typed");
+         if Checkpoint_Requirement_Action (Requirement) /= Additive_Flush_Required
+           or else Checkpoint_Requirement_Family_Total (Requirement) /= Families'Length
+         then
+            raise Program_Error with Context_Text & " allocation failure replaced the prior requirement";
+         end if;
+         for Index in Positive range 1 .. Families'Length loop
+            if Checkpoint_Requirement_Family (Requirement, Index) /= Column_Family_ID (Index) then
+               raise Program_Error with
+                 Context_Text & " allocation failure changed prior checkpoint families";
+            end if;
+         end loop;
          Required_L0_Checkpoint_Action (Item, Action, Result);
          Expect (Result, Success, Context_Text & " first checkpoint query failed");
          if Action /= Additive_Flush_Required then
@@ -3106,6 +3159,7 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Flush_Info,
             Result  => Result);
          Expect (Result, Success, Context_Text & " first checkpoint failed");
+         Expect_Requirement (No_L0_Checkpoint_Work, 0, "clean");
          Required_L0_Checkpoint_Action (Item, Action, Result);
          Expect (Result, Success, Context_Text & " clean checkpoint query failed");
          if Action /= No_L0_Checkpoint_Work then
@@ -3119,6 +3173,7 @@ package body Flyology.DB.Engine_Tests is
          end loop;
          Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
          Expect (Result, Success, Context_Text & " suffix commit failed");
+         Expect_Requirement (Complete_Compaction_Required, Families'Length, "complete");
          Required_L0_Checkpoint_Action (Item, Action, Result);
          Expect (Result, Success, Context_Text & " full L0 checkpoint query failed");
          if Action /= Complete_Compaction_Required then
@@ -3135,6 +3190,7 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Flush_Info,
             Result  => Result);
          Expect (Result, Capacity_Exceeded, Context_Text & " admitted an over-capacity L0 successor");
+         Expect_Requirement (Complete_Compaction_Required, Families'Length, "post-rejection");
          Required_L0_Checkpoint_Action (Item, Action, Result);
          Expect (Result, Success, Context_Text & " post-rejection checkpoint query failed");
          if Action /= Complete_Compaction_Required then
@@ -3615,6 +3671,7 @@ package body Flyology.DB.Engine_Tests is
       Commit_Info : Commit_Receipt;
       Create_Info : Create_Receipt;
       Flush_Info  : Flush_Receipt;
+      Requirement : L0_Checkpoint_Requirement;
       Data        : Value;
       Result      : Outcome_Code;
       Planned_Runs, Planned_Identities, Family_Runs, Family_Entries : Natural;
@@ -3623,7 +3680,8 @@ package body Flyology.DB.Engine_Tests is
       Before_Batches, Before_Runs, Before_Manifests, Before_Heads   : Natural;
       After_Batches, After_Runs, After_Manifests, After_Heads       : Natural;
       --  The caller supplies a disjoint 100-ID namespace. +1 is Create,
-      --  +2/+3 are Put/Delete, +10/+20 are their L0 runs, +11/+21 are
+      --  +2/+3/+4 are Put/Delete/final tombstone, +10/+20 are the first two
+      --  L0 runs, +11/+21 are
       --  manifests, +12/+22 are HEAD transitions, +30 is the intentionally
       --  unused replacement-run identity, +31/+32 are its manifest/transition,
       --  and +40..+43 establish the later delta. This is deterministic corpus
@@ -3650,10 +3708,10 @@ package body Flyology.DB.Engine_Tests is
         [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 30))];
       Later_Runs : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 40))];
-      --  Two successful commits establish both the replay boundary and exact
+      --  Three successful commits establish both the replay boundary and exact
       --  identity ledger represented by the empty successor manifest.
-      Expected_Replay_Boundary : constant Sequence_Number := 2;
-      Expected_Identity_Total  : constant Natural := 2;
+      Expected_Replay_Boundary : constant Sequence_Number := 3;
+      Expected_Identity_Total  : constant Natural := 3;
       --  These one-byte payloads distinguish the retired live value from the
       --  post-empty-compaction delta; they are read witnesses, not DB policy.
       Item_Key    : constant Key := To_Key ([1]);
@@ -3705,6 +3763,20 @@ package body Flyology.DB.Engine_Tests is
          Receipt => Flush_Info,
          Result  => Result);
       Expect (Result, Success, "empty-compaction tombstone Flush failed");
+
+      Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 4), Txn, Result);
+      Expect (Result, Success, "empty-compaction final Delete transaction begin failed");
+      Delete (Item, Txn, 1, Item_Key, Result);
+      Expect (Result, Success, "empty-compaction final Delete buffer failed");
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Expect (Result, Success, "empty-compaction final Delete commit failed");
+      Observe_L0_Checkpoint_Requirement (Item, Requirement, Result);
+      Expect (Result, Success, "empty-compaction owned checkpoint query failed");
+      if Checkpoint_Requirement_Action (Requirement) /= Complete_Compaction_Required
+        or else Checkpoint_Requirement_Family_Total (Requirement) /= 0
+      then
+         raise Program_Error with "empty compaction did not retain an exact empty family projection";
+      end if;
 
       Testing.Build_Compaction_Checkpoint
         (Item,

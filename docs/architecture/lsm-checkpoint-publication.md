@@ -192,10 +192,18 @@ growth is full but one run per nonempty family fits. If neither representation f
 exact observation rather than a reservation: a later commit can change it, and publication revalidates all limits.
 The caller still supplies every run, manifest, and transition identity to the existing operation.
 
+`Observe_L0_Checkpoint_Requirement` uses that same coherent observation to retain an owned exact family set in
+stable registry order. Additive selection retains the suffix-changed families; complete selection retains the
+complete-view nonempty families; no work retains none. Storage is allocated lazily at the exact selected count from
+persisted registry facts. Successful observation swaps the entire action/set pair into the limited caller-owned
+value; any state or allocation failure preserves its prior contents. The value retains no database borrow and grants
+no scheduling, identity, or publication authority.
+
 The selection kernel is isolated in `Flyology.DB.Checkpoint_Policy` for SPARK proof. It uses checked arithmetic and
 distinguishes changed families from complete-view nonempty families, so a tombstone-only suffix can require an
-additive run while complete replacement may correctly emit no run for the now-empty family. The existing TLA+
-accumulation and compaction lanes remain the publication witnesses; no Ada-to-TLA+ refinement theorem is claimed.
+additive run while complete replacement may correctly emit no run for the now-empty family. The TLA+ selection lane
+model-checks the same action and family projection, while the accumulation and compaction lanes remain the
+publication witnesses; no Ada-to-TLA+ refinement theorem is claimed.
 
 `L0Accumulation.tla` checks the concrete two-run tombstone merge, independent persisted capacity rejection, lost
 accepted HEAD response, and exact recovery. `L0AccumulationSafetyProof.tla` proves the arbitrary-set, unbounded-cycle

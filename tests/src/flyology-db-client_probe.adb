@@ -111,6 +111,7 @@ procedure Flyology.DB.Client_Probe is
    Commit_Info            : Commit_Receipt;
    Flush_Info             : Flush_Receipt;
    Action                 : L0_Checkpoint_Action;
+   Requirement            : L0_Checkpoint_Requirement;
    Data                   : Flyology.Bytes.Unbounded_Bytes;
    Result                 : Outcome_Code;
    Close_Result           : Outcome_Code;
@@ -319,9 +320,11 @@ begin
       Receipt => Receipt,
       Result  => Result);
    Expect (Result, Success, "client-backed create failed");
-   Required_L0_Checkpoint_Action (Created, Action, Result);
+   Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "client-backed initial checkpoint query failed");
-   if Action /= No_L0_Checkpoint_Work then
+   if Checkpoint_Requirement_Action (Requirement) /= No_L0_Checkpoint_Work
+     or else Checkpoint_Requirement_Family_Total (Requirement) /= 0
+   then
       raise Program_Error with "client-backed fresh database reported checkpoint work";
    end if;
 
@@ -333,9 +336,12 @@ begin
    Expect (Result, Success, "client-backed put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "client-backed commit failed");
-   Required_L0_Checkpoint_Action (Created, Action, Result);
+   Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "client-backed dirty checkpoint query failed");
-   if Action /= Additive_Flush_Required then
+   if Checkpoint_Requirement_Action (Requirement) /= Additive_Flush_Required
+     or else Checkpoint_Requirement_Family_Total (Requirement) /= 1
+     or else Checkpoint_Requirement_Family (Requirement, 1) /= 1
+   then
       raise Program_Error with "client-backed initial commit did not require additive Flush";
    end if;
 

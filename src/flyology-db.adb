@@ -105,6 +105,8 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Scan_Row_Descriptor_Array, Scan_Row_Descriptor_Array_Access);
    procedure Free_Scan_Result_State is new
      Ada.Unchecked_Deallocation (Scan_Result_State, Scan_Result_State_Access);
+   procedure Free_L0_Checkpoint_Families is new
+     Ada.Unchecked_Deallocation (L0_Checkpoint_Family_Array, L0_Checkpoint_Family_Array_Access);
    procedure Free_Transaction_Arena is new
      Ada.Unchecked_Deallocation (Transaction_Arena, Transaction_Arena_Access);
 
@@ -271,6 +273,12 @@ package body Flyology.DB is
    procedure Finalize (Item : in out Scan_Result_Owner) is
    begin
       Release_Scan_Result (Item.State);
+   end Finalize;
+
+   overriding
+   procedure Finalize (Item : in out L0_Checkpoint_Requirement_State) is
+   begin
+      Free_L0_Checkpoint_Families (Item.Families);
    end Finalize;
 
    protected body Shared_Image_References is
@@ -15426,10 +15434,12 @@ package body Flyology.DB is
       Value := Item.Life.Highest (Result);
    end Highest_Visible;
 
-   procedure Required_L0_Checkpoint_Action
-     (Item   : in out Database;
-      Action : out L0_Checkpoint_Action;
-      Result : out Outcome_Code)
+   procedure Observe_L0_Checkpoint
+     (Item             : in out Database;
+      Include_Families : Boolean;
+      Action           : out L0_Checkpoint_Action;
+      Families         : out L0_Checkpoint_Family_Array_Access;
+      Result           : out Outcome_Code)
    is
       State          : Engine_State_Access;
       Guard          : Checkpoint_Guard;
@@ -15441,6 +15451,7 @@ package body Flyology.DB is
       Found_Gap      : Boolean := False;
    begin
       Action := No_L0_Checkpoint_Work;
+      Families := null;
       Item.Life.Begin_Checkpoint (State, Result);
       if Result /= Success then
          return;
@@ -15488,14 +15499,17 @@ package body Flyology.DB is
          --  count. Allocation failure is classified below before any
          --  publication identity or storage effect exists.
          declare
-            Entry_Total    : Natural;
-            Payload_Bytes  : Natural;
+            Entry_Total     : Natural;
+            Payload_Bytes   : Natural;
             Family_Position : Natural := 0;
-            Current_Runs   : Checkpoints.Run_Count_Array (1 .. Family_Total) := [others => 0];
-            Maximum_Runs   : Checkpoints.Run_Count_Array (1 .. Family_Total) := [others => 0];
-            Changed        : Checkpoints.Family_Flag_Array (1 .. Family_Total) := [others => False];
-            Nonempty       : Checkpoints.Family_Flag_Array (1 .. Family_Total) := [others => False];
-            Selection      : Checkpoints.Selection;
+            Selected_Total  : Natural := 0;
+            Current_Runs    : Checkpoints.Run_Count_Array (1 .. Family_Total) := [others => 0];
+            Maximum_Runs    : Checkpoints.Run_Count_Array (1 .. Family_Total) := [others => 0];
+            Changed         : Checkpoints.Family_Flag_Array (1 .. Family_Total) := [others => False];
+            Nonempty        : Checkpoints.Family_Flag_Array (1 .. Family_Total) := [others => False];
+            Family_IDs      : L0_Checkpoint_Family_Array (1 .. Family_Total);
+            Selected        : Checkpoints.Family_Flag_Array (1 .. Family_Total) := [others => False];
+            Selection       : Checkpoints.Selection;
          begin
             for Index in State.LSM_Authority.Families'Range loop
                if State.LSM_Authority.Families (Index).ID /= 0 then
@@ -15503,6 +15517,7 @@ package body Flyology.DB is
                   declare
                      Family : Family_LSM_Authority renames State.LSM_Authority.Families (Index);
                   begin
+                     Family_IDs (Family_Position) := Column_Family_ID (Family.ID);
                      Current_Runs (Family_Position) := Interfaces.Unsigned_32 (Family.State.Run_Total);
                      Maximum_Runs (Family_Position) := Family.State.Maximum_L0_Runs;
 
@@ -15549,11 +15564,32 @@ package body Flyology.DB is
                      Action := No_L0_Checkpoint_Work;
                   when Checkpoints.Additive_Flush =>
                      Action := Additive_Flush_Required;
+                     Selected := Changed;
                   when Checkpoints.Complete_Compaction =>
                      Action := Complete_Compaction_Required;
+                     Selected := Nonempty;
                   when Checkpoints.No_Admissible_Checkpoint =>
                      Result := Capacity_Exceeded;
                end case;
+
+               if Result = Success and then Include_Families and then Action /= No_L0_Checkpoint_Work then
+                  for Is_Selected of Selected loop
+                     if Is_Selected then
+                        Selected_Total := Selected_Total + 1;
+                     end if;
+                  end loop;
+                  if Selected_Total > 0 then
+                     Allocation_Faults.Check (Checkpoint_Requirement_Family_Allocation);
+                     Families := new L0_Checkpoint_Family_Array (1 .. Selected_Total);
+                     Selected_Total := 0;
+                     for Index in Selected'Range loop
+                        if Selected (Index) then
+                           Selected_Total := Selected_Total + 1;
+                           Families (Selected_Total) := Family_IDs (Index);
+                        end if;
+                     end loop;
+                  end if;
+               end if;
             end if;
          end;
       end if;
@@ -15562,18 +15598,71 @@ package body Flyology.DB is
       Guard.Active := False;
    exception
       when Storage_Error =>
+         Free_L0_Checkpoint_Families (Families);
          if Guard.Active then
             Item.Life.Finish_Checkpoint;
             Guard.Active := False;
          end if;
          Result := Capacity_Exceeded;
       when others =>
+         Free_L0_Checkpoint_Families (Families);
          if Guard.Active then
             Item.Life.Finish_Checkpoint;
             Guard.Active := False;
          end if;
          raise;
+   end Observe_L0_Checkpoint;
+
+   procedure Required_L0_Checkpoint_Action
+     (Item   : in out Database;
+      Action : out L0_Checkpoint_Action;
+      Result : out Outcome_Code)
+   is
+      Families : L0_Checkpoint_Family_Array_Access;
+   begin
+      Observe_L0_Checkpoint (Item, False, Action, Families, Result);
+      Free_L0_Checkpoint_Families (Families);
    end Required_L0_Checkpoint_Action;
+
+   procedure Observe_L0_Checkpoint_Requirement
+     (Item        : in out Database;
+      Requirement : in out L0_Checkpoint_Requirement;
+      Result      : out Outcome_Code)
+   is
+      Action   : L0_Checkpoint_Action;
+      Families : L0_Checkpoint_Family_Array_Access;
+      Previous : L0_Checkpoint_Family_Array_Access;
+   begin
+      Observe_L0_Checkpoint (Item, True, Action, Families, Result);
+      if Result = Success then
+         Previous := Requirement.State.Families;
+         Requirement.State.Action := Action;
+         Requirement.State.Families := Families;
+         Families := Previous;
+      end if;
+      Free_L0_Checkpoint_Families (Families);
+   exception
+      when others =>
+         Free_L0_Checkpoint_Families (Families);
+         raise;
+   end Observe_L0_Checkpoint_Requirement;
+
+   function Checkpoint_Requirement_Action
+     (Item : L0_Checkpoint_Requirement) return L0_Checkpoint_Action
+   is (Item.State.Action);
+
+   function Checkpoint_Requirement_Family_Total (Item : L0_Checkpoint_Requirement) return Natural
+   is (if Item.State.Families = null then 0 else Item.State.Families'Length);
+
+   function Checkpoint_Requirement_Family
+     (Item : L0_Checkpoint_Requirement; Index : Positive) return Column_Family_ID
+   is
+   begin
+      if Item.State.Families = null or else Index > Item.State.Families'Length then
+         raise Constraint_Error with "checkpoint requirement family index is out of range";
+      end if;
+      return Item.State.Families (Index);
+   end Checkpoint_Requirement_Family;
 
    procedure Set_Test_Paused (Item : in out Database; Value : Boolean; Result : out Outcome_Code) is
       Lease : Lifecycle_Lease;

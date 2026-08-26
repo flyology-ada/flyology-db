@@ -17,6 +17,8 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - Explicit synchronous `Flush` into immutable SST and manifest objects, including a later suffix-delta Flush.
 - A synchronous `Required_L0_Checkpoint_Action` observation that selects no work, additive `Flush`, or complete
   `Compact` solely from the exact current view and persisted run ceilings; the caller still supplies every identity.
+- An owned `L0_Checkpoint_Requirement` observation that carries the exact changed or nonempty family IDs from that
+  same view in stable registry order, without retaining the database or reserving publication authority.
 - Exact caller-selected two- or three-consecutive-run `Compact`, retaining every version/tombstone and all
   surrounding runs. The maintained Files acceptance scenario selects the two-run form.
 - Synchronous and caller-composable `Add_Column_Family` at an exact checkpoint boundary, with exact
@@ -88,3 +90,5 @@ The public `Required_L0_Checkpoint_Action` closes the policy-free observation se
 persisted run ceilings and the already-public Flush/Compact algorithms without generating identities or scheduling
 work. Memory/files qualification covers per-family, aggregate, and impossible replacement capacity; the
 authenticated provider probe covers clean and additive decisions on the same public writer path.
+`Observe_L0_Checkpoint_Requirement` exposes the same decision with an owned exact family projection. Successful
+observation atomically replaces the caller's prior value; capacity or state failure leaves that value unchanged.

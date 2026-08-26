@@ -11,6 +11,7 @@ private package Flyology.DB.Testing is
       Engine_State,
       Identity_Tables,
       Projection_Scratch,
+      Checkpoint_Requirement_Families,
       Root_Checkpoint_State,
       Root_Checkpoint_Image,
       Root_Manifest_Retention,

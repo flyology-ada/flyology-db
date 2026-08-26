@@ -1,5 +1,36 @@
 # Review record
 
+## Accepted owned exact-family checkpoint-requirement candidate
+
+- Parent: limited-profile checkpoint-observation integration commit `0d377f9`.
+- API and scope: add limited private `L0_Checkpoint_Requirement`, one synchronous atomic observation procedure, and
+  read-only action/count/index accessors directly in `Flyology.DB`. The owned value retains suffix-changed family IDs
+  for additive Flush, complete-view nonempty family IDs for complete compaction, and none for no work. Stable registry
+  order is preserved. The existing action-only query remains source-compatible and uses the same observation kernel.
+- Authority and ownership: family storage is allocated lazily at the exact selected count derived from the persisted
+  registry, with no new public/default capacity. A private controlled component reclaims it automatically; the public
+  type is limited but deliberately non-derivable and retains no database borrow. Complete compaction with no live
+  families is valid and retains an empty set. Successful observation swaps the whole action/set pair; state or
+  allocation failure leaves the prior value exact and publishes nothing.
+- Concurrency and certainty: the operation uses the existing exclusive checkpoint lifecycle and one coherent writer
+  view. It performs no provider I/O, reserves no identity, schedules no work, and grants no admission authority. A
+  later commit may invalidate the result, and the caller-selected Flush/Compact path revalidates every persisted
+  bound before publication.
+- Verification: `./tests/scripts/test.sh` is green, including memory/files allocation rollback, no-admissible
+  preservation, out-of-range access, complete zero-family projection, authenticated client use, crash/recovery, and
+  the owned limited Files showcase. `./tests/scripts/test-s3-matrix.sh` passes all 18 RustFS, SeaweedFS, MinIO, and
+  Flyology memory/files/SQLite lanes against Object Storage `179b16c…` and HTTP/QUIC `eb09a80…`. The selection model
+  remains 2,240 states at depth 2 with all four branches covered; its witness validates the exact complete family set
+  and TLAPS proves 8/8 action/projection obligations. The maintained warning-strict SPARK gate proves 1,097/1,097
+  selected-unit checks; the exact post-run audit is clean. Repository and diff checks pass. GNATformat is absent from
+  this host's selected Alire toolchain, so no formatter claim is made; every changed handwritten Ada line is within
+  110 columns. GNATdoc is likewise unavailable, so no generated-site claim is made.
+- Findings cycle: the API review found one P2 unnecessary visibly tagged/derivable type; a private controlled holder
+  restores the intended limited-private surface. The implementation sweep found one P1 rejection of the legitimate
+  all-tombstoned complete-compaction empty set; accepting the empty projection and adding the exact regression fixes
+  it. The repeated API, concurrency, allocation, lifecycle, certainty, constants, tests, formal-model, documentation,
+  compatibility, and unnecessary-surface sweep finds no actionable P0/P1/P2 finding.
+
 ## Accepted limited-profile checkpoint-observation integration candidate
 
 - Parent: public L0 checkpoint-action observation commit `dbff9d6`.

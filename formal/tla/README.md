@@ -129,9 +129,11 @@ L0 run ceilings to no work, additive flush, complete compaction, or no admissibl
 zero-to-two-run, one-to-three-slot geometry is finite qualification coverage rather than a product limit. Observation
 does not reserve an object identity, mutate checkpoint authority, or schedule work. The separately validated witness
 requires the case where each changed family can accept another run but their combined additions exceed the remaining
-database-wide slots, so complete compaction is selected. `L0CheckpointSelectionSafetyProof.tla` proves the four
-decision branches directly; it does not establish liveness, operational Ada refinement, or atomicity between this
-observation and a later caller-selected Flush or Compact.
+database-wide slots, so complete compaction is selected and the exact nonempty family set is retained. The model
+projects changed families for additive Flush, nonempty families for complete compaction, and an empty set otherwise.
+`L0CheckpointSelectionSafetyProof.tla` proves the four decision and four family-projection branches directly; it does
+not establish liveness, operational Ada refinement, or atomicity between this observation and a later caller-selected
+Flush or Compact.
 
 `L0Accumulation.tla` freezes the next additive algorithm without claiming that its Ada implementation has landed.
 The first run contains one value; the later delta run contains a tombstone for that key and a Put for a second key.

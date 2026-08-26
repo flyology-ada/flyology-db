@@ -12,6 +12,7 @@ package body Flyology.DB.Testing is
            when Engine_State              => Engine_State_Allocation,
            when Identity_Tables           => Identity_Table_Allocation,
            when Projection_Scratch        => Projection_Scratch_Allocation,
+           when Checkpoint_Requirement_Families => Checkpoint_Requirement_Family_Allocation,
            when Root_Checkpoint_State     => Root_Checkpoint_State_Allocation,
            when Root_Checkpoint_Image     => Root_Checkpoint_Image_Allocation,
            when Root_Manifest_Retention   => Root_Manifest_Retention_Allocation,

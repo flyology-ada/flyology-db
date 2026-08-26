@@ -27,11 +27,16 @@ RequiredAction(current, maximum, changed, nonempty, totalMaximum, dirty) ==
     ELSE IF CompleteFits(nonempty, totalMaximum) THEN "Complete"
     ELSE "NoAdmissible"
 
+RequiredFamilies(action, changed, nonempty) ==
+    IF action = "Additive" THEN changed
+    ELSE IF action = "Complete" THEN nonempty
+    ELSE {}
+
 VARIABLES current, maximum, changed, nonempty, totalMaximum, dirty,
-          action, phase, lastAction
+          action, selectedFamilies, phase, lastAction
 
 vars == <<current, maximum, changed, nonempty, totalMaximum, dirty,
-          action, phase, lastAction>>
+          action, selectedFamilies, phase, lastAction>>
 
 AuthorityValid ==
     /\ current \in [Families -> 0 .. 2]
@@ -47,6 +52,7 @@ AuthorityValid ==
 Init ==
     /\ AuthorityValid
     /\ action = "Unobserved"
+    /\ selectedFamilies = {}
     /\ phase = "Ready"
     /\ lastAction = "Init"
 
@@ -54,6 +60,7 @@ ObserveNoWork ==
     /\ phase = "Ready"
     /\ RequiredAction(current, maximum, changed, nonempty, totalMaximum, dirty) = "NoWork"
     /\ action' = "NoWork"
+    /\ selectedFamilies' = {}
     /\ phase' = "Observed"
     /\ lastAction' = "ObserveNoWork"
     /\ UNCHANGED <<current, maximum, changed, nonempty, totalMaximum, dirty>>
@@ -62,6 +69,7 @@ ObserveAdditive ==
     /\ phase = "Ready"
     /\ RequiredAction(current, maximum, changed, nonempty, totalMaximum, dirty) = "Additive"
     /\ action' = "Additive"
+    /\ selectedFamilies' = changed
     /\ phase' = "Observed"
     /\ lastAction' = "ObserveAdditive"
     /\ UNCHANGED <<current, maximum, changed, nonempty, totalMaximum, dirty>>
@@ -70,6 +78,7 @@ ObserveComplete ==
     /\ phase = "Ready"
     /\ RequiredAction(current, maximum, changed, nonempty, totalMaximum, dirty) = "Complete"
     /\ action' = "Complete"
+    /\ selectedFamilies' = nonempty
     /\ phase' = "Observed"
     /\ lastAction' = "ObserveComplete"
     /\ UNCHANGED <<current, maximum, changed, nonempty, totalMaximum, dirty>>
@@ -78,6 +87,7 @@ ObserveNoAdmissible ==
     /\ phase = "Ready"
     /\ RequiredAction(current, maximum, changed, nonempty, totalMaximum, dirty) = "NoAdmissible"
     /\ action' = "NoAdmissible"
+    /\ selectedFamilies' = {}
     /\ phase' = "Observed"
     /\ lastAction' = "ObserveNoAdmissible"
     /\ UNCHANGED <<current, maximum, changed, nonempty, totalMaximum, dirty>>
@@ -89,6 +99,7 @@ Spec == Init /\ [][Next]_vars
 TypeOK ==
     /\ AuthorityValid
     /\ action \in Actions \cup {"Unobserved"}
+    /\ selectedFamilies \subseteq Families
     /\ phase \in {"Ready", "Observed"}
     /\ lastAction \in
          {"Init", "ObserveNoWork", "ObserveAdditive", "ObserveComplete", "ObserveNoAdmissible"}
@@ -96,6 +107,10 @@ TypeOK ==
 ObservationCorrect ==
     phase = "Observed" =>
       action = RequiredAction(current, maximum, changed, nonempty, totalMaximum, dirty)
+
+FamilyProjectionCorrect ==
+    phase = "Observed" =>
+      selectedFamilies = RequiredFamilies(action, changed, nonempty)
 
 ObservationHasNoEffects ==
     phase = "Observed" => AuthorityValid

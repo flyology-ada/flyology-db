@@ -44,6 +44,8 @@ def validate(states: list[dict[str, object]]) -> None:
         fail(f"unexpected family maxima: {observed.get('maximum')!r}")
     if observed.get("changed") != ["F1", "F2"] or observed.get("nonempty") != ["F1", "F2"]:
         fail("witness did not retain both changed/nonempty families")
+    if observed.get("selectedFamilies") != ["F1", "F2"]:
+        fail("witness did not project both nonempty families for complete compaction")
     if observed.get("totalMaximum") != 3 or observed.get("dirty") is not True:
         fail("witness did not retain the exact aggregate limit and dirty boundary")
 

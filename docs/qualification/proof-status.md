@@ -231,15 +231,18 @@ files, capacity, certainty, tombstone, unchanged-old-run, cacheless-reopen, cras
 those boundaries. The additive 49-state TLC and 24/24 TLAPS campaign remains the abstract publication proof; no
 refinement theorem to the operational Ada implementation is claimed.
 
-The public L0 checkpoint-action query advances the warning-strict selected-unit result to 1,097/1,097 checks:
+The public L0 checkpoint observation and owned exact-family projection preserve the warning-strict selected-unit
+result at 1,097/1,097 checks:
 94 initialization, 531 run-time, 91 assertion, 306 functional-contract, and 75 termination checks. Flow analysis
 discharges 168 and provers discharge 929, with maximum successful effort 6,890 steps. Every selected unit reports
 zero warnings, unproved or justified checks, and zero `pragma Assume`; the new pure selector contributes five proved
 checks. Coherent lifecycle acquisition, protected snapshots, dynamic allocation, and routing from the selector into
-the public observation remain executable boundaries. Deterministic memory/files tests and the authenticated
+the public observation, controlled ownership, atomic replacement, and allocation rollback remain executable
+boundaries. Deterministic memory/files tests and the authenticated
 18-lane provider matrix cover fresh, additive, per-family/global complete-compaction, failed-additive, and
-no-admissible cases. The separate 2,240-state TLC and 4/4 TLAPS lane qualifies the abstract decision, but no
-refinement theorem or atomic observation-to-maintenance guarantee is claimed.
+no-admissible cases, including complete compaction with an exact empty family set. The separate 2,240-state TLC and
+8/8 TLAPS lane qualifies the abstract action/family projection, but no refinement theorem or atomic
+observation-to-maintenance guarantee is claimed.
 
 The public complete-view compaction candidate preserves the exact warning-strict 1,091/1,091 selected-unit result:
 167 checks by flow analysis and 924 by provers, with zero warnings, unproved/justified checks, or `pragma Assume`.

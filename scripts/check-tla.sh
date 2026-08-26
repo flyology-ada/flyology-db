@@ -383,7 +383,7 @@ grep -q 'Invariant WitnessPending is violated.' \
   --cleanfp --nofp --strict --method smt \
   "$model_root/L0CheckpointSelectionSafetyProof.tla" \
   >"$temporary_root/tlaps-l0-selection.log" 2>&1
-grep -q 'All 4 obligations proved.' "$temporary_root/tlaps-l0-selection.log"
+grep -q 'All 8 obligations proved.' "$temporary_root/tlaps-l0-selection.log"
 
 #  One-versus-two family/global run limits are finite qualification geometry
 #  for persisted backpressure, not product defaults. The pinned graph detects
@@ -1125,7 +1125,7 @@ printf '%s\n' "  Successive checkpoint TLAPS 24/24 obligations"
 printf '%s\n' "  Successive checkpoint lost-response recovery witness validated"
 printf '%s\n' "  Negative successive-checkpoint early-HEAD probe detected"
 printf '%s\n' "  L0 checkpoint selection TLC 2240 distinct states, depth 2"
-printf '%s\n' "  L0 checkpoint selection TLAPS 4/4 obligations"
+printf '%s\n' "  L0 checkpoint selection TLAPS 8/8 obligations"
 printf '%s\n' "  L0 checkpoint complete-compaction decision witness validated"
 printf '%s\n' "  Additive L0 TLC 49 distinct states, depth 17"
 printf '%s\n' "  Additive L0 TLAPS 24/24 obligations"

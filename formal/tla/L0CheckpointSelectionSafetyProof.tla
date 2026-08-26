@@ -15,6 +15,11 @@ Decision ==
     ELSE IF CompleteFits THEN "Complete"
     ELSE "NoAdmissible"
 
+SelectedFamilies ==
+    IF Decision = "Additive" THEN Changed
+    ELSE IF Decision = "Complete" THEN Nonempty
+    ELSE {}
+
 THEOREM NoWorkSelection == ~Dirty => Decision = "NoWork"
 <1>1. QED BY DEF Decision
 
@@ -27,5 +32,19 @@ THEOREM CompleteSelection == Dirty /\ ~AdditiveFits /\ CompleteFits => Decision 
 THEOREM NoAdmissibleSelection ==
     Dirty /\ ~AdditiveFits /\ ~CompleteFits => Decision = "NoAdmissible"
 <1>1. QED BY DEF Decision
+
+THEOREM NoWorkFamilies == ~Dirty => SelectedFamilies = {}
+<1>1. QED BY DEF SelectedFamilies, Decision
+
+THEOREM AdditiveFamilies == Dirty /\ AdditiveFits => SelectedFamilies = Changed
+<1>1. QED BY DEF SelectedFamilies, Decision
+
+THEOREM CompleteFamilies ==
+    Dirty /\ ~AdditiveFits /\ CompleteFits => SelectedFamilies = Nonempty
+<1>1. QED BY DEF SelectedFamilies, Decision
+
+THEOREM NoAdmissibleFamilies ==
+    Dirty /\ ~AdditiveFits /\ ~CompleteFits => SelectedFamilies = {}
+<1>1. QED BY DEF SelectedFamilies, Decision
 
 =============================================================================

@@ -46,7 +46,9 @@ evolution remain separate review units.
 Public `Required_L0_Checkpoint_Action` now inspects one quiescent writer view and projects the persisted per-family
 and database-wide L0 run ceilings into no work, additive Flush, or complete compaction. It performs no storage I/O,
 reserves no identity, and schedules no work; callers still provide every immutable and transition identity, and the
-chosen publication operation revalidates the observation.
+chosen publication operation revalidates the observation. `Observe_L0_Checkpoint_Requirement` additionally retains
+the exact affected family IDs from that same view in an owned limited value: changed families for additive Flush,
+nonempty families for complete compaction, and none for no work. Failed replacement preserves the prior value.
 The LSM read-equivalence lane independently checks that a complete live-state replacement emits one Put for each
 live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
 later delta containing Puts, Deletes, or untouched keys. This closes concrete replacement-read semantics without
