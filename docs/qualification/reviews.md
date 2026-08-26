@@ -1,5 +1,27 @@
 # Review record
 
+## Unified whole/paged scan engine candidate
+
+- Parent: public storage-backed fixed-snapshot Get commit `85e3789d41e5bdf8a406ff43f438254381bf0ecb`.
+- Scope: whole `Scan` now captures the established owned physical `Scan_Cursor` and requires one complete page from
+  the same merge engine used by `Next_Scan_Page`. The complete-page budgets are the exact persisted live-row and
+  live-byte limits already retained by the cursor; no public default, persisted value, provider request, task,
+  retry, or automatic policy is added. The prior whole-scan materializer is removed.
+- Ownership and failure atomicity: cursor capture owns immutable image references and copied transaction mutations.
+  Both whole and paged calls share database/transaction/incarnation/snapshot/mutation-version validation before
+  materialization. Whole `Scan` does not allocate a resume key. A view that cannot complete under persisted limits,
+  any allocation failure, or Serializable predicate-retention failure releases candidate state and preserves the
+  caller's prior rows and predicate authority.
+- Findings cycle: the first review removed a P2 unnecessary whole-scan resume-key allocation. The follow-up
+  concurrency review found one P1: whole `Scan` initially called the page worker directly and bypassed the public
+  cursor/transaction binding validation. One private continuation now performs that validation for both entry
+  points before invoking the shared worker. The repeated correctness, ownership, bounds, constants, compatibility,
+  documentation, and test sweep found no remaining actionable P0/P1/P2 finding.
+- Verification boundary: the exact-tree maintained suite covers whole/paged parity, own writes, tombstones,
+  checkpoint-plus-suffix reopen, Serializable retention, cursor invalidation, exact/one-over persisted limits, and
+  all eight whole-scan allocation rollback points, followed by repository, limited end-to-end, comparative, TLA/
+  TLC/TLAPS, and warning-strict GNATprove gates.
+
 ## Public storage-backed fixed-snapshot Get candidate
 
 - Parent: mixed SST-v1/v2 lazy selector commit `a41a879e4e0516bc04eb9421ae5a68a147bd2c77`.

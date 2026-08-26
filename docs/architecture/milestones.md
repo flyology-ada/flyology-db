@@ -68,8 +68,9 @@ Public `Scan` materializes the complete selected half-open interval at the trans
 Put/Delete mutations, and sorts by unsigned-byte lexicographic key. Its controlled result owns exact descriptors and
 combined key/value bytes bounded by persisted live-entry/live-state limits. Allocation, validation, or predicate
 retention failure leaves the caller's previous result unchanged; Serializable predicates become visible only after
-complete materialization. The additive paged cursor now uses an owned physical merge snapshot; Object Storage
-streaming and conversion of whole `Scan` to the same private cursor remain later Milestone 4 work.
+complete materialization. The additive paged cursor uses an owned physical merge snapshot, and whole `Scan` now
+requests one complete page from that same private engine under the persisted live limits. Object Storage streaming
+remains later Milestone 4 work.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a

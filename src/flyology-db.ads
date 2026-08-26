@@ -595,6 +595,8 @@ package Flyology.DB is
    --  key-plus-value bytes are bounded by the database's persisted live-state
    --  limits; individual extents remain bounded by the selected family. There
    --  is no page size, byte default, timeout, storage I/O, or helper task.
+   --  The implementation captures and completes the same owned physical
+   --  cursor used by Next_Scan_Page; no cursor state escapes this call.
    --  Rows is replaced atomically only on Success and remains unchanged on
    --  every failure. A Serializable success merges the exact predicate into
    --  its normalized retained components only after complete materialization;

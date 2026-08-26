@@ -7526,10 +7526,15 @@ package body Flyology.DB.Engine_Tests is
       --  One byte beyond family one's persisted 64-byte key authority proves
       --  present-endpoint rejection; this is derived from the reference corpus.
       Oversized      : constant Byte_Array (1 .. Reference_Maximum_Key_Bytes + 1) := [others => 16#55#];
-      --  These four test-only failure positions cover every allocation owned
-      --  by Scan before atomic result replacement; they add no runtime policy.
-      Scan_Faults    : constant array (Positive range 1 .. 4) of Internal_Allocation_Fault_Point :=
-        [Scan_Source_Allocation,
+      --  These eight test-only failure positions cover the shared cursor/page
+      --  path used by whole Scan before atomic result replacement. They add
+      --  no runtime allocation or scan policy.
+      Scan_Faults    : constant array (Positive range 1 .. 8) of Internal_Allocation_Fault_Point :=
+        [Scan_Cursor_State_Allocation,
+         Scan_Source_Allocation,
+         Scan_Cursor_Entry_Allocation,
+         Scan_Cursor_Source_Allocation,
+         Scan_Cursor_Owned_Bytes_Allocation,
          Scan_Result_State_Allocation,
          Scan_Result_Rows_Allocation,
          Scan_Result_Payload_Allocation];

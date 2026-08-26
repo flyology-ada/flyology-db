@@ -1,9 +1,11 @@
 # Owned physical scan merge
 
 The owned physical scan slice replaces repeated whole-source capture and global sorting behind the established
-`Scan_Cursor` API. It changes private execution and ownership only. `Start_Scan`, `Next_Scan_Page`, the explicit
-caller page budgets, fixed-snapshot semantics, `Scan_Result`, and every outcome remain unchanged. No persisted
-format, provider request, task, retry, default, automatic compaction choice, or page-size policy is introduced.
+`Scan_Cursor` API. `Start_Scan` and `Next_Scan_Page` retain their explicit caller page budgets. Whole `Scan` now
+captures that same cursor and requires one complete page under the database's persisted live-row and live-byte
+limits before replacing its result. This changes private execution and ownership only: fixed-snapshot semantics,
+`Scan_Result`, and every public outcome remain unchanged. No persisted format, provider request, task, retry,
+default, automatic compaction choice, or page-size policy is introduced.
 
 ## Owned source snapshot
 
@@ -43,9 +45,9 @@ and the page publish together. Tombstones may advance candidate positions while 
 those advances become authoritative only with a successful page or successful empty completion.
 
 Transaction own-mutation version validation and one-time Serializable predicate retention remain exactly as defined
-by [`paged-scans.md`](paged-scans.md). Whole `Scan` continues to use complete materialization; changing it to drain
-the same private cursor remains a separate implementation choice after exact result/failure compatibility is
-demonstrated.
+by [`paged-scans.md`](paged-scans.md). Whole `Scan` requests the complete retained interval from this same private
+page engine with limits derived from the cursor's persisted authority. If the captured live view cannot complete
+within those limits, the page and Serializable predicate remain unpublished and `Scan` returns `Capacity_Exceeded`.
 
 ## Formal and qualification boundary
 
