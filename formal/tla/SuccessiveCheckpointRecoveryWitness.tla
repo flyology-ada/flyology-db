@@ -1,5 +1,5 @@
 --------------- MODULE SuccessiveCheckpointRecoveryWitness ---------------
-EXTENDS SuccessiveCheckpointPublication
+EXTENDS SuccessiveCheckpointPublication, FlyologyHarness
 
 (***************************************************************************
 This witness selects the accepted-lost second-checkpoint path, read-only
@@ -34,7 +34,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      phase |-> phase,
      history_capacity |-> historyCapacity,
@@ -50,5 +50,7 @@ WitnessAlias ==
                    replayed_state |-> replayedState,
                    replayed_ids |-> replayedIds,
                    local_state |-> localState, local_ids |-> localIds]]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

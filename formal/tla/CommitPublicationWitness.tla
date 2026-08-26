@@ -1,9 +1,9 @@
 ----------------------- MODULE CommitPublicationWitness ----------------------
-EXTENDS CommitPublication
+EXTENDS CommitPublication, FlyologyHarness
 
 WitnessPending == ~WitnessComplete
 
-Alias == [
+WitnessState == [
     action |-> lastAction,
     head |-> [
         epoch |-> epoch,
@@ -35,5 +35,7 @@ Alias == [
     crash_observed |-> crashObserved,
     stale_publication_observed |-> stalePublicationObserved
 ]
+
+Alias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

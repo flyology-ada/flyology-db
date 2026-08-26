@@ -1,5 +1,5 @@
 ------------ MODULE LSMThreeRunCompactionEquivalenceWitness ------------
-EXTENDS LSMThreeRunCompactionEquivalence
+EXTENDS LSMThreeRunCompactionEquivalence, FlyologyHarness
 
 (***************************************************************************
 This witness fixes three selected consecutive runs. The first writes a value,
@@ -39,7 +39,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      phase |-> phase,
      older |-> olderRun,
@@ -53,5 +53,7 @@ WitnessAlias ==
      identityRetained |-> identityRetained,
      before |-> beforeView,
      after |-> afterView]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

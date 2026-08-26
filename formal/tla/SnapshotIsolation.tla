@@ -1,5 +1,5 @@
 ------------------------- MODULE SnapshotIsolation -------------------------
-EXTENDS FiniteSets, Naturals, TLC
+EXTENDS FiniteSets, FlyologyHarness, Naturals, TLC
 
 (***************************************************************************
 This finite model freezes the first runtime snapshot-isolation rule. A
@@ -111,5 +111,17 @@ TypeOK ==
 NoInvalidCommit == ~invalidCommitObserved
 
 Safety == TypeOK /\ NoInvalidCommit
+
+HarnessState ==
+    [last_action |-> lastAction,
+     sequence |-> sequence,
+     checkpoint_boundary |-> checkpointBoundary,
+     phase |-> phase,
+     snapshot |-> snapshot,
+     writes |-> writes,
+     last_write |-> lastWrite,
+     invalid_commit |-> invalidCommitObserved]
+
+HarnessAlias == CheckedWitnessAlias(lastAction, HarnessState)
 
 =============================================================================

@@ -1,5 +1,5 @@
 -------------------- MODULE L0CompactionRecoveryWitness --------------------
-EXTENDS L0Compaction
+EXTENDS L0Compaction, FlyologyHarness
 
 (***************************************************************************
 This witness selects admitted compaction, an accepted-lost HEAD response,
@@ -33,7 +33,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      phase |-> phase,
      empty_output |-> emptyReplacement,
@@ -50,5 +50,7 @@ WitnessAlias ==
                 recovered |-> recoveredView, local |-> localView],
      identities |-> [checkpoint |-> checkpointIds,
                       recovered |-> recoveredIds, local |-> localIds]]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

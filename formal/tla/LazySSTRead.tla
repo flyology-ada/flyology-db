@@ -1,5 +1,5 @@
 --------------------------- MODULE LazySSTRead ---------------------------
-EXTENDS Naturals, Sequences, TLC
+EXTENDS FlyologyHarness, Naturals, Sequences, TLC
 
 (***************************************************************************
 This finite model freezes the certainty boundary for an independently framed
@@ -214,6 +214,21 @@ Safety ==
     /\ OutputExact
     /\ PrePublicationAtomic
     /\ FailureAtomic
+
+HarnessState ==
+    [action |-> lastAction,
+     current_generation |-> currentGeneration,
+     captured_generation |-> capturedGeneration,
+     requested_key |-> requestedKey,
+     index_generation |-> indexGeneration,
+     frame_generation |-> frameGeneration,
+     frame_key |-> frameKey,
+     frame_value |-> frameValue,
+     phase |-> phase,
+     output |-> output,
+     result |-> result]
+
+HarnessAlias == CheckedWitnessAlias(lastAction, HarnessState)
 
 Spec == Init /\ [][Next]_vars
 

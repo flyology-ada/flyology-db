@@ -1,5 +1,5 @@
 ---------------------- MODULE SerializableValidation ----------------------
-EXTENDS Naturals, FiniteSets, TLC
+EXTENDS FlyologyHarness, Naturals, FiniteSets, TLC
 
 (***************************************************************************
 This finite model freezes serializable validation independently from the Ada
@@ -219,5 +219,20 @@ TypeOK ==
 NoInvalidCommit == ~badCommitObserved
 
 Safety == TypeOK /\ NoInvalidCommit
+
+HarnessState ==
+    [last_action |-> lastAction,
+     sequence |-> sequence,
+     phase |-> phase,
+     mode |-> mode,
+     snapshot |-> snapshot,
+     writes |-> writes,
+     point_reads |-> pointReads,
+     range_reads |-> rangeReads,
+     last_write |-> lastWrite,
+     result |-> result,
+     bad_commit |-> badCommitObserved]
+
+HarnessAlias == CheckedWitnessAlias(lastAction, HarnessState)
 
 =============================================================================

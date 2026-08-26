@@ -1,5 +1,5 @@
 -------------- MODULE LSMPartialCompactionEquivalenceWitness --------------
-EXTENDS LSMPartialCompactionEquivalence
+EXTENDS LSMPartialCompactionEquivalence, FlyologyHarness
 
 (***************************************************************************
 This witness merges two selected consecutive runs between retained older and
@@ -36,7 +36,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      phase |-> phase,
      older |-> olderRun,
@@ -49,5 +49,7 @@ WitnessAlias ==
      identityRetained |-> identityRetained,
      before |-> beforeView,
      after |-> afterView]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

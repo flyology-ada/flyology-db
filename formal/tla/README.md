@@ -23,9 +23,10 @@ become stale; the gate requires TLC to reject that negative probe through `NoSta
 history monitor itself from becoming a vacuous green check.
 
 The two descendant witness modules require committed and failed reconciliation traces in which two later valid
-HEAD transitions follow the ambiguous attempt. Their validator checks the exact pooled action paths, reachable-chain
-conclusion, ordinal gap, retained unknown history, and receipts for both transactions. They prevent reconciliation
-from silently regressing to exact-HEAD or immediate-successor matching.
+HEAD transitions follow the ambiguous attempt. The gate regenerates their canonical shared traces byte-for-byte,
+including the exact pooled action paths, reachable-chain conclusion, ordinal gap, retained unknown history, and
+receipts for both transactions. They prevent reconciliation from silently regressing to exact-HEAD or
+immediate-successor matching.
 
 `PublicationSafetyProof.tla` is an unbounded batch-atomic abstraction. Each abstract batch is assigned an arbitrary
 nonempty transaction set, with pairwise-disjoint membership across distinct batches, and every action changes the
@@ -48,7 +49,7 @@ linked-batch ordering, recovery traversal, and progress. SPARK covers executable
 conformance tests cover storage atomicity. TLC checks the richer linked-chain model over its complete finite state
 graph, including transaction-count sequence advancement, all-or-none recovery, and an explicit history flag that
 would record any stale-writer publication. There is no machine-checked refinement theorem between the TLC model,
-proof kernel, workload projection, or future Ada implementation, so the gate does not claim one. In particular, the
+proof kernel, canonical trace projection, or Ada implementation, so the gate does not claim one. In particular, the
 TLAPS epoch property is monotonicity; stale-writer exclusion is checked by the executable model and is not attributed
 to that proof-kernel property.
 
@@ -60,8 +61,8 @@ before any HEAD action is enabled. It then explores accepted and unaccepted lost
 resolves the attempted root through a later reachable manifest; the action names say `ExternalStoreSuccessor` and
 `ExternalPublishSuccessor` because the fenced unknown writer never continues publication. A failed witness resolves
 an unaccepted attempt from a competing root at the attempted ordinal. Both paths discard all local state and recover
-the exact registry named by HEAD, and `validate_manifest_witnesses.py` independently checks the critical action order
-and final projection.
+the exact registry named by HEAD. The shared normalizer validates and byte-compares the deterministic action order
+and final projection in both canonical trace artifacts.
 
 The exhaustive manifest model checks stored/confirmed ordering, predecessor storage, immutable existing family
 configuration, sound committed/failed reconciliation, and cacheless recovery snapshots. The deliberately invalid
@@ -89,7 +90,8 @@ The model distinguishes accepted-response loss from an unaccepted ambiguous HEAD
 continues; a named external/later writer may publish a successor. Recovery discards all local state, starts from HEAD,
 loads every named run and the exact admitted-identity ledger through the replay boundary, then replays only later
 batches. Missing or corrupt named runs reject recovery. The `committed`, `rejected`, and `recovery` witness modules
-emit deterministic traces, and `validate_checkpoint_witnesses.py` checks their exact actions and final projections.
+emit deterministic traces. The shared normalizer validates and byte-compares their exact actions and final
+projections.
 The stale-publication, partial-run, wrong-family, and wrong-ledger probes extend the full checkpoint machine. Each
 adds one deliberately unsafe action excluded from normal `Next` and reaches it through a valid prefix. They must
 violate their respective invariants. The gate also requires nonzero TLC coverage for every normal action, including
@@ -118,7 +120,7 @@ also covers an accepted lost second-HEAD response, exact resolution, crash/recov
 bytes outside current visibility. `SuccessiveCheckpointPartialProbe.tla` deliberately publishes the second HEAD
 before confirming its new run and manifest and must violate the normal safety predicate.
 `SuccessiveCheckpointRecoveryWitness.tla` selects the accepted-lost response, read-only resolution, crash, and
-recovery path; `validate_successive_checkpoint_witness.py` checks its exact action sequence and final authority.
+recovery path; the shared canonical trace comparison checks its exact action sequence and final authority.
 
 `SuccessiveCheckpointSafetyProof.tla` generalizes the same algorithm to arbitrary sets and any number of replacement
 cycles. It proves ordering, exact checkpoint/suffix partitioning, exact recovery, and local-cache disposability. It
@@ -127,9 +129,10 @@ does not prove format bytes, manifest-depth arithmetic, provider behavior, capac
 `L0CheckpointSelection.tla` freezes the policy-neutral observation that maps persisted per-family and database-wide
 L0 run ceilings to no work, additive flush, complete compaction, or no admissible action. The two-family,
 zero-to-two-run, one-to-three-slot geometry is finite qualification coverage rather than a product limit. Observation
-does not reserve an object identity, mutate checkpoint authority, or schedule work. The separately validated witness
-requires the case where each changed family can accept another run but their combined additions exceed the remaining
-database-wide slots, so complete compaction is selected and the exact nonempty family set is retained. The model
+does not reserve an object identity, mutate checkpoint authority, or schedule work. Four canonical witnesses cover
+no work, additive Flush, complete compaction, and no admissible action. The shared Ada replay adapter calls the real
+private checkpoint policy for each input and requires its outcome and selected family set to match the model. A
+deliberately buggy adapter must diverge on complete compaction with a stable shared result fingerprint. The model
 projects changed families for additive Flush, nonempty families for complete compaction, and an empty set otherwise.
 `L0CheckpointSelectionSafetyProof.tla` proves the four decision and four family-projection branches directly; it does
 not establish liveness, operational Ada refinement, or atomicity between this observation and a later caller-selected
@@ -141,8 +144,8 @@ The successor manifest retains the first descriptor and appends the second under
 run ceilings. Recovery applies their non-overlapping sequence ranges oldest to newest, so the newer tombstone masks
 the old value. The model also covers definite pre-effect capacity rejection and accepted-lost HEAD resolution.
 `L0AccumulationPartialProbe.tla` publishes the successor before its new run and manifest are confirmed and must fail.
-`L0AccumulationRecoveryWitness.tla` plus `validate_l0_accumulation_witness.py` checks the exact lost-response,
-resolution, crash, tombstone, retained-run, and recovery path.
+The canonical `L0AccumulationRecoveryWitness` trace fixes the exact lost-response, resolution, crash, tombstone,
+retained-run, and recovery path.
 
 `L0AccumulationSafetyProof.tla` generalizes additive publication to arbitrary transaction, identity, manifest, and
 run sets over any number of cycles. It proves that current run authority names only confirmed immutable bytes, each
@@ -161,8 +164,8 @@ prove the absence of a post-snapshot write. This is deliberate safety backpressu
 
 TLC exhausts the finite state graph and checks type/sequence authority plus the explicit no-invalid-commit monitor.
 `SnapshotIsolationUnsafeCommitProbe.tla` adds the forbidden transition that commits despite failed validation and must
-violate that monitor. Three witness modules ask TLC for useful paths, and
-`validate_snapshot_isolation_witnesses.py` independently checks their exact actions and final authority:
+violate that monitor. Three witness modules ask TLC for useful paths, and their canonical shared traces fix the exact
+actions and final authority:
 
 - two same-snapshot writers of the same key produce one commit and one conflict;
 - two same-snapshot writers of disjoint keys both commit; and
@@ -209,7 +212,7 @@ same-family point and phantom conflicts. Manifest v3 now supplies caller-selecte
 isolation/range API and runtime allocation remain separate pending decisions.
 
 TLC exhausts 44,244 states at depth 13 and requires nonzero coverage for Begin, write buffering, point/range
-retention, both capacity rejections, valid commit, and conflict rejection. Four validators pin a serializable point
+retention, both capacity rejections, valid commit, and conflict rejection. Four canonical shared traces pin a serializable point
 conflict, a serializable range conflict, a snapshot transaction that observes the same point without retaining it,
 and a serializable read of its own write after the point set is full. Own writes bypass point retention and capacity,
 matching read-your-writes precedence. The negative model commits through an existing serializable point conflict and
@@ -261,7 +264,7 @@ The finite model's four ordered one-byte keys, three value extents, zero-to-two 
 budgets are qualification geometry only. They are not key/value limits, persisted fields, page defaults, or retention
 policy. TLC exhausts 341 distinct states at depth 6 with nonzero coverage for Begin, concurrent authority change,
 ordinary page publication, empty-view completion, capacity rejection, and allocation rejection. The skipped-key
-and nonmaximal-page negative probes must each violate `Safety`. The independently validated eight-state witness emits
+and nonmaximal-page negative probes must each violate `Safety`. The canonical eight-state trace records
 the frozen first row, changes current authority, observes both atomic rejection paths, and then emits the original
 remaining rows exactly.
 
@@ -286,7 +289,7 @@ cache capacity, request policy, or public defaults.
 TLC exhausts 16 distinct states at depth 6 with nonzero coverage for capture, provider replacement, index/frame
 authentication, success, allocation rejection, both stale-generation rejections, and both corruption rejections.
 The stale-generation probe publishes the current generation under an older captured header, while the frame-swap
-probe authenticates another key's frame; both must violate `Safety`. The independently validated seven-state witness
+probe authenticates another key's frame; both must violate `Safety`. The canonical seven-state trace
 rejects one allocation, authenticates the exact frame, replaces provider authority, and still publishes only the
 owned older-generation value.
 
@@ -311,24 +314,19 @@ run-count domains. Its abstract `Expected` function assumes the finite model's
 newest-visible selection result; neither artifact proves SST authentication,
 allocation, provider behavior, progress, Ada execution, or refinement.
 
-## Witness projection
+## Shared witness contract
 
-`CommitPublicationWitness.tla` adds a deliberate invariant violation that asks TLC for one useful path. The
-retained path is not treated as proof. `witness_to_workload.py` first rejects any trace whose exact action sequence
-and critical state snapshots do not match the intended scenario, then applies this scenario projection:
+Every maintained witness `ALIAS` projects into the shared harness shape from `FlyologyHarness.tla`: action, role,
+input, expected outcome, expected state, and model-source coordinates. TLC still chooses the path by reaching the
+witness invariant violation. `flyology-tla trace normalize` converts that raw TLC JSON into the canonical
+`flyology.tla.trace` schema, the strict shared decoder validates it, and the gate compares it byte-for-byte with the
+checked-in artifact under `formal/tla/traces/`.
 
-| TLA+ action | Workload observation |
-| --- | --- |
-| `PreparePooled` | begin two snapshot transactions and buffer three puts across two families |
-| `StoreBatch`, `PublishHead`, `LoseAcceptedResponse` | both grouped commits return `Outcome_Unknown`, each with its own receipt |
-| `ResolveCommitted` | both receipts resolve to `Success`; neither transaction is replayed |
-| `Crash` | the outer runner kills the adapter and discards every local cache/staging artifact |
-| `Recover` | reopen, read all three keys across both families, and assert the complete canonical state |
-
-The checked-in result is `oracles/workloads/tla_commit_publication_witness.ndjson`. The formal gate regenerates
-it from fresh TLC JSON, compares it byte-for-byte, and validates it with the normative workload validator.
-Milestone 2 adds the actual replay runner; until then the witness is executable contract input, not implementation
-evidence.
+The canonical traces are deterministic design evidence, not proof or automatic implementation refinement. The L0
+checkpoint-selection lane additionally uses `Flyology_TLA.Replay` against the actual Ada policy, checks trace/result
+SHA identity, and requires both conformant positive results and one intentional negative divergence. Other lanes
+retain their TLC exploration, negative probes, action coverage, and TLAPS proofs without duplicating the shared
+trace codec or reporting machinery.
 
 `L0Compaction.tla` starts from that exact two-run accumulated authority and freezes a complete replacement algorithm.
 An admitted operation captures the complete live view and identity authority. A live view stores and confirms one
@@ -338,9 +336,9 @@ from the captured generation. The successor names only the new output set; the t
 immutable stored history rather than current authority. Zero-versus-one output capacity is finite qualification
 geometry, not a product default. Missing present compacted output after a crash fails recovery closed.
 `L0CompactionPartialProbe.tla` publishes HEAD immediately after planning and must violate safety.
-`L0CompactionRecoveryWitness.tla` plus `validate_l0_compaction_witness.py` checks the exact admitted, accepted-lost,
-read-only resolution, crash, and compacted-run-only recovery path.
-`L0CompactionEmptyRecoveryWitness.tla` plus its validator checks the corresponding zero-capacity, no-SST, empty-run
+The canonical `L0CompactionRecoveryWitness` trace fixes the exact admitted, accepted-lost, read-only resolution,
+crash, and compacted-run-only recovery path.
+The canonical `L0CompactionEmptyRecoveryWitness` trace fixes the corresponding zero-capacity, no-SST, empty-run
 manifest path while preserving exact admitted identities across accepted-lost resolution and recovery.
 
 `L0CompactionSafetyProof.tla` generalizes complete replacement to arbitrary fresh output sets, including empty, and
@@ -353,7 +351,7 @@ capacity arithmetic, provider behavior, liveness, or refinement to Ada.
 formed by every two-key/two-value captured view and every later Put/Delete/no-mutation map. A complete replacement
 emits a Put for a live key and no mutation for an absent key, cacheless recovery must equal the capture, and applying
 the later delta must be observationally identical on every key. `LSMCompactionEquivalenceProbe.tla` omits one live
-key and must violate safety. `LSMCompactionEquivalenceWitness.tla` plus its validator fixes the captured-live/absent,
+key and must violate safety. The canonical `LSMCompactionEquivalenceWitness` trace fixes the captured-live/absent,
 replacement, recovery, later-Delete/later-Put path as executable evidence.
 
 `LSMCompactionEquivalenceSafetyProof.tla` proves six strict obligations over arbitrary nonempty key and value sets:
@@ -368,7 +366,7 @@ still need masking. A post-checkpoint log suffix is transferred unchanged, inclu
 authority, and is replayed after the merged SST view. TLC exhausts 3,145,728 distinct states at depth 3 across all
 two-key/two-value run and suffix mutations and checks exact pre/post recovery equality plus suffix authority
 transfer. `LSMPartialCompactionEquivalenceProbe.tla` transfers the suffix correctly but drops a selected tombstone
-and must violate safety. `LSMPartialCompactionEquivalenceWitness.tla` plus its validator fixes a concrete
+and must violate safety. The canonical `LSMPartialCompactionEquivalenceWitness` trace fixes a concrete
 retained-older, selected-pair, retained-newer, and later-suffix path.
 
 `LSMPartialCompactionEquivalenceSafetyProof.tla` proves five strict obligations over arbitrary nonempty key and value
@@ -383,7 +381,7 @@ depth 3 for one key and two values, including retained older/newer runs and a po
 the merged run keeps the newest selected mutation, that a middle tombstone survives when the last run has no
 mutation for that key, and that suffix bytes and transaction-identity authority transfer unchanged.
 `LSMThreeRunCompactionEquivalenceProbe.tla` drops that middle tombstone and must violate safety.
-`LSMThreeRunCompactionEquivalenceWitness.tla` plus its validator records the concrete first-Put, middle-Delete,
+The canonical `LSMThreeRunCompactionEquivalenceWitness` trace records the concrete first-Put, middle-Delete,
 last-empty, suffix-Put execution path.
 
 `LSMThreeRunCompactionEquivalenceSafetyProof.tla` proves seven strict obligations over arbitrary nonempty key and
@@ -421,8 +419,7 @@ These values are qualification geometry, not an age horizon or delete batch size
 
 TLC exhausts 75,337 distinct states at depth 16 with nonzero coverage for every semantic action. The listing-only
 negative probe deletes the current reachability set after listing and age marking and must violate `Safety`. The
-independently
-validated 24-state witness covers snapshot, replica, predecessor, and unknown-attempt protection; release and exact
+canonical 24-state trace covers snapshot, replica, predecessor, and unknown-attempt protection; release and exact
 predecessor deletion; discovery loss/reconstruction; and resolved-orphan deletion while current authority survives.
 `ObjectRetentionSafetyProof.tla` proves 15 action-preservation obligations over arbitrary object sets. It proves no
 graph traversal, clock/source metadata trust, age threshold, replica lease protocol, provider delete certainty,
@@ -433,50 +430,56 @@ batching, progress, public API, or refinement to Ada.
 `ReplicaRefresh.tla` freezes monotonic read-only catch-up and exact writer fencing. A refresh captures a confirmed
 HEAD ordinal/epoch pair, may finish after authority advances, and installs only at or above its replica high-water
 pair. A writer publishes only when both its captured ordinal and epoch still equal HEAD. TLC exhausts 1,460 states at
-depth 15; stale-writer and rollback probes must violate safety, and a validated 16-state witness covers fencing,
+depth 15; stale-writer and rollback probes must violate safety, and a canonical 16-state trace covers fencing,
 replacement writer publication, lagging installation, and catch-up. The bounds two and one are qualification
 geometry. `ReplicaRefreshSafetyProof.tla` proves 11 obligations over arbitrary natural ordinals/epochs. Immutable
 graph validation, transport certainty, polling, leases, promotion, progress, and Ada refinement remain outside.
 
 ## Reproduction
 
-Install the pinned tools under ignored `.deps/tla` as recorded in
-`docs/qualification/dependency-provenance.md`, provide Java 11 or newer, and run:
+Install `flyology_tla=0.1.0-dev` from the configured Flyology Alire index and provision its verified toolchain under
+dedicated ignored prefixes, then run:
 
 ```sh
+./scripts/setup-tla.sh
 ./scripts/check-tla.sh
 ```
+
+After an intentional model, configuration, or toolchain-identity change, regenerate the checked artifacts with
+`FLYOLOGY_DB_TLA_UPDATE_TRACES=1 ./scripts/check-tla.sh`, inspect the trace diff, and rerun the ordinary command to
+prove byte-stable reproduction.
 
 The checked configuration uses one TLC worker for deterministic breadth-first witness selection. The exhaustive
 gate must report 112,031 distinct states at depth 14, record a successful `PreparePooled` transition in coverage, and
 strict TLAPS must prove 23 of 23 obligations. The manifest lane adds 286 distinct states at depth 10 and 12 of 12
-strict TLAPS obligations. The first-checkpoint lane adds 819 distinct states at depth 19, three independently
-validated witnesses, four required integrated negative probes, full normal-action coverage, and 43 of 43 strict
-TLAPS obligations. The successive-checkpoint lane adds 37 distinct states at depth 17, one validated lost-response
-recovery witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS
+strict TLAPS obligations. The first-checkpoint lane adds 819 distinct states at depth 19, three canonical traces,
+four required integrated negative probes, full normal-action coverage, and 43 of 43 strict TLAPS obligations. The
+successive-checkpoint lane adds 37 distinct states at depth 17, one canonical lost-response recovery trace, one
+required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS
 obligations. The L0 checkpoint-selection lane adds 2,240 distinct states at depth 2, nonzero coverage of all four
-decisions, one validated complete-compaction witness, and 4 of 4 strict TLAPS obligations. The additive-L0 lane adds
-49 distinct states at depth 17, one validated tombstone/lost-response recovery
-witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS obligations.
-The L0-compaction lane adds 35 distinct states at depth 10, validated ordinary and canonical-empty lost-response
-recovery witnesses, one required early-HEAD negative probe, full semantic-action coverage, and 26 of 26 strict TLAPS
+decisions, four canonical witnesses, four successful Ada replays, one required implementation-divergence probe, and
+8 of 8 strict TLAPS obligations. The additive-L0 lane adds
+49 distinct states at depth 17, one canonical tombstone/lost-response recovery trace, one required early-HEAD
+negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS obligations.
+The L0-compaction lane adds 35 distinct states at depth 10, canonical ordinary and empty-output lost-response
+recovery traces, one required early-HEAD negative probe, full semantic-action coverage, and 26 of 26 strict TLAPS
 obligations.
-The immutable-cache lane adds 623 distinct states at depth 12, one validated coalescing/loss/corruption witness, one
+The immutable-cache lane adds 623 distinct states at depth 12, one canonical coalescing/loss/corruption trace, one
 required stale-generation negative probe, full semantic-action coverage, and 13 of 13 strict TLAPS obligations.
-The immutable-object retention lane adds 75,337 distinct states at depth 16, one validated protection/reclamation
-witness, one required listing-only deletion probe, full semantic-action coverage, and 15 of 15 TLAPS obligations.
-The replica lane adds 1,460 distinct states at depth 15, one validated fencing/catch-up witness, two required negative
+The immutable-object retention lane adds 75,337 distinct states at depth 16, one canonical protection/reclamation
+trace, one required listing-only deletion probe, full semantic-action coverage, and 15 of 15 TLAPS obligations.
+The replica lane adds 1,460 distinct states at depth 15, one canonical fencing/catch-up trace, two required negative
 probes, full semantic-action coverage, and 11 of 11 TLAPS obligations.
 The snapshot-isolation lane
-adds 336 distinct states at depth 10, three independently validated
-witnesses, one required negative probe, full normal-action coverage, and 6 of 6 strict TLAPS obligations. The
-fixed-snapshot read lane adds 7,530 states at depth 14, three validated witnesses, one negative probe, and 7 of 7
-strict TLAPS obligations. The serializable lane adds 44,244 states at depth 13, four validated witnesses, one
+adds 336 distinct states at depth 10, three canonical traces, one required negative probe, full normal-action
+coverage, and 6 of 6 strict TLAPS obligations. The fixed-snapshot read lane adds 7,530 states at depth 14, three
+canonical traces, one negative probe, and 7 of 7 strict TLAPS obligations. The serializable lane adds 44,244 states
+at depth 13, four canonical traces, one
 negative probe, full semantic-action coverage, and 10 of 10 strict TLAPS obligations. Larger state spaces belong to
 qualification campaigns and must not replace this fast per-change gate.
-The range-normalization lane adds 3,419 states at depth 4, one validated bridge/cross-family/rollback witness, one
-negative probe, and 19 of 19 strict TLAPS obligations. The paged-scan lane adds 341 states at depth 6, one validated
-fixed-view/backpressure witness, skipped-key and nonmaximal-page negative probes, full semantic-action coverage, and
+The range-normalization lane adds 3,419 states at depth 4, one canonical bridge/cross-family/rollback trace, one
+negative probe, and 19 of 19 strict TLAPS obligations. The paged-scan lane adds 341 states at depth 6, one canonical
+fixed-view/backpressure trace, skipped-key and nonmaximal-page negative probes, full semantic-action coverage, and
 24 of 24 strict TLAPS obligations.
-The lazy-SST-read lane adds 16 states at depth 6, one validated allocation/replacement witness, stale-generation and
+The lazy-SST-read lane adds 16 states at depth 6, one canonical allocation/replacement trace, stale-generation and
 frame-swap negative probes, full semantic-action coverage, and 41 of 41 strict TLAPS obligations.

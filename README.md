@@ -153,8 +153,10 @@ qualification geometry and can be changed for focused diagnostics with
 The exact Object Storage commit used by the current campaign is recorded in
 [dependency-provenance.md](docs/qualification/dependency-provenance.md).
 
-The TLA+ gate exhausts the bounded commit-publication state machine, checks the unbounded safety kernel with TLAPS,
-and regenerates a workload witness for later replay against the Ada model, Flyology.DB, and comparative oracles.
+The TLA+ gate exhausts the maintained bounded state machines, checks their unbounded safety kernels with TLAPS,
+regenerates canonical `flyology.tla.trace` artifacts through the indexed `flyology_tla` harness, and replays all
+four L0 checkpoint-policy outcomes against the Ada implementation. Run `./scripts/setup-tla.sh` once to install the
+exact indexed harness CLI and its verified toolchain in ignored `.deps` prefixes.
 
 ## Agent setup
 

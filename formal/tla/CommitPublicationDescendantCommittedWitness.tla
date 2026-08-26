@@ -1,5 +1,5 @@
 --------------- MODULE CommitPublicationDescendantCommittedWitness ---------------
-EXTENDS CommitPublication
+EXTENDS CommitPublication, FlyologyHarness
 
 AdvanceDescendant(w, q) ==
     /\ epoch < 3
@@ -21,7 +21,7 @@ DescendantCommittedComplete ==
 
 DescendantCommittedPending == ~DescendantCommittedComplete
 
-Alias == [
+WitnessState == [
     action |-> lastAction,
     head |-> [
         ordinal |-> headOrdinal,
@@ -40,5 +40,7 @@ Alias == [
         was_unknown |-> wasUnknown[t]
     ]]
 ]
+
+Alias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

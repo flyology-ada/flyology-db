@@ -1,5 +1,5 @@
 ---------------------------- MODULE SnapshotReads -------------------------
-EXTENDS Naturals, TLC
+EXTENDS FlyologyHarness, Naturals, TLC
 
 (***************************************************************************
 This finite model freezes fixed point reads after write validation. A read
@@ -154,5 +154,22 @@ TypeOK ==
 NoBadRead == ~badReadObserved
 
 Safety == TypeOK /\ NoBadRead
+
+HarnessState ==
+    [last_action |-> lastAction,
+     sequence |-> sequence,
+     checkpoint_boundary |-> checkpointBoundary,
+     phase |-> phase,
+     snapshot |-> snapshot,
+     buffer_kind |-> bufferKind,
+     buffer_value |-> bufferValue,
+     latest_sequence |-> latestSeq,
+     latest_value |-> latestValue,
+     previous_sequence |-> previousSeq,
+     previous_value |-> previousValue,
+     observed |-> observed,
+     bad_read |-> badReadObserved]
+
+HarnessAlias == CheckedWitnessAlias(lastAction, HarnessState)
 
 =============================================================================

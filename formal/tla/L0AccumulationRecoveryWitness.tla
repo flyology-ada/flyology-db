@@ -1,5 +1,5 @@
 ------------------- MODULE L0AccumulationRecoveryWitness ------------------
-EXTENDS L0Accumulation
+EXTENDS L0Accumulation, FlyologyHarness
 
 (***************************************************************************
 This witness selects admitted two-run accumulation, an accepted-lost second
@@ -35,7 +35,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      phase |-> phase,
      limits |-> [family_runs |-> familyRunLimit,
@@ -51,5 +51,7 @@ WitnessAlias ==
                 recovered |-> recoveredView, local |-> localView],
      identities |-> [checkpoint |-> checkpointIds, later |-> laterIds,
                       recovered |-> recoveredIds, local |-> localIds]]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

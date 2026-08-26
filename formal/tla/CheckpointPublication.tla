@@ -1,5 +1,5 @@
 ----------------------- MODULE CheckpointPublication -----------------------
-EXTENDS FiniteSets, Naturals, TLC
+EXTENDS FiniteSets, FlyologyHarness, Naturals, TLC
 
 CONSTANTS
     M0, M1, R1, R2, F1, F2,
@@ -1012,7 +1012,7 @@ Safety ==
     /\ LocalIsOnlyACache
     /\ RecoveryRejectsInvalidRuns
 
-WitnessAlias == [
+WitnessState == [
     action |-> lastAction,
     capacity |-> capacityMode,
     head |-> [manifest |-> headManifest, highest |-> headHighest,
@@ -1043,5 +1043,7 @@ WitnessAlias == [
                replayed |-> replayedTransactions,
                crash_observed |-> crashObserved]
 ]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

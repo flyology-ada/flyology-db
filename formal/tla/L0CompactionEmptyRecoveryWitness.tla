@@ -1,5 +1,5 @@
 ----------------- MODULE L0CompactionEmptyRecoveryWitness -----------------
-EXTENDS L0Compaction
+EXTENDS L0Compaction, FlyologyHarness
 
 (***************************************************************************
 This witness selects an all-tombstoned captured view, consumes no output
@@ -35,7 +35,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      phase |-> phase,
      empty_output |-> emptyReplacement,
@@ -52,5 +52,7 @@ WitnessAlias ==
                 recovered |-> recoveredView, local |-> localView],
      identities |-> [checkpoint |-> checkpointIds,
                       recovered |-> recoveredIds, local |-> localIds]]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

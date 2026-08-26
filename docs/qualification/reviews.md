@@ -1,5 +1,40 @@
 # Review record
 
+## Shared TLA harness migration candidate
+
+- Parent: fixed-snapshot read commit `85e3789d41e5bdf8a406ff43f438254381bf0ecb`.
+- Scope: replace repository-specific TLC witness codecs and validators with the exact indexed
+  `flyology_tla = "=0.1.0-dev"` consumer contract while preserving every maintained exhaustive TLC graph,
+  negative probe, action-coverage assertion, and strict TLAPS proof lane. All 36 checked witnesses are canonical
+  `flyology.tla.trace/2` artifacts with authoritative SANY local-module-closure and configuration identities.
+- Implementation conformance: four checkpoint-selection outcomes replay through the shared dynamic adapter against
+  the real private Ada policy. Results remain strict `flyology.tla.result/1`, bind the exact trace SHA-256, and a
+  deliberately buggy complete-compaction adapter must produce the stable shared divergence property and fingerprint.
+- Indexed-consumer boundary: the repository has no harness source copy or path pin. Setup verifies source commit
+  `faf06c48246931e30b7fe9c5c786660185925666`, installs the CLI and toolchain in dedicated ignored prefixes, and CI
+  independently performs a clean exact indexed get/build before resolving and testing Flyology.DB. The exact
+  publishing index commit is `ea2ae2055494faf7fe34b5f73a37997ac7fa8ba5`.
+- Findings cycle: the deliberate self-review uses P0 for destructive or authority-breaking defects, P1 for wrong
+  semantics, missing qualification, or non-reproducible evidence, and P2 for maintainability and diagnostic gaps.
+  It found and fixed four P1s: update mode initially replayed old L0 artifacts rather than newly normalized
+  candidates; an unconditional Alire update could replace a complete solution with a timed-out incomplete one while
+  exiting successfully; the first exact-source check verified the live catalog but allowed a complete same-version
+  root lock to retain older source `e75b848`; and its first correction tried a targeted update even when an older lock
+  had no harness entry, which Alire rejects rather than adding the new dependency. Setup now performs a full
+  noninteractive solve when the entry is absent, targets only stale/incomplete existing entries, and rejects any
+  missing graph or lock not bound to exact source `faf06c4` for both root and test consumers.
+  It found and fixed two P2s: trace updates published incrementally before later gates completed, and automation left
+  Alire commands interactive. The final sweep found no remaining actionable P0, P1, or P2 finding.
+- Publication-refresh provenance: after the first staging pass at `e75b848`, the focused result/2 PR merged and the
+  mutable development index advanced to `faf06c4`. Source-identity checks and qualification records were refreshed
+  to that published commit; the DB adapter deliberately remains on strict result/1, whose contract is unchanged.
+- Verification: exact indexed root and test-crate builds pass; `./tests/scripts/test.sh` passes the full deterministic
+  suite; `./scripts/prove.sh` proves 1,097/1,097 selected checks; update-mode `./scripts/check-tla.sh` regenerates all
+  36 trace/2 artifacts, replays four conformant and one intentional divergent Ada result, and passes every retained
+  TLC/TLAPS lane; `./scripts/check-repository.sh`, shell syntax checks, and `git diff --check` pass. The complete
+  deterministic and formal gates were repeated after the index refresh against exact source `faf06c4` with the
+  unchanged strict result/1 adapter.
+
 ## Unified whole/paged scan engine candidate
 
 - Parent: public storage-backed fixed-snapshot Get commit `85e3789d41e5bdf8a406ff43f438254381bf0ecb`.

@@ -1,5 +1,5 @@
 ------------------------- MODULE ReplicaRefreshWitness -------------------------
-EXTENDS ReplicaRefresh
+EXTENDS ReplicaRefresh, FlyologyHarness
 
 (***************************************************************************
 This exact witness fences a writer after it captures epoch zero, cancels it,
@@ -45,7 +45,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction, step |-> step,
      authority |-> [ordinal |-> headOrdinal, epoch |-> headEpoch,
                     confirmed |-> confirmed],
@@ -56,5 +56,7 @@ WitnessAlias ==
                   highOrdinal |-> highOrdinal, highEpoch |-> highEpoch],
      refresh |-> [phase |-> refreshPhase, ordinal |-> capturedOrdinal,
                   epoch |-> capturedEpoch]]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

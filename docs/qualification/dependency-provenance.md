@@ -107,13 +107,17 @@ must retain those notices.
 
 ## Formal-method tools
 
-- TLC: TLA+ Tools `v1.8.0`, release commit `9787e65`, official `tla2tools.jar` SHA-1
-  `0e4cfdb976f04522d218ec62c6046bbee5098377`, SHA-256
+- Harness: exact indexed dependency `flyology_tla = "=0.1.0-dev"`, unpinned source commit
+  `faf06c48246931e30b7fe9c5c786660185925666`, published by Flyology Alire index commit
+  `ea2ae2055494faf7fe34b5f73a37997ac7fa8ba5`.
+- TLC: TLA+ Tools `v1.8.0`, release commit `9787e65`, official `tla2tools.jar` SHA-256
   `eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a`.
-- TLAPS: rolling release `1.6.0-pre`, proof-manager commit `4600b24`, official arm64 macOS archive SHA-256
-  `ad1cb0a047ac2b5c33d6811d5d57c5bfbad4b317cd90299fee4302514f1bebde`; extracted `tlapm` binary SHA-256
-  `291db0665c3b599f5343b03c06bcfb49b48ac966c39efff8643fa730f0d296b7`.
+- TLAPS: rolling release `1.6.0-pre`, proof-manager commit `4600b24`; the verified arm64 macOS `tlapm` binary
+  SHA-256 is `291db0665c3b599f5343b03c06bcfb49b48ac966c39efff8643fa730f0d296b7`.
+- Java: harness-provisioned Eclipse Temurin 21 JRE, selected and verified through the shared toolchain receipt.
 
-The ignored `.deps/tla` directory contains the verified release artifacts. `scripts/check-tla.sh` verifies both
-executable artifacts by SHA-256 and the TLAPS reported commit before use. TLC requires Java 11 or newer; the Java
-runtime is an execution prerequisite, not a repository dependency.
+`scripts/setup-tla.sh` resolves the exact harness source from the configured Flyology index, installs its CLI under
+ignored `.deps/flyology-tla-cli`, and provisions the shared verified toolchain under
+`.deps/flyology-tla-toolchain`. `scripts/check-tla.sh` verifies that receipt before use. The canonical trace/2
+artifacts bind each configuration by SHA-256 and each TLA model by the authoritative, byte-framed, sorted
+SANY-resolved local-module-closure digest produced by `flyology-tla model identity`.

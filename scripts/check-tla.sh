@@ -2,36 +2,54 @@
 set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-tools_root="$project_root/.deps/tla"
-tlc_jar="$tools_root/tla2tools.jar"
-tlapm="$tools_root/tlapm/bin/tlapm"
+toolchain_root="$project_root/.deps/flyology-tla-toolchain"
+tla_cli="$project_root/.deps/flyology-tla-cli/bin/flyology-tla"
 model_root="$project_root/formal/tla"
-expected_workload="$project_root/oracles/workloads/tla_commit_publication_witness.ndjson"
+trace_root="$model_root/traces"
 
-if test -n "${FLYOLOGY_TLA_JAVA:-}"
-then
-  java_command=$FLYOLOGY_TLA_JAVA
-elif command -v java >/dev/null 2>&1 && java -version >/dev/null 2>&1
-then
-  java_command=$(command -v java)
-elif test -x "/Applications/Protégé.app/Contents/jre/bin/java"
-then
-  java_command="/Applications/Protégé.app/Contents/jre/bin/java"
-else
-  printf '%s\n' "TLC requires Java 11 or newer; set FLYOLOGY_TLA_JAVA" >&2
-  exit 1
-fi
-
-test -f "$tlc_jar"
-test -x "$tlapm"
-test "$(shasum -a 256 "$tlc_jar" | awk '{print $1}')" = \
-  "eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a"
-test "$(shasum -a 256 "$tlapm" | awk '{print $1}')" = \
-  "291db0665c3b599f5343b03c06bcfb49b48ac966c39efff8643fa730f0d296b7"
-test "$($tlapm --version)" = "4600b24"
+test -x "$tla_cli"
+"$tla_cli" toolchain verify "$toolchain_root"
+eval "$("$tla_cli" toolchain env "$toolchain_root")"
+java_command=$FLYOLOGY_TLA_JAVA
+tlc_jar=$FLYOLOGY_TLA_TLC_JAR
+tlapm=$FLYOLOGY_TLAPM
+toolchain_identity=tla2tools-1.8.0+9787e65
 
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/flyology-db-tla.XXXXXX")
 trap 'rm -rf "$temporary_root"' EXIT HUP INT TERM
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1
+  then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+check_trace() {
+  raw_trace=$1
+  module=$2
+  normalized_trace="$temporary_root/$module.trace.json"
+  "$tla_cli" trace normalize \
+    "$raw_trace" "$normalized_trace" "$model_root/$module.tla" \
+    --config "$model_root/$module.cfg" --toolchain "$toolchain_identity" 128 64
+  "$tla_cli" trace validate "$normalized_trace" 128 64
+  if test "${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}" != 1
+  then
+    cmp "$normalized_trace" "$trace_root/$module.trace.json"
+  fi
+}
+
+trace_path() {
+  module=$1
+  if test "${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}" = 1
+  then
+    printf '%s\n' "$temporary_root/$module.trace.json"
+  else
+    printf '%s\n' "$trace_root/$module.trace.json"
+  fi
+}
 
 cd "$model_root"
 "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
@@ -87,8 +105,7 @@ do
   grep -q "Invariant $witness_invariant is violated." \
     "$temporary_root/tlc-descendant-$reconciliation.log"
   ! grep -q '^Warning:' "$temporary_root/tlc-descendant-$reconciliation.log"
-  "$model_root/validate_reconciliation_witnesses.py" \
-    "$reconciliation" "$temporary_root/descendant-$reconciliation.json"
+  check_trace "$temporary_root/descendant-$reconciliation.json" "$witness_module"
 done
 
 set +e
@@ -116,12 +133,7 @@ test "$witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' "$temporary_root/tlc-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-witness.log"
 
-"$model_root/witness_to_workload.py" "$temporary_root/witness.json" \
-  >"$temporary_root/workload.ndjson"
-cmp "$temporary_root/workload.ndjson" "$expected_workload"
-"$project_root/oracles/contract/validate_workload.py" \
-  "$project_root/oracles/contract/workload.schema.json" \
-  "$expected_workload"
+check_trace "$temporary_root/witness.json" CommitPublicationWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/PublicationSafetyProof.tla" \
@@ -184,8 +196,7 @@ do
   grep -q "Invariant $manifest_witness_invariant is violated." \
     "$temporary_root/tlc-manifest-$reconciliation.log"
   ! grep -q '^Warning:' "$temporary_root/tlc-manifest-$reconciliation.log"
-  "$model_root/validate_manifest_witnesses.py" \
-    "$reconciliation" "$temporary_root/manifest-$reconciliation.json"
+  check_trace "$temporary_root/manifest-$reconciliation.json" "$manifest_witness_module"
 done
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-manifest-cache" --cleanfp --nofp \
@@ -276,9 +287,7 @@ do
   grep -q 'Invariant WitnessPending is violated.' \
     "$temporary_root/tlc-checkpoint-$checkpoint_witness.log"
   ! grep -q '^Warning:' "$temporary_root/tlc-checkpoint-$checkpoint_witness.log"
-  "$model_root/validate_checkpoint_witnesses.py" \
-    "$checkpoint_witness" \
-    "$temporary_root/checkpoint-$checkpoint_witness.json"
+  check_trace "$temporary_root/checkpoint-$checkpoint_witness.json" "$checkpoint_witness_module"
 done
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-checkpoint-cache" --cleanfp --nofp \
@@ -335,8 +344,9 @@ test "$successive_checkpoint_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-successive-checkpoint-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-successive-checkpoint-witness.log"
-"$model_root/validate_successive_checkpoint_witness.py" \
-  "$temporary_root/successive-checkpoint-recovery.json"
+check_trace \
+  "$temporary_root/successive-checkpoint-recovery.json" \
+  SuccessiveCheckpointRecoveryWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-successive-checkpoint-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/SuccessiveCheckpointSafetyProof.tla" \
@@ -362,22 +372,62 @@ do
   grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-l0-selection.log"
 done
 
-set +e
-"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
-  -workers 1 -noGenerateSpecTE \
-  -metadir "$temporary_root/tlc-l0-selection-witness-states" \
-  -config L0CheckpointSelectionWitness.cfg \
-  -dumpTrace json "$temporary_root/l0-checkpoint-selection.json" \
+for l0_selection_module in \
+  L0CheckpointNoWorkWitness \
+  L0CheckpointAdditiveWitness \
   L0CheckpointSelectionWitness \
-  >"$temporary_root/tlc-l0-selection-witness.log" 2>&1
-l0_selection_witness_status=$?
+  L0CheckpointNoAdmissibleWitness
+do
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-$l0_selection_module-states" \
+    -config "$l0_selection_module.cfg" \
+    -dumpTrace json "$temporary_root/$l0_selection_module.json" \
+    "$l0_selection_module" \
+    >"$temporary_root/tlc-$l0_selection_module.log" 2>&1
+  l0_selection_witness_status=$?
+  set -e
+  test "$l0_selection_witness_status" -eq 12
+  grep -q 'Invariant WitnessPending is violated.' \
+    "$temporary_root/tlc-$l0_selection_module.log"
+  ! grep -q '^Warning:' "$temporary_root/tlc-$l0_selection_module.log"
+  check_trace "$temporary_root/$l0_selection_module.json" "$l0_selection_module"
+done
+
+conformance_runner="$project_root/tests/bin/flyology-db-tla-conformance"
+test -x "$conformance_runner"
+for l0_selection_module in \
+  L0CheckpointNoWorkWitness \
+  L0CheckpointAdditiveWitness \
+  L0CheckpointSelectionWitness \
+  L0CheckpointNoAdmissibleWitness
+do
+  result_path="$temporary_root/$l0_selection_module.result.json"
+  replay_trace=$(trace_path "$l0_selection_module")
+  "$conformance_runner" --format terse --result-json "$result_path" \
+    "$replay_trace"
+  grep -q '"format":"flyology.tla.result/1","verdict":"conformant"' \
+    "$result_path"
+  trace_sha256=$(sha256_file "$replay_trace")
+  grep -q "\"trace_sha256\":\"$trace_sha256\"" "$result_path"
+done
+
+divergence_trace=$(trace_path L0CheckpointSelectionWitness)
+set +e
+"$conformance_runner" --buggy --format terse \
+  --result-json "$temporary_root/l0-selection-divergence.result.json" \
+  "$divergence_trace" \
+  >"$temporary_root/l0-selection-divergence.log" 2>&1
+l0_selection_divergence_status=$?
 set -e
-test "$l0_selection_witness_status" -eq 12
-grep -q 'Invariant WitnessPending is violated.' \
-  "$temporary_root/tlc-l0-selection-witness.log"
-! grep -q '^Warning:' "$temporary_root/tlc-l0-selection-witness.log"
-"$model_root/validate_l0_checkpoint_selection_witness.py" \
-  "$temporary_root/l0-checkpoint-selection.json"
+test "$l0_selection_divergence_status" -ne 0
+grep -q '"verdict":"diverged"' \
+  "$temporary_root/l0-selection-divergence.result.json"
+grep -q '"property":"tla-conformance"' \
+  "$temporary_root/l0-selection-divergence.result.json"
+grep -q '"fingerprint":"outcome:L0CheckpointSelectionWitness!ObserveComplete"' \
+  "$temporary_root/l0-selection-divergence.result.json"
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-l0-selection-cache" \
   --cleanfp --nofp --strict --method smt \
@@ -434,8 +484,7 @@ test "$l0_accumulation_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-l0-accumulation-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-l0-accumulation-witness.log"
-"$model_root/validate_l0_accumulation_witness.py" \
-  "$temporary_root/l0-accumulation-recovery.json"
+check_trace "$temporary_root/l0-accumulation-recovery.json" L0AccumulationRecoveryWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-l0-accumulation-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/L0AccumulationSafetyProof.tla" \
@@ -489,8 +538,7 @@ test "$l0_compaction_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-l0-compaction-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-l0-compaction-witness.log"
-"$model_root/validate_l0_compaction_witness.py" \
-  "$temporary_root/l0-compaction-recovery.json"
+check_trace "$temporary_root/l0-compaction-recovery.json" L0CompactionRecoveryWitness
 
 set +e
 "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
@@ -506,8 +554,9 @@ test "$l0_compaction_empty_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-l0-compaction-empty-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-l0-compaction-empty-witness.log"
-"$model_root/validate_l0_compaction_empty_witness.py" \
-  "$temporary_root/l0-compaction-empty-recovery.json"
+check_trace \
+  "$temporary_root/l0-compaction-empty-recovery.json" \
+  L0CompactionEmptyRecoveryWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-l0-compaction-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/L0CompactionSafetyProof.tla" \
@@ -559,8 +608,9 @@ test "$lsm_equivalence_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-lsm-equivalence-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-lsm-equivalence-witness.log"
-"$model_root/validate_lsm_compaction_equivalence_witness.py" \
-  "$temporary_root/lsm-compaction-equivalence.json"
+check_trace \
+  "$temporary_root/lsm-compaction-equivalence.json" \
+  LSMCompactionEquivalenceWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-lsm-equivalence-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/LSMCompactionEquivalenceSafetyProof.tla" \
@@ -615,8 +665,9 @@ test "$lsm_partial_equivalence_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-lsm-partial-equivalence-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-lsm-partial-equivalence-witness.log"
-"$model_root/validate_lsm_partial_compaction_equivalence_witness.py" \
-  "$temporary_root/lsm-partial-compaction-equivalence.json"
+check_trace \
+  "$temporary_root/lsm-partial-compaction-equivalence.json" \
+  LSMPartialCompactionEquivalenceWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-lsm-partial-equivalence-cache" \
   --cleanfp --nofp --strict --method smt \
@@ -672,8 +723,9 @@ test "$lsm_three_run_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-lsm-three-run-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-lsm-three-run-witness.log"
-"$model_root/validate_lsm_three_run_compaction_equivalence_witness.py" \
-  "$temporary_root/lsm-three-run-compaction-equivalence.json"
+check_trace \
+  "$temporary_root/lsm-three-run-compaction-equivalence.json" \
+  LSMThreeRunCompactionEquivalenceWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-lsm-three-run-cache" \
   --cleanfp --nofp --strict --method smt \
@@ -727,8 +779,7 @@ test "$immutable_cache_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-immutable-cache-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-immutable-cache-witness.log"
-"$model_root/validate_immutable_cache_witness.py" \
-  "$temporary_root/immutable-cache-witness.json"
+check_trace "$temporary_root/immutable-cache-witness.json" ImmutableCacheWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-immutable-cache-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/ImmutableCacheSafetyProof.tla" \
@@ -782,8 +833,7 @@ test "$object_retention_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-object-retention-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-object-retention-witness.log"
-"$model_root/validate_object_retention_witness.py" \
-  "$temporary_root/object-retention-witness.json"
+check_trace "$temporary_root/object-retention-witness.json" ObjectRetentionWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-object-retention-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/ObjectRetentionSafetyProof.tla" \
@@ -835,8 +885,7 @@ test "$replica_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-replica-refresh-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-replica-refresh-witness.log"
-"$model_root/validate_replica_refresh_witness.py" \
-  "$temporary_root/replica-refresh-witness.json"
+check_trace "$temporary_root/replica-refresh-witness.json" ReplicaRefreshWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-replica-refresh-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/ReplicaRefreshSafetyProof.tla" \
@@ -901,8 +950,7 @@ do
   grep -q 'Invariant WitnessPending is violated.' \
     "$temporary_root/tlc-snapshot-$snapshot_witness.log"
   ! grep -q '^Warning:' "$temporary_root/tlc-snapshot-$snapshot_witness.log"
-  "$model_root/validate_snapshot_isolation_witnesses.py" \
-    "$snapshot_witness" "$temporary_root/snapshot-$snapshot_witness.json"
+  check_trace "$temporary_root/snapshot-$snapshot_witness.json" "$snapshot_witness_module"
 done
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-snapshot-isolation-cache" --cleanfp --nofp \
@@ -968,8 +1016,7 @@ do
   grep -q 'Invariant WitnessPending is violated.' \
     "$temporary_root/tlc-snapshot-read-$snapshot_read_witness.log"
   ! grep -q '^Warning:' "$temporary_root/tlc-snapshot-read-$snapshot_read_witness.log"
-  "$model_root/validate_snapshot_read_witnesses.py" \
-    "$snapshot_read_witness" "$temporary_root/snapshot-read-$snapshot_read_witness.json"
+  check_trace "$temporary_root/snapshot-read-$snapshot_read_witness.json" "$snapshot_read_module"
 done
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-snapshot-reads-cache" --cleanfp --nofp \
@@ -1038,8 +1085,7 @@ do
   grep -q 'Invariant WitnessPending is violated.' \
     "$temporary_root/tlc-serializable-$serializable_witness.log"
   ! grep -q '^Warning:' "$temporary_root/tlc-serializable-$serializable_witness.log"
-  "$model_root/validate_serializable_witnesses.py" \
-    "$serializable_witness" "$temporary_root/serializable-$serializable_witness.json"
+  check_trace "$temporary_root/serializable-$serializable_witness.json" "$serializable_module"
 done
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-serializable-cache" --cleanfp --nofp \
@@ -1094,8 +1140,7 @@ test "$range_normalization_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-range-normalization-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-range-normalization-witness.log"
-"$model_root/validate_range_normalization_witness.py" \
-  "$temporary_root/range-normalization-witness.json"
+check_trace "$temporary_root/range-normalization-witness.json" RangeNormalizationWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-range-normalization-cache" \
   --cleanfp --nofp --strict --method smt \
@@ -1166,8 +1211,7 @@ test "$paged_scan_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-paged-scan-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-paged-scan-witness.log"
-"$model_root/validate_paged_scan_witness.py" \
-  "$temporary_root/paged-scan-witness.json"
+check_trace "$temporary_root/paged-scan-witness.json" PagedScanWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-paged-scan-cache" \
   --cleanfp --nofp --strict --method smt \
@@ -1239,8 +1283,7 @@ test "$physical_scan_merge_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-physical-scan-merge-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-physical-scan-merge-witness.log"
-"$model_root/validate_physical_scan_merge_witness.py" \
-  "$temporary_root/physical-scan-merge-witness.json"
+check_trace "$temporary_root/physical-scan-merge-witness.json" PhysicalScanMergeWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-physical-scan-merge-cache" \
   --cleanfp --nofp --strict --method smt \
@@ -1312,8 +1355,7 @@ test "$lazy_sst_read_witness_status" -eq 12
 grep -q 'Invariant WitnessPending is violated.' \
   "$temporary_root/tlc-lazy-sst-read-witness.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-lazy-sst-read-witness.log"
-"$model_root/validate_lazy_sst_read_witness.py" \
-  "$temporary_root/lazy-sst-read-witness.json"
+check_trace "$temporary_root/lazy-sst-read-witness.json" LazySSTReadWitness
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-lazy-sst-read-cache" \
   --cleanfp --nofp --strict --method smt \
@@ -1355,89 +1397,98 @@ done
 grep -q 'All 13 obligations proved.' \
   "$temporary_root/tlaps-lazy-checkpoint-read.log"
 
+if test "${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}" = 1
+then
+  for normalized_trace in "$temporary_root"/*.trace.json
+  do
+    cp "$normalized_trace" "$trace_root/$(basename "$normalized_trace")"
+  done
+fi
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
 printf '%s\n' "  Negative stale-publication probe detected"
 printf '%s\n' "  Negative overlapping-transaction ownership probe detected"
-printf '%s\n' "  Deep committed/failed reconciliation witnesses validated"
-printf '%s\n' "  Witness pooled accepted-response loss, reconciliation, crash, recovery"
+printf '%s\n' "  Deep committed/failed reconciliation traces canonical"
+printf '%s\n' "  Canonical pooled accepted-response loss, reconciliation, crash, recovery trace"
 printf '%s\n' "  Manifest TLC 286 distinct states, depth 10"
 printf '%s\n' "  Manifest TLAPS 12/12 obligations"
-printf '%s\n' "  Manifest committed/failed reconciliation witnesses validated"
+printf '%s\n' "  Manifest committed/failed reconciliation traces canonical"
 printf '%s\n' "  Negative manifest registry-mutation probe detected"
 printf '%s\n' "  Checkpoint TLC 819 distinct states, depth 19"
 printf '%s\n' "  Checkpoint TLAPS 43/43 obligations"
-printf '%s\n' "  Checkpoint committed/rejected/recovery witnesses validated"
+printf '%s\n' "  Checkpoint committed/rejected/recovery traces canonical"
 printf '%s\n' "  Negative checkpoint stale/partial/family/ledger probes detected"
 printf '%s\n' "  Successive checkpoint TLC 37 distinct states, depth 17"
 printf '%s\n' "  Successive checkpoint TLAPS 24/24 obligations"
-printf '%s\n' "  Successive checkpoint lost-response recovery witness validated"
+printf '%s\n' "  Successive checkpoint lost-response recovery trace canonical"
 printf '%s\n' "  Negative successive-checkpoint early-HEAD probe detected"
 printf '%s\n' "  L0 checkpoint selection TLC 2240 distinct states, depth 2"
 printf '%s\n' "  L0 checkpoint selection TLAPS 8/8 obligations"
-printf '%s\n' "  L0 checkpoint complete-compaction decision witness validated"
+printf '%s\n' "  L0 checkpoint four-outcome traces replayed against Ada policy"
+printf '%s\n' "  L0 checkpoint intentional implementation divergence detected"
 printf '%s\n' "  Additive L0 TLC 49 distinct states, depth 17"
 printf '%s\n' "  Additive L0 TLAPS 24/24 obligations"
-printf '%s\n' "  Additive L0 tombstone/lost-response recovery witness validated"
+printf '%s\n' "  Additive L0 tombstone/lost-response recovery trace canonical"
 printf '%s\n' "  Negative additive-L0 early-HEAD probe detected"
 printf '%s\n' "  L0 compaction TLC 35 distinct states, depth 10"
 printf '%s\n' "  L0 compaction TLAPS 26/26 obligations"
-printf '%s\n' "  L0 compaction lost-response recovery witness validated"
-printf '%s\n' "  L0 empty-output lost-response recovery witness validated"
+printf '%s\n' "  L0 compaction lost-response recovery trace canonical"
+printf '%s\n' "  L0 empty-output lost-response recovery trace canonical"
 printf '%s\n' "  Negative L0-compaction early-HEAD probe detected"
 printf '%s\n' "  LSM read equivalence TLC 576 distinct states, depth 4"
 printf '%s\n' "  LSM read equivalence TLAPS 6/6 obligations"
-printf '%s\n' "  LSM replacement/delete/replay witness validated"
+printf '%s\n' "  LSM replacement/delete/replay trace canonical"
 printf '%s\n' "  Negative omitted-live-key replacement probe detected"
 printf '%s\n' "  Partial LSM merge TLC 3145728 distinct states, depth 3"
 printf '%s\n' "  Partial LSM merge TLAPS 5/5 obligations"
-printf '%s\n' "  Partial LSM older/selected/newer/suffix merge witness validated"
+printf '%s\n' "  Partial LSM older/selected/newer/suffix merge trace canonical"
 printf '%s\n' "  Negative dropped-tombstone partial-merge probe detected"
 printf '%s\n' "  Three-run LSM merge TLC 12288 distinct states, depth 3"
 printf '%s\n' "  Three-run LSM merge TLAPS 7/7 obligations"
-printf '%s\n' "  Three-run middle-tombstone/suffix witness validated"
+printf '%s\n' "  Three-run middle-tombstone/suffix trace canonical"
 printf '%s\n' "  Negative dropped-middle-tombstone probe detected"
 printf '%s\n' "  Immutable cache TLC 623 distinct states, depth 12"
 printf '%s\n' "  Immutable cache TLAPS 13/13 obligations"
-printf '%s\n' "  Cache coalescing/loss/corruption witness validated"
+printf '%s\n' "  Cache coalescing/loss/corruption trace canonical"
 printf '%s\n' "  Negative stale-generation cache probe detected"
 printf '%s\n' "  Object retention TLC 75337 distinct states, depth 16"
 printf '%s\n' "  Object retention TLAPS 15/15 obligations"
-printf '%s\n' "  Snapshot/replica/predecessor/unknown retention witness validated"
+printf '%s\n' "  Snapshot/replica/predecessor/unknown retention trace canonical"
 printf '%s\n' "  Negative listing-only deletion probe detected"
 printf '%s\n' "  Replica refresh TLC 1460 distinct states, depth 15"
 printf '%s\n' "  Replica refresh TLAPS 11/11 obligations"
-printf '%s\n' "  Fencing/lagging-refresh/catch-up witness validated"
+printf '%s\n' "  Fencing/lagging-refresh/catch-up trace canonical"
 printf '%s\n' "  Negative stale-writer and replica-rollback probes detected"
 printf '%s\n' "  Snapshot isolation TLC 336 distinct states, depth 10"
 printf '%s\n' "  Snapshot isolation TLAPS 6/6 obligations"
-printf '%s\n' "  Snapshot conflict/disjoint/checkpoint witnesses validated"
+printf '%s\n' "  Snapshot conflict/disjoint/checkpoint traces canonical"
 printf '%s\n' "  Negative unsafe snapshot commit probe detected"
 printf '%s\n' "  Snapshot reads TLC 7530 distinct states, depth 14"
 printf '%s\n' "  Snapshot reads TLAPS 7/7 obligations"
-printf '%s\n' "  Snapshot old/own/too-old witnesses validated"
+printf '%s\n' "  Snapshot old/own/too-old traces canonical"
 printf '%s\n' "  Negative latest-value snapshot read probe detected"
 printf '%s\n' "  Serializable validation TLC 44244 distinct states, depth 13"
 printf '%s\n' "  Serializable validation TLAPS 10/10 obligations"
-printf '%s\n' "  Serializable point/range/snapshot/own witnesses validated"
+printf '%s\n' "  Serializable point/range/snapshot/own traces canonical"
 printf '%s\n' "  Negative unsafe serializable commit probe detected"
 printf '%s\n' "  Range normalization TLC 3419 distinct states, depth 4"
 printf '%s\n' "  Range normalization TLAPS 19/19 obligations"
-printf '%s\n' "  Bridge/cross-family/capacity/allocation witness validated"
+printf '%s\n' "  Bridge/cross-family/capacity/allocation trace canonical"
 printf '%s\n' "  Negative incomplete-bridge normalization probe detected"
 printf '%s\n' "  Paged scan TLC 341 distinct states, depth 6"
 printf '%s\n' "  Paged scan TLAPS 24/24 obligations"
-printf '%s\n' "  Frozen-page/capacity/allocation/concurrent witness validated"
+printf '%s\n' "  Frozen-page/capacity/allocation/concurrent trace canonical"
 printf '%s\n' "  Negative skipped-key page probe detected"
 printf '%s\n' "  Negative nonmaximal page probe detected"
 printf '%s\n' "  Physical scan merge TLC 21 distinct states, depth 6"
 printf '%s\n' "  Physical scan merge TLAPS 18/18 obligations"
-printf '%s\n' "  Owned merge/tombstone/concurrent witness validated"
+printf '%s\n' "  Owned merge/tombstone/concurrent trace canonical"
 printf '%s\n' "  Negative partial-advance and stale-winner probes detected"
 printf '%s\n' "  Lazy SST read TLC 16 distinct states, depth 6"
 printf '%s\n' "  Lazy SST read TLAPS 41/41 obligations"
 printf '%s\n' "  Lazy checkpoint selector TLC 37 distinct states, depth 6"
 printf '%s\n' "  Lazy checkpoint selector TLAPS 13/13 obligations"
-printf '%s\n' "  Generation-bound allocation/replacement witness validated"
+printf '%s\n' "  Generation-bound allocation/replacement trace canonical"
 printf '%s\n' "  Negative stale-generation and frame-swap probes detected"

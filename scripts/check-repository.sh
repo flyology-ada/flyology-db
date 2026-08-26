@@ -24,9 +24,11 @@ test -x oracles/adapters/slatedb/run_workload.py
 test -x oracles/adapters/slatedb/scripts/build.sh
 test -x oracles/adapters/slatedb/scripts/test.sh
 test -x oracles/adapters/slatedb/tests/test_adapter.py
-test -x formal/tla/witness_to_workload.py
-test -x formal/tla/validate_reconciliation_witnesses.py
-test -x formal/tla/validate_manifest_witnesses.py
+test -f formal/tla/FlyologyHarness.tla
+test -d formal/tla/traces
+test -f tests/src/flyology-db-tla_conformance.ads
+test -f tests/src/flyology-db-tla_conformance.adb
+test -x scripts/setup-tla.sh
 test -x scripts/check-tla.sh
 test -f formal/tla/CommitPublication.tla
 test -f formal/tla/PublicationSafetyProof.tla
@@ -49,7 +51,7 @@ test -f formal/tla/ImmutableCacheStaleProbe.cfg
 test -f formal/tla/ImmutableCacheWitness.tla
 test -f formal/tla/ImmutableCacheWitness.cfg
 test -f formal/tla/ImmutableCacheSafetyProof.tla
-test -x formal/tla/validate_immutable_cache_witness.py
+test -f formal/tla/traces/ImmutableCacheWitness.trace.json
 test -f formal/tla/ObjectRetention.tla
 test -f formal/tla/ObjectRetention.cfg
 test -f formal/tla/ObjectRetentionListingProbe.tla
@@ -57,7 +59,7 @@ test -f formal/tla/ObjectRetentionListingProbe.cfg
 test -f formal/tla/ObjectRetentionWitness.tla
 test -f formal/tla/ObjectRetentionWitness.cfg
 test -f formal/tla/ObjectRetentionSafetyProof.tla
-test -x formal/tla/validate_object_retention_witness.py
+test -f formal/tla/traces/ObjectRetentionWitness.trace.json
 test -f formal/tla/ReplicaRefresh.tla
 test -f formal/tla/ReplicaRefresh.cfg
 test -f formal/tla/ReplicaRefreshStaleWriterProbe.tla
@@ -67,7 +69,7 @@ test -f formal/tla/ReplicaRefreshRollbackProbe.cfg
 test -f formal/tla/ReplicaRefreshWitness.tla
 test -f formal/tla/ReplicaRefreshWitness.cfg
 test -f formal/tla/ReplicaRefreshSafetyProof.tla
-test -x formal/tla/validate_replica_refresh_witness.py
+test -f formal/tla/traces/ReplicaRefreshWitness.trace.json
 test -x tests/scripts/run-db-s3-server-slice.sh
 test -x tests/scripts/test-s3-matrix.sh
 test -f src/flyology-db-manifest_formats.ads
@@ -78,6 +80,17 @@ grep -q '^gnat = ">=13 & <=16[.]1[.]0"$' alire.toml
 grep -q '^package Flyology.DB is$' src/flyology-db.ads
 grep -q 'Flyology.DB limited end-to-end profile: OK' showcases/src/flyology_db_limited_e2e.adb
 grep -q 'flyology_object_storage = { path=' alire.toml
+grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' alire.toml
+grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' tests/alire.toml
+! grep -Eq '^flyology_tla = \{ (path|url)=' alire.toml
+! grep -Eq '^flyology_tla = \{ (path|url)=' tests/alire.toml
+test "$(find formal/tla/traces -type f -name '*.trace.json' | wc -l | tr -d ' ')" -eq 36
+for trace in formal/tla/traces/*.trace.json
+do
+  grep -q '"format":"flyology[.]tla[.]trace/2"' "$trace"
+  grep -Eq '"configuration_sha256":"[0-9a-f]{64}"' "$trace"
+done
+! find formal/tla -maxdepth 1 -type f -name 'validate_*witness*.py' | grep -q .
 dependency_commit=$(git -C .deps/flyology-object-storage rev-parse HEAD)
 grep -q "$dependency_commit" docs/qualification/dependency-provenance.md
 test -z "$(git -C .deps/flyology-object-storage status --short)"

@@ -1,5 +1,5 @@
 ------------------------ MODULE ObjectRetentionWitness ------------------------
-EXTENDS ObjectRetention
+EXTENDS ObjectRetention, FlyologyHarness
 
 (***************************************************************************
 This exact witness retains O0 while it is current, snapshot-pinned,
@@ -53,12 +53,14 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction, step |-> step, stored |-> stored,
      current |-> current,
      protected |-> [snapshots |-> snapshotPins, replicas |-> replicaPins,
                     predecessors |-> predecessorPins,
                     unknown |-> unresolvedPins],
      listed |-> listed, aged |-> aged, deleted |-> deleted]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

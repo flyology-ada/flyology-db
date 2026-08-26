@@ -1,5 +1,5 @@
 ------------------------- MODULE ImmutableCacheWitness -------------------------
-EXTENDS ImmutableCache
+EXTENDS ImmutableCache, FlyologyHarness
 
 (***************************************************************************
 This exact witness coalesces two readers on E0, advances authority to E1,
@@ -49,12 +49,14 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction, step |-> step,
      store |-> storedEntries, current |-> currentEntry,
      cache |-> [valid |-> cacheValid, corrupt |-> cacheCorrupt,
                 capacity |-> cacheCapacity],
      fetch |-> fetchOwner, joined |-> joined,
      requested |-> requested, results |-> results]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

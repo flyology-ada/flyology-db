@@ -1,5 +1,5 @@
 -------------------- MODULE PhysicalScanMergeWitness ---------------------
-EXTENDS PhysicalScanMerge
+EXTENDS PhysicalScanMerge, FlyologyHarness
 
 (***************************************************************************
 The witness emits transaction-local key one, changes current engine authority,
@@ -36,7 +36,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      result |-> result,
      positions |-> positions,
@@ -46,5 +46,7 @@ WitnessAlias ==
      done |-> done,
      captured |-> capturedSources,
      current |-> currentSources]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

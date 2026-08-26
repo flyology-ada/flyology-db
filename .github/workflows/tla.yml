@@ -1,0 +1,76 @@
+name: TLA assurance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flyology-db-tla-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  formal:
+    name: Canonical traces, Ada replay, TLC, and TLAPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out sources
+        timeout-minutes: 5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Alire
+        timeout-minutes: 15
+        uses: alire-project/setup-alire@fc4c8ce471aa30b3af0d39ce15add1ee9eaf28f2 # v6.0.0
+        with:
+          version: 2.1.1
+          toolchain: >-
+            gnat_native=16.1.0
+            gprbuild=26.0.1
+          cache: true
+      - name: Configure Flyology index
+        timeout-minutes: 5
+        run: |
+          alr index --reset-community
+          alr index \
+            --add=git+https://github.com/flyology-ada/alire-index.git \
+            --name=flyology \
+            --before=community
+      - name: Build the exact indexed harness independently
+        timeout-minutes: 20
+        run: |
+          mkdir -p "$RUNNER_TEMP/flyology-tla-indexed"
+          cd "$RUNNER_TEMP/flyology-tla-indexed"
+          alr show flyology_tla=0.1.0-dev --solve 2>&1 | tee resolution.log
+          grep -Fq 'Origin: commit faf06c48246931e30b7fe9c5c786660185925666' \
+            resolution.log
+          alr -n get flyology_tla=0.1.0-dev -b
+      - name: Materialize the qualified Object Storage source
+        timeout-minutes: 10
+        run: |
+          git clone --no-checkout \
+            https://github.com/flyology-ada/flyology-object-storage.git \
+            .deps/flyology-object-storage
+          git -C .deps/flyology-object-storage \
+            checkout --detach 99706cceaef0add2578f3665e48af37cd52bafdc
+          test -z "$(git -C .deps/flyology-object-storage status --short)"
+      - name: Restore verified TLA toolchain
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .deps/flyology-tla-toolchain
+          key: flyology-tla-toolchain-v1-${{ runner.os }}
+      - name: Resolve the indexed consumer and build its replay adapter
+        timeout-minutes: 25
+        run: |
+          ./scripts/setup-tla.sh
+          alr build
+          cd tests
+          alr build
+      - name: Run canonical trace, replay, TLC, and TLAPS gate
+        run: ./scripts/check-tla.sh

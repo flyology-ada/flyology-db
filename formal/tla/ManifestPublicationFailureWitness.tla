@@ -1,5 +1,5 @@
 ----------------- MODULE ManifestPublicationFailureWitness -----------------
-EXTENDS ManifestPublication
+EXTENDS ManifestPublication, FlyologyHarness
 
 FailureWitnessComplete ==
     /\ lastAction = "Recover"
@@ -17,7 +17,7 @@ FailureWitnessComplete ==
 
 FailureWitnessPending == ~FailureWitnessComplete
 
-Alias == [
+WitnessState == [
     action |-> lastAction,
     head |-> [ordinal |-> headOrdinal, latest_manifest |-> latestManifest],
     manifests |-> [m \in ManifestIds |-> [
@@ -33,5 +33,7 @@ Alias == [
     cache |-> [local |-> local, recovered_manifest |-> recoveredManifest,
                recovered_registry |-> recoveredRegistry, crash_observed |-> crashObserved]
 ]
+
+Alias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

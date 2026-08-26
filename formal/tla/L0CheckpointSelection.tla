@@ -1,5 +1,5 @@
 ----------------------- MODULE L0CheckpointSelection -----------------------
-EXTENDS FiniteSets, Naturals, TLC
+EXTENDS FiniteSets, FlyologyHarness, Naturals, TLC
 
 (***************************************************************************
 This finite model freezes the maintenance observation that precedes caller-
@@ -114,5 +114,26 @@ FamilyProjectionCorrect ==
 
 ObservationHasNoEffects ==
     phase = "Observed" => AuthorityValid
+
+HarnessInput ==
+    [current_f1 |-> current["F1"], current_f2 |-> current["F2"],
+     maximum_f1 |-> maximum["F1"], maximum_f2 |-> maximum["F2"],
+     changed_f1 |-> "F1" \in changed, changed_f2 |-> "F2" \in changed,
+     nonempty_f1 |-> "F1" \in nonempty, nonempty_f2 |-> "F2" \in nonempty,
+     total_maximum |-> totalMaximum, dirty |-> dirty]
+
+HarnessOutcome ==
+    [selection |-> action,
+     selected_f1 |-> "F1" \in selectedFamilies,
+     selected_f2 |-> "F2" \in selectedFamilies]
+
+HarnessState ==
+    [phase |-> phase,
+     action |-> action,
+     selected_f1 |-> "F1" \in selectedFamilies,
+     selected_f2 |-> "F2" \in selectedFamilies]
+
+HarnessAlias ==
+    TraceAlias(lastAction, "checkpoint-selection", HarnessInput, HarnessOutcome, HarnessState)
 
 =============================================================================

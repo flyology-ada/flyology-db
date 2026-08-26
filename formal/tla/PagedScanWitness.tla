@@ -1,5 +1,5 @@
 ------------------------- MODULE PagedScanWitness --------------------------
-EXTENDS PagedScan
+EXTENDS PagedScan, FlyologyHarness
 
 (***************************************************************************
 This witness begins on rows (1,A), (3,B), (4,A): key two's newer tombstone
@@ -42,7 +42,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      result |-> result,
      rowLimit |-> lastRowLimit,
@@ -54,5 +54,7 @@ WitnessAlias ==
      emptyView |-> emptyView,
      snapshot |-> snapshotNewest,
      current |-> currentNewest]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

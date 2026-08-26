@@ -1,5 +1,5 @@
 --------------------- MODULE RangeNormalizationWitness ---------------------
-EXTENDS RangeNormalization
+EXTENDS RangeNormalization, FlyologyHarness
 
 (***************************************************************************
 This witness records two separated family-one ranges, bridges them into one,
@@ -44,11 +44,13 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      result |-> result,
      candidate |-> lastCandidate,
      ranges |-> storedRanges,
      coverage |-> observedCoverage]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

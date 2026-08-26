@@ -17,6 +17,9 @@ flyology_object_storage = "=0.1.0-dev"
 flyology = "*"
 
 [[depends-on]]
+flyology_tla = "=0.1.0-dev"
+
+[[depends-on]]
 gnat = ">=13 & <=16.1.0"
 
 [build-switches]

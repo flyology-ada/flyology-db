@@ -1,5 +1,5 @@
 ----------------- MODULE LSMCompactionEquivalenceWitness -----------------
-EXTENDS LSMCompactionEquivalence
+EXTENDS LSMCompactionEquivalence, FlyologyHarness
 
 (***************************************************************************
 This witness captures one live and one absent key, builds and recovers the
@@ -27,7 +27,7 @@ WitnessComplete ==
 
 WitnessPending == ~WitnessComplete
 
-WitnessAlias ==
+WitnessState ==
     [action |-> lastAction,
      phase |-> phase,
      source |-> sourceView,
@@ -35,5 +35,7 @@ WitnessAlias ==
      recovered |-> recoveredView,
      delta |-> laterDelta,
      replayed |-> replayedView]
+
+WitnessAlias == CheckedWitnessAlias(lastAction, WitnessState)
 
 =============================================================================

@@ -433,8 +433,8 @@ remain executable boundaries rather than newly selected proof units.
   second negative model overlaps one transaction between an ever-unknown batch and an active batch and must violate
   the transaction-level no-active-replay invariant.
 - A deliberate witness predicate emits a two-transaction, cross-family, accepted-but-response-lost publication path.
-  A checked converter validates every state and projects the scenario to
-  `oracles/workloads/tla_commit_publication_witness.ndjson`.
+  The indexed `flyology_tla` normalizer emits and strictly validates its canonical shared trace, and the gate
+  compares that artifact byte-for-byte with the checked-in result under `formal/tla/traces/`.
 - Two additional checked witnesses require committed and failed reconciliation after two later valid HEAD
   transitions, guarding chain-descendant reasoning rather than only exact or immediate HEAD matching.
 - TLAPS, in strict mode with its SMT backend, proves all 23 obligations in the unbounded inductive safety kernel.
@@ -449,8 +449,8 @@ remain executable boundaries rather than newly selected proof units.
 - The staged first-LSM checkpoint model exhausts 819 states at depth 19. It covers exact two-family L0 placement and
   reconstruction, separate family/aggregate run and identity capacity, an exact captured ledger including admitted
   nonvisible identities, accepted and unaccepted lost HEAD responses, a real external prepublication advance, later
-  manifest-preserving commit, crash, cacheless recovery, and missing/corrupt named-run rejection. Three independent
-  validators check committed, rejected, and recovery traces. Integrated stale-publication, partial-run, wrong-family,
+  manifest-preserving commit, crash, cacheless recovery, and missing/corrupt named-run rejection. Three canonical
+  shared traces fix the committed, rejected, and recovery paths. Integrated stale-publication, partial-run, wrong-family,
   and wrong-ledger probes must fail after reachable prefixes, and every normal action has nonzero TLC coverage. Its
   smaller unbounded kernel proves 43/43 strict TLAPS obligations for
   abstract stored-before-confirmed ordering, confirmed HEAD references, immutable registry, exact expected-generation
@@ -469,11 +469,13 @@ remain executable boundaries rather than newly selected proof units.
   proof.
 - The L0 checkpoint-selection model exhausts 2,240 distinct states at depth 2 with nonzero coverage of no work,
   additive flush, complete compaction, and no admissible action. It checks the exact persisted per-family and
-  database-wide run-ceiling decision without mutating authority or reserving identity. A validated two-state witness
-  requires complete compaction when both changed families individually have room but their additions exceed the
-  remaining aggregate slots. Its focused kernel proves all four decision branches in 4/4 strict TLAPS obligations.
-  The finite two-family and zero-to-two-run geometry is qualification coverage, not a product default. Scheduling,
-  progress, the race between an observation and a later call, and refinement to Ada remain outside this proof.
+  database-wide run-ceiling decision without mutating authority or reserving identity. Four canonical traces cover
+  every outcome; the shared replay engine calls the real private Ada checkpoint policy for each and checks exact
+  outcome and family selection. A deliberately buggy adapter must report a stable divergence for complete
+  compaction. The focused kernel proves all four decision and all four family-projection branches in 8/8 strict
+  TLAPS obligations. The finite two-family and zero-to-two-run geometry is qualification coverage, not a product
+  default. Scheduling, progress, the race between an observation and a later call, and a general refinement theorem
+  remain outside this proof.
 - The additive-L0 model exhausts 49 distinct states at depth 17 with nonzero semantic-action coverage. It checks
   independent persisted family/global run backpressure before effects, preservation and append of the first run,
   explicit newer tombstone masking, a second-key Put, accepted-but-lost HEAD response, read-only resolution, crash,
@@ -548,14 +550,14 @@ remain executable boundaries rather than newly selected proof units.
   to Ada.
 - The fixed-snapshot point-read model exhausts 7,530 states at depth 14. It checks read-your-writes before committed
   state, newest committed version selection no later than Begin, and conservative `TooOld` below the checkpoint
-  history boundary. Independent validators require old-value, own-write, and too-old traces, while a negative model
+  history boundary. Canonical shared traces require old-value, own-write, and too-old paths, while a negative model
   must trip the bad-read monitor when it substitutes latest state. Its unbounded kernel proves 7/7 strict obligations
   for type/sequence preservation and exact modeled selection. The two-version finite representation is qualification
   geometry, not product retention; byte lookup, allocation, retained-history sufficiency, progress, serializable
   predicates, and refinement to Ada remain outside this proof.
 - The serializable-validation model exhausts 44,244 states at depth 13. It checks snapshot write conflicts,
   serializable point and normalized-range conflicts, and independent point/range capacity rejection with nonzero
-  coverage for every semantic action. Independent validators require exact point-conflict, range-conflict,
+  coverage for every semantic action. Canonical shared traces require exact point-conflict, range-conflict,
   snapshot-non-retention, and full-point-set own-write traces; a negative unsafe action must violate the
   no-invalid-commit monitor. Its unbounded
   action-preservation kernel proves 10/10 strict TLAPS obligations for state/sequence soundness and guarded commit
