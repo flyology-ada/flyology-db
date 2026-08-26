@@ -373,6 +373,12 @@ identity, persisted database and family limits, sequence endpoints, and logical-
 failure returns no SST; allocation occurs lazily only after checked geometry and validation and publishes no partial
 state.
 
+The private slice decoders enforce the same rules without requiring a complete object image. An index slice must
+match the authenticated header's exact extent; its CRC, every record, ordering, sequence interval, logical total, and
+contiguous frame coverage validate before one exact index/key allocation. A frame slice must match one retained index
+extent; its CRC and duplicated sequence, operation, lengths, and key validate before one exact payload allocation.
+Provider generation binding remains an execution-protocol responsibility rather than a fact inferred by the codec.
+
 The private operational codec is gated by an independently generated 323-byte golden image, shifted-lower-bound
 decoding, every truncation, trailing bytes, whole/index/frame checksum corruption, repaired-checksum index/frame
 mismatch, intact-frame substitution, malformed extents, unsupported version, and persisted key/value-limit

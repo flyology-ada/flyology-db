@@ -44,6 +44,14 @@ package body Flyology.DB.LSM_Runtime_Formats is
    procedure Free_Checkpoint is new
      Ada.Unchecked_Deallocation (Object => Checkpoint_Manifest, Name => Checkpoint_Manifest_Access);
    procedure Free_SST is new Ada.Unchecked_Deallocation (Object => SST, Name => SST_Access);
+   procedure Free_SST_V2_Index is new
+     Ada.Unchecked_Deallocation
+       (Object => SST_V2_Index,
+        Name   => SST_V2_Index_Access);
+   procedure Free_SST_V2_Frame is new
+     Ada.Unchecked_Deallocation
+       (Object => SST_V2_Frame,
+        Name   => SST_V2_Frame_Access);
    procedure Free_Image is new
      Ada.Unchecked_Deallocation (Object => Formats.Byte_Array, Name => Image_Access);
 
@@ -178,6 +186,16 @@ package body Flyology.DB.LSM_Runtime_Formats is
    procedure Release (Value : in out SST_Access) is
    begin
       Free_SST (Value);
+   end Release;
+
+   procedure Release (Value : in out SST_V2_Index_Access) is
+   begin
+      Free_SST_V2_Index (Value);
+   end Release;
+
+   procedure Release (Value : in out SST_V2_Frame_Access) is
+   begin
+      Free_SST_V2_Frame (Value);
    end Release;
 
    procedure Release (Image : in out Image_Access) is
@@ -1236,6 +1254,424 @@ package body Flyology.DB.LSM_Runtime_Formats is
    begin
       return Key_Less (Data, Left_Offset, Left_Length, Data, Right_Offset, Right_Length);
    end Key_Less;
+
+   function Valid_SST_V2_Index (Value : SST_V2_Index) return Boolean is
+      Frame_Cursor      : Natural := Value.Frame_Offset;
+      Key_Cursor        : Positive := 1;
+      Lowest            : Interfaces.Unsigned_64 :=
+        Interfaces.Unsigned_64'Last;
+      Highest           : Interfaces.Unsigned_64 := 0;
+      Logical           : Interfaces.Unsigned_64 := 0;
+      Previous_Sequence : Interfaces.Unsigned_64 := 0;
+   begin
+      if Head_Policy.Is_Zero (Value.Database_ID)
+        or else Head_Policy.Is_Zero (Value.Run_ID)
+        or else Value.Family_ID = 0
+        or else Value.Entry_Total = 0
+        or else Value.Frame_Offset /= SST_V2_Header_Length
+        or else Value.Frame_Byte_Total > Natural'Last - Value.Frame_Offset
+        or else Value.Key_Byte_Total = Natural'Last
+        or else Value.Lowest_Sequence = 0
+        or else Value.Lowest_Sequence > Value.Highest_Sequence
+      then
+         return False;
+      end if;
+      for Position in Value.Entries'Range loop
+         declare
+            Item       : SST_V2_Index_Entry renames Value.Entries (Position);
+            Item_Bytes : Interfaces.Unsigned_64;
+         begin
+            if Item.Frame_Offset /= Frame_Cursor
+              or else Item.Frame_Byte_Total
+                      < SST_V2_Frame_Header_Length
+                        + SST_V2_Frame_Trailer_Length
+              or else Item.Key_Offset /= Key_Cursor
+              or else Item.Key_Byte_Total
+                      > Value.Key_Byte_Total - (Key_Cursor - 1)
+              or else Item.Sequence = 0
+              or else Item.Sequence < Value.Lowest_Sequence
+              or else Item.Sequence > Value.Highest_Sequence
+              or else Item.Operation
+                      not in LSM.Put_Operation | LSM.Delete_Operation
+              or else (Item.Operation = LSM.Delete_Operation
+                       and then Item.Value_Byte_Total /= 0)
+              or else Item.Key_Byte_Total
+                      > Item.Frame_Byte_Total
+                        - SST_V2_Frame_Header_Length
+                        - SST_V2_Frame_Trailer_Length
+              or else Item.Value_Byte_Total
+                      /= Item.Frame_Byte_Total
+                         - SST_V2_Frame_Header_Length
+                         - SST_V2_Frame_Trailer_Length
+                         - Item.Key_Byte_Total
+              or else Item.Frame_Byte_Total > Natural'Last - Frame_Cursor
+            then
+               return False;
+            end if;
+            if Position > Value.Entries'First then
+               declare
+                  Previous : SST_V2_Index_Entry renames
+                    Value.Entries (Position - 1);
+               begin
+                  if Same_Key
+                       (Value.Keys,
+                        Previous.Key_Offset - 1,
+                        Previous.Key_Byte_Total,
+                        Item.Key_Offset - 1,
+                        Item.Key_Byte_Total)
+                  then
+                     if Previous_Sequence <= Item.Sequence then
+                        return False;
+                     end if;
+                  elsif not Key_Less
+                              (Value.Keys,
+                               Previous.Key_Offset - 1,
+                               Previous.Key_Byte_Total,
+                               Item.Key_Offset - 1,
+                               Item.Key_Byte_Total)
+                  then
+                     return False;
+                  end if;
+               end;
+            end if;
+            Item_Bytes :=
+              Interfaces.Unsigned_64 (Item.Key_Byte_Total)
+              + Interfaces.Unsigned_64 (Item.Value_Byte_Total);
+            if not Add_U64 (Logical, Item_Bytes, Logical) then
+               return False;
+            end if;
+            Frame_Cursor := Frame_Cursor + Item.Frame_Byte_Total;
+            Key_Cursor := Key_Cursor + Item.Key_Byte_Total;
+            Lowest := Interfaces.Unsigned_64'Min (Lowest, Item.Sequence);
+            Highest := Interfaces.Unsigned_64'Max (Highest, Item.Sequence);
+            Previous_Sequence := Item.Sequence;
+         end;
+      end loop;
+      return
+        Frame_Cursor = Value.Frame_Offset + Value.Frame_Byte_Total
+        and then Key_Cursor = Value.Key_Byte_Total + 1
+        and then Lowest = Value.Lowest_Sequence
+        and then Highest = Value.Highest_Sequence
+        and then Logical = Value.Logical_Payload_Bytes;
+   end Valid_SST_V2_Index;
+
+   procedure Decode_SST_V2_Index
+     (Image               : Formats.Byte_Array;
+      Admission           : SST_Header_Admission;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Maximum_Key_Bytes   : Interfaces.Unsigned_64;
+      Maximum_Value_Bytes : Interfaces.Unsigned_64;
+      Value               : out SST_V2_Index_Access;
+      Status              : out Decode_Status)
+   is
+      Candidate         : SST_V2_Index_Access := null;
+      Data_End          : Natural;
+      Cursor            : Natural := 0;
+      Frame_Cursor      : Natural := Admission.Frame_Offset;
+      Key_Bytes         : Interfaces.Unsigned_64 := 0;
+      Logical           : Interfaces.Unsigned_64 := 0;
+      Lowest            : Interfaces.Unsigned_64 :=
+        Interfaces.Unsigned_64'Last;
+      Highest           : Interfaces.Unsigned_64 := 0;
+      Previous_Key      : Natural := 0;
+      Previous_Key_Size : Natural := 0;
+      Previous_Sequence : Interfaces.Unsigned_64 := 0;
+   begin
+      Value := null;
+      if Image'Length
+        < SST_V2_Index_Entry_Header_Length + SST_V2_Index_Trailer_Length
+        or else Admission.Format_Version /= SST_V2_Format_Version
+        or else Admission.Header_Length /= SST_V2_Header_Length
+        or else Admission.Entry_Total = 0
+        or else Interfaces.Unsigned_64 (Admission.Entry_Total)
+                /= Interfaces.Unsigned_64 (Expected_Descriptor.Entry_Total)
+        or else Interfaces.Unsigned_64 (Admission.Payload_Bytes)
+                /= Expected_Descriptor.Logical_Payload_Bytes
+        or else Admission.Frame_Offset /= SST_V2_Header_Length
+        or else Admission.Index_Offset < Admission.Frame_Offset
+        or else Admission.Frame_Bytes
+                /= Admission.Index_Offset - Admission.Frame_Offset
+        or else Admission.Index_Bytes /= Image'Length
+        or else not Valid_Run_Descriptor (Expected_Descriptor)
+        or else Head_Policy.Is_Zero (Expected_Database)
+        or else Expected_Family = 0
+      then
+         Status := Invalid_Length;
+         return;
+      end if;
+      Data_End := Image'Length - SST_V2_Index_Trailer_Length;
+      if Read_U32 (Image, Data_End)
+        /= Formats.CRC_32C (Image (Image'First .. Image'First + Data_End - 1))
+      then
+         Status := Index_Checksum_Failed;
+         return;
+      end if;
+
+      --  The authenticated index is parsed without allocation first. Its
+      --  canonical contiguous frames and key order become retained authority.
+      for Position in Positive range 1 .. Admission.Entry_Total loop
+         declare
+            Frame_Offset : Interfaces.Unsigned_64;
+            Frame_Bytes  : Interfaces.Unsigned_64;
+            Sequence     : Interfaces.Unsigned_64;
+            Operation    : Formats.Byte;
+            Key_Wire     : Interfaces.Unsigned_32;
+            Value_Wire   : Interfaces.Unsigned_32;
+            Key_Total    : Natural;
+            Value_Total  : Natural;
+            Key_Start    : Natural;
+            Exact_Frame  : Interfaces.Unsigned_64;
+            Item_Bytes   : Interfaces.Unsigned_64;
+         begin
+            if Cursor > Data_End
+              or else SST_V2_Index_Entry_Header_Length > Data_End - Cursor
+            then
+               Status := Invalid_Entry;
+               return;
+            end if;
+            Frame_Offset := Read_U64 (Image, Cursor);
+            Frame_Bytes := Read_U64 (Image, Cursor + 8);
+            Sequence := Read_U64 (Image, Cursor + 16);
+            Operation := Byte_At (Image, Cursor + 24);
+            Key_Wire := Read_U32 (Image, Cursor + 28);
+            Value_Wire := Read_U32 (Image, Cursor + 32);
+            if Byte_At (Image, Cursor + 25) /= 0
+              or else Read_U16 (Image, Cursor + 26) /= 0
+              or else Sequence = 0
+              or else Sequence < Expected_Descriptor.Lowest_Sequence
+              or else Sequence > Expected_Descriptor.Highest_Sequence
+              or else Operation not in LSM.Put_Operation | LSM.Delete_Operation
+              or else (Operation = LSM.Delete_Operation
+                       and then Value_Wire /= 0)
+            then
+               Status := Invalid_Entry;
+               return;
+            elsif Interfaces.Unsigned_64 (Key_Wire) > Maximum_Key_Bytes
+              or else Interfaces.Unsigned_64 (Value_Wire) > Maximum_Value_Bytes
+            then
+               Status := Limit_Exceeded;
+               return;
+            end if;
+            Key_Total := Natural (Key_Wire);
+            Value_Total := Natural (Value_Wire);
+            Exact_Frame := Interfaces.Unsigned_64 (SST_V2_Frame_Header_Length);
+            if not Add_U64
+                     (Exact_Frame,
+                      Interfaces.Unsigned_64 (Key_Total),
+                      Exact_Frame)
+              or else not Add_U64
+                            (Exact_Frame,
+                             Interfaces.Unsigned_64 (Value_Total),
+                             Exact_Frame)
+              or else not Add_U64
+                            (Exact_Frame,
+                             Interfaces.Unsigned_64
+                               (SST_V2_Frame_Trailer_Length),
+                             Exact_Frame)
+              or else Frame_Offset /= Interfaces.Unsigned_64 (Frame_Cursor)
+              or else Frame_Bytes /= Exact_Frame
+              or else Frame_Bytes
+                      > Interfaces.Unsigned_64 (Natural'Last - Frame_Cursor)
+            then
+               Status := Invalid_Entry;
+               return;
+            end if;
+            Cursor := Cursor + SST_V2_Index_Entry_Header_Length;
+            if Key_Total > Data_End - Cursor then
+               Status := Invalid_Entry;
+               return;
+            end if;
+            Key_Start := Cursor;
+            if Position > 1 then
+               if Same_Key
+                    (Image,
+                     Previous_Key,
+                     Previous_Key_Size,
+                     Key_Start,
+                     Key_Total)
+               then
+                  if Previous_Sequence <= Sequence then
+                     Status := Invalid_SST_State;
+                     return;
+                  end if;
+               elsif not Key_Less
+                           (Image,
+                            Previous_Key,
+                            Previous_Key_Size,
+                            Key_Start,
+                            Key_Total)
+               then
+                  Status := Invalid_SST_State;
+                  return;
+               end if;
+            end if;
+            Item_Bytes :=
+              Interfaces.Unsigned_64 (Key_Total)
+              + Interfaces.Unsigned_64 (Value_Total);
+            if not Add_U64 (Logical, Item_Bytes, Logical)
+              or else not Add_U64
+                            (Key_Bytes,
+                             Interfaces.Unsigned_64 (Key_Total),
+                             Key_Bytes)
+            then
+               Status := Invalid_Length;
+               return;
+            end if;
+            Cursor := Cursor + Key_Total;
+            Frame_Cursor := Frame_Cursor + Natural (Frame_Bytes);
+            Lowest := Interfaces.Unsigned_64'Min (Lowest, Sequence);
+            Highest := Interfaces.Unsigned_64'Max (Highest, Sequence);
+            Previous_Key := Key_Start;
+            Previous_Key_Size := Key_Total;
+            Previous_Sequence := Sequence;
+         end;
+      end loop;
+      if Cursor /= Data_End
+        or else Frame_Cursor /= Admission.Index_Offset
+        or else Logical /= Expected_Descriptor.Logical_Payload_Bytes
+        or else Lowest /= Expected_Descriptor.Lowest_Sequence
+        or else Highest /= Expected_Descriptor.Highest_Sequence
+        or else Key_Bytes >= Interfaces.Unsigned_64 (Natural'Last)
+      then
+         Status := Invalid_SST_State;
+         return;
+      end if;
+
+      Candidate :=
+        new SST_V2_Index (Admission.Entry_Total, Natural (Key_Bytes));
+      Candidate.Database_ID := Expected_Database;
+      Candidate.Run_ID := Expected_Descriptor.Run_ID;
+      Candidate.Family_ID := Expected_Family;
+      Candidate.Lowest_Sequence := Expected_Descriptor.Lowest_Sequence;
+      Candidate.Highest_Sequence := Expected_Descriptor.Highest_Sequence;
+      Candidate.Logical_Payload_Bytes :=
+        Expected_Descriptor.Logical_Payload_Bytes;
+      Candidate.Frame_Offset := Admission.Frame_Offset;
+      Candidate.Frame_Byte_Total := Admission.Frame_Bytes;
+      Candidate.Entries := [others => <>];
+      Candidate.Keys := [others => 0];
+      Cursor := 0;
+      declare
+         Key_Cursor : Positive := 1;
+      begin
+         for Item of Candidate.Entries loop
+            declare
+               Key_Total : constant Natural :=
+                 Natural (Read_U32 (Image, Cursor + 28));
+            begin
+               Item.Frame_Offset := Natural (Read_U64 (Image, Cursor));
+               Item.Frame_Byte_Total := Natural (Read_U64 (Image, Cursor + 8));
+               Item.Sequence := Read_U64 (Image, Cursor + 16);
+               Item.Operation := Byte_At (Image, Cursor + 24);
+               Item.Key_Offset := Key_Cursor;
+               Item.Key_Byte_Total := Key_Total;
+               Item.Value_Byte_Total :=
+                 Natural (Read_U32 (Image, Cursor + 32));
+               Cursor := Cursor + SST_V2_Index_Entry_Header_Length;
+               for Offset in Natural range 1 .. Key_Total loop
+                  Candidate.Keys (Key_Cursor + Offset - 1) :=
+                    Byte_At (Image, Cursor + Offset - 1);
+               end loop;
+               Cursor := Cursor + Key_Total;
+               Key_Cursor := Key_Cursor + Key_Total;
+            end;
+         end loop;
+      end;
+      if Cursor /= Data_End or else not Valid_SST_V2_Index (Candidate.all) then
+         Release (Candidate);
+         Status := Invalid_SST_State;
+         return;
+      end if;
+      Value := Candidate;
+      Status := Decoded;
+   exception
+      when Storage_Error =>
+         Release (Candidate);
+         Value := null;
+         Status := Allocation_Failed;
+   end Decode_SST_V2_Index;
+
+   procedure Decode_SST_V2_Frame
+     (Image    : Formats.Byte_Array;
+      Index    : SST_V2_Index;
+      Position : Positive;
+      Value    : out SST_V2_Frame_Access;
+      Status   : out Decode_Status)
+   is
+      Candidate : SST_V2_Frame_Access := null;
+      Data_End  : Natural;
+   begin
+      Value := null;
+      if not Valid_SST_V2_Index (Index)
+        or else Position not in Index.Entries'Range
+      then
+         Status := Invalid_SST_State;
+         return;
+      end if;
+      declare
+         Expected : SST_V2_Index_Entry renames Index.Entries (Position);
+      begin
+         if Image'Length /= Expected.Frame_Byte_Total
+           or else Image'Length
+                   < SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length
+         then
+            Status := Invalid_Length;
+            return;
+         end if;
+         Data_End := Image'Length - SST_V2_Frame_Trailer_Length;
+         if Read_U32 (Image, Data_End)
+           /= Formats.CRC_32C
+                (Image (Image'First .. Image'First + Data_End - 1))
+         then
+            Status := Frame_Checksum_Failed;
+            return;
+         end if;
+         if Read_U64 (Image, 0) /= Expected.Sequence
+           or else Byte_At (Image, 8) /= Expected.Operation
+           or else Byte_At (Image, 9) /= 0
+           or else Read_U16 (Image, 10) /= 0
+           or else Read_U32 (Image, 12)
+                   /= Interfaces.Unsigned_32 (Expected.Key_Byte_Total)
+           or else Read_U32 (Image, 16)
+                   /= Interfaces.Unsigned_32 (Expected.Value_Byte_Total)
+           or else Data_End
+                   /= SST_V2_Frame_Header_Length
+                      + Expected.Key_Byte_Total
+                      + Expected.Value_Byte_Total
+         then
+            Status := Invalid_Entry;
+            return;
+         end if;
+         for Offset in Natural range 1 .. Expected.Key_Byte_Total loop
+            if Byte_At (Image, SST_V2_Frame_Header_Length + Offset - 1)
+              /= Index.Keys (Expected.Key_Offset + Offset - 1)
+            then
+               Status := Invalid_SST_State;
+               return;
+            end if;
+         end loop;
+         Candidate :=
+           new SST_V2_Frame
+                 (Expected.Key_Byte_Total + Expected.Value_Byte_Total);
+         Candidate.Sequence := Expected.Sequence;
+         Candidate.Operation := Expected.Operation;
+         Candidate.Key_Byte_Total := Expected.Key_Byte_Total;
+         Candidate.Value_Byte_Total := Expected.Value_Byte_Total;
+         for Offset in Natural range 1 .. Candidate.Payload_Byte_Total loop
+            Candidate.Payload (Offset) :=
+              Byte_At (Image, SST_V2_Frame_Header_Length + Offset - 1);
+         end loop;
+      end;
+      Value := Candidate;
+      Status := Decoded;
+   exception
+      when Storage_Error =>
+         Release (Candidate);
+         Value := null;
+         Status := Allocation_Failed;
+   end Decode_SST_V2_Frame;
 
    function Structurally_Valid (Value : SST) return Boolean is
       Cursor  : Positive := 1;

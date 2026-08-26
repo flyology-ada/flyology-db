@@ -44,6 +44,8 @@ package body Flyology.DB.LSM_Format_Tests is
    use type Runtime.Run_Descriptor;
    use type Runtime.SST;
    use type Runtime.SST_Access;
+   use type Runtime.SST_V2_Frame_Access;
+   use type Runtime.SST_V2_Index_Access;
 
    --  Exact extents derived independently by generate_lsm_goldens.py from the
    --  frozen field tables and fixture values; they are not product limits.
@@ -678,6 +680,8 @@ package body Flyology.DB.LSM_Format_Tests is
       Table_Read     : Runtime.SST_Access;
       Table_Image    : Runtime.Image_Access;
       Table_Head     : Runtime.SST_Header_Admission;
+      Table_Index    : Runtime.SST_V2_Index_Access;
+      Table_Frame    : Runtime.SST_V2_Frame_Access;
       Allocation     : Runtime.Allocation_Status;
       Encode_Status  : Runtime.Encode_Status;
       Decode_Status  : Runtime.Decode_Status;
@@ -894,6 +898,80 @@ package body Flyology.DB.LSM_Format_Tests is
       then
          raise Program_Error with "runtime SST-v2 golden did not round-trip";
       end if;
+      Runtime.Decode_SST_V2_Index
+        (SST_V2_Golden
+           (Table_Head.Index_Offset
+            .. Table_Head.Index_Offset + Table_Head.Index_Bytes - 1),
+         Table_Head,
+         ID (1),
+         1,
+         Descriptor,
+         8,
+         8,
+         Table_Index,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Table_Index = null
+        or else Table_Index.Database_ID /= ID (1)
+        or else Table_Index.Run_ID /= ID (9)
+        or else Table_Index.Family_ID /= 1
+        or else Table_Index.Frame_Offset /= Runtime.SST_V2_Header_Length
+        or else Table_Index.Frame_Byte_Total /= Fixture_Frame_Bytes
+        or else Table_Index.Keys
+                /= Formats.Byte_Array'
+                     [Character'Pos ('a'),
+                      Character'Pos ('a'),
+                      Character'Pos ('b')]
+      then
+         raise Program_Error
+           with "runtime SST-v2 index range did not authenticate";
+      end if;
+      for Position in Table_Index.Entries'Range loop
+         declare
+            Item : Runtime.SST_V2_Index_Entry renames
+              Table_Index.Entries (Position);
+         begin
+            Runtime.Decode_SST_V2_Frame
+              (SST_V2_Golden
+                 (Item.Frame_Offset
+                  .. Item.Frame_Offset + Item.Frame_Byte_Total - 1),
+               Table_Index.all,
+               Position,
+               Table_Frame,
+               Decode_Status);
+            if Decode_Status /= Runtime.Decoded or else Table_Frame = null then
+               raise Program_Error
+                 with "runtime SST-v2 frame range did not authenticate";
+            elsif Position = 1
+              and then (Table_Frame.Sequence /= 2
+                        or else Table_Frame.Operation /= LSM.Put_Operation
+                        or else Table_Frame.Payload
+                                /= Formats.Byte_Array'
+                                     [Character'Pos ('a'),
+                                      Character'Pos ('x')])
+            then
+               raise Program_Error with "runtime SST-v2 first frame mismatch";
+            elsif Position = 2
+              and then (Table_Frame.Sequence /= 1
+                        or else Table_Frame.Operation /= LSM.Delete_Operation
+                        or else Table_Frame.Payload
+                                /= Formats.Byte_Array'
+                                     [1 => Character'Pos ('a')])
+            then
+               raise Program_Error with "runtime SST-v2 second frame mismatch";
+            elsif Position = 3
+              and then (Table_Frame.Sequence /= 2
+                        or else Table_Frame.Operation /= LSM.Put_Operation
+                        or else Table_Frame.Value_Byte_Total /= 0
+                        or else Table_Frame.Payload
+                                /= Formats.Byte_Array'
+                                     [1 => Character'Pos ('b')])
+            then
+               raise Program_Error with "runtime SST-v2 third frame mismatch";
+            end if;
+            Runtime.Release (Table_Frame);
+         end;
+      end loop;
 
       declare
          --  Nonzero lower bounds verify that operational parsing is positional;
@@ -939,6 +1017,8 @@ package body Flyology.DB.LSM_Format_Tests is
       Runtime.Release (Manifest_Read);
       Runtime.Release (Manifest_Value);
       Runtime.Release (Table_Image);
+      Runtime.Release (Table_Frame);
+      Runtime.Release (Table_Index);
       Runtime.Release (Table_Read);
       Runtime.Release (Table_Value);
    exception
@@ -947,6 +1027,8 @@ package body Flyology.DB.LSM_Format_Tests is
          Runtime.Release (Manifest_Read);
          Runtime.Release (Manifest_Value);
          Runtime.Release (Table_Image);
+         Runtime.Release (Table_Frame);
+         Runtime.Release (Table_Index);
          Runtime.Release (Table_Read);
          Runtime.Release (Table_Value);
          raise;
@@ -980,6 +1062,27 @@ package body Flyology.DB.LSM_Format_Tests is
       Swapped_Frame_Extent : constant :=
         Runtime.SST_V2_Frame_Header_Length + 1 + Runtime.SST_V2_Frame_Trailer_Length;
       Third_Frame_Offset : constant := Second_Frame_Offset + Swapped_Frame_Extent;
+      Index_Golden         :
+        constant Formats.Byte_Array (0 .. Index_Bytes - 1) :=
+          SST_V2_Golden (Index_Offset .. Index_Offset + Index_Bytes - 1);
+      First_Frame_Golden   :
+        constant Formats.Byte_Array (0 .. First_Frame_Extent - 1) :=
+          SST_V2_Golden
+            (Runtime.SST_V2_Header_Length
+             .. Runtime.SST_V2_Header_Length + First_Frame_Extent - 1);
+      Second_Frame_Golden  :
+        constant Formats.Byte_Array (0 .. Swapped_Frame_Extent - 1) :=
+          SST_V2_Golden
+            (Second_Frame_Offset
+             .. Second_Frame_Offset + Swapped_Frame_Extent - 1);
+      Third_Frame_Golden   :
+        constant Formats.Byte_Array (0 .. Swapped_Frame_Extent - 1) :=
+          SST_V2_Golden
+            (Third_Frame_Offset
+             .. Third_Frame_Offset + Swapped_Frame_Extent - 1);
+      Admission            : Runtime.SST_Header_Admission;
+      Index_Value          : Runtime.SST_V2_Index_Access;
+      Decode_Status        : Runtime.Decode_Status;
 
       procedure Expect
         (Image    : Formats.Byte_Array;
@@ -1000,7 +1103,63 @@ package body Flyology.DB.LSM_Format_Tests is
          end if;
          Runtime.Release (Decoded);
       end Expect;
+
+      procedure Expect_Index
+        (Image    : Formats.Byte_Array;
+         Expected : Runtime.Decode_Status;
+         Context  : String)
+      is
+         Decoded : Runtime.SST_V2_Index_Access;
+         Actual  : Runtime.Decode_Status;
+      begin
+         Runtime.Decode_SST_V2_Index
+           (Image, Admission, ID (1), 1, Descriptor, 8, 8, Decoded, Actual);
+         if Actual /= Expected then
+            Runtime.Release (Decoded);
+            raise Program_Error
+              with Context & ": " & Runtime.Decode_Status'Image (Actual);
+         elsif Actual /= Runtime.Decoded and then Decoded /= null then
+            Runtime.Release (Decoded);
+            raise Program_Error with Context & ": partial SST-v2 index output";
+         end if;
+         Runtime.Release (Decoded);
+      end Expect_Index;
+
+      procedure Expect_Frame
+        (Image    : Formats.Byte_Array;
+         Position : Positive;
+         Expected : Runtime.Decode_Status;
+         Context  : String)
+      is
+         Decoded : Runtime.SST_V2_Frame_Access;
+         Actual  : Runtime.Decode_Status;
+      begin
+         Runtime.Decode_SST_V2_Frame
+           (Image, Index_Value.all, Position, Decoded, Actual);
+         if Actual /= Expected then
+            Runtime.Release (Decoded);
+            raise Program_Error
+              with Context & ": " & Runtime.Decode_Status'Image (Actual);
+         elsif Actual /= Runtime.Decoded and then Decoded /= null then
+            Runtime.Release (Decoded);
+            raise Program_Error with Context & ": partial SST-v2 frame output";
+         end if;
+         Runtime.Release (Decoded);
+      end Expect_Frame;
    begin
+      Runtime.Inspect_SST_V2_Header
+        (SST_V2_Golden (0 .. Runtime.SST_V2_Header_Length - 1),
+         ID (1),
+         1,
+         Descriptor,
+         SST_V2_Golden'Length,
+         Admission,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded then
+         raise Program_Error
+           with "SST-v2 rejection fixture header did not authenticate";
+      end if;
+
       for Size in Natural range 0 .. SST_V2_Length - 1 loop
          declare
             Short : Formats.Byte_Array (1 .. Size);
@@ -1119,6 +1278,260 @@ package body Flyology.DB.LSM_Format_Tests is
             raise Program_Error with "SST-v2 value limit was not enforced before allocation";
          end if;
       end;
+
+      for Size in Natural range 0 .. Index_Bytes - 1 loop
+         declare
+            Short : Formats.Byte_Array (1 .. Size);
+         begin
+            if Size > 0 then
+               Short := Index_Golden (0 .. Size - 1);
+            end if;
+            Expect_Index
+              (Short,
+               Runtime.Invalid_Length,
+               "truncated SST-v2 index accepted");
+         end;
+      end loop;
+      declare
+         Long : Formats.Byte_Array (0 .. Index_Bytes) := [others => 0];
+      begin
+         Long (0 .. Index_Bytes - 1) := Index_Golden;
+         Expect_Index
+           (Long,
+            Runtime.Invalid_Length,
+            "SST-v2 index trailing byte accepted");
+      end;
+      declare
+         Index_Corrupt : Formats.Byte_Array (Index_Golden'Range) :=
+           Index_Golden;
+      begin
+         Index_Corrupt (Index_Corrupt'Last) :=
+           Index_Corrupt (Index_Corrupt'Last) xor 1;
+         Expect_Index
+           (Index_Corrupt,
+            Runtime.Index_Checksum_Failed,
+            "SST-v2 slice index checksum");
+
+         Index_Corrupt := Index_Golden;
+         Put_U64 (Index_Corrupt, 0, Runtime.SST_V2_Header_Length + 1);
+         Repair_Object_Checksum (Index_Corrupt);
+         Expect_Index
+           (Index_Corrupt,
+            Runtime.Invalid_Entry,
+            "SST-v2 slice frame offset binding");
+
+         Index_Corrupt := Index_Golden;
+         --  The second one-byte key follows the first 36+1-byte record.
+         Index_Corrupt
+           (Runtime.SST_V2_Index_Entry_Header_Length
+            + 1
+            + Runtime.SST_V2_Index_Entry_Header_Length) :=
+           Character'Pos ('0');
+         Repair_Object_Checksum (Index_Corrupt);
+         Expect_Index
+           (Index_Corrupt,
+            Runtime.Invalid_SST_State,
+            "SST-v2 slice index ordering");
+      end;
+      declare
+         Decoded : Runtime.SST_V2_Index_Access;
+         Actual  : Runtime.Decode_Status;
+      begin
+         Runtime.Decode_SST_V2_Index
+           (Index_Golden,
+            Admission,
+            ID (1),
+            1,
+            Descriptor,
+            0,
+            8,
+            Decoded,
+            Actual);
+         if Actual /= Runtime.Limit_Exceeded or else Decoded /= null then
+            Runtime.Release (Decoded);
+            raise Program_Error
+              with "SST-v2 index key limit did not fail before allocation";
+         end if;
+         Runtime.Decode_SST_V2_Index
+           (Index_Golden,
+            Admission,
+            ID (1),
+            1,
+            Descriptor,
+            8,
+            0,
+            Decoded,
+            Actual);
+         if Actual /= Runtime.Limit_Exceeded or else Decoded /= null then
+            Runtime.Release (Decoded);
+            raise Program_Error
+              with "SST-v2 index value limit did not fail before allocation";
+         end if;
+      end;
+
+      Runtime.Decode_SST_V2_Index
+        (Index_Golden,
+         Admission,
+         ID (1),
+         1,
+         Descriptor,
+         8,
+         8,
+         Index_Value,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded or else Index_Value = null then
+         raise Program_Error
+           with "SST-v2 frame rejection index did not authenticate";
+      end if;
+      for Size in Natural range 0 .. First_Frame_Extent - 1 loop
+         declare
+            Short : Formats.Byte_Array (1 .. Size);
+         begin
+            if Size > 0 then
+               Short := First_Frame_Golden (0 .. Size - 1);
+            end if;
+            Expect_Frame
+              (Short,
+               1,
+               Runtime.Invalid_Length,
+               "truncated SST-v2 frame accepted");
+         end;
+      end loop;
+      declare
+         Long : Formats.Byte_Array (0 .. First_Frame_Extent) := [others => 0];
+      begin
+         Long (0 .. First_Frame_Extent - 1) := First_Frame_Golden;
+         Expect_Frame
+           (Long,
+            1,
+            Runtime.Invalid_Length,
+            "SST-v2 frame trailing byte accepted");
+      end;
+      declare
+         Frame_Corrupt : Formats.Byte_Array (First_Frame_Golden'Range) :=
+           First_Frame_Golden;
+      begin
+         Frame_Corrupt (Frame_Corrupt'Last) :=
+           Frame_Corrupt (Frame_Corrupt'Last) xor 1;
+         Expect_Frame
+           (Frame_Corrupt,
+            1,
+            Runtime.Frame_Checksum_Failed,
+            "SST-v2 slice frame checksum");
+
+         Frame_Corrupt := First_Frame_Golden;
+         Put_U64 (Frame_Corrupt, 0, 1);
+         Repair_Object_Checksum (Frame_Corrupt);
+         Expect_Frame
+           (Frame_Corrupt,
+            1,
+            Runtime.Invalid_Entry,
+            "SST-v2 slice frame sequence binding");
+
+         Frame_Corrupt := First_Frame_Golden;
+         Frame_Corrupt (Runtime.SST_V2_Frame_Header_Length) :=
+           Character'Pos ('b');
+         Repair_Object_Checksum (Frame_Corrupt);
+         Expect_Frame
+           (Frame_Corrupt,
+            1,
+            Runtime.Invalid_SST_State,
+            "SST-v2 slice frame key binding");
+      end;
+      Expect_Frame
+        (Third_Frame_Golden,
+         2,
+         Runtime.Invalid_Entry,
+         "SST-v2 slice swapped frame");
+      Expect_Frame
+        (Second_Frame_Golden,
+         2,
+         Runtime.Decoded,
+         "SST-v2 slice exact second frame");
+      Expect_Frame
+        (First_Frame_Golden,
+         4,
+         Runtime.Invalid_SST_State,
+         "SST-v2 frame position bound");
+
+      declare
+         Bad_Index : Runtime.SST_V2_Index (1, 0);
+         Decoded   : Runtime.SST_V2_Frame_Access;
+         Actual    : Runtime.Decode_Status;
+      begin
+         Bad_Index.Database_ID := ID (1);
+         Bad_Index.Run_ID := ID (9);
+         Bad_Index.Family_ID := 1;
+         Bad_Index.Lowest_Sequence := 1;
+         Bad_Index.Highest_Sequence := 1;
+         Bad_Index.Frame_Offset := Runtime.SST_V2_Header_Length;
+         Bad_Index.Frame_Byte_Total := Natural'Last;
+         Runtime.Decode_SST_V2_Frame
+           (First_Frame_Golden, Bad_Index, 1, Decoded, Actual);
+         if Actual /= Runtime.Invalid_SST_State or else Decoded /= null then
+            Runtime.Release (Decoded);
+            raise Program_Error
+              with "SST-v2 frame accepted overflowing retained geometry";
+         end if;
+      end;
+
+      declare
+         Wrong_Admission : Runtime.SST_Header_Admission := Admission;
+         Decoded_Index   : Runtime.SST_V2_Index_Access;
+         Actual          : Runtime.Decode_Status;
+      begin
+         Wrong_Admission.Index_Bytes := Wrong_Admission.Index_Bytes + 1;
+         Runtime.Decode_SST_V2_Index
+           (Index_Golden,
+            Wrong_Admission,
+            ID (1),
+            1,
+            Descriptor,
+            8,
+            8,
+            Decoded_Index,
+            Actual);
+         if Actual /= Runtime.Invalid_Length or else Decoded_Index /= null then
+            Runtime.Release (Decoded_Index);
+            raise Program_Error
+              with "SST-v2 index admitted mismatched header geometry";
+         end if;
+      end;
+
+      declare
+         Shifted_Index :
+           constant Formats.Byte_Array (7 .. 7 + Index_Bytes - 1) :=
+             Index_Golden;
+         Shifted_Frame :
+           constant Formats.Byte_Array (9 .. 9 + First_Frame_Extent - 1) :=
+             First_Frame_Golden;
+         Decoded_Index : Runtime.SST_V2_Index_Access;
+      begin
+         Runtime.Decode_SST_V2_Index
+           (Shifted_Index,
+            Admission,
+            ID (1),
+            1,
+            Descriptor,
+            8,
+            8,
+            Decoded_Index,
+            Decode_Status);
+         if Decode_Status /= Runtime.Decoded then
+            raise Program_Error with "SST-v2 shifted index range rejected";
+         end if;
+         Runtime.Release (Decoded_Index);
+         Expect_Frame
+           (Shifted_Frame,
+            1,
+            Runtime.Decoded,
+            "SST-v2 shifted frame range rejected");
+      end;
+      Runtime.Release (Index_Value);
+   exception
+      when others =>
+         Runtime.Release (Index_Value);
+         raise;
    end Test_Runtime_SST_V2_Rejection;
 
    procedure Test_Runtime_Persisted_Limits is

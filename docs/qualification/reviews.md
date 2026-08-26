@@ -1,5 +1,38 @@
 # Review record
 
+## Accepted private SST-v2 slice codec candidate
+
+- Parent: accepted private whole-object SST-v2 codec commit `3b7f459`.
+- Scope and compatibility: add private exact-index and exact-frame decoders over the frozen SST-v2 representation.
+  The active v1 writer, manifest recovery, compaction output, public API, provider calls, retry behavior, task
+  topology, and durable bytes remain unchanged. This unit does not claim that a slice came from one provider
+  generation and does not activate v2 persistence.
+- Authentication and authority: the index decoder requires the exact header-admitted extent, authenticates its CRC
+  before reading any record, then validates canonical key/sequence ordering, persisted per-family key/value limits,
+  exact contiguous frame coverage, sequence endpoints, and logical totals. One exact allocation retains descriptor,
+  frame-region, entry, and key authority. The frame decoder requires one retained entry's exact extent, authenticates
+  the frame CRC, and binds sequence, operation, flags, lengths, and every key byte before allocating the exact
+  key/value payload. Provider generation remains the caller-driven operation's responsibility.
+- Failure atomicity and ownership: both decoders publish a value only after complete authentication and structural
+  validation. Every truncation, trailing byte, CRC failure, repaired-checksum mismatch, swapped frame, hostile
+  retained-index geometry, persisted-limit failure, and allocation failure returns a typed rejection with no partial
+  owner. Explicit `Release` procedures are the sole owners' cleanup path.
+- Findings cycle: the arithmetic review found one P1 fail-closed defect in retained-index validation: final frame and
+  one-based key cursor additions could overflow on a hostile private value before returning `Invalid_SST_State`.
+  Aggregate extents are now rejected before those additions, and a direct hostile-geometry oracle verifies the typed
+  result. A proposed per-entry U32 guard was removed after the warning-strict compiler proved it unreachable: this
+  target's `Natural` is already a subset of the frozen U32 field width, enforced by the package's compile-time check.
+  Repeated format, authentication order, lower-bound, checked-arithmetic, allocation, ownership, compatibility,
+  constants-authority, proof-boundary, and unnecessary-surface review finds no remaining actionable P0/P1/P2
+  finding.
+- Verification: root and nested builds, the focused parity/corruption executable, repository integrity, the limited
+  end-to-end profile, client-backed create/commit/Flush/compaction/refresh/reopen path, files crash/recovery, and the
+  full maintained deterministic suite pass against Object Storage
+  `99706cceaef0add2578f3665e48af37cd52bafdc`. The warning-strict GNATprove gate preserves 1,097/1,097 selected checks,
+  and the post-run host audit is clean. Project-aware GNATformat loads the complete locked dependency graph, but its
+  focused diff mode proposes broad legacy-file formatting churn; that mechanical rewrite was removed. All changed
+  handwritten Ada lines are at most 110 columns, and repository and diff checks pass.
+
 ## Accepted private SST-v2 whole-object codec candidate
 
 - Parent: accepted generation-bound lazy SST read formal/design commit `508000a`.

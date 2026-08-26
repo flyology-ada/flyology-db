@@ -196,6 +196,75 @@ private package Flyology.DB.LSM_Runtime_Formats is
       Admission           : out SST_Header_Admission;
       Status              : out Decode_Status);
 
+   type SST_V2_Index_Entry is record
+      Frame_Offset     : Natural := 0;
+      Frame_Byte_Total : Natural := 0;
+      Sequence         : Interfaces.Unsigned_64 := 0;
+      Operation        : Formats.Byte := 0;
+      Key_Offset       : Natural := 0;
+      Key_Byte_Total   : Natural := 0;
+      Value_Byte_Total : Natural := 0;
+   end record;
+
+   type SST_V2_Index_Entry_Array is
+     array (Positive range <>) of SST_V2_Index_Entry;
+
+   --  An authenticated index retains exact descriptor and frame-region
+   --  authority plus only the canonical index keys. Its discriminants derive
+   --  from the admitted header and authenticated index bytes, not a cache cap.
+   type SST_V2_Index (Entry_Total, Key_Byte_Total : Natural) is record
+      Database_ID           : Head_Policy.Identifier :=
+        Head_Policy.Zero_Identifier;
+      Run_ID                : Head_Policy.Identifier :=
+        Head_Policy.Zero_Identifier;
+      Family_ID             : Interfaces.Unsigned_32 := 0;
+      Lowest_Sequence       : Interfaces.Unsigned_64 := 0;
+      Highest_Sequence      : Interfaces.Unsigned_64 := 0;
+      Logical_Payload_Bytes : Interfaces.Unsigned_64 := 0;
+      Frame_Offset          : Natural := 0;
+      Frame_Byte_Total      : Natural := 0;
+      Entries               : SST_V2_Index_Entry_Array (1 .. Entry_Total);
+      Keys                  : Formats.Byte_Array (1 .. Key_Byte_Total);
+   end record;
+
+   type SST_V2_Index_Access is access all SST_V2_Index;
+
+   --  Authenticate one exact index range before parsing records, then retain
+   --  one exact dynamic index. Persisted family limits are caller authority.
+   procedure Decode_SST_V2_Index
+     (Image               : Formats.Byte_Array;
+      Admission           : SST_Header_Admission;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Maximum_Key_Bytes   : Interfaces.Unsigned_64;
+      Maximum_Value_Bytes : Interfaces.Unsigned_64;
+      Value               : out SST_V2_Index_Access;
+      Status              : out Decode_Status);
+
+   procedure Release (Value : in out SST_V2_Index_Access);
+
+   type SST_V2_Frame (Payload_Byte_Total : Natural) is record
+      Sequence         : Interfaces.Unsigned_64 := 0;
+      Operation        : Formats.Byte := 0;
+      Key_Byte_Total   : Natural := 0;
+      Value_Byte_Total : Natural := 0;
+      Payload          : Formats.Byte_Array (1 .. Payload_Byte_Total);
+   end record;
+
+   type SST_V2_Frame_Access is access all SST_V2_Frame;
+
+   --  Authenticate one exact frame range and bind every duplicated field and
+   --  key byte to an already authenticated index entry before allocation.
+   procedure Decode_SST_V2_Frame
+     (Image    : Formats.Byte_Array;
+      Index    : SST_V2_Index;
+      Position : Positive;
+      Value    : out SST_V2_Frame_Access;
+      Status   : out Decode_Status);
+
+   procedure Release (Value : in out SST_V2_Frame_Access);
+
    type SST_Entry is record
       Sequence         : Interfaces.Unsigned_64 := 0;
       Operation        : Formats.Byte := 0;

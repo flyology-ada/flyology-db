@@ -119,8 +119,9 @@ active whole-object integrity format. The additive private SST-v2 whole-object c
 authenticates a trailing key/offset index, and freezes exact v2 bytes through an independent golden and corruption
 corpus. TLC exhausts the replacement, allocation, stale-generation, and corruption boundaries; two unsafe probes fail
 and TLAPS proves the arbitrary-generation/key/value action kernel. No v2 writer/recovery activation, public read
-operation, cache, prefetch, automatic retry, or block-size policy exists yet. Header/index/frame slice decoders and an
-explicit caller-driven generation-bound storage-I/O operation are the next Milestone 4 units. See
+operation, cache, prefetch, automatic retry, or block-size policy exists yet. Private header/index/frame slice
+decoders are now operational; an explicit caller-driven generation-bound storage-I/O operation is the next Milestone
+4 unit. See
 [`lazy-sst-reads.md`](lazy-sst-reads.md).
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot

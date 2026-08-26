@@ -45,6 +45,13 @@ The exact wire offsets, widths, version/magic bytes, and golden image are now fr
 and documented adjacent to their declarations and in `persisted-formats.md`. This does not activate v2 durable writes
 or expose a range-read operation; those remain separate compatibility and execution changes.
 
+The private range-local codec now also consumes the exact index and frame slices described below. Index decoding
+authenticates the complete index CRC before parsing any record, validates canonical contiguous frame geometry and key
+ordering, and retains exact descriptor/key authority in one lazily allocated value. Frame decoding accepts one exact
+index-selected extent, authenticates its CRC, and binds sequence, operation, lengths, and every key byte before
+allocating output. These routines perform no Object Storage call and therefore do not themselves establish that the
+slices came from one provider generation; that authority belongs to the caller-driven protocol operation.
+
 ## Range-read protocol
 
 1. Use `Head_Object` to observe the exact object extent and opaque provider generation without retaining a body.
@@ -80,5 +87,6 @@ not prove CRC arithmetic, byte offsets, range arithmetic, the Ada codec, provide
 or refinement. The private whole-object codec now covers independent v1/v2 goldens, v1 compatibility, every v2
 object truncation, exact extent checks, whole/index/frame CRCs, repaired-checksum index/frame binding, intact-frame
 substitution, shifted lower bounds, trailing bytes, persisted key/value limits, common-envelope identity/kind/flags
-rejection, and hostile U64 extent overflow. Activation additionally requires wrong-generation provider results,
-mixed-version manifests, generation-bound range execution, complete local loss, and all maintained providers.
+rejection, hostile U64 extent overflow, and standalone index/frame truncation, CRC, geometry, ordering, binding, and
+shifted-bound cases. Activation additionally requires wrong-generation provider results, mixed-version manifests,
+generation-bound range execution, complete local loss, and all maintained providers.
