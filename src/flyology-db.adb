@@ -4,6 +4,7 @@ with Ada.Streams;
 with Ada.Unchecked_Deallocation;
 with Flyology.Operations.Drivers;
 with Flyology.DB.Batch_Formats;
+with Flyology.DB.Checkpoint_Policy;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
 with Flyology.DB.LSM_Runtime_Formats;
@@ -20,6 +21,7 @@ package body Flyology.DB is
    package Client_Low_Level renames Flyology.Object_Storage.Client.Low_Level;
    package Client_Objects renames Flyology.Object_Storage.Client.Objects;
    package Batches renames Flyology.DB.Batch_Formats;
+   package Checkpoints renames Flyology.DB.Checkpoint_Policy;
    package Heads renames Flyology.DB.Head_Policy;
    package LSM_Runtime renames Flyology.DB.LSM_Runtime_Formats;
    package Manifests renames Flyology.DB.Manifest_Formats;
@@ -15423,6 +15425,155 @@ package body Flyology.DB is
    begin
       Value := Item.Life.Highest (Result);
    end Highest_Visible;
+
+   procedure Required_L0_Checkpoint_Action
+     (Item   : in out Database;
+      Action : out L0_Checkpoint_Action;
+      Result : out Outcome_Code)
+   is
+      State          : Engine_State_Access;
+      Guard          : Checkpoint_Guard;
+      Head           : Head_Snapshot;
+      Generation     : Generation_Value;
+      Uncertain      : Boolean;
+      Fenced         : Boolean;
+      Family_Total   : Natural := 0;
+      Found_Gap      : Boolean := False;
+   begin
+      Action := No_L0_Checkpoint_Work;
+      Item.Life.Begin_Checkpoint (State, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Guard.Life := Item.Life'Unchecked_Access;
+      Guard.Active := True;
+      Item.Life.Await_Quiescent;
+
+      if not State.LSM_Authority.Enabled then
+         Result := Unsupported_Format;
+      elsif State.LSM_Authority.Maximum_Point_Reads_Per_Transaction = 0
+        or else State.LSM_Authority.Maximum_Scan_Ranges_Per_Transaction = 0
+      then
+         Result := Unsupported_Format;
+      else
+         State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+         if Uncertain then
+            Result := Outcome_Unknown;
+         elsif Fenced then
+            Result := Stale_Writer;
+         elsif State.LSM_Authority.Replay_Boundary > Interfaces.Unsigned_64 (Head.Highest) then
+            Result := Corrupt;
+         else
+            Result := Success;
+         end if;
+      end if;
+
+      if Result = Success then
+         for Index in State.LSM_Authority.Families'Range loop
+            if State.LSM_Authority.Families (Index).ID = 0 then
+               Found_Gap := True;
+            elsif Found_Gap or else Family_Total = Maximum_Initial_Column_Families then
+               Result := Corrupt;
+               exit;
+            else
+               Family_Total := Family_Total + 1;
+            end if;
+         end loop;
+      end if;
+
+      if Result = Success and then Family_Total = 0 then
+         Result := Corrupt;
+      elsif Result = Success then
+         --  Scratch state is allocated lazily at the exact persisted family
+         --  count. Allocation failure is classified below before any
+         --  publication identity or storage effect exists.
+         declare
+            Entry_Total    : Natural;
+            Payload_Bytes  : Natural;
+            Family_Position : Natural := 0;
+            Current_Runs   : Checkpoints.Run_Count_Array (1 .. Family_Total) := [others => 0];
+            Maximum_Runs   : Checkpoints.Run_Count_Array (1 .. Family_Total) := [others => 0];
+            Changed        : Checkpoints.Family_Flag_Array (1 .. Family_Total) := [others => False];
+            Nonempty       : Checkpoints.Family_Flag_Array (1 .. Family_Total) := [others => False];
+            Selection      : Checkpoints.Selection;
+         begin
+            for Index in State.LSM_Authority.Families'Range loop
+               if State.LSM_Authority.Families (Index).ID /= 0 then
+                  Family_Position := Family_Position + 1;
+                  declare
+                     Family : Family_LSM_Authority renames State.LSM_Authority.Families (Index);
+                  begin
+                     Current_Runs (Family_Position) := Interfaces.Unsigned_32 (Family.State.Run_Total);
+                     Maximum_Runs (Family_Position) := Family.State.Maximum_L0_Runs;
+
+                     State.Gate.Family_Snapshot_Requirements
+                       (Column_Family_ID (Family.ID), Entry_Total, Payload_Bytes, Result);
+                     if Result = Success then
+                        Nonempty (Family_Position) := True;
+                     elsif Result = Not_Found then
+                        Result := Success;
+                     else
+                        exit;
+                     end if;
+
+                     if State.LSM_Authority.Replay_Boundary = 0 then
+                        Changed (Family_Position) := Nonempty (Family_Position);
+                     else
+                        State.Gate.Family_Delta_Snapshot
+                          (Column_Family_ID (Family.ID), null, Entry_Total, Payload_Bytes, Result);
+                        if Result = Success then
+                           Changed (Family_Position) := True;
+                        elsif Result = Not_Found then
+                           Result := Success;
+                        else
+                           exit;
+                        end if;
+                     end if;
+                  end;
+               end if;
+            end loop;
+
+            if Result = Success then
+               Selection :=
+                 Checkpoints.Decide
+                   (Current_Runs,
+                    Maximum_Runs,
+                    Changed,
+                    Nonempty,
+                    Interfaces.Unsigned_64 (Head.Highest) > State.LSM_Authority.Replay_Boundary,
+                    State.LSM_Authority.Maximum_Total_L0_Runs);
+               case Selection is
+                  when Checkpoints.Invalid_Authority =>
+                     Result := Corrupt;
+                  when Checkpoints.No_Work =>
+                     Action := No_L0_Checkpoint_Work;
+                  when Checkpoints.Additive_Flush =>
+                     Action := Additive_Flush_Required;
+                  when Checkpoints.Complete_Compaction =>
+                     Action := Complete_Compaction_Required;
+                  when Checkpoints.No_Admissible_Checkpoint =>
+                     Result := Capacity_Exceeded;
+               end case;
+            end if;
+         end;
+      end if;
+
+      Item.Life.Finish_Checkpoint;
+      Guard.Active := False;
+   exception
+      when Storage_Error =>
+         if Guard.Active then
+            Item.Life.Finish_Checkpoint;
+            Guard.Active := False;
+         end if;
+         Result := Capacity_Exceeded;
+      when others =>
+         if Guard.Active then
+            Item.Life.Finish_Checkpoint;
+            Guard.Active := False;
+         end if;
+         raise;
+   end Required_L0_Checkpoint_Action;
 
    procedure Set_Test_Paused (Item : in out Database; Value : Boolean; Result : out Outcome_Code) is
       Lease : Lifecycle_Lease;

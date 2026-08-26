@@ -124,6 +124,15 @@ recovery path; `validate_successive_checkpoint_witness.py` checks its exact acti
 cycles. It proves ordering, exact checkpoint/suffix partitioning, exact recovery, and local-cache disposability. It
 does not prove format bytes, manifest-depth arithmetic, provider behavior, capacities, or refinement to Ada.
 
+`L0CheckpointSelection.tla` freezes the policy-neutral observation that maps persisted per-family and database-wide
+L0 run ceilings to no work, additive flush, complete compaction, or no admissible action. The two-family,
+zero-to-two-run, one-to-three-slot geometry is finite qualification coverage rather than a product limit. Observation
+does not reserve an object identity, mutate checkpoint authority, or schedule work. The separately validated witness
+requires the case where each changed family can accept another run but their combined additions exceed the remaining
+database-wide slots, so complete compaction is selected. `L0CheckpointSelectionSafetyProof.tla` proves the four
+decision branches directly; it does not establish liveness, operational Ada refinement, or atomicity between this
+observation and a later caller-selected Flush or Compact.
+
 `L0Accumulation.tla` freezes the next additive algorithm without claiming that its Ada implementation has landed.
 The first run contains one value; the later delta run contains a tombstone for that key and a Put for a second key.
 The successor manifest retains the first descriptor and appends the second under independent persisted family/global
@@ -380,7 +389,9 @@ strict TLAPS obligations. The first-checkpoint lane adds 819 distinct states at 
 validated witnesses, four required integrated negative probes, full normal-action coverage, and 43 of 43 strict
 TLAPS obligations. The successive-checkpoint lane adds 37 distinct states at depth 17, one validated lost-response
 recovery witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS
-obligations. The additive-L0 lane adds 49 distinct states at depth 17, one validated tombstone/lost-response recovery
+obligations. The L0 checkpoint-selection lane adds 2,240 distinct states at depth 2, nonzero coverage of all four
+decisions, one validated complete-compaction witness, and 4 of 4 strict TLAPS obligations. The additive-L0 lane adds
+49 distinct states at depth 17, one validated tombstone/lost-response recovery
 witness, one required early-HEAD negative probe, full semantic-action coverage, and 24 of 24 strict TLAPS obligations.
 The L0-compaction lane adds 35 distinct states at depth 10, validated ordinary and canonical-empty lost-response
 recovery witnesses, one required early-HEAD negative probe, full semantic-action coverage, and 26 of 26 strict TLAPS

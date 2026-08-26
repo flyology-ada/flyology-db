@@ -231,6 +231,16 @@ files, capacity, certainty, tombstone, unchanged-old-run, cacheless-reopen, cras
 those boundaries. The additive 49-state TLC and 24/24 TLAPS campaign remains the abstract publication proof; no
 refinement theorem to the operational Ada implementation is claimed.
 
+The public L0 checkpoint-action query advances the warning-strict selected-unit result to 1,097/1,097 checks:
+94 initialization, 531 run-time, 91 assertion, 306 functional-contract, and 75 termination checks. Flow analysis
+discharges 168 and provers discharge 929, with maximum successful effort 6,890 steps. Every selected unit reports
+zero warnings, unproved or justified checks, and zero `pragma Assume`; the new pure selector contributes five proved
+checks. Coherent lifecycle acquisition, protected snapshots, dynamic allocation, and routing from the selector into
+the public observation remain executable boundaries. Deterministic memory/files tests and the authenticated
+18-lane provider matrix cover fresh, additive, per-family/global complete-compaction, failed-additive, and
+no-admissible cases. The separate 2,240-state TLC and 4/4 TLAPS lane qualifies the abstract decision, but no
+refinement theorem or atomic observation-to-maintenance guarantee is claimed.
+
 The public complete-view compaction candidate preserves the exact warning-strict 1,091/1,091 selected-unit result:
 167 checks by flow analysis and 924 by provers, with zero warnings, unproved/justified checks, or `pragma Assume`.
 The production mode selection, owner-stack driver, dynamic planning, provider calls, and exact token restoration
@@ -366,6 +376,13 @@ remain executable boundaries rather than newly selected proof units.
   checkpoint authority, recovery, and disposable local state. Concrete codecs, sorting, allocation, provider
   behavior, progress, garbage collection, multi-run levels, compaction, and refinement to Ada remain outside this
   proof.
+- The L0 checkpoint-selection model exhausts 2,240 distinct states at depth 2 with nonzero coverage of no work,
+  additive flush, complete compaction, and no admissible action. It checks the exact persisted per-family and
+  database-wide run-ceiling decision without mutating authority or reserving identity. A validated two-state witness
+  requires complete compaction when both changed families individually have room but their additions exceed the
+  remaining aggregate slots. Its focused kernel proves all four decision branches in 4/4 strict TLAPS obligations.
+  The finite two-family and zero-to-two-run geometry is qualification coverage, not a product default. Scheduling,
+  progress, the race between an observation and a later call, and refinement to Ada remain outside this proof.
 - The additive-L0 model exhausts 49 distinct states at depth 17 with nonzero semantic-action coverage. It checks
   independent persisted family/global run backpressure before effects, preservation and append of the first run,
   explicit newer tombstone masking, a second-key Put, accepted-but-lost HEAD response, read-only resolution, crash,

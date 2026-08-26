@@ -110,6 +110,7 @@ procedure Flyology.DB.Client_Probe is
    Family_Info            : Column_Family_Receipt;
    Commit_Info            : Commit_Receipt;
    Flush_Info             : Flush_Receipt;
+   Action                 : L0_Checkpoint_Action;
    Data                   : Flyology.Bytes.Unbounded_Bytes;
    Result                 : Outcome_Code;
    Close_Result           : Outcome_Code;
@@ -318,6 +319,11 @@ begin
       Receipt => Receipt,
       Result  => Result);
    Expect (Result, Success, "client-backed create failed");
+   Required_L0_Checkpoint_Action (Created, Action, Result);
+   Expect (Result, Success, "client-backed initial checkpoint query failed");
+   if Action /= No_L0_Checkpoint_Work then
+      raise Program_Error with "client-backed fresh database reported checkpoint work";
+   end if;
 
    Begin_Transaction (Created, Transaction_ID, Txn, Result);
    Expect (Result, Success, "client-backed transaction begin failed");
@@ -327,6 +333,11 @@ begin
    Expect (Result, Success, "client-backed put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "client-backed commit failed");
+   Required_L0_Checkpoint_Action (Created, Action, Result);
+   Expect (Result, Success, "client-backed dirty checkpoint query failed");
+   if Action /= Additive_Flush_Required then
+      raise Program_Error with "client-backed initial commit did not require additive Flush";
+   end if;
 
    --  Completion-slot rejection is required to precede token movement. The
    --  timer occupies the sole test slot; the three marker bytes and stable tag
@@ -549,6 +560,11 @@ begin
       Receipt => Flush_Info,
       Result  => Result);
    Expect (Result, Success, "client-backed synchronous Flush failed");
+   Required_L0_Checkpoint_Action (Created, Action, Result);
+   Expect (Result, Success, "client-backed clean checkpoint query failed");
+   if Action /= No_L0_Checkpoint_Work then
+      raise Program_Error with "client-backed successful Flush left checkpoint work";
+   end if;
    if Flyology.Buffers.Has_Buffer (Flush_Buffer)
      or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
      or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
@@ -734,6 +750,11 @@ begin
    Expect (Result, Success, "appended-family remote put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "later client-backed commit failed");
+   Required_L0_Checkpoint_Action (Created, Action, Result);
+   Expect (Result, Success, "later client-backed checkpoint query failed");
+   if Action /= Additive_Flush_Required then
+      raise Program_Error with "later client-backed commit did not require additive Flush";
+   end if;
    Flush
      (Created,
       Later_Runs,
@@ -750,6 +771,11 @@ begin
    Expect (Result, Success, "third client-backed put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "third client-backed commit failed");
+   Required_L0_Checkpoint_Action (Created, Action, Result);
+   Expect (Result, Success, "third client-backed checkpoint query failed");
+   if Action /= Additive_Flush_Required then
+      raise Program_Error with "third client-backed commit did not require additive Flush";
+   end if;
    Flush
      (Created,
       Third_Runs,

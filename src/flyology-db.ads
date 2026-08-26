@@ -147,6 +147,17 @@ package Flyology.DB is
    type Commit_Receipt is private;
    --  Self-contained checkpoint publication and reconciliation state.
    type Flush_Receipt is private;
+   --  Runtime-only maintenance choice derived from persisted L0 limits and an
+   --  exact current writer view. Enumeration positions are never persisted or
+   --  placed on the wire.
+   --  @enum No_L0_Checkpoint_Work No committed suffix requires a checkpoint
+   --  @enum Additive_Flush_Required Current runs admit one delta run per changed family
+   --  @enum Complete_Compaction_Required Additive growth is full but a complete
+   --  run per nonempty family fits
+   type L0_Checkpoint_Action is
+     (No_L0_Checkpoint_Work,
+      Additive_Flush_Required,
+      Complete_Compaction_Required);
    --  Caller-composable checkpoint and family-registry publication. The discriminants are
    --  retained borrows: Set, Item, Storage, HTTP, Payload_Pool, and
    --  Cancellation must outlive terminal Finish or scope-abandonment drain.
@@ -886,6 +897,22 @@ package Flyology.DB is
 
    --  Return the highest sequence confirmed visible while Item is safely open.
    procedure Highest_Visible (Item : in out Database; Value : out Sequence_Number; Result : out Outcome_Code);
+
+   --  Inspect the exact quiescent writer view and report the next L0 action
+   --  implied solely by persisted per-family and database-wide run ceilings.
+   --  The call serializes with commit/checkpoint lifecycle work but performs no
+   --  storage I/O, reserves no publication identity, and starts no background
+   --  task. A later commit can change the answer; Flush and Compact therefore
+   --  revalidate every bound and publication precondition. On Capacity_Exceeded
+   --  neither additive Flush nor complete compaction can fit; Action is only
+   --  meaningful when Result is Success.
+   --  @param Item Open writer database whose current L0 requirement is inspected
+   --  @param Action Exact current action selected from persisted run authorities
+   --  @param Result Success or a definite local state/capacity classification
+   procedure Required_L0_Checkpoint_Action
+     (Item   : in out Database;
+      Action : out L0_Checkpoint_Action;
+      Result : out Outcome_Code);
 
 private
 

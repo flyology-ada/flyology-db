@@ -42,6 +42,10 @@ output, manifest, and transition identities. They retain every version and tombs
 any later committed suffix, and use the same operation, receipt, certainty, and reconciliation machinery. Three is
 the qualified algorithm shape, not a fanout or maintenance default. Run selection, pruning, and broader family
 evolution remain separate review units.
+Public `Required_L0_Checkpoint_Action` now inspects one quiescent writer view and projects the persisted per-family
+and database-wide L0 run ceilings into no work, additive Flush, or complete compaction. It performs no storage I/O,
+reserves no identity, and schedules no work; callers still provide every immutable and transition identity, and the
+chosen publication operation revalidates the observation.
 The LSM read-equivalence lane independently checks that a complete live-state replacement emits one Put for each
 live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
 later delta containing Puts, Deletes, or untouched keys. This closes concrete replacement-read semantics without

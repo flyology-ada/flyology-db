@@ -2957,13 +2957,22 @@ package body Flyology.DB.Engine_Tests is
    end Test_Checkpoint_Recovery_Failures;
 
    procedure Test_L0_Accumulation_Capacity (Backend : not null access Backends.Backend'Class) is
-      --  The two disjoint 100-ID domains isolate the persisted per-family and
-      --  aggregate L0 ceilings. +1 is the root transition, +2/+3 are the two
+      --  The three disjoint 100-ID domains isolate the persisted per-family,
+      --  aggregate, and no-admissible L0 decisions. The established offsets
+      --  below retain their exact fixture roles in each domain.
+      --  transactions, +10/+11 and +20/+21 are first/second run identities,
+      --  and +30/+31 and +40/+41 are manifest/HEAD identities. These are
+      --  deterministic test namespace choices, not database defaults.
+      --  +1 is the root transition, +2/+3 are the two transactions, +10/+11
+      --  and +20/+21 are first/second run identities, and +30/+31 and +40/+41
+      --  are manifest/HEAD identities. These are deterministic test namespace
+      --  choices, not database defaults.
       --  transactions, +10/+11 and +20/+21 are first/second run identities,
       --  and +30/+31 and +40/+41 are manifest/HEAD identities. These are
       --  deterministic test namespace choices, not database defaults.
       Family_Limit_Base : constant Natural := 25_100;
       Global_Limit_Base : constant Natural := 25_200;
+      Impossible_Base   : constant Natural := 25_300;
       Family_Limits     : constant Database_Limits :=
         (Default_Limits with delta
            Maximum_Column_Families => 1,
@@ -2984,6 +2993,53 @@ package body Flyology.DB.Engine_Tests is
         [Configure_Column_Family (1, [Byte (Character'Pos ('p'))], 8, 8, 16, 1, 2),
          Configure_Column_Family (2, [Byte (Character'Pos ('q'))], 8, 8, 16, 1, 2)];
 
+      procedure Run_Impossible_Case is
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Txn         : Transaction;
+         Create_Info : Create_Receipt;
+         Commit_Info : Commit_Receipt;
+         Result      : Outcome_Code;
+         Action      : L0_Checkpoint_Action;
+         --  Two nonempty families cannot be represented by the persisted
+         --  database-wide one-run ceiling even after complete replacement.
+         --  This deliberately inconsistent workload/limit fixture proves a
+         --  definite capacity result; it is not a recommended configuration.
+         Limits : constant Database_Limits :=
+           (Default_Limits with delta
+              Maximum_Column_Families => 2,
+              Maximum_Total_L0_Runs => 1);
+         Families : constant Column_Family_Configuration_Array :=
+           [Configure_Column_Family (1, [Byte (Character'Pos ('r'))], 8, 8, 16, 1, 2),
+            Configure_Column_Family (2, [Byte (Character'Pos ('s'))], 8, 8, 16, 1, 2)];
+      begin
+         Bind_Context (Context, Backend, "l0-no-admissible-checkpoint");
+         Create
+           (Item,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Impossible_Base)),
+            Manifest_ID_For (Numbered_ID (Impossible_Base + 1)),
+            Numbered_ID (Impossible_Base + 1),
+            Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "no-admissible-checkpoint create failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Impossible_Base + 2), Txn, Result);
+         Expect (Result, Success, "no-admissible-checkpoint begin failed");
+         Put (Item, Txn, 1, To_Key ([1]), To_Value ([1]), Result);
+         Expect (Result, Success, "no-admissible-checkpoint first Put failed");
+         Put (Item, Txn, 2, To_Key ([2]), To_Value ([2]), Result);
+         Expect (Result, Success, "no-admissible-checkpoint second Put failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "no-admissible-checkpoint commit failed");
+         Required_L0_Checkpoint_Action (Item, Action, Result);
+         Expect (Result, Capacity_Exceeded, "impossible replacement capacity was not reported");
+         Close (Item, Result);
+         Expect (Result, Success, "no-admissible-checkpoint close failed");
+      end Run_Impossible_Case;
+
       procedure Run_Case
         (Prefix        : String;
          Identity_Base : Natural;
@@ -2998,6 +3054,7 @@ package body Flyology.DB.Engine_Tests is
          Create_Info                                                : Create_Receipt;
          Flush_Info                                                 : Flush_Receipt;
          Result                                                     : Outcome_Code;
+         Action                                                     : L0_Checkpoint_Action;
          First_Runs, Second_Runs                                    :
            Checkpoint_Run_Identity_Array (1 .. Families'Length);
          Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
@@ -3016,6 +3073,11 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Create_Info,
             Result  => Result);
          Expect (Result, Success, Context_Text & " create failed");
+         Required_L0_Checkpoint_Action (Item, Action, Result);
+         Expect (Result, Success, Context_Text & " initial checkpoint query failed");
+         if Action /= No_L0_Checkpoint_Work then
+            raise Program_Error with Context_Text & " fresh database reported checkpoint work";
+         end if;
          Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 2), Txn, Result);
          Expect (Result, Success, Context_Text & " first transaction begin failed");
          for Index in Positive range 1 .. Families'Length loop
@@ -3030,6 +3092,11 @@ package body Flyology.DB.Engine_Tests is
          end loop;
          Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
          Expect (Result, Success, Context_Text & " first commit failed");
+         Required_L0_Checkpoint_Action (Item, Action, Result);
+         Expect (Result, Success, Context_Text & " first checkpoint query failed");
+         if Action /= Additive_Flush_Required then
+            raise Program_Error with Context_Text & " initial committed state did not require additive Flush";
+         end if;
          Flush
            (Item,
             First_Runs,
@@ -3039,6 +3106,11 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Flush_Info,
             Result  => Result);
          Expect (Result, Success, Context_Text & " first checkpoint failed");
+         Required_L0_Checkpoint_Action (Item, Action, Result);
+         Expect (Result, Success, Context_Text & " clean checkpoint query failed");
+         if Action /= No_L0_Checkpoint_Work then
+            raise Program_Error with Context_Text & " clean checkpoint reported duplicate work";
+         end if;
          Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 3), Txn, Result);
          Expect (Result, Success, Context_Text & " suffix transaction begin failed");
          for Index in Positive range 1 .. Families'Length loop
@@ -3047,6 +3119,11 @@ package body Flyology.DB.Engine_Tests is
          end loop;
          Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
          Expect (Result, Success, Context_Text & " suffix commit failed");
+         Required_L0_Checkpoint_Action (Item, Action, Result);
+         Expect (Result, Success, Context_Text & " full L0 checkpoint query failed");
+         if Action /= Complete_Compaction_Required then
+            raise Program_Error with Context_Text & " full L0 geometry did not require complete compaction";
+         end if;
          Testing.Publication_Counts
            (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
          Flush
@@ -3058,6 +3135,11 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Flush_Info,
             Result  => Result);
          Expect (Result, Capacity_Exceeded, Context_Text & " admitted an over-capacity L0 successor");
+         Required_L0_Checkpoint_Action (Item, Action, Result);
+         Expect (Result, Success, Context_Text & " post-rejection checkpoint query failed");
+         if Action /= Complete_Compaction_Required then
+            raise Program_Error with Context_Text & " rejected Flush changed the required compaction";
+         end if;
          Testing.Publication_Counts
            (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
          if After_Batches /= Before_Batches
@@ -3083,6 +3165,7 @@ package body Flyology.DB.Engine_Tests is
          Global_Limits,
          Global_Bounded,
          "database-wide L0 capacity");
+      Run_Impossible_Case;
    end Test_L0_Accumulation_Capacity;
 
    procedure Test_Adjacent_L0_Merge

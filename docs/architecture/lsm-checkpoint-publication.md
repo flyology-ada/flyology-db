@@ -183,6 +183,20 @@ The Ada planner, synchronous wait, and composable state machine all use this alg
 exact full live base without rereading storage. Cacheless activation allocates from authenticated run extents, merges
 every run oldest-to-newest, trims scratch to the exact live base, and installs it under the existing lifecycle gate.
 
+`Required_L0_Checkpoint_Action` exposes the first maintenance decision without inventing the identities or scheduler
+needed to execute it. Under the exclusive checkpoint lifecycle gate it compares one coherent committed view with the
+persisted per-family `Maximum_L0_Runs` and database-wide `Maximum_Total_L0_Runs`. It reports no work when the replay
+boundary is current, additive `Flush` when one delta run per changed family fits, and complete `Compact` when additive
+growth is full but one run per nonempty family fits. If neither representation fits, it returns definite
+`Capacity_Exceeded`. The query performs no storage I/O, reserves no identity, and starts no task. Its answer is an
+exact observation rather than a reservation: a later commit can change it, and publication revalidates all limits.
+The caller still supplies every run, manifest, and transition identity to the existing operation.
+
+The selection kernel is isolated in `Flyology.DB.Checkpoint_Policy` for SPARK proof. It uses checked arithmetic and
+distinguishes changed families from complete-view nonempty families, so a tombstone-only suffix can require an
+additive run while complete replacement may correctly emit no run for the now-empty family. The existing TLA+
+accumulation and compaction lanes remain the publication witnesses; no Ada-to-TLA+ refinement theorem is claimed.
+
 `L0Accumulation.tla` checks the concrete two-run tombstone merge, independent persisted capacity rejection, lost
 accepted HEAD response, and exact recovery. `L0AccumulationSafetyProof.tla` proves the arbitrary-set, unbounded-cycle
 publication kernel. The models freeze the algorithm and qualify its abstract publication invariants; no refinement
@@ -400,7 +414,8 @@ Those choices require their own authority, crash tests, provider conformance evi
 
 ## Non-goals
 
-This design does not implement automatic flushing or compaction selection, run pruning, garbage
+This design does not implement automatic flushing, identity generation, background scheduling, or run pruning,
+garbage
 collection, or an LSM performance claim. Its operational scope is manifest-v3 root creation, initial whole-state
 runs, additive suffix-delta runs, public caller-selected complete-view replacement, private caller-selected
 adjacent-run publication, certainty-preserving checkpoint publication/reconciliation, and header-first cacheless

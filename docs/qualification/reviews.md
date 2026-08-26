@@ -1,5 +1,32 @@
 # Review record
 
+## Accepted public L0 checkpoint-action observation candidate
+
+- Parent: public one-shot monotonic replica refresh commit `4ec2816`.
+- API and scope: add `Required_L0_Checkpoint_Action` directly in `Flyology.DB` to observe whether the exact current
+  persisted authority requires no work, additive `Flush`, or complete `Compact`. The call reserves no identity,
+  performs no object-storage I/O, starts no task, and is not a scheduler or reservation; the later caller-selected
+  publication revalidates every bound and precondition.
+- Authority and allocation: the selector distinguishes suffix-changed families from complete-view nonempty families
+  and applies each persisted `Maximum_L0_Runs` plus `Maximum_Total_L0_Runs`. Runtime scratch is allocated lazily at
+  the exact validated persisted family count with checked arithmetic. Invalid authority fails closed as `Corrupt`;
+  a representation that fits neither publication shape returns definite `Capacity_Exceeded`; allocation failure
+  publishes nothing and is safely classified before any provider effect.
+- Concurrency and ownership: the observation uses the established exclusive checkpoint lifecycle, drains active
+  work, snapshots one coherent writer view, and releases the lifecycle on every normal or exceptional path. It
+  retains no caller borrow or storage lease after return. A later commit may change the answer, which is stated in
+  the public contract and prevents callers from treating the observation as conclusive admission.
+- Verification: root/test builds, `./tests/scripts/test.sh`, and the uninterrupted six-provider/three-run matrix are
+  green on Object Storage `179b16c…` and HTTP/QUIC `eb09a80…`. The new finite model exhausts 2,240 states at depth 2
+  with nonzero coverage of all four internal decisions; its complete-compaction witness validates and TLAPS proves
+  4/4 branch obligations. The warning-strict selected SPARK gate proves 1,097/1,097 checks, including all five new
+  selector checks, and the exact post-run host audit is clean. Root/test project-aware GNATformat was applied only to
+  changed ranges/new units; GNATdoc is unavailable in this host toolchain, so no generated-site claim is made.
+- Findings cycle: the first sweep found one P2 fixed-size 64-family scratch allocation and one P2 stale test-authority
+  comment. Exact persisted-family-sized scratch state and corrected adjacent authority wording fix both. The repeated
+  API, concurrency, allocation, certainty, constants, tests, formal-model, documentation, and unnecessary-surface
+  sweep finds no actionable P0/P1/P2 finding.
+
 ## Accepted public one-shot monotonic replica refresh candidate
 
 - Parent: published dependency-chain qualification commit `e38ea25`.

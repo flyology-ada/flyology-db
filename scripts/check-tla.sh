@@ -343,6 +343,48 @@ grep -q 'Invariant WitnessPending is violated.' \
   >"$temporary_root/tlaps-successive-checkpoint.log" 2>&1
 grep -q 'All 24 obligations proved.' "$temporary_root/tlaps-successive-checkpoint.log"
 
+#  Two families and zero-to-two current runs are finite qualification geometry
+#  for the persisted per-family and database-wide limit decision. They are not
+#  product defaults. The model observes authority without reserving identity or
+#  changing the checkpoint state.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-l0-selection-states" \
+  -config L0CheckpointSelection.cfg L0CheckpointSelection \
+  >"$temporary_root/tlc-l0-selection.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-l0-selection.log"
+! grep -q '^Warning:' "$temporary_root/tlc-l0-selection.log"
+grep -q '2240 distinct states found' "$temporary_root/tlc-l0-selection.log"
+grep -q 'The depth of the complete state graph search is 2.' \
+  "$temporary_root/tlc-l0-selection.log"
+for action in ObserveNoWork ObserveAdditive ObserveComplete ObserveNoAdmissible
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-l0-selection.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-l0-selection-witness-states" \
+  -config L0CheckpointSelectionWitness.cfg \
+  -dumpTrace json "$temporary_root/l0-checkpoint-selection.json" \
+  L0CheckpointSelectionWitness \
+  >"$temporary_root/tlc-l0-selection-witness.log" 2>&1
+l0_selection_witness_status=$?
+set -e
+test "$l0_selection_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-l0-selection-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-l0-selection-witness.log"
+"$model_root/validate_l0_checkpoint_selection_witness.py" \
+  "$temporary_root/l0-checkpoint-selection.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-l0-selection-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/L0CheckpointSelectionSafetyProof.tla" \
+  >"$temporary_root/tlaps-l0-selection.log" 2>&1
+grep -q 'All 4 obligations proved.' "$temporary_root/tlaps-l0-selection.log"
+
 #  One-versus-two family/global run limits are finite qualification geometry
 #  for persisted backpressure, not product defaults. The pinned graph detects
 #  accidental narrowing of tombstone, append, or uncertainty coverage.
@@ -1082,6 +1124,9 @@ printf '%s\n' "  Successive checkpoint TLC 37 distinct states, depth 17"
 printf '%s\n' "  Successive checkpoint TLAPS 24/24 obligations"
 printf '%s\n' "  Successive checkpoint lost-response recovery witness validated"
 printf '%s\n' "  Negative successive-checkpoint early-HEAD probe detected"
+printf '%s\n' "  L0 checkpoint selection TLC 2240 distinct states, depth 2"
+printf '%s\n' "  L0 checkpoint selection TLAPS 4/4 obligations"
+printf '%s\n' "  L0 checkpoint complete-compaction decision witness validated"
 printf '%s\n' "  Additive L0 TLC 49 distinct states, depth 17"
 printf '%s\n' "  Additive L0 TLAPS 24/24 obligations"
 printf '%s\n' "  Additive L0 tombstone/lost-response recovery witness validated"

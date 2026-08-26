@@ -15,6 +15,8 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - Synchronous Snapshot transactions with point `Get`, ordered bounded `Scan`, `Put`, `Delete`, singleton `Commit`,
   and explicit atomic `Commit_Group`.
 - Explicit synchronous `Flush` into immutable SST and manifest objects, including a later suffix-delta Flush.
+- A synchronous `Required_L0_Checkpoint_Action` observation that selects no work, additive `Flush`, or complete
+  `Compact` solely from the exact current view and persisted run ceilings; the caller still supplies every identity.
 - Exact caller-selected two- or three-consecutive-run `Compact`, retaining every version/tombstone and all
   surrounding runs. The maintained Files acceptance scenario selects the two-run form.
 - Synchronous and caller-composable `Add_Column_Family` at an exact checkpoint boundary, with exact
@@ -58,8 +60,8 @@ retry, and endpoint policy remain outside Flyology.DB.
 ## Explicit exclusions
 
 This profile does not include family rename/drop/reconfiguration, appending across an unflushed commit suffix,
-public replica management, writer promotion, TTL, codecs, automatic Flush or
-automatic compaction selection, garbage-collection policy, an authenticated deployment walkthrough,
+writer promotion, TTL, codecs, automatic execution or identity generation, garbage-collection policy, an
+authenticated deployment walkthrough,
 background polling, transparent retry, retained borrowed request bodies, performance claims, or stable-format
 compatibility beyond the versions accepted by the current decoder. Public complete-view `Compact` is deliberately
 policy-neutral: the caller supplies every output and publication identity, and the operation retains predecessors.
@@ -79,3 +81,8 @@ read-only replica use. It validates and installs one complete newer authoritativ
 unchanged. It adds no polling, helper task, retry, lease, registration, retention, promotion, or timeout default, and
 a fenced handle remains fenced. Authenticated provider qualification exercises a deliberately stale checkpoint view
 followed by one exact refresh to the writer's compacted view.
+
+The public `Required_L0_Checkpoint_Action` closes the policy-free observation seam between
+persisted run ceilings and the already-public Flush/Compact algorithms without generating identities or scheduling
+work. Memory/files qualification covers per-family, aggregate, and impossible replacement capacity; the
+authenticated provider probe covers clean and additive decisions on the same public writer path.
