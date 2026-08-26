@@ -1,9 +1,10 @@
 # Fixed-snapshot paged scans
 
-The first paged-scan slice is an additive bounded alternative to `Scan`; it does not replace the established whole
+The paged-scan API is an additive bounded alternative to complete `Scan`; it does not replace the established whole
 materialization. Its purpose is to bound each published result while preserving the same canonical half-open range,
 unsigned-byte key order, read-your-writes precedence, fixed transaction snapshot, and Serializable predicate rule.
-It is a stepping stone toward physical merge iteration, not a claim that source traversal is already streaming.
+It now has both storage-free initialization over already-materialized state and authenticated Object Storage
+initialization, but it does not claim constant-memory source traversal.
 
 ## Public contract candidate
 
@@ -18,6 +19,25 @@ access value or borrow of the database, transaction, family handle, arena, coord
 combined key-plus-value byte count, an existing `Scan_Result`, and returns `Done` plus `Outcome_Code`. Neither budget
 has a default. They are caller backpressure for one call, not persisted database limits or a promised page size.
 Persisted database and family limits remain independent upper admission authorities.
+
+### Authenticated initialization
+
+The additive caller-owned `Scan_Operation` and its blocking overload read the exact immutable run slice retained by
+the current authenticated manifest. One caller-selected `Unique_Buffer` token supplies the sole object-read scratch
+bound. Initiation validates operation ownership, lifecycle, transaction identity, family authority, endpoints, and
+the exact run descriptor extent before moving that token. A busy completion set or initiation exception rolls back
+the slot, lease, allocated state, and token byte/tag/metadata/length exact.
+
+The operation reads runs sequentially under one absolute monotonic deadline. SST-v1 and SST-v2 are admitted through
+their existing complete checked decoders and exact generation-bound reads, then merged with the captured committed
+suffix and transaction-local mutations by the same physical cursor builder used by storage-free initialization.
+There is no helper task, provider retry, prefetch, run-count default, or cache. Typed `Finish` is the sole token
+restoration and cursor-publication authority; it accepts any vacant handle from the original pool. Failure,
+cancellation, timeout, corruption, or allocation rejection preserves the caller's prior cursor exactly.
+
+This is a deliberately limited end-to-end path. The caller buffer bounds each object transfer, while the completed
+cursor retains decoded immutable images for the selected run slice. Per-frame lazy scan traversal and a
+constant-memory claim remain later work; no hidden capacity or eviction policy is inferred from this implementation.
 
 The cursor fixes the transaction's own-write prefix by retaining the arena mutation version observed by
 `Start_Scan`. Every successful `Put` or `Delete` advances that version, including replacement of an existing arena
@@ -72,6 +92,7 @@ The model dimensions are qualification geometry, not product defaults. The forma
 comparison, transaction mutation-version validation, allocation, source capture, concurrency, progress, the Ada
 implementation, or refinement. The current Ada implementation captures one bounded in-memory physical source
 snapshot at `Start_Scan` and advances retained per-source positions without recapturing or globally sorting sources
-per page. It is an owned physical merge cursor, but it does not stream SST or batch objects from Object Storage and
-does not claim memory independent of retained descriptors. The exact ownership and merge boundary is documented in
+per page. The authenticated overload reads exact SST objects sequentially from Object Storage before cursor
+publication, but it does not lazily stream frames during paging or claim memory independent of retained run images.
+The exact ownership and merge boundary is documented in
 [`physical-scan-merge.md`](physical-scan-merge.md).

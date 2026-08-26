@@ -260,13 +260,15 @@ procedure Flyology.DB.Client_Probe is
      Transaction_Identifier (Numbered_ID (38));
    Replica_Refreshed_Reader_ID  : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (39));
-   --  IDs 40 and 41 are the suffix-backed and checkpoint-backed public Get
-   --  reader fixtures. They are stable test identities, not allocation or
-   --  transaction-ID generation policy.
+   --  IDs 40 through 42 are the suffix-backed Get, checkpoint-backed Get, and
+   --  authenticated scan reader fixtures. They are stable test identities,
+   --  not allocation or transaction-ID generation policy.
    Suffix_Get_Reader_ID         : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (40));
    Checkpoint_Get_Reader_ID     : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (41));
+   Scan_Reader_ID               : constant Transaction_Identifier :=
+     Transaction_Identifier (Numbered_ID (42));
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag              : constant Interfaces.Unsigned_64 := 16#F105#;
@@ -555,6 +557,195 @@ procedure Flyology.DB.Client_Probe is
          Flyology.Buffers.Release (Restored);
          raise;
    end Test_Public_Get;
+
+   procedure Test_Public_Scan is
+      --  The DB scan parent plus its whole-run provider/HTTP/transport stack
+      --  uses six exact fixture slots. This is scheduling geometry, not a DB
+      --  page, queue, or persisted capacity.
+      Scan_Set       : aliased Flyology.Operations.Completion_Set (6);
+      Scan_Pool      :
+        aliased Flyology.Buffers.Pool
+                  (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
+      Scan_Buffer    : Flyology.Buffers.Unique_Buffer (Scan_Pool'Access);
+      Restored       : Flyology.Buffers.Unique_Buffer (Scan_Pool'Access);
+      Scan_Txn       : aliased Transaction;
+      Stop           : aliased Flyology.Cancellation.Token;
+      Cursor         : Scan_Cursor;
+      Rows           : Scan_Result;
+      Work           :
+        Scan_Operation (Scan_Set'Access, Created'Access, Scan_Txn'Access, Scan_Pool'Access, null);
+      Cancelled_Work :
+        Scan_Operation (Scan_Set'Access, Created'Access, Scan_Txn'Access, Scan_Pool'Access, Stop'Access);
+      Item_Key       : Flyology.Bytes.Unbounded_Bytes;
+      Item_Value     : Flyology.Bytes.Unbounded_Bytes;
+      Done           : Boolean;
+      --  Arbitrary nonzero metadata proves exact token restoration through an
+      --  arbitrary vacant same-pool handle.
+      Scan_Tag       : constant Interfaces.Unsigned_64 := 16#5CA4#;
+
+      procedure Expect_Allocation_Rejection (Point : Internal_Allocation_Fault_Point; Context : String) is
+      begin
+         Set_Test_Allocation_Fault (Point);
+         Start_Scan (Family, False, Bytes (""), False, Bytes (""), Scan_Buffer, Test_Operation_Timeout, Work);
+         Flyology.Operations.Wait_All (Scan_Set);
+         Finish (Work, Cursor, Result, Restored);
+         Expect (Result, Capacity_Exceeded, Context);
+         if not Flyology.Buffers.Has_Buffer (Restored) or else Flyology.Buffers.Tag (Restored) /= Scan_Tag
+         then
+            raise Program_Error with Context & " lost exact token authority";
+         end if;
+         Flyology.Buffers.Move (Restored, Scan_Buffer);
+      end Expect_Allocation_Rejection;
+   begin
+      Begin_Transaction (Created, Scan_Reader_ID, Scan_Txn, Result);
+      Expect (Result, Success, "authenticated scan reader begin failed");
+
+      --  A busy one-slot set rejects before token movement. Exact bytes,
+      --  length, and tag prove complete operation-state and lease rollback.
+      declare
+         Marker          : constant Ada.Streams.Stream_Element_Array := [16#5C#, 16#A4#, 16#7E#];
+         Rollback_Set    : aliased Flyology.Operations.Completion_Set (1);
+         Rollback_Pool   :
+           aliased Flyology.Buffers.Pool (Block_Size => Positive (Marker'Length), Capacity => 1);
+         Rollback_Buffer : Flyology.Buffers.Unique_Buffer (Rollback_Pool'Access);
+         Rollback_Work   :
+           Scan_Operation (Rollback_Set'Access, Created'Access, Scan_Txn'Access, Rollback_Pool'Access, null);
+         Busy            : Timers.Timer_Operation :=
+           Timers.Sleep_For (Rollback_Set'Access, Test_Operation_Timeout);
+         Rejected        : Boolean := False;
+      begin
+         Flyology.Buffers.Acquire (Rollback_Buffer);
+         Flyology.Buffers.Copy_From (Rollback_Buffer, Marker);
+         Flyology.Buffers.Set_Tag (Rollback_Buffer, Scan_Tag);
+         begin
+            Start_Scan
+              (Family,
+               False,
+               Bytes (""),
+               False,
+               Bytes (""),
+               Rollback_Buffer,
+               Test_Operation_Timeout,
+               Rollback_Work);
+         exception
+            when Flyology.Operations.Capacity_Error =>
+               Rejected := True;
+         end;
+         if not Rejected
+           or else not Flyology.Buffers.Has_Buffer (Rollback_Buffer)
+           or else Flyology.Buffers.Length (Rollback_Buffer) /= Marker'Length
+           or else Flyology.Buffers.Tag (Rollback_Buffer) /= Scan_Tag
+           or else not Same (Rollback_Buffer, Marker)
+         then
+            raise Program_Error with "authenticated scan Start did not roll back its exact token";
+         end if;
+         Flyology.Operations.Cancel (Busy);
+         Flyology.Operations.Wait_All (Rollback_Set);
+         begin
+            Timers.Finish (Busy);
+         exception
+            when Flyology.Operations.Operation_Cancelled =>
+               null;
+         end;
+         Flyology.Operations.Release (Busy);
+         Flyology.Buffers.Release (Rollback_Buffer);
+      end;
+
+      Flyology.Buffers.Acquire (Scan_Buffer);
+      Flyology.Buffers.Set_Tag (Scan_Buffer, Scan_Tag);
+      Expect_Allocation_Rejection
+        (Scan_Operation_State_Allocation, "authenticated scan state allocation failure was not typed");
+      Expect_Allocation_Rejection
+        (Get_Run_Descriptor_Allocation, "authenticated scan run-descriptor allocation failure was not typed");
+      Expect_Allocation_Rejection
+        (Scan_Run_Array_Allocation, "authenticated scan run-array allocation failure was not typed");
+      Expect_Allocation_Rejection
+        (Scan_Child_Operation_Allocation, "authenticated scan child allocation failure was not typed");
+
+      Stop.Request;
+      Start_Scan
+        (Family, False, Bytes (""), False, Bytes (""), Scan_Buffer, Test_Operation_Timeout, Cancelled_Work);
+      Flyology.Operations.Wait_All (Scan_Set);
+      Finish (Cancelled_Work, Cursor, Result, Restored);
+      Expect (Result, Cancelled, "authenticated scan ignored pre-start cancellation");
+      if not Flyology.Buffers.Has_Buffer (Restored) or else Flyology.Buffers.Tag (Restored) /= Scan_Tag then
+         raise Program_Error with "cancelled authenticated scan lost token authority";
+      end if;
+      Flyology.Buffers.Move (Restored, Scan_Buffer);
+
+      --  A terminal timeout cannot replace an already valid cursor. The
+      --  subsequent local page proves exact prior position preservation.
+      Start_Scan (Created, Scan_Txn, Family, False, Bytes (""), False, Bytes (""), Cursor, Result);
+      Expect (Result, Success, "prior scan cursor initialization failed");
+      Start_Scan (Family, False, Bytes (""), False, Bytes (""), Scan_Buffer, 0.0, Work);
+      if Flyology.Buffers.Has_Buffer (Scan_Buffer) then
+         raise Program_Error with "authenticated scan did not move its scratch token";
+      end if;
+      Flyology.Operations.Wait_All (Scan_Set);
+      Finish (Work, Cursor, Result, Restored);
+      Expect (Result, Timed_Out, "authenticated scan ignored expired deadline");
+      if not Flyology.Buffers.Has_Buffer (Restored) or else Flyology.Buffers.Tag (Restored) /= Scan_Tag then
+         raise Program_Error with "failed authenticated scan lost token authority";
+      end if;
+      Next_Scan_Page (Created, Scan_Txn, Cursor, 1, Limits.Maximum_Live_State_Bytes, Rows, Done, Result);
+      Expect (Result, Success, "failed authenticated scan replaced prior cursor");
+      if Scan_Row_Count (Rows) /= 1 or else not Done then
+         raise Program_Error with "prior scan cursor returned the wrong page";
+      end if;
+
+      --  Restart the consumed operation and publish a fresh authenticated
+      --  cursor only through typed Finish.
+      Start_Scan (Family, False, Bytes (""), False, Bytes (""), Restored, Test_Operation_Timeout, Work);
+      Flyology.Operations.Wait_All (Scan_Set);
+      Finish (Work, Cursor, Result, Scan_Buffer);
+      Expect (Result, Success, "composable authenticated scan initialization failed");
+      if not Flyology.Buffers.Has_Buffer (Scan_Buffer) or else Flyology.Buffers.Tag (Scan_Buffer) /= Scan_Tag
+      then
+         raise Program_Error with "authenticated scan Finish lost the exact token";
+      end if;
+      Next_Scan_Page (Created, Scan_Txn, Cursor, 1, Limits.Maximum_Live_State_Bytes, Rows, Done, Result);
+      Expect (Result, Success, "authenticated scan page failed");
+      if Scan_Row_Count (Rows) /= 1 or else not Done then
+         raise Program_Error with "authenticated scan returned the wrong row count";
+      end if;
+      Read_Scan_Row (Rows, 1, Item_Key, Item_Value, Result);
+      Expect (Result, Success, "authenticated scan row read failed");
+      if not Same (Item_Key, Key_Data) or else not Same (Item_Value, Third_Value_Data) then
+         raise Program_Error with "authenticated scan returned the wrong fixed-snapshot bytes";
+      end if;
+
+      --  The blocking overload is a literal wait over the same operation and
+      --  replaces the completed cursor with a fresh position.
+      Start_Scan
+        (Created,
+         Scan_Txn,
+         Family,
+         False,
+         Bytes (""),
+         False,
+         Bytes (""),
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Cursor,
+         Result);
+      Expect (Result, Success, "blocking authenticated scan initialization failed");
+      Next_Scan_Page (Created, Scan_Txn, Cursor, 1, Limits.Maximum_Live_State_Bytes, Rows, Done, Result);
+      Expect (Result, Success, "blocking authenticated scan page failed");
+      if Scan_Row_Count (Rows) /= 1 or else not Done then
+         raise Program_Error with "blocking authenticated scan returned the wrong page";
+      end if;
+      Flyology.Operations.Release (Work);
+      Flyology.Operations.Release (Cancelled_Work);
+      Rollback (Scan_Txn, Result);
+      Expect (Result, Success, "authenticated scan reader rollback failed");
+      Flyology.Buffers.Release (Scan_Buffer);
+   exception
+      when others =>
+         Flyology.Buffers.Release (Scan_Buffer);
+         Flyology.Buffers.Release (Restored);
+         raise;
+   end Test_Public_Scan;
 
    procedure Test_Lazy_SST_Read is
       procedure Read_And_Expect
@@ -1355,6 +1546,7 @@ begin
    --  After the third checkpoint, the same public state machine falls through
    --  to the authenticated immutable run selector.
    Test_Public_Get (Checkpoint_Get_Reader_ID, Third_Value_Data, True);
+   Test_Public_Scan;
 
    --  The exact current manifest order is oldest to newest. The private
    --  selector traverses it newest first at one fixed snapshot, skipping

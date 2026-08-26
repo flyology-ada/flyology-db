@@ -1,5 +1,39 @@
 # Review record
 
+## Authenticated physical scan initialization candidate
+
+- Parent: shared TLA harness migration commit `d13c1a1`.
+- API decision: preserve the storage-free `Start_Scan`, `Scan`, and `Next_Scan_Page` contracts and add one reusable
+  `Scan_Operation`, operation-last initiation, typed `Finish`, and a blocking wait directly in `Flyology.DB`.
+  Scoped lifetime is expressed by the limited operation and its retained ownership, not by a parallel package tree.
+  One caller-selected buffer and timeout are mandatory; the API adds no page default, run cap, retry, cache, task,
+  prefetch, or allocation ceiling.
+- Snapshot and merge authority: initiation retains the exact authenticated engine state, transaction identity, Begin
+  sequence, mutation version, family configuration, endpoints, and manifest run slice. It reads those immutable runs
+  oldest to newest with generation-bound provider operations, then gives transaction-local mutations precedence over
+  the committed suffix and run images in the same physical cursor builder used by storage-free initialization. A
+  cursor is published only after every selected run is decoded and transaction consistency is revalidated.
+- Ownership and failure atomicity: Start reserves the visible operation slot before moving the exact caller token;
+  any initiating exception rolls back the slot, lifecycle lease, state, and token exactly. The operation drives one
+  reusable whole-run reader at a time under one absolute monotonic deadline. Typed `Finish` accepts any vacant handle
+  from the original pool, restores the exact token, and swaps the candidate cursor only on `Success`. Allocation,
+  cancellation, timeout, corruption, provider failure, or lifecycle rejection preserves the prior cursor. The
+  cursor deliberately retains decoded run images; per-frame traversal and constant-memory claims remain out of scope.
+- Findings cycle: review uses P0 for data loss, durable-authority, or safety defects; P1 for wrong public semantics,
+  ownership, snapshot, certainty, or qualification; and P2 for maintainability, diagnostics, or test weakness. It
+  found and fixed four P1s: early precheck outcomes were initially overwritten by transaction validation before a
+  snapshot had been captured; malformed decoded SST operations could fall through as tombstones; public Start/Finish
+  contracts did not encode the documented acquired/vacant same-pool ownership; and cursor construction attempted a
+  second lifecycle admission while already retaining the exact engine state, which could fail during close/drain.
+  One captured-state flag, explicit Put/Delete validation, full ownership aspects, and a retained-state cursor-builder
+  path close those defects. The same sweep added busy-set exact-token rollback, distinct owner/run/child allocation
+  rejection, pre-start cancellation, expired-deadline prior-cursor preservation, reusable operation, and blocking-wait
+  coverage. The repeated API, concurrency, ownership, bounds, constants, snapshot, documentation, and test sweep found
+  no remaining actionable P0, P1, or P2 finding.
+- Verification boundary: exact root and nested builds, the complete maintained deterministic suite, repository and
+  GNATdoc gates, `git diff --check`, the maintained TLA/TLC/TLAPS gate, warning-strict GNATprove, and a clean coordinated
+  formal-process audit are required on the frozen source tree.
+
 ## Shared TLA harness migration candidate
 
 - Parent: fixed-snapshot read commit `85e3789d41e5bdf8a406ff43f438254381bf0ecb`.

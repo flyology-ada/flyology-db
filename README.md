@@ -118,6 +118,13 @@ through terminal publication, moves one exact caller scratch token, records Seri
 after a conclusive external result, and restores the token only through typed `Finish`. It introduces no helper task,
 retry, cache, prefetch, or hidden storage bound.
 
+The storage-free `Start_Scan` remains available for already-materialized state. Its additive `Scan_Operation` and
+buffer-owned synchronous overload authenticate the exact manifest run slice from Object Storage, read those runs
+sequentially under one absolute deadline, and construct the same owned physical cursor used by whole and paged
+scans. Typed `Finish` alone restores the exact caller token and publishes the candidate cursor; every failure leaves
+the prior cursor unchanged. This establishes an end-to-end remote scan path, but it currently retains each decoded
+run needed by the cursor and therefore makes no constant-memory or frame-streaming claim.
+
 ## Durability rule
 
 A transaction is durably committed only after its complete immutable batch object is published and `meta/HEAD` is

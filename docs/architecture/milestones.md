@@ -9,7 +9,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local/client paths and six-provider matrix operational; broader acceptance pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Limited owned sync/composable spine and remote matrix operational; broader acceptance pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
-| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, complete-view replacement, and owned physical paged merge operational; partial compaction and Object Storage streaming pending |
+| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, complete-view replacement, and authenticated physical paged merge operational; partial compaction and frame-streamed paging pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete, exact-two-run, and exact-three-run replacement operational and deletion safety proved; automatic/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
@@ -69,8 +69,9 @@ Put/Delete mutations, and sorts by unsigned-byte lexicographic key. Its controll
 combined key/value bytes bounded by persisted live-entry/live-state limits. Allocation, validation, or predicate
 retention failure leaves the caller's previous result unchanged; Serializable predicates become visible only after
 complete materialization. The additive paged cursor uses an owned physical merge snapshot, and whole `Scan` now
-requests one complete page from that same private engine under the persisted live limits. Object Storage streaming
-remains later Milestone 4 work.
+requests one complete page from that same private engine under the persisted live limits. Authenticated Object
+Storage initialization now reads the exact manifest run slice sequentially and builds that same cursor. Per-frame
+traversal during paging and a constant-memory claim remain later Milestone 4 work.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
@@ -100,7 +101,7 @@ The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token
 without a helper task. Public `Start_Compaction` now builds one complete live-state run per nonempty family, publishes
 a successor manifest naming only those caller-identified fresh runs, and reconciles unknown immutable-object
 responses by rebuilding the exact replacement plan. Blocking `Compact` waits on that operation for client storage
-and drives the equivalent backend-neutral publisher for memory/files. Streaming/physical scans, automatic selection,
+and drives the equivalent backend-neutral publisher for memory/files. Per-frame scan streaming, automatic selection,
 run pruning, and retention/GC policy remain later focused units, so Milestone 4
 remains incomplete.
 
@@ -112,7 +113,8 @@ owned immutable source snapshot, advances every equal-key head, and selects own 
 newest-to-oldest, then checkpoint, with tombstone suppression and atomic allocation rejection. Its finite TLC model,
 two negative probes, checked witness, and abstract TLAPS kernel are green. The Ada cursor retains exact immutable
 image leases and copied transaction-local mutations across engine replacement, eliminating repeated page capture and
-global sorting. Object Storage streaming, automatic run selection, and constant-memory claims remain unfinished. See
+global sorting. Authenticated initialization now reads exact manifest SSTs sequentially under one deadline; lazy
+frame traversal, automatic run selection, and constant-memory claims remain unfinished. See
 [`paged-scans.md`](paged-scans.md) and [`physical-scan-merge.md`](physical-scan-merge.md).
 
 Generation-bound lazy immutable-run point reads now have a caller-driven execution path. New Flush and
@@ -123,8 +125,9 @@ buffer through one caller-owned completion set and absolute deadline. The authen
 and an absent key from the actual v2 run published by Flush, while the recovery corpus converts one current run to v1
 and reopens a mixed v1/v2 checkpoint. TLC exhausts the replacement, allocation, stale-generation, and corruption
 boundaries; two unsafe probes fail and TLAPS proves the arbitrary-generation/key/value action kernel. The original
-storage-free `Get`, `Scan`, and `Next_Scan_Page` remain unchanged. An additive buffer-owned `Get` operation now opts
-into storage I/O without adding a cache, prefetch, automatic retry, or block-size policy. See
+storage-free `Get`, `Scan`, `Start_Scan`, and `Next_Scan_Page` remain source-compatible. Additive buffer-owned
+`Get_Operation` and `Scan_Operation` paths opt into storage I/O without adding a cache, prefetch, automatic retry,
+or block-size policy. See
 [`lazy-sst-reads.md`](lazy-sst-reads.md).
 
 The point-read path also owns an exact manifest run slice and

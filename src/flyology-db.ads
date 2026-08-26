@@ -208,6 +208,20 @@ package Flyology.DB is
       Item         : not null access Database;
       Txn          : not null access Transaction;
       Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation with private;
+   --  Caller-composable authenticated fixed-snapshot scan initialization.
+   --  Item and Txn are retained borrows through terminal publication; the
+   --  caller must not use Txn while the operation is active. Payload_Pool
+   --  supplies the sole caller-selected object-read scratch bound. The
+   --  operation reads the exact manifest run slice sequentially, creates the
+   --  same owned physical cursor used by Next_Scan_Page, and introduces no
+   --  helper task, retry, run cap, page default, prefetch, or cache.
+   type Scan_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Txn          : not null access Transaction;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
       Cancellation : access Flyology.Cancellation.Token) is
      new Flyology.Operations.Operation with private;
    --  Project admission policy documented by the synchronous topology: one
@@ -649,6 +663,90 @@ package Flyology.DB is
       Upper     : Byte_Array;
       Cursor    : in out Scan_Cursor;
       Result    : out Outcome_Code);
+
+   --  Start or restart authenticated object-storage initialization of one
+   --  fixed-snapshot cursor. The exact manifest run slice is read under one
+   --  absolute monotonic deadline into caller-bounded scratch, then merged
+   --  with the captured committed suffix and transaction-local mutations.
+   --  Payload_Buffer moves into Operation only after validation and operation
+   --  admission. Typed Finish is the sole restoration and cursor-publication
+   --  authority. Any failure preserves the caller's prior cursor exactly.
+   --  @param Family Valid handle selecting persisted family limits and identity
+   --  @param Has_Lower True when Lower is the inclusive endpoint
+   --  @param Lower Inclusive endpoint bytes, ignored when Has_Lower is false
+   --  @param Has_Upper True when Upper is the exclusive endpoint
+   --  @param Upper Exclusive endpoint bytes, ignored when Has_Upper is false
+   --  @param Payload_Buffer Acquired caller scratch token moved into Operation
+   --  @param Timeout Caller-selected duration for the complete initialization
+   --  @param Operation Fresh or consumed operation receiving retained ownership
+   procedure Start_Scan
+     (Family         : Column_Family;
+      Has_Lower      : Boolean;
+      Lower          : Byte_Array;
+      Has_Upper      : Boolean;
+      Upper          : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Scan_Operation)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Consume a terminal authenticated scan initialization. On Success,
+   --  Cursor atomically receives the new fixed-snapshot position; otherwise
+   --  it is unchanged. Payload_Buffer may be any vacant handle from the same
+   --  pool and receives the exact token moved by Start_Scan.
+   --  @param Operation Terminal scan initialization to consume
+   --  @param Cursor Existing cursor replaced only on Success
+   --  @param Result Success or exact validation, capacity, storage, or lifecycle outcome
+   --  @param Payload_Buffer Vacant same-pool handle receiving the exact moved token
+   procedure Finish
+     (Operation      : in out Scan_Operation;
+      Cursor         : in out Scan_Cursor;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+   with
+     Pre  =>
+       Flyology.Operations.Is_Terminal (Operation)
+       and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool,
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Blocking wait over the same authenticated scan-initialization state
+   --  machine. The optional null cancellation token follows the established
+   --  Flyology operation convention and selects no timeout or retry policy.
+   --  @param Item Open client-bound database owning the fixed snapshot
+   --  @param Txn Active transaction retained for the duration of the call
+   --  @param Family Valid handle selecting persisted family limits and identity
+   --  @param Has_Lower True when Lower is the inclusive endpoint
+   --  @param Lower Inclusive endpoint bytes, ignored when Has_Lower is false
+   --  @param Has_Upper True when Upper is the exclusive endpoint
+   --  @param Upper Exclusive endpoint bytes, ignored when Has_Upper is false
+   --  @param Payload_Buffer Acquired caller scratch token restored before return
+   --  @param Timeout Caller-selected duration for the complete initialization
+   --  @param Token Optional caller-owned cancellation token
+   --  @param Cursor Existing cursor replaced only on Success
+   --  @param Result Success or exact validation, capacity, storage, or lifecycle outcome
+   procedure Start_Scan
+     (Item           : in out Database;
+      Txn            : aliased in out Transaction;
+      Family         : Column_Family;
+      Has_Lower      : Boolean;
+      Lower          : Byte_Array;
+      Has_Upper      : Boolean;
+      Upper          : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Cursor         : in out Scan_Cursor;
+      Result         : out Outcome_Code)
+   with
+     Pre  => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Materialize the maximal next contiguous page that fits both explicit
    --  caller budgets. Maximum_Rows and Maximum_Bytes have no defaults and are
@@ -1274,7 +1372,13 @@ private
       --  persisted, public allocation policy, or stable ABI.
       Get_Operation_State_Allocation,
       Get_Run_Descriptor_Allocation,
-      Get_Child_Operation_Allocation);
+      Get_Child_Operation_Allocation,
+      --  Test-only positions distinguish authenticated scan owner state, the
+      --  exact run-result array, and its private whole-run reader child. They
+      --  are not persisted, public allocation policy, or stable ABI.
+      Scan_Operation_State_Allocation,
+      Scan_Run_Array_Allocation,
+      Scan_Child_Operation_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code);
@@ -1629,12 +1733,17 @@ private
    type Refresh_Driver_State_Access is access Refresh_Driver_State;
    type Get_Driver_State;
    type Get_Driver_State_Access is access Get_Driver_State;
+   type Scan_Driver_State;
+   type Scan_Driver_State_Access is access Scan_Driver_State;
    type Lazy_SST_Read_State;
    type Lazy_SST_Read_State_Access is access Lazy_SST_Read_State;
+   type Lazy_SST_Table_Holder;
+   type Lazy_SST_Table_Holder_Access is access Lazy_SST_Table_Holder;
    type Lazy_Checkpoint_Read_State;
    type Lazy_Checkpoint_Read_State_Access is access Lazy_Checkpoint_Read_State;
    type Lazy_SST_Entry_Disposition is
      (Lazy_Value_Found, Lazy_Tombstone_Found, Lazy_Key_Absent, Lazy_Read_Failed);
+   type Lazy_SST_Read_Purpose is (Lazy_Point_Entry, Lazy_Whole_Run);
    type Lazy_SST_Run_Descriptor is record
       Run_ID                : Identifier := Zero_Identifier;
       Lowest_Sequence       : Sequence_Number := 0;
@@ -1744,10 +1853,13 @@ private
       Final_Disposition : Lazy_SST_Entry_Disposition := Lazy_Read_Failed;
       Final_Sequence   : Sequence_Number := 0;
       Final_Value      : Flyology.Bytes.Unbounded_Bytes;
+      Final_Table       : Lazy_SST_Table_Holder_Access := null;
+      Final_Purpose     : Lazy_SST_Read_Purpose := Lazy_Point_Entry;
       Has_Final_Result : Boolean := False;
       Has_Saved_Error  : Boolean := False;
       Saved_Error      : Ada.Exceptions.Exception_Occurrence;
    end record;
+   type Lazy_SST_Read_Operation_Access is access Lazy_SST_Read_Operation;
 
    procedure Read_Lazy_SST_Entry
      (Database_ID          : Database_Identifier;
@@ -1984,6 +2096,39 @@ private
    overriding procedure Request_Cancellation (Item : in out Get_Operation);
    --  @exclude
    overriding procedure Finalize (Item : in out Get_Operation);
+
+   --  @exclude
+   type Scan_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Txn          : not null access Transaction;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation (Set) with record
+      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Child            : Lazy_SST_Read_Operation_Access := null;
+      Driver_State     : Scan_Driver_State_Access := null;
+      Candidate_Cursor : Scan_Cursor;
+      Retained_Life    : Database_Lifecycle_Access := null;
+      Retained_State   : Engine_State_Access := null;
+      --  Vacant-operation sentinel only. Start_Scan replaces it with the
+      --  caller-derived monotonic deadline before any child can start.
+      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      Final_Result     : Outcome_Code := Invalid_State;
+      Has_Final_Result : Boolean := False;
+      Has_Saved_Error  : Boolean := False;
+      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+   end record;
+
+   --  @exclude
+   overriding
+   procedure Drive (Item : in out Scan_Operation; Event : Flyology.Operations.Driver_Event);
+   --  @exclude
+   overriding
+   procedure Request_Cancellation (Item : in out Scan_Operation);
+   --  @exclude
+   overriding
+   procedure Finalize (Item : in out Scan_Operation);
 
    overriding
    procedure Finalize (Item : in out Database);
