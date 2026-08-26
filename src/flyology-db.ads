@@ -98,10 +98,11 @@ package Flyology.DB is
       Maximum_L0_Runs      : Interfaces.Unsigned_32) return Column_Family_Configuration;
 
    --  Bind one configured family to the immutable run identity selected by a
-   --  checkpoint operation. Run_ID must be nonzero. Flush requires one mapping
-   --  for every persisted family, rejects duplicate families or run IDs, and
-   --  publishes only mappings whose family snapshot is nonempty. The mapping
-   --  is borrowed only for the call and is never retained.
+   --  checkpoint operation. Run_ID must be nonzero. Flush and complete
+   --  compaction require one mapping for every family that produces an SST,
+   --  reject duplicate families or run IDs, and continue accepting a full
+   --  persisted-family map by ignoring no-work entries. The mapping is
+   --  borrowed only for the call and is never retained.
    --  @param Family_ID Stable persisted family identifier
    --  @param Run_ID Caller-owned stable immutable run identity
    --  @return Valid immutable family/run mapping
@@ -595,7 +596,7 @@ package Flyology.DB is
    --  capacity is a definite prepublication Capacity_Exceeded result. No
    --  helper task, hidden retry, or second deadline is introduced.
    --  @param Operation Fresh or consumed client-bound Flush operation
-   --  @param Runs Exact family/run identity map copied before return
+   --  @param Runs Exact affected-family/run identity map copied before return
    --  @param Manifest_ID Stable immutable checkpoint manifest identity
    --  @param Transition_ID Stable attempted HEAD transition identity
    --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
@@ -616,8 +617,10 @@ package Flyology.DB is
        Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Start an exact complete-view compaction in an established operation.
-   --  Runs maps every persisted family to a caller-selected fresh output
-   --  identity; empty families produce no object. Compaction copies Runs and
+   --  Runs maps every nonempty family to a caller-selected fresh output
+   --  identity; an all-empty replacement accepts an empty map. A legacy full
+   --  family map remains accepted and its empty-family entries are ignored.
+   --  Compaction copies Runs and
    --  retains no borrow of that map after return. It removes no stored
    --  predecessor and selects no trigger, level, fanout, schedule, retry, or
    --  garbage-collection policy. Its normal operation-owner borrows and the
@@ -625,7 +628,7 @@ package Flyology.DB is
    --  Ownership, deadline, certainty, and exact same-identity reconciliation
    --  are identical to Start_Flush.
    --  @param Operation Fresh or consumed client-bound checkpoint operation
-   --  @param Runs Exact complete family/output-run identity map copied before return
+   --  @param Runs Exact nonempty-family/output-run identity map copied before return
    --  @param Manifest_ID Stable immutable successor-manifest identity
    --  @param Transition_ID Stable attempted HEAD transition identity
    --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
@@ -739,14 +742,15 @@ package Flyology.DB is
    --  Publish an immutable checkpoint at the current committed boundary. The
    --  first call writes complete nonempty-family runs; each later call appends
    --  one suffix-delta run for every affected family and retains prior current
-   --  runs. Runs must map every persisted family to one caller-stable identity;
-   --  empty or unchanged families consume no new run object or identity. Every
+   --  runs. Runs must map every family that has a complete or suffix snapshot
+   --  to one caller-stable identity. A legacy full family map remains accepted;
+   --  empty or unchanged entries consume no new run object or identity. Every
    --  identity that names an attempted object or HEAD becomes unavailable for
    --  reuse once its publication begins. One absolute monotonic deadline
    --  covers planning, publication, reconciliation, and local activation.
    --  Outcome_Unknown must be resolved and never replayed as a new operation.
    --  @param Item Open database whose committed prefix is checkpointed
-   --  @param Runs Exact caller-owned family/run identity map borrowed for this call
+   --  @param Runs Exact caller-owned affected-family/run map borrowed for this call
    --  @param Manifest_ID Stable immutable checkpoint manifest identity
    --  @param Transition_ID Stable attempted HEAD transition identity
    --  @param Timeout Whole-operation monotonic timeout budget
@@ -764,15 +768,16 @@ package Flyology.DB is
       Result        : out Outcome_Code);
 
    --  Publish an exact complete live-state replacement. The caller supplies
-   --  one fresh output-run identity for every persisted family; an empty
-   --  family consumes no output object or identity. The operation preserves
+   --  one fresh output-run identity for every nonempty family; empty families
+   --  consume no output object or identity, and an all-empty view accepts an
+   --  empty map. A legacy full family map remains accepted. The operation preserves
    --  any later committed suffix and every never-reuse ledger entry, confirms
    --  complete immutable outputs before one conditional HEAD transition, and
    --  retains superseded objects. It chooses no automatic compaction or
    --  deletion policy. Client-backed execution waits on Start_Compaction;
    --  memory/files use the equivalent backend-neutral publisher.
    --  @param Item Open database whose complete live view is compacted
-   --  @param Runs Exact complete family/output-run identity map
+   --  @param Runs Exact nonempty-family/output-run identity map
    --  @param Manifest_ID Stable immutable successor-manifest identity
    --  @param Transition_ID Stable attempted HEAD transition identity
    --  @param Timeout Whole-operation monotonic timeout budget

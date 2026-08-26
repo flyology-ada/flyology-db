@@ -3683,7 +3683,7 @@ package body Flyology.DB.Engine_Tests is
       --  +2/+3/+4 are Put/Delete/final tombstone, +10/+20 are the first two
       --  L0 runs, +11/+21 are
       --  manifests, +12/+22 are HEAD transitions, +30 is the intentionally
-      --  unused replacement-run identity, +31/+32 are its manifest/transition,
+      --  empty replacement map, +31/+32 are its manifest/transition,
       --  and +40..+43 establish the later delta. This is deterministic corpus
       --  identity geometry, not database identity policy.
       Database_ID : constant Database_Identifier :=
@@ -3704,8 +3704,10 @@ package body Flyology.DB.Engine_Tests is
         [Configure_Checkpoint_Run (1, First_Run)];
       Second_Runs : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (1, Second_Run)];
-      Empty_Replacement : constant Checkpoint_Run_Identity_Array :=
-        [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 30))];
+      --  The complete view has no live family, so exact sparse-map authority
+      --  supplies no output identity. This null range is protocol shape, not a
+      --  family-count or capacity default.
+      Empty_Replacement : constant Checkpoint_Run_Identity_Array (1 .. 0) := [];
       Later_Runs : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 40))];
       --  Three successful commits establish both the replay boundary and exact
@@ -3814,7 +3816,6 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "empty L0 replacement publication failed");
       if not Testing.Receipt_Replaces_Current_Runs (Flush_Info)
         or else Flush_Receipt_Run_Total (Flush_Info) /= Empty_Replacement'Length
-        or else Flush_Receipt_Run (Flush_Info, 1) /= Empty_Replacement (1)
         or else Flush_Receipt_Replay_Boundary (Flush_Info) /= Expected_Replay_Boundary
       then
          raise Program_Error with "empty replacement receipt lost its reconciliation input";

@@ -5165,6 +5165,10 @@ package body Flyology.DB is
       Run_Total      : Natural := 0;
       Run_Index      : Natural := 0;
       Allocation     : LSM_Runtime.Allocation_Status;
+      --  This transient projection has exactly the persisted manifest family
+      --  slot extent. It changes no database limit and lets map validation
+      --  finish before any SST allocation.
+      Required_Families : array (Manifests.Family_Slot) of Boolean := [others => False];
 
       function Run_For (Family_ID : Column_Family_ID) return Identifier is
       begin
@@ -5175,6 +5179,25 @@ package body Flyology.DB is
          end loop;
          return Zero_Identifier;
       end Run_For;
+
+      procedure Family_Requires_Run
+        (Family_ID : Column_Family_ID; Required : out Boolean; Status : out Outcome_Code)
+      is
+         Entry_Total   : Natural;
+         Payload_Bytes : Natural;
+      begin
+         Required := False;
+         if Replace_Current_Runs or else State.LSM_Authority.Replay_Boundary = 0 then
+            State.Gate.Family_Snapshot_Requirements (Family_ID, Entry_Total, Payload_Bytes, Status);
+         else
+            State.Gate.Family_Delta_Snapshot (Family_ID, null, Entry_Total, Payload_Bytes, Status);
+         end if;
+         if Status = Success then
+            Required := True;
+         elsif Status = Not_Found then
+            Status := Success;
+         end if;
+      end Family_Requires_Run;
    begin
       Plan := (others => <>);
       if Is_Zero (Manifest_ID)
@@ -5247,7 +5270,9 @@ package body Flyology.DB is
          Existing_Run_Total := (if Replace_Current_Runs then 0 else Prior.Run_Total);
       end if;
 
-      if Runs'Length /= Natural (Base.Family_Total) then
+      if Runs'Length > Natural (Base.Family_Total)
+        or else (Runs'Length = 0 and then not Replace_Current_Runs)
+      then
          Result := Invalid_State;
          return;
       end if;
@@ -5284,23 +5309,42 @@ package body Flyology.DB is
       for Family_Index in Manifests.Family_Slot range 1 .. Base.Family_Total loop
          declare
             Family_ID : constant Column_Family_ID := Column_Family_ID (Base.Families (Family_Index).ID);
-            Run_ID    : constant Identifier := Run_For (Family_ID);
          begin
-            Build_Family_SST
-              (State,
-               Family_ID,
-               Run_ID,
-               Plan.SSTs (Family_Index),
-               Result,
-               Complete_View => Replace_Current_Runs,
-               Allow_Fenced  => Allow_Fenced);
-            if Result = Success then
-               New_Run_Total := New_Run_Total + 1;
-            elsif Result = Not_Found then
-               Result := Success;
-            else
+            Family_Requires_Run (Family_ID, Required_Families (Family_Index), Result);
+            if Result /= Success then
                Release_Checkpoint_Plan (Plan);
                return;
+            elsif Required_Families (Family_Index) and then Is_Zero (Run_For (Family_ID)) then
+               Release_Checkpoint_Plan (Plan);
+               Result := Invalid_State;
+               return;
+            end if;
+         end;
+      end loop;
+
+      for Family_Index in Manifests.Family_Slot range 1 .. Base.Family_Total loop
+         declare
+            Family_ID : constant Column_Family_ID := Column_Family_ID (Base.Families (Family_Index).ID);
+            Run_ID    : constant Identifier := Run_For (Family_ID);
+         begin
+            if Required_Families (Family_Index) then
+               Build_Family_SST
+                 (State,
+                  Family_ID,
+                  Run_ID,
+                  Plan.SSTs (Family_Index),
+                  Result,
+                  Complete_View => Replace_Current_Runs,
+                  Allow_Fenced  => Allow_Fenced);
+               if Result = Success then
+                  New_Run_Total := New_Run_Total + 1;
+               else
+                  if Result = Not_Found then
+                     Result := Corrupt;
+                  end if;
+                  Release_Checkpoint_Plan (Plan);
+                  return;
+               end if;
             end if;
          end;
       end loop;
@@ -13214,7 +13258,9 @@ package body Flyology.DB is
             then
                Operation.Driver_State.Precheck_Result := Invalid_State;
             end if;
-         elsif Runs'Length = 0 or else Runs'Length > Maximum_Initial_Column_Families then
+         elsif Runs'Length > Maximum_Initial_Column_Families
+           or else (Runs'Length = 0 and then Mode /= Complete_Replacement_Plan)
+         then
             Operation.Driver_State.Precheck_Result := Invalid_State;
          else
             Operation.Driver_State.Run_Total := Runs'Length;

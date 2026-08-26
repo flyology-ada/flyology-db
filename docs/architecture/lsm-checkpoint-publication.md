@@ -118,12 +118,14 @@ The ledger is sorted by identifier bytes before structural validation. Family, a
 limits come only from the authenticated manifest-v3 policy. Any validation or allocation failure releases the whole
 plan and leaves batch, manifest, and HEAD publication counts unchanged.
 
-The caller supplies an exact family-to-run identity map with one entry for every persisted family. Input order is not
-authority: the planner joins by stable family ID and emits canonical registry order. Every run ID is nonzero, unique
-within the operation, and distinct from the operation's manifest and transition identities. Duplicate, missing,
-unknown, or colliding mappings fail before checkpoint allocation or object I/O. Empty families publish no run, so
-their mapped identities are not consumed by this checkpoint. The planner copies selected IDs into owned SSTs and
-retains no pointer to the caller's array.
+The caller supplies an exact family-to-run identity map with one entry for every family selected by the checkpoint
+requirement: every suffix-changed family for additive Flush, or every complete-view nonempty family for replacement.
+Input order is not authority: the planner joins by stable family ID and emits canonical registry order. Every run ID
+is nonzero, unique within the operation, and distinct from the operation's manifest and transition identities. A
+missing required family, duplicate family or run ID, unknown family, or colliding identity fails before checkpoint
+allocation or object I/O. A legacy full persisted-family map remains accepted; entries for families with no work are
+ignored and their run identities are neither published nor reserved. The planner copies selected IDs into owned SSTs
+and retains no pointer to the caller's array.
 
 Publication order is strict:
 
@@ -174,10 +176,11 @@ Missing, malformed, misbound, overlapping, or reordered runs fail closed. Later 
 manifest boundary. The separate replacement planner may compact this current run set; additive Flush never selects
 that mode implicitly.
 
-The public Flush signatures, caller-supplied one-ID-per-family map, receipt ownership, absolute deadline, and
-publication certainty do not change. A family uses its mapped ID only when it has a suffix delta, matching the
-existing empty-family convention. An empty suffix may publish a successor manifest with the same run set and no run
-objects; this preserves established Flush completion semantics without inventing an automatic-flush threshold.
+The public Flush signatures, receipt ownership, absolute deadline, and publication certainty do not change. The
+caller may pass the exact affected-family projection returned by `Observe_L0_Checkpoint_Requirement` after assigning
+one fresh identity to each family. A family uses its mapped ID only when it has a suffix delta, matching the existing
+empty-family convention. A legacy full map can still publish an empty-suffix successor with no run objects; the
+policy query reports no work and does not direct a caller to do so.
 
 The Ada planner, synchronous wait, and composable state machine all use this algorithm. Local activation retains an
 exact full live base without rereading storage. Cacheless activation allocates from authenticated run extents, merges
@@ -197,7 +200,9 @@ stable registry order. Additive selection retains the suffix-changed families; c
 complete-view nonempty families; no work retains none. Storage is allocated lazily at the exact selected count from
 persisted registry facts. Successful observation swaps the entire action/set pair into the limited caller-owned
 value; any state or allocation failure preserves its prior contents. The value retains no database borrow and grants
-no scheduling, identity, or publication authority.
+no scheduling, identity, or publication authority. Its family projection is nevertheless the exact input domain for
+the existing sparse Flush or complete Compact map at that observed state. Publication revalidates the domain after
+entering the exclusive checkpoint lifecycle, so a later commit cannot turn the observation into a reservation.
 
 The selection kernel is isolated in `Flyology.DB.Checkpoint_Policy` for SPARK proof. It uses checked arithmetic and
 distinguishes changed families from complete-view nonempty families, so a tombstone-only suffix can require an

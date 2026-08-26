@@ -1,5 +1,37 @@
 # Review record
 
+## Accepted sparse checkpoint-map execution candidate
+
+- Parent: owned exact-family checkpoint-requirement commit `1b8190175553fa2f1e34ff5a4ac731a42407f571`.
+- API and scope: relax the existing Flush and complete Compact family/run maps to accept the exact affected-family
+  projection already returned by `Observe_L0_Checkpoint_Requirement`. No declaration, overload, default, timeout,
+  identity generator, scheduler, retry, or public capacity is added. Additive Flush still rejects an empty map;
+  complete replacement accepts one only when the complete view produces no SST.
+- Validation and certainty: under the existing exclusive checkpoint lifecycle, the planner derives the complete
+  required-family projection before any SST allocation, rejects a missing required family with definite
+  `Invalid_State`, and publishes nothing. Duplicate families or run IDs, unknown families, zero IDs, and operation-ID
+  collisions retain their established prepublication rejection. The provider publication order, absolute deadline,
+  mutation certainty, same-identity reconciliation, owner-stack operation, buffer move/restore, and no-replay rules
+  are unchanged.
+- Compatibility and authority: legacy full-family maps remain accepted. Entries for empty or unchanged families are
+  retained as caller-supplied reconciliation input but produce no immutable object and reserve no identity. The
+  authenticated fixture reuses one such ignored value for a later affected-family run. Sparse maps select no policy:
+  every run, manifest, and transition identity remains caller-owned, while the required domain derives only from the
+  persisted family state and limits.
+- Verification: `./tests/scripts/test.sh` passes the root/test builds, repository/provenance gate, deterministic
+  memory/files suite, limited Files end-to-end showcase, crash/recovery corpus, authenticated client-backed
+  create/commit/Flush/compaction/refresh/reopen probe, 32 comparative cases, and pinned TidesDB 4/4. The complete
+  TLA+/TLAPS gate remains green, including 2,240 checkpoint-selection states and 8/8 selection obligations. The
+  warning-strict SPARK gate proves 1,097/1,097 selected-unit checks. The six-provider matrix passes all 18 RustFS,
+  SeaweedFS, MinIO, and Flyology memory/files/SQLite lanes against Object Storage `179b16c…` and HTTP/QUIC
+  `eb09a80…`. Exact post-formal host audit, repository check, line-width audit, and `git diff --check` are clean.
+  GNATformat and GNATdoc are absent from the selected Alire toolchain, so no formatter or generated-site claim is
+  made.
+- Findings cycle: the first sweep fixed one P2 ordering weakness by validating every required family before any
+  transient SST allocation. It also corrected one P2 authenticated receipt assertion that still expected a removed
+  no-work mapping. Repeated API, concurrency, allocation, publication, certainty, compatibility, constants,
+  documentation, test, formal-boundary, and unnecessary-surface review finds no actionable P0/P1/P2 finding.
+
 ## Accepted owned exact-family checkpoint-requirement candidate
 
 - Parent: limited-profile checkpoint-observation integration commit `0d377f9`.

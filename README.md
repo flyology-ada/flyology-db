@@ -49,6 +49,9 @@ reserves no identity, and schedules no work; callers still provide every immutab
 chosen publication operation revalidates the observation. `Observe_L0_Checkpoint_Requirement` additionally retains
 the exact affected family IDs from that same view in an owned limited value: changed families for additive Flush,
 nonempty families for complete compaction, and none for no work. Failed replacement preserves the prior value.
+After assigning fresh immutable run identities, a caller can pass that exact sparse family set to the existing
+Flush or Compact operation; publication revalidates it under the checkpoint lifecycle. Legacy full-family maps
+remain accepted, but no-work entries are ignored and their identities are not consumed.
 The LSM read-equivalence lane independently checks that a complete live-state replacement emits one Put for each
 live key, no entry for absence, reconstructs every captured point read exactly, and remains equivalent after any
 later delta containing Puts, Deletes, or untouched keys. This closes concrete replacement-read semantics without

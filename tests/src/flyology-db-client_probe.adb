@@ -178,13 +178,13 @@ procedure Flyology.DB.Client_Probe is
    --  read-only probe, 6/7/8 to the additive run/checkpoint/HEAD transition,
    --  9/10 and 11/12 to the two appended-family manifest/transitions, 13/14/15
    --  to the complete replacement, 16 to the later cross-family transaction,
-   --  17/18/19/20 to its two runs/checkpoint/transition, 21 to a third
+   --  17/32/19/20 to its two runs/checkpoint/transition, 21 to a third
    --  transaction, 22/23/24 to its family-1 run/checkpoint/transition, and
    --  25/26/27 to the selected adjacent merge, and 28/29/30/31 to the final
-   --  two-run complete replacement and its manifest/transition. IDs 32 through
-   --  37 are unused run-map placeholders for unchanged or empty families;
-   --  they never name attempted objects. These values isolate fixture roles
-   --  and are not ID-generation policy or tags.
+   --  two-run complete replacement and its manifest/transition. ID 33 is a
+   --  legacy full-map entry for an empty family; it never names an attempted
+   --  object. These values isolate fixture roles and are not ID-generation
+   --  policy or tags.
    Probe_Database_ID        : constant Database_Identifier := Database_Identifier (Numbered_ID (1));
    Root_Manifest_ID         : constant Identifier := Numbered_ID (2);
    Root_Transition_ID       : constant Identifier := Numbered_ID (3);
@@ -203,7 +203,10 @@ procedure Flyology.DB.Client_Probe is
    Later_Transaction_ID     : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (16));
    Later_Run_ID             : constant Identifier := Numbered_ID (17);
-   Audit_Run_ID             : constant Identifier := Numbered_ID (18);
+   --  The audit run deliberately reuses a value previously supplied for an
+   --  empty family in the legacy full compaction map. Successful publication
+   --  proves that ignored no-work entries do not reserve identities.
+   Audit_Run_ID             : constant Identifier := Numbered_ID (32);
    Later_Manifest_ID        : constant Identifier := Numbered_ID (19);
    Later_Transition_ID      : constant Identifier := Numbered_ID (20);
    Third_Transaction_ID     : constant Transaction_Identifier :=
@@ -218,12 +221,10 @@ procedure Flyology.DB.Client_Probe is
    Final_Audit_Run_ID        : constant Identifier := Numbered_ID (29);
    Final_Manifest_ID         : constant Identifier := Numbered_ID (30);
    Final_Transition_ID       : constant Identifier := Numbered_ID (31);
-   Empty_Later_Metadata_Run_ID : constant Identifier := Numbered_ID (32);
-   Unchanged_Third_Audit_Run_ID : constant Identifier := Numbered_ID (33);
-   Unchanged_Third_Metadata_Run_ID : constant Identifier := Numbered_ID (34);
-   Empty_Compaction_Audit_Run_ID : constant Identifier := Numbered_ID (35);
-   Empty_Compaction_Metadata_Run_ID : constant Identifier := Numbered_ID (36);
-   Empty_Final_Metadata_Run_ID : constant Identifier := Numbered_ID (37);
+   --  This compatibility-fixture identity is ignored because family 3 is
+   --  empty at the first complete replacement. It is not a production
+   --  placeholder convention or allocation policy.
+   Legacy_Empty_Metadata_Run_ID : constant Identifier := Numbered_ID (33);
    --  IDs 38 and 39 identify the fixture's read-only transactions immediately
    --  before and after its one caller-triggered replica refresh. They are
    --  transaction-test geometry, not replica cadence or identity policy.
@@ -236,22 +237,20 @@ procedure Flyology.DB.Client_Probe is
    Flush_Token_Tag          : constant Interfaces.Unsigned_64 := 16#F105#;
    Checkpoint_Runs          : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Checkpoint_Run_ID)];
+   --  A legacy full-family map remains accepted. The empty-family entries are
+   --  retained in the receipt but neither published nor identity-reserved.
    Compaction_Runs          : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Compaction_Run_ID),
-      Configure_Checkpoint_Run (2, Empty_Compaction_Audit_Run_ID),
-      Configure_Checkpoint_Run (3, Empty_Compaction_Metadata_Run_ID)];
+      Configure_Checkpoint_Run (2, Audit_Run_ID),
+      Configure_Checkpoint_Run (3, Legacy_Empty_Metadata_Run_ID)];
    Later_Runs               : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Later_Run_ID),
-      Configure_Checkpoint_Run (2, Audit_Run_ID),
-      Configure_Checkpoint_Run (3, Empty_Later_Metadata_Run_ID)];
+      Configure_Checkpoint_Run (2, Audit_Run_ID)];
    Third_Runs               : constant Checkpoint_Run_Identity_Array :=
-     [Configure_Checkpoint_Run (1, Third_Run_ID),
-      Configure_Checkpoint_Run (2, Unchanged_Third_Audit_Run_ID),
-      Configure_Checkpoint_Run (3, Unchanged_Third_Metadata_Run_ID)];
+     [Configure_Checkpoint_Run (1, Third_Run_ID)];
    Final_Compaction_Runs    : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Final_Primary_Run_ID),
-      Configure_Checkpoint_Run (2, Final_Audit_Run_ID),
-      Configure_Checkpoint_Run (3, Empty_Final_Metadata_Run_ID)];
+      Configure_Checkpoint_Run (2, Final_Audit_Run_ID)];
    Key_Data                 : constant Byte_Array := Bytes ("client-key");
    Value_Data               : constant Byte_Array := Bytes ("client-value");
    Later_Value_Data         : constant Byte_Array := Bytes ("client-value-later");
@@ -740,6 +739,9 @@ begin
    if not Flush_Info.Replaces_Current_Runs
      or else Flush_Receipt_Manifest_ID (Flush_Info) /= Compaction_Manifest_ID
      or else Flush_Receipt_Transition_ID (Flush_Info) /= Compaction_Transition_ID
+     or else Flush_Receipt_Run_Total (Flush_Info) /= Compaction_Runs'Length
+     or else Flush_Receipt_Run (Flush_Info, 2) /= Compaction_Runs (2)
+     or else Flush_Receipt_Run (Flush_Info, 3) /= Compaction_Runs (3)
    then
       raise Program_Error with "client-backed compaction receipt lost replacement authority";
    end if;
@@ -756,9 +758,13 @@ begin
    Expect (Result, Success, "appended-family remote put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "later client-backed commit failed");
-   Required_L0_Checkpoint_Action (Created, Action, Result);
+   Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "later client-backed checkpoint query failed");
-   if Action /= Additive_Flush_Required then
+   if Checkpoint_Requirement_Action (Requirement) /= Additive_Flush_Required
+     or else Checkpoint_Requirement_Family_Total (Requirement) /= 2
+     or else Checkpoint_Requirement_Family (Requirement, 1) /= 1
+     or else Checkpoint_Requirement_Family (Requirement, 2) /= 2
+   then
       raise Program_Error with "later client-backed commit did not require additive Flush";
    end if;
    Flush
@@ -777,9 +783,12 @@ begin
    Expect (Result, Success, "third client-backed put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "third client-backed commit failed");
-   Required_L0_Checkpoint_Action (Created, Action, Result);
+   Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "third client-backed checkpoint query failed");
-   if Action /= Additive_Flush_Required then
+   if Checkpoint_Requirement_Action (Requirement) /= Additive_Flush_Required
+     or else Checkpoint_Requirement_Family_Total (Requirement) /= 1
+     or else Checkpoint_Requirement_Family (Requirement, 1) /= 1
+   then
       raise Program_Error with "third client-backed commit did not require additive Flush";
    end if;
    Flush
@@ -857,7 +866,7 @@ begin
       Result  => Result);
    Expect (Result, Outcome_Unknown, "blocking compaction lost HEAD uncertainty");
    if not Flush_Info.Replaces_Current_Runs
-     or else Flush_Receipt_Run_Total (Flush_Info) /= 3
+     or else Flush_Receipt_Run_Total (Flush_Info) /= Final_Compaction_Runs'Length
      or else Flush_Receipt_Manifest_ID (Flush_Info) /= Final_Manifest_ID
      or else Flush_Receipt_Transition_ID (Flush_Info) /= Final_Transition_ID
    then

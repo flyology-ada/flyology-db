@@ -92,3 +92,6 @@ work. Memory/files qualification covers per-family, aggregate, and impossible re
 authenticated provider probe covers clean and additive decisions on the same public writer path.
 `Observe_L0_Checkpoint_Requirement` exposes the same decision with an owned exact family projection. Successful
 observation atomically replaces the caller's prior value; capacity or state failure leaves that value unchanged.
+The projection is directly actionable through the existing Flush or Compact map after the application assigns one
+fresh immutable run identity per returned family. The publication call revalidates the observed work and accepts the
+exact sparse map; it retains compatibility with a full-family map by ignoring entries for families with no work.
