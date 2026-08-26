@@ -273,6 +273,29 @@ tombstone semantics, endpoint comparison, allocation, transaction-local mutation
 the public Ada contract, or refinement. TLC owns the first two finite rules; the remaining operational boundaries
 must be covered by the Ada implementation and deterministic tests.
 
+## Generation-bound lazy-SST-read lane
+
+`LazySSTRead.tla` freezes the certainty and publication boundary for one independently authenticated SST-v2 entry.
+`Begin` abstracts a successful HeadObject authority observation followed by a generation-bound header range. The
+index and selected entry frame must use that exact generation, and the frame must match the key and value
+authenticated by the index before output changes. Allocation, stale-generation, and corruption rejection preserve
+the prior output. A provider replacement after the frame is owned does not alter the captured bytes. The finite
+model's two keys, two generations, and four values are qualification geometry, not format extents, key/value limits,
+cache capacity, request policy, or public defaults.
+
+TLC exhausts 16 distinct states at depth 6 with nonzero coverage for capture, provider replacement, index/frame
+authentication, success, allocation rejection, both stale-generation rejections, and both corruption rejections.
+The stale-generation probe publishes the current generation under an older captured header, while the frame-swap
+probe authenticates another key's frame; both must violate `Safety`. The independently validated seven-state witness
+rejects one allocation, authenticates the exact frame, replaces provider authority, and still publishes only the
+owned older-generation value.
+
+`LazySSTReadSafetyProof.tla` is an action-preservation kernel over arbitrary nonempty generation, key, and value sets.
+TLAPS proves 41 obligations for type and request binding, exact generation and frame binding, prepublication and
+failure atomicity, exact successful output, and quiescence. The model proves no CRC or byte-range arithmetic, codec,
+allocation implementation, provider behavior, progress, public API, or refinement to Ada. Those remain codec and
+executable qualification boundaries documented in `docs/architecture/lazy-sst-reads.md`.
+
 ## Witness projection
 
 `CommitPublicationWitness.tla` adds a deliberate invariant violation that asks TLC for one useful path. The
@@ -440,3 +463,5 @@ The range-normalization lane adds 3,419 states at depth 4, one validated bridge/
 negative probe, and 19 of 19 strict TLAPS obligations. The paged-scan lane adds 341 states at depth 6, one validated
 fixed-view/backpressure witness, skipped-key and nonmaximal-page negative probes, full semantic-action coverage, and
 24 of 24 strict TLAPS obligations.
+The lazy-SST-read lane adds 16 states at depth 6, one validated allocation/replacement witness, stale-generation and
+frame-swap negative probes, full semantic-action coverage, and 41 of 41 strict TLAPS obligations.

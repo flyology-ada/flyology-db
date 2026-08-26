@@ -1,5 +1,33 @@
 # Review record
 
+## Accepted generation-bound lazy SST read formal/design candidate
+
+- Parent: accepted owned physical scan merge implementation commit `21f685f`.
+- Scope: explain why SST v1 cannot safely serve independently validated ranges, freeze an additive SST-v2
+  entry-frame/index design, and add finite TLA+, two negative probes, a checked witness, and an abstract TLAPS
+  kernel for one generation-bound lazy entry read. No Ada declaration, persisted byte, public default, cache,
+  provider call, retry, helper task, compaction decision, or operational compatibility claim changes in this unit.
+- Format and API boundary: v1 stays whole-object compatible. The v2 candidate retains a whole-object CRC and adds
+  exact header frame/index extents, one CRC-authenticated frame per entry, and a CRC-authenticated trailing index
+  whose duplicated entry facts must match the selected frame. Exact numeric wire authority waits for the codec and
+  golden fixtures. Existing `Get`, `Scan`, and `Next_Scan_Page` keep their no-storage-I/O contract; an eventual lazy
+  read requires a separately reviewed caller-driven deadline/cancellation/buffer/completion-set surface.
+- Authority: two keys, two opaque generations, and four values are finite qualification geometry only. No block
+  size, key/value ceiling, cache capacity, timeout, retry count, or public constant is selected. Variable allocation
+  remains a lazy checked consequence of persisted database/per-family limits and authenticated object extents.
+- Findings cycle: focused review strengthened safety with explicit prepublication output atomicity and active-phase
+  generation/key binding. TLAPS had correctly rejected the weaker noninductive abstract predicate. The witness
+  validator was also fixed to read this model's deliberate `lastAction` trace field. The integration sweep then found
+  one P1 mismatch: the first range read could not establish its own generation because Object Storage requires an
+  expected generation for `Get_Range`. The protocol now observes generation and extent with `Head_Object`, then
+  validates the header through a generation-bound range before publishing the formal `Begin` state. The constants,
+  compatibility, certainty, failure-atomicity, formal-boundary, API-surface, and unnecessary-policy resweep finds no
+  remaining actionable P0/P1/P2 finding.
+- Verification: the maintained formal gate exhausts 16 distinct states at depth 6 with every normal and rejection
+  action covered; both unsafe probes violate `Safety`; the seven-state JSON witness passes its independent validator;
+  and strict TLAPS proves 41/41 obligations. Repository/diff checks pass. No Ada implementation or refinement claim
+  is made by this candidate.
+
 ## Accepted owned physical scan merge implementation candidate
 
 - Parent: accepted owned physical scan merge formal commit `2082515`.

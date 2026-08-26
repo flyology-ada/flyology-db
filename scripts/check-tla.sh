@@ -1251,6 +1251,79 @@ grep -q 'Invariant WitnessPending is violated.' \
 grep -q 'All 18 obligations proved.' \
   "$temporary_root/tlaps-physical-scan-merge.log"
 
+#  Two keys, two generations, and four exact values are finite qualification
+#  geometry for one generation-bound lazy SST entry read. They are not
+#  key/value limits, format extents, cache capacities, or provider policy.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-lazy-sst-read-states" \
+  -config LazySSTRead.cfg LazySSTRead \
+  >"$temporary_root/tlc-lazy-sst-read.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-lazy-sst-read.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lazy-sst-read.log"
+grep -q '16 distinct states found' "$temporary_root/tlc-lazy-sst-read.log"
+grep -q 'The depth of the complete state graph search is 6.' \
+  "$temporary_root/tlc-lazy-sst-read.log"
+for action in Begin ReplaceObject ReadIndex ReadFrame PublishSuccess \
+  RejectAllocation RejectStaleIndex RejectStaleFrame RejectCorruptIndex \
+  RejectCorruptFrame
+do
+  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-lazy-sst-read.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-lazy-sst-read-stale-probe-states" \
+  -config LazySSTReadStaleProbe.cfg LazySSTReadStaleProbe \
+  >"$temporary_root/tlc-lazy-sst-read-stale-probe.log" 2>&1
+lazy_sst_read_stale_probe_status=$?
+set -e
+test "$lazy_sst_read_stale_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-lazy-sst-read-stale-probe.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lazy-sst-read-stale-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-lazy-sst-read-frame-swap-probe-states" \
+  -config LazySSTReadFrameSwapProbe.cfg LazySSTReadFrameSwapProbe \
+  >"$temporary_root/tlc-lazy-sst-read-frame-swap-probe.log" 2>&1
+lazy_sst_read_frame_swap_probe_status=$?
+set -e
+test "$lazy_sst_read_frame_swap_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-lazy-sst-read-frame-swap-probe.log"
+! grep -q '^Warning:' \
+  "$temporary_root/tlc-lazy-sst-read-frame-swap-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-lazy-sst-read-witness-states" \
+  -config LazySSTReadWitness.cfg \
+  -dumpTrace json "$temporary_root/lazy-sst-read-witness.json" \
+  LazySSTReadWitness \
+  >"$temporary_root/tlc-lazy-sst-read-witness.log" 2>&1
+lazy_sst_read_witness_status=$?
+set -e
+test "$lazy_sst_read_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-lazy-sst-read-witness.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lazy-sst-read-witness.log"
+"$model_root/validate_lazy_sst_read_witness.py" \
+  "$temporary_root/lazy-sst-read-witness.json"
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-lazy-sst-read-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/LazySSTReadSafetyProof.tla" \
+  >"$temporary_root/tlaps-lazy-sst-read.log" 2>&1
+#  Initialization, five action families, and quiescence establish the
+#  reviewed 41-obligation generation/binding/output kernel.
+grep -q 'All 41 obligations proved.' \
+  "$temporary_root/tlaps-lazy-sst-read.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -1331,3 +1404,7 @@ printf '%s\n' "  Physical scan merge TLC 21 distinct states, depth 6"
 printf '%s\n' "  Physical scan merge TLAPS 18/18 obligations"
 printf '%s\n' "  Owned merge/tombstone/concurrent witness validated"
 printf '%s\n' "  Negative partial-advance and stale-winner probes detected"
+printf '%s\n' "  Lazy SST read TLC 16 distinct states, depth 6"
+printf '%s\n' "  Lazy SST read TLAPS 41/41 obligations"
+printf '%s\n' "  Generation-bound allocation/replacement witness validated"
+printf '%s\n' "  Negative stale-generation and frame-swap probes detected"

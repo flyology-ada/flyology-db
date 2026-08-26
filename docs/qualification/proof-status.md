@@ -14,6 +14,13 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
+The generation-bound lazy-SST-read design changes no selected SPARK unit. Its maintained finite TLA+ lane exhausts
+16 distinct states to depth 6 with nonzero coverage for every normal and rejection action, detects stale-generation
+and frame-swap unsafe probes, and validates the allocation-rejection/provider-replacement witness. Its arbitrary-set
+TLAPS kernel proves 41/41 obligations for request typing, exact generation/frame binding, prepublication and failure
+atomicity, exact successful output, and quiescence. CRC arithmetic, byte-range arithmetic, SST-v2 codec refinement,
+allocation, Object Storage behavior, and the eventual owner-driven Ada read operation remain outside this claim.
+
 The owned physical scan merge implementation changes no selected SPARK unit and preserves the exact warning-strict
 campaign at 1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or `pragma Assume`
 statements. Its maintained TLA/TLC/TLAPS lane exhausts 21 distinct states to depth 6, detects independent

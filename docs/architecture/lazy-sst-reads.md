@@ -1,0 +1,82 @@
+# Generation-bound lazy SST reads
+
+The next LSM storage slice makes immutable runs range-readable without weakening persisted integrity or silently
+adding storage I/O to the established local `Get`, `Scan`, and `Next_Scan_Page` contracts. SST version 1 remains
+readable through its existing generation-bound whole-object decoder. New writers will eventually emit an additive
+SST version 2 whose exact entry frames can be authenticated independently after one authority observation, one
+header range, and one index range.
+
+This is a format and certainty prerequisite, not an automatic cache, block-size, prefetch, timeout, retry, or
+compaction policy. The existing APIs that promise no storage I/O remain unchanged until a separately reviewed
+caller-driven operation supplies explicit deadline, cancellation, buffer ownership, and completion-set authority.
+
+## Why SST version 1 cannot stream safely
+
+SST version 1 is one variable-length entry stream followed by a single object CRC. Its header authenticates total
+extent and descriptor facts, but an individual range contains neither an independently authenticated entry nor an
+index binding that entry to its key and sequence. Reading a value range without the rest of the object would skip
+the format's corruption check. Provider generation binding prevents mixed object versions; it does not replace the
+persisted integrity contract.
+
+The implementation therefore must not claim lazy SST-v1 validation. A v1 run is read and checked whole, or the read
+fails. Mixed manifests may retain v1 and v2 runs; compaction may read either version and emits only the current writer
+version after that version is accepted.
+
+## SST version 2 candidate
+
+SST v2 retains the same database, run, family, sequence interval, entry count, logical byte count, canonical
+unsigned-byte key order, descending sequence order within a key, operation encoding, and immutable object identity.
+It changes framing as follows:
+
+- the authenticated header carries exact frame-region and index-region byte extents;
+- each variable-length entry frame carries the established sequence, operation, key length, value length, exact key
+  and value bytes, plus a CRC over that complete frame;
+- the trailing index has one canonical record per entry containing the frame offset and extent plus the duplicated
+  sequence, operation, lengths, and exact key bytes needed for lookup and merge;
+- the index has its own CRC, and the object retains a whole-object CRC for complete reads and offline validation;
+- a range-decoded frame is accepted only when every duplicated fact matches its authenticated index record.
+
+One entry is one integrity frame. This deliberately introduces no selected block size or entries-per-block ceiling.
+Frame and index extents derive by checked arithmetic from exact admitted entry/key/value lengths and the persisted
+database and column-family limits. The index may be retained or cached only under separately admitted byte authority;
+allocation failure is typed backpressure and publishes no partial read state.
+
+The exact wire offsets, widths, version/magic bytes, and golden image become immutable compatibility authority in the
+codec implementation unit. They will be documented adjacent to their declarations and in `persisted-formats.md` when
+the codec lands; this design candidate does not predeclare numeric offsets before the implementation and proof agree.
+
+## Range-read protocol
+
+1. Use `Head_Object` to observe the exact object extent and opaque provider generation without retaining a body.
+2. Read the exact v2 header range with `Expected_Entity_Tag` equal to that observed generation. A replacement between
+   HEAD and this range read therefore rejects before a candidate header exists.
+3. Validate magic, version, kind, database/run/family identity, object length, sequence interval, entry count, logical
+   bytes, checked frame/index extents, and header CRC before allocating variable storage. The object length in the
+   header must equal the authoritative HEAD extent.
+4. Read the exact index range with the same `Expected_Entity_Tag`. Validate its exact
+   range, length, canonical records, ordering, bounds, uniqueness, and index CRC before publication.
+5. Select an entry from that authenticated index. Read exactly its frame with the same required generation.
+6. Validate the frame CRC and every index-bound field and key byte before exposing a value or advancing a scan
+   position. Delete frames expose absence/tombstone authority, never value bytes.
+7. A stale generation, malformed range, allocation failure, cancellation, or incomplete response leaves the prior
+   result and cursor position unchanged. No mutation or read is automatically replayed.
+
+Once header, index, or frame bytes are fully returned and authenticated, a later provider replacement cannot change
+those owned bytes. Before that boundary, any generation mismatch rejects the candidate. Listing never participates.
+
+## Formal and executable boundary
+
+`LazySSTRead.tla` treats successful HEAD observation plus generation-bound header validation as one atomic `Begin`
+boundary. It checks exact-generation index and frame reads, index/frame binding, allocation rejection, corruption
+rejection, and success after a provider replacement that occurs only after the frame is owned. Negative probes
+deliberately read a newer generation under an older header and substitute a frame for another key. A checked witness
+follows Begin, index, allocation rejection, exact frame, concurrent replacement, and successful publication.
+`LazySSTReadSafetyProof.tla` proves the abstract generation/binding/failure-atomicity action kernel for arbitrary
+finite generation, key, and value sets. Replacement between HEAD and header validation is outside the published
+candidate state and must fail through the generation-bound Object Storage range result.
+
+The formal geometry is not a format bound, cache size, request count, retry budget, or public default. The model does
+not prove CRC arithmetic, byte offsets, range arithmetic, the Ada codec, provider behavior, progress, concurrency,
+or refinement. Codec acceptance additionally requires golden v1/v2 fixtures, v1 compatibility, every header/index/
+frame truncation and corruption class, wrong identity/kind/version/generation, offset overflow, swapped frames,
+trailing bytes, mixed-version manifests, complete local loss, and all maintained providers.
