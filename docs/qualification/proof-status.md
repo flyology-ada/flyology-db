@@ -14,6 +14,13 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
+The additive public storage-backed `Get` composes already-qualified transaction selection and the mixed-version
+checkpoint selector without changing a selected SPARK unit or either TLA+ action system. The runtime operation,
+database/transaction borrow lifetime, copied descriptor ownership, completion scheduling, and exact buffer movement
+remain executable boundaries. Acceptance requires the complete maintained TLA/TLC/TLAPS gate and warning-strict
+GNATprove wrapper to remain green serially on the final tree; those commands do not establish an Ada-to-TLA
+refinement proof or prove Object Storage behavior.
+
 The generation-bound lazy-SST-read design, private whole-object plus slice-local SST-v2 codecs, and private
 caller-driven read operation change no selected SPARK unit. The runtime codecs and owner-stack operation remain
 executable boundaries qualified by the independent golden, fail-closed corruption, ownership, and provider corpus.

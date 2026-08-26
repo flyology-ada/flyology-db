@@ -383,9 +383,11 @@ mismatch, intact-frame substitution, malformed extents, unsupported version, and
 rejection, common-envelope identity/kind/flags rejection, and hostile U64 extent overflow. This freezes the v2 wire
 representation. Flush and compaction now encode every newly published run as v2. Recovery first authenticates the
 persisted version selector and dispatches v1 to its whole-object decoder or v2 to its whole-object decoder; one
-manifest may name both. The private lazy point-read path accepts only v2 because v1 has no independently authenticated
-frame. Complete-loss recovery, mixed-version recovery, and authenticated provider execution are covered by the
-maintained deterministic corpus; the public transaction read path is not yet connected to lazy storage I/O.
+manifest may name both. The lazy point-read path authenticates v2 index/frame slices and admits a frozen v1 run only
+through an exact generation-bound whole-object read that fits the caller's scratch token, because v1 has no
+independently authenticated frame. Complete-loss recovery, mixed-version recovery, and authenticated provider
+execution are covered by the maintained deterministic corpus. The additive public storage-backed `Get` composes that
+selector after transaction-local and committed-suffix lookup; the established storage-free `Get` remains unchanged.
 
 ## Evolution
 

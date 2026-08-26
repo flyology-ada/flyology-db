@@ -29,6 +29,7 @@ procedure Flyology.DB.Client_Probe is
    use type Buckets.Create_Outcome_Kind;
    use type Ada.Streams.Stream_Element_Array;
    use type Byte;
+   use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
 
    procedure Expect (Actual, Expected : Outcome_Code; Context : String) is
@@ -259,6 +260,13 @@ procedure Flyology.DB.Client_Probe is
      Transaction_Identifier (Numbered_ID (38));
    Replica_Refreshed_Reader_ID  : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (39));
+   --  IDs 40 and 41 are the suffix-backed and checkpoint-backed public Get
+   --  reader fixtures. They are stable test identities, not allocation or
+   --  transaction-ID generation policy.
+   Suffix_Get_Reader_ID         : constant Transaction_Identifier :=
+     Transaction_Identifier (Numbered_ID (40));
+   Checkpoint_Get_Reader_ID     : constant Transaction_Identifier :=
+     Transaction_Identifier (Numbered_ID (41));
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag              : constant Interfaces.Unsigned_64 := 16#F105#;
@@ -319,6 +327,234 @@ procedure Flyology.DB.Client_Probe is
    Lazy_Checkpoint_Work         :
      Lazy_Checkpoint_Read_Operation
        (Lazy_Checkpoint_Set'Access, Context'Access, Client'Access, Lazy_Pool'Access, null);
+
+   procedure Test_Public_Get
+     (Transaction_ID : Transaction_Identifier;
+      Expected_Value : Byte_Array;
+      Checkpoint_Backed : Boolean)
+   is
+      --  The public Get parent adds one slot above the established six-slot
+      --  private checkpoint selector stack. This is exact fixture geometry,
+      --  not a production completion-set default.
+      Read_Set       : aliased Flyology.Operations.Completion_Set (7);
+      Read_Pool      : aliased Flyology.Buffers.Pool
+        (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
+      Read_Buffer    : Flyology.Buffers.Unique_Buffer (Read_Pool'Access);
+      Restored       : Flyology.Buffers.Unique_Buffer (Read_Pool'Access);
+      Read_Txn       : aliased Transaction;
+      Stop           : aliased Flyology.Cancellation.Token;
+      Read_Work      : Get_Operation
+        (Read_Set'Access, Created'Access, Read_Txn'Access, Read_Pool'Access, null);
+      Cancelled_Work : Get_Operation
+        (Read_Set'Access, Created'Access, Read_Txn'Access, Read_Pool'Access, Stop'Access);
+      Read_Data      : Flyology.Bytes.Unbounded_Bytes;
+      Local_Key      : constant Byte_Array := Bytes ("local-key");
+      Local_Value    : constant Byte_Array := Bytes ("local-value");
+      --  Arbitrary nonzero metadata proves the exact moved token returns from
+      --  both composable and synchronous waits.
+      Read_Tag       : constant Interfaces.Unsigned_64 := 16#6E71#;
+      --  Exact zero is the already-expired deadline fixture. It selects no
+      --  production timeout default or scheduling interval.
+      Expired_Timeout : constant Duration := 0.0;
+
+      procedure Expect_Allocation_Rejection
+        (Point   : Internal_Allocation_Fault_Point;
+         Context : String)
+      is
+      begin
+         Set_Test_Allocation_Fault (Point);
+         Get
+           (Family,
+            Key_Data,
+            Read_Buffer,
+            Test_Operation_Timeout,
+            Read_Work);
+         Flyology.Operations.Wait_All (Read_Set);
+         Finish (Read_Work, Read_Data, Result, Restored);
+         Expect (Result, Capacity_Exceeded, Context);
+         if Flyology.Bytes.Length (Read_Data) /= 0
+           or else Read_Txn.Owner.Arena.Point_Read_Count /= 0
+           or else not Flyology.Buffers.Has_Buffer (Restored)
+           or else Flyology.Buffers.Tag (Restored) /= Read_Tag
+         then
+            raise Program_Error with Context & " lost failure or token authority";
+         end if;
+         Flyology.Buffers.Move (Restored, Read_Buffer);
+      end Expect_Allocation_Rejection;
+   begin
+      Begin_Transaction
+        (Created, Transaction_ID, Serializable, Read_Txn, Result);
+      Expect (Result, Success, "public Get reader begin failed");
+
+      --  A busy one-slot set rejects before token movement. Exact bytes,
+      --  length, and tag prove that Get also rolls back its retained database
+      --  lease and operation state without consuming caller ownership.
+      declare
+         Marker          : constant Ada.Streams.Stream_Element_Array := [16#A5#, 16#5A#, 16#C3#];
+         Rollback_Set    : aliased Flyology.Operations.Completion_Set (1);
+         Rollback_Pool   : aliased Flyology.Buffers.Pool
+           (Block_Size => Positive (Marker'Length), Capacity => 1);
+         Rollback_Buffer : Flyology.Buffers.Unique_Buffer (Rollback_Pool'Access);
+         Rollback_Work   : Get_Operation
+           (Rollback_Set'Access,
+            Created'Access,
+            Read_Txn'Access,
+            Rollback_Pool'Access,
+            null);
+         Busy            : Timers.Timer_Operation :=
+           Timers.Sleep_For (Rollback_Set'Access, Test_Operation_Timeout);
+         Rejected        : Boolean := False;
+      begin
+         Flyology.Buffers.Acquire (Rollback_Buffer);
+         Flyology.Buffers.Copy_From (Rollback_Buffer, Marker);
+         Flyology.Buffers.Set_Tag (Rollback_Buffer, Read_Tag);
+         begin
+            Get
+              (Family,
+               Key_Data,
+               Rollback_Buffer,
+               Test_Operation_Timeout,
+               Rollback_Work);
+         exception
+            when Flyology.Operations.Capacity_Error =>
+               Rejected := True;
+         end;
+         if not Rejected
+           or else not Flyology.Buffers.Has_Buffer (Rollback_Buffer)
+           or else Flyology.Buffers.Length (Rollback_Buffer) /= Marker'Length
+           or else Flyology.Buffers.Tag (Rollback_Buffer) /= Read_Tag
+           or else not Same (Rollback_Buffer, Marker)
+         then
+            raise Program_Error with "public Get Start did not roll back its exact token";
+         end if;
+         Flyology.Operations.Cancel (Busy);
+         Flyology.Operations.Wait_All (Rollback_Set);
+         begin
+            Timers.Finish (Busy);
+         exception
+            when Flyology.Operations.Operation_Cancelled =>
+               null;
+         end;
+         Flyology.Operations.Release (Busy);
+         Flyology.Buffers.Release (Rollback_Buffer);
+      end;
+
+      Flyology.Buffers.Acquire (Read_Buffer);
+      Flyology.Buffers.Set_Tag (Read_Buffer, Read_Tag);
+      Expect_Allocation_Rejection
+        (Get_Operation_State_Allocation,
+         "public Get state allocation failure was not typed");
+      if Checkpoint_Backed then
+         Expect_Allocation_Rejection
+           (Get_Run_Descriptor_Allocation,
+            "public Get run allocation failure was not typed");
+         Expect_Allocation_Rejection
+           (Get_Child_Operation_Allocation,
+            "public Get child allocation failure was not typed");
+      end if;
+
+      Stop.Request;
+      Get
+        (Family,
+         Key_Data,
+         Read_Buffer,
+         Test_Operation_Timeout,
+         Cancelled_Work);
+      Flyology.Operations.Wait_All (Read_Set);
+      Finish (Cancelled_Work, Read_Data, Result, Restored);
+      Expect (Result, Cancelled, "public Get ignored pre-start cancellation");
+      if Flyology.Bytes.Length (Read_Data) /= 0
+        or else Read_Txn.Owner.Arena.Point_Read_Count /= 0
+        or else Flyology.Buffers.Tag (Restored) /= Read_Tag
+      then
+         raise Program_Error with "public Get cancellation published data or lost token authority";
+      end if;
+      Flyology.Buffers.Move (Restored, Read_Buffer);
+
+      Get
+        (Family,
+         Key_Data,
+         Read_Buffer,
+         Expired_Timeout,
+         Read_Work);
+      Flyology.Operations.Wait_All (Read_Set);
+      Finish (Read_Work, Read_Data, Result, Restored);
+      Expect (Result, Timed_Out, "public Get ignored an expired deadline");
+      if Flyology.Bytes.Length (Read_Data) /= 0
+        or else Read_Txn.Owner.Arena.Point_Read_Count /= 0
+        or else Flyology.Buffers.Tag (Restored) /= Read_Tag
+      then
+         raise Program_Error with "public Get timeout published data or lost token authority";
+      end if;
+      Flyology.Buffers.Move (Restored, Read_Buffer);
+
+      Get
+        (Family,
+         Key_Data,
+         Read_Buffer,
+         Test_Operation_Timeout,
+         Read_Work);
+      if Flyology.Buffers.Has_Buffer (Read_Buffer) then
+         raise Program_Error with "public composable Get did not move its scratch token";
+      end if;
+      Flyology.Operations.Wait_All (Read_Set);
+      Finish (Read_Work, Read_Data, Result, Restored);
+      Expect (Result, Success, "public composable Get failed");
+      if not Same (Read_Data, Expected_Value)
+        or else not Flyology.Buffers.Has_Buffer (Restored)
+        or else Flyology.Buffers.Tag (Restored) /= Read_Tag
+        or else Read_Txn.Owner.Arena.Point_Read_Count /= 1
+      then
+         raise Program_Error with "public composable Get lost value, observation, or token authority";
+      end if;
+
+      Put (Created, Read_Txn, Family, Local_Key, Local_Value, Result);
+      Expect (Result, Success, "public Get local fixture Put failed");
+      Get
+        (Family,
+         Local_Key,
+         Restored,
+         Test_Operation_Timeout,
+         Read_Work);
+      Flyology.Operations.Wait_All (Read_Set);
+      Finish (Read_Work, Read_Data, Result, Read_Buffer);
+      Expect (Result, Success, "public Get did not select its transaction-local value");
+      if not Same (Read_Data, Local_Value)
+        or else Read_Txn.Owner.Arena.Point_Read_Count /= 1
+        or else Flyology.Buffers.Tag (Read_Buffer) /= Read_Tag
+      then
+         raise Program_Error with "public Get treated its own mutation as an external observation";
+      end if;
+
+      Get
+        (Created,
+         Read_Txn,
+         Family,
+         Bytes ("missing-key"),
+         Read_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Read_Data,
+         Result);
+      Expect (Result, Not_Found, "public synchronous Get absence failed");
+      if Flyology.Bytes.Length (Read_Data) /= 0
+        or else Read_Txn.Owner.Arena.Point_Read_Count /= 2
+        or else not Flyology.Buffers.Has_Buffer (Read_Buffer)
+        or else Flyology.Buffers.Tag (Read_Buffer) /= Read_Tag
+      then
+         raise Program_Error with "public synchronous Get lost absence observation or token authority";
+      end if;
+      Flyology.Operations.Release (Read_Work);
+      Flyology.Operations.Release (Cancelled_Work);
+      Rollback (Read_Txn, Result);
+      Expect (Result, Success, "public Get reader rollback failed");
+      Flyology.Buffers.Release (Read_Buffer);
+   exception
+      when others =>
+         Flyology.Buffers.Release (Read_Buffer);
+         Flyology.Buffers.Release (Restored);
+         raise;
+   end Test_Public_Get;
 
    procedure Test_Lazy_SST_Read is
       procedure Read_And_Expect
@@ -660,6 +896,9 @@ begin
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "client-backed commit failed");
    First_Sequence := Receipt_Sequence (Commit_Info);
+   --  Before the first checkpoint, the public state machine resolves the
+   --  committed suffix without starting Object Storage I/O.
+   Test_Public_Get (Suffix_Get_Reader_ID, Value_Data, False);
    Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "client-backed dirty checkpoint query failed");
    if Checkpoint_Requirement_Action (Requirement) /= Additive_Flush_Required
@@ -1112,6 +1351,10 @@ begin
       Receipt => Flush_Info,
       Result  => Result);
    Expect (Result, Success, "third client-backed additive Flush failed");
+
+   --  After the third checkpoint, the same public state machine falls through
+   --  to the authenticated immutable run selector.
+   Test_Public_Get (Checkpoint_Get_Reader_ID, Third_Value_Data, True);
 
    --  The exact current manifest order is oldest to newest. The private
    --  selector traverses it newest first at one fixed snapshot, skipping

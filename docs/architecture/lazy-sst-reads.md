@@ -1,17 +1,18 @@
 # Generation-bound lazy SST reads
 
-The private LSM storage slice makes immutable SST-v2 runs range-readable without weakening persisted integrity or
-silently adding storage I/O to the established public `Get`, `Scan`, and `Next_Scan_Page` contracts. SST version 1
-remains readable through its generation-bound whole-object decoder. New Flush and compaction outputs use additive
-SST version 2, whose exact entry frames can be authenticated independently after one authority observation, one
-header range, and one index range.
+The LSM storage slice makes immutable SST-v2 runs range-readable without weakening persisted integrity or silently
+adding storage I/O to the established storage-free public `Get`, `Scan`, and `Next_Scan_Page` contracts. An additive
+caller-composable `Get_Operation` and buffer-owned synchronous `Get` now opt into storage-backed point reads. SST
+version 1 remains readable through its generation-bound whole-object decoder. New Flush and compaction outputs use
+additive SST version 2, whose exact entry frames can be authenticated independently after one authority observation,
+one header range, and one index range.
 
 This is a format and certainty mechanism, not an automatic cache, block-size, prefetch, timeout, retry, or
-compaction-selection policy. The private caller-driven operation supplies explicit deadline, cancellation, moved
-buffer ownership, and completion-set authority. Existing public APIs that promise no storage I/O remain unchanged
-until a later public execution decision composes this mechanism into them.
+compaction-selection policy. The caller-driven operation supplies explicit deadline, cancellation, moved buffer
+ownership, and completion-set authority. Existing public APIs that promise no storage I/O remain unchanged; callers
+select the additive overload by supplying the unique scratch buffer or an established `Get_Operation`.
 
-The next private layer composes that one-run mechanism across one exact
+The checkpoint selector composes that one-run mechanism across one exact
 oldest-to-newest manifest run slice at a fixed transaction snapshot. It copies
 the exact descriptor extent into operation-owned storage, traverses newest to
 oldest, skips a run without I/O when its lowest sequence is newer than the
@@ -66,15 +67,38 @@ database and column-family limits. The index may be retained or cached only unde
 allocation failure is typed backpressure and publishes no partial read state.
 
 The exact wire offsets, widths, version/magic bytes, and golden image are frozen in the private whole-object codec
-and documented adjacent to their declarations and in `persisted-formats.md`. Durable run publication and private
-range-read execution are active; no public lazy-read overload is exposed.
+and documented adjacent to their declarations and in `persisted-formats.md`. Durable run publication and
+storage-backed public point-read execution are active. The storage-free overloads remain unchanged.
 
 The private range-local codec consumes the exact index and frame slices described below. Index decoding
 authenticates the complete index CRC before parsing any record, validates canonical contiguous frame geometry and key
 ordering, and retains exact descriptor/key authority in one lazily allocated value. Frame decoding accepts one exact
 index-selected extent, authenticates its CRC, and binds sequence, operation, lengths, and every key byte before
 allocating output. These routines perform no Object Storage call and therefore do not themselves establish that the
-slices came from one provider generation; the private caller-driven operation establishes that authority.
+slices came from one provider generation; the caller-driven operation establishes that authority.
+
+## Public composition and ownership
+
+`Get_Operation` is declared directly in `Flyology.DB`; scoped lifetime is expressed by the limited operation,
+caller-owned completion set, retained borrows, cancellation, and typed `Finish`, not by a parallel namespace. The
+established operation retains the open `Database`, active `Transaction`, payload pool, and optional cancellation
+token until terminal publication. The caller must not use the transaction concurrently. Family and key facts are
+copied before initiation returns.
+
+Start first validates the database incarnation and fixed transaction snapshot, then resolves transaction-local
+mutations and the committed post-checkpoint suffix without Object Storage I/O. Only an unresolved key copies the
+exact immutable run descriptor slice and starts the mixed-version checkpoint selector. One absolute monotonic
+deadline and one exact caller-owned buffer token cover the complete path. Completion-slot rejection restores the
+database lease and leaves the caller's bytes, length, tag, and token ownership unchanged.
+
+Typed `Finish` is the sole normal restoration authority after successful initiation. It accepts any vacant handle
+from the same pool, restores the exact moved token, consumes the terminal result, and returns value bytes only for
+`Success`. Serializable point-read authority is retained only after a conclusive external `Success` or `Not_Found`;
+transaction-local reads do not create an external observation. The synchronous buffer overload is a literal
+`Wait_All`/`Finish` owner-stack wait on that same operation. This first public slice provides an established reusable
+operation rather than a limited constructor: an access parameter controlling the tagged `Database` and a result
+controlling `Get_Operation` would make one Ada function dispatch on two tagged types. No alias or compatibility
+wrapper is introduced to evade that rule.
 
 ## Range-read protocol
 
@@ -128,6 +152,8 @@ published runs to select newest and two historical snapshots, reject an
 invalid run order before I/O, and exhaust all runs for absence while preserving
 the exact moved token. It then converts the oldest run to frozen v1 and repeats
 historical-value and complete-absence selection across the mixed manifest.
-Recovery covers complete local loss and an actual mixed-version manifest. Broad
-provider qualification of this private path remains a later campaign; the maintained authenticated client fixture
-is the current provider seam.
+Recovery covers complete local loss and an actual mixed-version manifest. The authenticated client fixture exercises
+the public operation before a checkpoint through the committed suffix and after a checkpoint through the immutable
+selector, plus transaction-local precedence, Serializable observation, exact token restoration, restart, and the
+synchronous wait. Broad provider qualification of this path remains a later campaign; the maintained authenticated
+client fixture is the current provider seam.

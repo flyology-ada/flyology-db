@@ -109,6 +109,13 @@ predicate only after complete materialization. Transaction-owned predicates now 
 endpoint contact into exact unions before the persisted component count is enforced. Cross-family predicates remain
 separate; full-capacity merges succeed, while capacity or allocation failure leaves the prior set exact.
 
+The original storage-free point `Get` remains unchanged. An additive caller-owned `Get_Operation` and buffer-owned
+synchronous overload compose transaction-local mutations, the retained committed suffix, and generation-bound
+immutable checkpoint runs at the transaction's fixed snapshot. The operation retains the database and transaction
+through terminal publication, moves one exact caller scratch token, records Serializable point-read authority only
+after a conclusive external result, and restores the token only through typed `Finish`. It introduces no helper task,
+retry, cache, prefetch, or hidden storage bound.
+
 ## Durability rule
 
 A transaction is durably committed only after its complete immutable batch object is published and `meta/HEAD` is

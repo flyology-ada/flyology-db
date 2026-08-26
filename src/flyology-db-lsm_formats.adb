@@ -756,8 +756,10 @@ is
             Cursor := Cursor + Head_Policy.Identifier_Length;
          end loop;
          if Cursor /= Payload_End then
+            Value := Empty_Checkpoint_Manifest;
             Status := Invalid_Length;
          elsif not Structurally_Valid (Candidate) then
+            Value := Empty_Checkpoint_Manifest;
             Status := Invalid_Manifest_State;
          else
             Value := Candidate;

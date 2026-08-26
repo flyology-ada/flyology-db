@@ -99,3 +99,11 @@ observation atomically replaces the caller's prior value; capacity or state fail
 The projection is directly actionable through the existing Flush or Compact map after the application assigns one
 fresh immutable run identity per returned family. The publication call revalidates the observed work and accepts the
 exact sparse map; it retains compatibility with a full-family map by ignoring entries for families with no work.
+
+The additive client-backed storage `Get` is the first read-side composable expansion. Its established
+`Get_Operation`, typed `Finish`, and synchronous buffer overload resolve transaction-local mutations, the committed
+suffix, and immutable checkpoint runs under one snapshot, deadline, cancellation token, and exact caller scratch
+token. The maintained authenticated client fixture exercises suffix and checkpoint reads, restart, allocation,
+cancellation, timeout, Serializable observation, and exact token restoration. This does not replace or silently
+change the provider-neutral storage-free `Get` used by the Files acceptance showcase; direct memory/files lazy reads
+remain a separate execution decision.

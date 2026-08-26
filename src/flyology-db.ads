@@ -197,6 +197,19 @@ package Flyology.DB is
       Payload_Pool : not null access Flyology.Buffers.Pool;
       Cancellation : access Flyology.Cancellation.Token) is
      new Flyology.Operations.Operation with private;
+   --  Caller-composable fixed-snapshot point read. Item and Txn are retained
+   --  borrows through terminal publication; the caller must not use Txn while
+   --  the operation is active. Payload_Pool supplies the sole caller-selected
+   --  storage scratch bound. The operation checks transaction-local and
+   --  committed suffix state before reading immutable checkpoint runs, and
+   --  introduces no helper task, retry, run cap, timeout default, or cache.
+   type Get_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Txn          : not null access Transaction;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation with private;
    --  Project admission policy documented by the synchronous topology: one
    --  public atomic group has at most eight members. This is a bounded API and
    --  coordinator-capacity choice, not a wire-count limit or database default.
@@ -475,6 +488,76 @@ package Flyology.DB is
       Item_Key : Byte_Array;
       Data     : out Flyology.Bytes.Unbounded_Bytes;
       Result   : out Outcome_Code);
+
+   --  Start or restart the storage-backed form of the same fixed-snapshot
+   --  point read in an established caller-owned operation. Family and Item_Key
+   --  are copied before return. Lifecycle and completion-slot admission occur
+   --  before the exact Payload_Buffer token moves into operation ownership.
+   --  Successful initiation leaves the caller handle vacant until typed
+   --  Finish. The operation retains exclusive use of its Txn discriminant
+   --  while active and records a Serializable point observation only after a
+   --  conclusive Success or Not_Found result.
+   --  @param Family Valid family handle copied for the fixed read
+   --  @param Item_Key Exact arbitrary-byte key copied before return
+   --  @param Payload_Buffer Acquired caller-owned storage scratch token
+   --  @param Timeout One monotonic budget for the complete read
+   --  @param Operation Fresh or consumed database/transaction-bound operation
+   procedure Get
+     (Family         : Column_Family;
+      Item_Key       : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Get_Operation)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Consume a terminal owner-driven Get, restore its exact scratch token
+   --  into any vacant same-pool handle, and return the same Data/Result pair as
+   --  the synchronous overload. Data is empty on every non-Success outcome.
+   --  An unexpected retained exception is re-raised only after token and
+   --  operation ownership are restored.
+   --  @param Operation Terminal fixed-snapshot point read
+   --  @param Data Owned value bytes, empty on every non-Success outcome
+   --  @param Result Success, Not_Found, or exact typed failure
+   --  @param Payload_Buffer Vacant same-pool destination for the exact token
+   procedure Finish
+     (Operation      : in out Get_Operation;
+      Data           : out Flyology.Bytes.Unbounded_Bytes;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+     with Pre => Flyology.Operations.Is_Terminal (Operation)
+       and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool,
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Wait on the same owner-driven storage-backed Get state machine. The
+   --  caller supplies the sole scratch token and whole-operation timeout; the
+   --  established null cancellation default matches the other DB waits and
+   --  selects no retry or background execution policy.
+   --  @param Item Open database that owns the fixed snapshot state
+   --  @param Txn Active transaction borrowed exclusively during this call
+   --  @param Family Valid family handle
+   --  @param Item_Key Exact arbitrary-byte key
+   --  @param Payload_Buffer Acquired caller-owned storage scratch token
+   --  @param Timeout One monotonic budget for the complete read
+   --  @param Token Optional cooperative cancellation token
+   --  @param Data Owned value bytes, empty on every non-Success outcome
+   --  @param Result Success, Not_Found, or exact typed failure
+   procedure Get
+     (Item           : in out Database;
+      Txn            : aliased in out Transaction;
+      Family         : Column_Family;
+      Item_Key       : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Data           : out Flyology.Bytes.Unbounded_Bytes;
+      Result         : out Outcome_Code)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Validate and observe one canonical half-open scan predicate without
    --  reading or returning rows. A false endpoint flag means that endpoint is
@@ -1183,7 +1266,13 @@ private
       Recovery_SST_Image_Allocation,
       Recovery_Checkpoint_Image_Allocation,
       Recovery_Snapshot_Base_Allocation,
-      Flush_Activation_State_Allocation);
+      Flush_Activation_State_Allocation,
+      --  Test-only positions distinguish the public Get owner state, copied
+      --  immutable-run descriptors, and private selector child. They are not
+      --  persisted, public allocation policy, or stable ABI.
+      Get_Operation_State_Allocation,
+      Get_Run_Descriptor_Allocation,
+      Get_Child_Operation_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code);
@@ -1536,6 +1625,8 @@ private
    type Flush_Driver_State_Access is access Flush_Driver_State;
    type Refresh_Driver_State;
    type Refresh_Driver_State_Access is access Refresh_Driver_State;
+   type Get_Driver_State;
+   type Get_Driver_State_Access is access Get_Driver_State;
    type Lazy_SST_Read_State;
    type Lazy_SST_Read_State_Access is access Lazy_SST_Read_State;
    type Lazy_Checkpoint_Read_State;
@@ -1707,6 +1798,7 @@ private
       Has_Saved_Error  : Boolean := False;
       Saved_Error      : Ada.Exceptions.Exception_Occurrence;
    end record;
+   type Lazy_Checkpoint_Read_Operation_Access is access Lazy_Checkpoint_Read_Operation;
 
    procedure Read_Lazy_Checkpoint_Entry
      (Database_ID    : Database_Identifier;
@@ -1858,6 +1950,38 @@ private
    type Database is new Ada.Finalization.Limited_Controlled with record
       Life : aliased Database_Lifecycle;
    end record;
+
+   --  @exclude
+   type Get_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Txn          : not null access Transaction;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation (Set) with record
+      Payload          : Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Child            : Lazy_Checkpoint_Read_Operation_Access := null;
+      Driver_State     : Get_Driver_State_Access := null;
+      Retained_Life    : Database_Lifecycle_Access := null;
+      Retained_State   : Engine_State_Access := null;
+      --  Vacant-operation sentinel only. Get replaces it with the caller's
+      --  derived monotonic deadline before any child can start.
+      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      Final_Value      : Flyology.Bytes.Unbounded_Bytes;
+      Final_Result     : Outcome_Code := Invalid_State;
+      Has_Final_Result : Boolean := False;
+      Has_Saved_Error  : Boolean := False;
+      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+   end record;
+
+   --  @exclude
+   overriding procedure Drive
+     (Item : in out Get_Operation;
+      Event : Flyology.Operations.Driver_Event);
+   --  @exclude
+   overriding procedure Request_Cancellation (Item : in out Get_Operation);
+   --  @exclude
+   overriding procedure Finalize (Item : in out Get_Operation);
 
    overriding
    procedure Finalize (Item : in out Database);

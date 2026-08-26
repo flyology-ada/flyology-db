@@ -2391,6 +2391,7 @@ package body Flyology.DB is
          Image           : out Shared_Image_Access;
          Value_Offset    : out Natural;
          Value_Length    : out Natural;
+         Matched         : out Boolean;
          Result          : out Outcome_Code);
 
       procedure Scan_Source_Requirements
@@ -4091,6 +4092,7 @@ package body Flyology.DB is
          Image           : out Shared_Image_Access;
          Value_Offset    : out Natural;
          Value_Length    : out Natural;
+         Matched         : out Boolean;
          Result          : out Outcome_Code)
       is
          function Valid_Slice
@@ -4123,6 +4125,7 @@ package body Flyology.DB is
          Image := null;
          Value_Offset := 0;
          Value_Length := 0;
+         Matched := False;
          if Snapshot_At < Retained_History_Boundary then
             Result := Conflict;
             return;
@@ -4176,6 +4179,7 @@ package body Flyology.DB is
                               elsif Mutation.Family = Family
                                 and then Same_Key (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
                               then
+                                 Matched := True;
                                  if Mutation.Operation = Delete_Mutation then
                                     Result := Not_Found;
                                  else
@@ -4214,6 +4218,7 @@ package body Flyology.DB is
                              Checkpoint_Base (Index).Key_Offset,
                              Checkpoint_Base (Index).Key_Length)
                then
+                  Matched := True;
                   Image := Checkpoint_Base (Index).Image;
                   Value_Offset := Checkpoint_Base (Index).Value_Offset;
                   Value_Length := Checkpoint_Base (Index).Value_Length;
@@ -8679,6 +8684,32 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation
        (Lazy_Checkpoint_Read_State, Lazy_Checkpoint_Read_State_Access);
 
+   type Get_Driver_Phase is (Get_Idle, Get_Reading_Checkpoint, Get_Terminal);
+
+   type Get_Driver_State is record
+      Database_ID      : Database_Identifier := Zero_Database_ID;
+      Incarnation      : Engine_Incarnation := No_Incarnation;
+      Transaction_ID   : Transaction_Identifier := Zero_Transaction_ID;
+      Snapshot_At      : Sequence_Number := 0;
+      Mutation_Version : Interfaces.Unsigned_64 := 0;
+      Transaction_Captured : Boolean := False;
+      Family           : Column_Family_Configuration;
+      Runs             : Lazy_SST_Run_Array_Access := null;
+      Item_Key         : Flyology.Bytes.Unbounded_Bytes;
+      Phase            : Get_Driver_Phase := Get_Idle;
+      Precheck_Result  : Outcome_Code := Success;
+      Local_Result     : Outcome_Code := Invalid_State;
+      Has_Local_Result : Boolean := False;
+      Needs_Observation : Boolean := False;
+   end record;
+
+   procedure Free_Get_Driver_State is new
+     Ada.Unchecked_Deallocation (Get_Driver_State, Get_Driver_State_Access);
+
+   procedure Free_Lazy_Checkpoint_Read_Operation is new
+     Ada.Unchecked_Deallocation
+       (Lazy_Checkpoint_Read_Operation, Lazy_Checkpoint_Read_Operation_Access);
+
    procedure Fail_Recovery (State : in out Recovery_Traversal; Result : Outcome_Code) is
    begin
       State.Terminal_Result := Result;
@@ -11324,6 +11355,7 @@ package body Flyology.DB is
       Image         : Shared_Image_Access;
       Value_Offset  : Natural;
       Value_Length  : Natural;
+      Matched       : Boolean;
    begin
       Flyology.Bytes.Clear (Data);
       if not Txn.Active or else Txn.Owner.Arena = null then
@@ -11380,6 +11412,7 @@ package body Flyology.DB is
          Image,
          Value_Offset,
          Value_Length,
+         Matched,
          Result);
       if Result = Success then
          Flyology.Bytes.Reserve_Capacity (Data, Value_Length);
@@ -11967,6 +12000,7 @@ package body Flyology.DB is
          Image        : Shared_Image_Access;
          Value_Offset : Natural;
          Value_Length : Natural;
+         Matched      : Boolean;
          Lookup       : Outcome_Code;
       begin
          Live := False;
@@ -12008,6 +12042,7 @@ package body Flyology.DB is
                Image,
                Value_Offset,
                Value_Length,
+               Matched,
                Lookup);
          end;
          if Lookup = Not_Found then
@@ -16462,6 +16497,621 @@ package body Flyology.DB is
             null;
       end;
       Release_Lazy_Checkpoint_Read_State (Item);
+      Flyology.Buffers.Release (Item.Payload);
+   end Finalize;
+
+   procedure Release_Get_Lease (Item : in out Get_Operation) is
+   begin
+      if Item.Retained_Life /= null then
+         Item.Retained_Life.Release;
+         Item.Retained_Life := null;
+         Item.Retained_State := null;
+      end if;
+   end Release_Get_Lease;
+
+   procedure Release_Get_State (Item : in out Get_Operation) is
+   begin
+      if Item.Driver_State /= null then
+         Free_Lazy_SST_Run_Array (Item.Driver_State.Runs);
+         Free_Get_Driver_State (Item.Driver_State);
+      end if;
+      if Item.Child /= null then
+         Free_Lazy_Checkpoint_Read_Operation (Item.Child);
+      end if;
+   end Release_Get_State;
+
+   procedure Complete_Get
+     (Item   : in out Get_Operation;
+      Result : Outcome_Code;
+      Value  : in out Flyology.Bytes.Unbounded_Bytes;
+      Kind   : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded)
+   is
+      Final_Result : Outcome_Code := Result;
+   begin
+      Flyology.Bytes.Clear (Item.Final_Value);
+      if Item.Driver_State = null then
+         Final_Result := Capacity_Exceeded;
+      elsif Item.Driver_State.Transaction_Captured
+        and then
+          (not Item.Txn.Active
+           or else Item.Txn.Owner.Arena = null
+           or else Item.Txn.Database_ID /= Item.Driver_State.Database_ID
+           or else Item.Txn.Incarnation /= Item.Driver_State.Incarnation
+           or else Item.Txn.Transaction_ID /= Item.Driver_State.Transaction_ID
+           or else Item.Txn.Snapshot_At /= Item.Driver_State.Snapshot_At
+           or else Item.Txn.Owner.Arena.Mutation_Version
+                     /= Item.Driver_State.Mutation_Version)
+      then
+         Final_Result := Invalid_State;
+      elsif Item.Driver_State.Needs_Observation
+        and then Final_Result in Success | Not_Found
+      then
+         declare
+            Raw_Key : constant Ada.Streams.Stream_Element_Array :=
+              Flyology.Bytes.To_Array (Item.Driver_State.Item_Key);
+            Key     : Byte_Array (1 .. Raw_Key'Length);
+         begin
+            for Index in Key'Range loop
+               Key (Index) := Byte (Raw_Key (Ada.Streams.Stream_Element_Offset (Index)));
+            end loop;
+            Record_Point_Read
+              (Item.Txn.all,
+               Item.Driver_State.Family.ID,
+               Key,
+               Final_Result);
+            if Final_Result = Success then
+               Final_Result := Result;
+            end if;
+         end;
+      end if;
+      if Final_Result = Success then
+         Flyology.Bytes.Move (Item.Final_Value, Value);
+      else
+         Flyology.Bytes.Clear (Value);
+      end if;
+      Item.Driver_State.Phase := Get_Terminal;
+      Item.Final_Result := Final_Result;
+      Item.Has_Final_Result := True;
+      Release_Get_Lease (Item);
+      Flyology.Operations.Drivers.Complete (Item, Kind);
+   exception
+      when Storage_Error =>
+         Flyology.Bytes.Clear (Item.Final_Value);
+         Flyology.Bytes.Clear (Value);
+         Item.Final_Result := Capacity_Exceeded;
+         Item.Has_Final_Result := True;
+         if Item.Driver_State /= null then
+            Item.Driver_State.Phase := Get_Terminal;
+         end if;
+         Release_Get_Lease (Item);
+         Flyology.Operations.Drivers.Complete
+           (Item, Flyology.Operations.Succeeded);
+   end Complete_Get;
+
+   procedure Fail_Get
+     (Item  : in out Get_Operation;
+      Error : Ada.Exceptions.Exception_Occurrence)
+   is
+      Empty : Flyology.Bytes.Unbounded_Bytes;
+   begin
+      if Ada.Exceptions.Exception_Identity (Error) = Storage_Error'Identity then
+         Complete_Get (Item, Capacity_Exceeded, Empty);
+         return;
+      end if;
+      Item.Has_Saved_Error := True;
+      Ada.Exceptions.Save_Occurrence (Item.Saved_Error, Error);
+      Complete_Get
+        (Item, Storage_Failure, Empty, Flyology.Operations.Failed);
+   exception
+      when others =>
+         Release_Get_Lease (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Flyology.Operations.Drivers.Complete
+              (Item, Flyology.Operations.Failed);
+         end if;
+   end Fail_Get;
+
+   procedure Copy_Get_Checkpoint_Runs
+     (State  : not null Engine_State_Access;
+      Family : Column_Family_Configuration;
+      Runs   : out Lazy_SST_Run_Array_Access;
+      Result : out Outcome_Code)
+   is
+      Manifest    : constant LSM_Runtime.Checkpoint_Manifest_Access := State.Checkpoint_Manifest;
+      Family_Slot : Natural := 0;
+   begin
+      Runs := null;
+      if Manifest = null then
+         Result := Not_Found;
+         return;
+      end if;
+      for Index in Manifest.Families'Range loop
+         if Manifest.Base.Families (Index).ID = Interfaces.Unsigned_32 (Family.ID) then
+            Family_Slot := Index;
+            exit;
+         end if;
+      end loop;
+      if Family_Slot = 0 then
+         Result := Corrupt;
+         return;
+      end if;
+      declare
+         Family_State : LSM_Runtime.Family_LSM_State renames Manifest.Families (Family_Slot);
+      begin
+         if Family_State.Run_Total = 0 then
+            Result := Not_Found;
+            return;
+         elsif Family_State.First_Run = 0
+           or else Family_State.First_Run > Manifest.Run_Total
+           or else Family_State.Run_Total > Manifest.Run_Total - Family_State.First_Run + 1
+         then
+            Result := Corrupt;
+            return;
+         end if;
+         Allocation_Faults.Check (Get_Run_Descriptor_Allocation);
+         Runs := new Lazy_SST_Run_Array (1 .. Family_State.Run_Total);
+         for Offset in Natural range 0 .. Family_State.Run_Total - 1 loop
+            declare
+               Descriptor : LSM_Runtime.Run_Descriptor renames
+                 Manifest.Runs (Family_State.First_Run + Offset);
+            begin
+               Runs (Offset + 1) :=
+                 (Run_ID                => To_Identifier (Descriptor.Run_ID),
+                  Lowest_Sequence       => Sequence_Number (Descriptor.Lowest_Sequence),
+                  Highest_Sequence      => Sequence_Number (Descriptor.Highest_Sequence),
+                  Entry_Total           => Descriptor.Entry_Total,
+                  Logical_Payload_Bytes => Descriptor.Logical_Payload_Bytes);
+            end;
+         end loop;
+      end;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Free_Lazy_SST_Run_Array (Runs);
+         Result := Capacity_Exceeded;
+   end Copy_Get_Checkpoint_Runs;
+
+   procedure Prepare_Get
+     (Operation : in out Get_Operation;
+      Family    : Column_Family;
+      Item_Key  : Byte_Array)
+   is
+      State         : Get_Driver_State renames Operation.Driver_State.all;
+      Head          : Head_Snapshot;
+      Generation    : Generation_Value;
+      Uncertain     : Boolean;
+      Fenced        : Boolean;
+      Image         : Shared_Image_Access;
+      Value_Offset  : Natural;
+      Value_Length  : Natural;
+      Matched       : Boolean;
+      Lookup_Result : Outcome_Code;
+   begin
+      Operation.Item.Life.Acquire (Operation.Retained_State, State.Precheck_Result);
+      if State.Precheck_Result /= Success then
+         return;
+      end if;
+      Operation.Retained_Life := Operation.Item.Life'Unchecked_Access;
+      if Operation.Retained_State.Storage = null
+        or else Operation.Retained_State.Storage.HTTP_Client = null
+        or else Operation.Retained_State.Storage.Client_Identity = null
+      then
+         State.Precheck_Result := Invalid_State;
+         return;
+      elsif not Operation.Txn.Active or else Operation.Txn.Owner.Arena = null then
+         State.Precheck_Result := Invalid_State;
+         return;
+      end if;
+      Operation.Retained_State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Operation.Txn.Database_ID /= Head.Database_ID
+        or else Operation.Txn.Incarnation
+                  /= Operation.Retained_State.Gate.Current_Incarnation
+      then
+         State.Precheck_Result := Invalid_State;
+         return;
+      end if;
+      State.Database_ID := Head.Database_ID;
+      State.Incarnation := Operation.Txn.Incarnation;
+      State.Transaction_ID := Operation.Txn.Transaction_ID;
+      State.Snapshot_At := Operation.Txn.Snapshot_At;
+      State.Mutation_Version := Operation.Txn.Owner.Arena.Mutation_Version;
+      State.Transaction_Captured := True;
+      if Uncertain then
+         State.Precheck_Result := Outcome_Unknown;
+         return;
+      elsif Fenced then
+         State.Precheck_Result := Stale_Writer;
+         return;
+      end if;
+      Operation.Retained_State.Gate.Validate_Family
+        (Family, State.Family, State.Precheck_Result);
+      if State.Precheck_Result /= Success then
+         return;
+      elsif Interfaces.Unsigned_64 (Item_Key'Length) > State.Family.Max_Key_Bytes then
+         State.Precheck_Result := Capacity_Exceeded;
+         return;
+      end if;
+      Flyology.Bytes.Reserve_Capacity (State.Item_Key, Item_Key'Length);
+      for Value of Item_Key loop
+         Flyology.Bytes.Append (State.Item_Key, Ada.Streams.Stream_Element (Value));
+      end loop;
+
+      for Index in reverse Positive range 1 .. Operation.Txn.Owner.Arena.Count loop
+         declare
+            Mutation : Owned_Mutation renames Operation.Txn.Owner.Arena.Mutations (Index);
+         begin
+            if Mutation.Family = State.Family.ID and then Same_Owned_Key (Mutation, Item_Key) then
+               State.Has_Local_Result := True;
+               State.Local_Result :=
+                 (if Mutation.Operation = Delete_Mutation then Not_Found else Success);
+               if State.Local_Result = Success then
+                  Flyology.Bytes.Reserve_Capacity
+                    (Operation.Final_Value, Mutation.Value_Length);
+                  for Offset in Positive range 1 .. Mutation.Value_Length loop
+                     Flyology.Bytes.Append
+                       (Operation.Final_Value,
+                        Flyology.Bytes.Element
+                          (Mutation.Payload, Mutation.Key_Length + Offset));
+                  end loop;
+               end if;
+               return;
+            end if;
+         end;
+      end loop;
+
+      Operation.Retained_State.Gate.Lookup_At
+        (State.Family.ID,
+         Item_Key,
+         State.Snapshot_At,
+         null,
+         Image,
+         Value_Offset,
+         Value_Length,
+         Matched,
+         Lookup_Result);
+      if Lookup_Result = Success and then Matched then
+         State.Needs_Observation := Operation.Txn.Isolation = Serializable;
+         State.Has_Local_Result := True;
+         State.Local_Result := Success;
+         Flyology.Bytes.Reserve_Capacity (Operation.Final_Value, Value_Length);
+         for Offset in Positive range 1 .. Value_Length loop
+            Flyology.Bytes.Append
+              (Operation.Final_Value,
+               Flyology.Bytes.Element (Image.Data, Value_Offset + Offset));
+         end loop;
+         return;
+      elsif Lookup_Result = Not_Found and then Matched then
+         State.Needs_Observation := Operation.Txn.Isolation = Serializable;
+         State.Has_Local_Result := True;
+         State.Local_Result := Not_Found;
+         return;
+      elsif Lookup_Result /= Not_Found then
+         State.Precheck_Result := Lookup_Result;
+         return;
+      end if;
+
+      State.Needs_Observation := Operation.Txn.Isolation = Serializable;
+      Copy_Get_Checkpoint_Runs
+        (Operation.Retained_State, State.Family, State.Runs, Lookup_Result);
+      if Lookup_Result = Not_Found then
+         State.Has_Local_Result := True;
+         State.Local_Result := Not_Found;
+      elsif Lookup_Result /= Success then
+         State.Precheck_Result := Lookup_Result;
+      else
+         Allocation_Faults.Check (Get_Child_Operation_Allocation);
+         Operation.Child :=
+           new Lazy_Checkpoint_Read_Operation
+             (Operation.Set.all'Unchecked_Access,
+              Operation.Retained_State.Storage,
+              Operation.Retained_State.Storage.HTTP_Client,
+              Operation.Payload_Pool.all'Unchecked_Access,
+              (if Operation.Cancellation = null
+               then null
+               else Operation.Cancellation.all'Unchecked_Access));
+      end if;
+   exception
+      when Storage_Error =>
+         State.Precheck_Result := Capacity_Exceeded;
+   end Prepare_Get;
+
+   procedure Start_Get_Child (Item : in out Get_Operation) is
+      State   : Get_Driver_State renames Item.Driver_State.all;
+      Raw_Key : constant Ada.Streams.Stream_Element_Array :=
+        Flyology.Bytes.To_Array (State.Item_Key);
+      Key     : Byte_Array (1 .. Raw_Key'Length);
+   begin
+      for Index in Key'Range loop
+         Key (Index) := Byte (Raw_Key (Ada.Streams.Stream_Element_Offset (Index)));
+      end loop;
+      State.Phase := Get_Reading_Checkpoint;
+      Read_Lazy_Checkpoint_Entry
+        (State.Database_ID,
+         State.Family,
+         State.Runs.all,
+         State.Snapshot_At,
+         Key,
+         Item.Payload,
+         Remaining_Time (Item.Deadline),
+         Item.Child.all);
+      Flyology.Operations.Continue_After (Item, Item.Child.all);
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         declare
+            Empty : Flyology.Bytes.Unbounded_Bytes;
+         begin
+            Complete_Get (Item, Capacity_Exceeded, Empty);
+         end;
+      when Error : others =>
+         Fail_Get (Item, Error);
+   end Start_Get_Child;
+
+   procedure Complete_Get_Child (Item : in out Get_Operation) is
+      Disposition : Lazy_SST_Entry_Disposition;
+      Sequence    : Sequence_Number;
+      Value       : Flyology.Bytes.Unbounded_Bytes;
+      Result      : Outcome_Code;
+   begin
+      begin
+         Finish_Lazy_Checkpoint_Read
+           (Item.Child.all,
+            Disposition,
+            Sequence,
+            Value,
+            Result,
+            Item.Payload);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Child.all)
+            then
+               Flyology.Operations.Release (Item.Child.all);
+            end if;
+            Fail_Get (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Child.all);
+      if Result = Success and then Disposition = Lazy_Value_Found then
+         Complete_Get (Item, Success, Value);
+      elsif Result = Not_Found
+        and then Disposition in Lazy_Tombstone_Found | Lazy_Key_Absent
+      then
+         Complete_Get (Item, Not_Found, Value);
+      elsif Result in Success | Not_Found then
+         Complete_Get (Item, Corrupt, Value);
+      else
+         Complete_Get (Item, Result, Value);
+      end if;
+   exception
+      when Error : others =>
+         Fail_Get (Item, Error);
+   end Complete_Get_Child;
+
+   overriding procedure Drive
+     (Item : in out Get_Operation;
+      Event : Flyology.Operations.Driver_Event)
+   is
+   begin
+      if Event = Flyology.Operations.Start_Operation then
+         if Item.Driver_State.Precheck_Result /= Success then
+            declare
+               Empty : Flyology.Bytes.Unbounded_Bytes;
+            begin
+               Complete_Get (Item, Item.Driver_State.Precheck_Result, Empty);
+            end;
+         elsif Item.Cancellation /= null and then Item.Cancellation.Requested then
+            declare
+               Empty : Flyology.Bytes.Unbounded_Bytes;
+            begin
+               Complete_Get
+                 (Item, Cancelled, Empty, Flyology.Operations.Cancelled);
+            end;
+         elsif Item.Deadline <= Ada.Real_Time.Clock then
+            declare
+               Empty : Flyology.Bytes.Unbounded_Bytes;
+            begin
+               Complete_Get (Item, Timed_Out, Empty);
+            end;
+         elsif Item.Driver_State.Has_Local_Result then
+            declare
+               Value : Flyology.Bytes.Unbounded_Bytes;
+            begin
+               Flyology.Bytes.Move (Value, Item.Final_Value);
+               Complete_Get
+                 (Item,
+                  Item.Driver_State.Local_Result,
+                  Value);
+            end;
+         else
+            Start_Get_Child (Item);
+         end if;
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Get_Reading_Checkpoint
+        and then Item.Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Child.all)
+      then
+         Complete_Get_Child (Item);
+      else
+         raise Program_Error with "invalid Get driver event";
+      end if;
+   exception
+      when Error : others =>
+         if Flyology.Operations.Is_Active (Item) then
+            Fail_Get (Item, Error);
+         end if;
+   end Drive;
+
+   overriding procedure Request_Cancellation (Item : in out Get_Operation) is
+   begin
+      if Item.Child /= null and then Flyology.Operations.Is_Active (Item.Child.all) then
+         Flyology.Operations.Cancel (Item.Child.all);
+      elsif Item.Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Child.all)
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Get_Reading_Checkpoint
+      then
+         Complete_Get_Child (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Request_Cancellation (Item);
+         end if;
+      elsif Flyology.Operations.Is_Active (Item) then
+         declare
+            Empty : Flyology.Bytes.Unbounded_Bytes;
+         begin
+            Complete_Get
+              (Item, Cancelled, Empty, Flyology.Operations.Cancelled);
+         end;
+      end if;
+   exception
+      when others =>
+         Release_Get_Lease (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Flyology.Operations.Drivers.Complete
+              (Item, Flyology.Operations.Failed);
+         end if;
+   end Request_Cancellation;
+
+   procedure Get
+     (Family         : Column_Family;
+      Item_Key       : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Get_Operation)
+   is
+      Started : Boolean := False;
+      Moved   : Boolean := False;
+   begin
+      if Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "Get payload belongs to a different pool";
+      elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
+        or else Operation.Driver_State /= null
+        or else Operation.Child /= null
+        or else Operation.Retained_Life /= null
+      then
+         raise Program_Error with "Get operation retains unconsumed ownership";
+      end if;
+      Operation.Deadline := Deadline_After (Timeout);
+      Flyology.Bytes.Clear (Operation.Final_Value);
+      Operation.Final_Result := Invalid_State;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+      begin
+         Allocation_Faults.Check (Get_Operation_State_Allocation);
+         Operation.Driver_State := new Get_Driver_State;
+      exception
+         when Storage_Error =>
+            Operation.Driver_State := null;
+      end;
+      if Operation.Driver_State /= null then
+         Prepare_Get (Operation, Family, Item_Key);
+      end if;
+      Flyology.Operations.Drivers.Start (Operation);
+      Started := True;
+      Flyology.Buffers.Move (Payload_Buffer, Operation.Payload);
+      Moved := True;
+      if Operation.Driver_State = null then
+         Operation.Final_Result := Capacity_Exceeded;
+         Operation.Has_Final_Result := True;
+         Flyology.Operations.Drivers.Complete
+           (Operation, Flyology.Operations.Succeeded);
+      else
+         Flyology.Operations.Drive
+           (Flyology.Operations.Operation'Class (Operation),
+            Flyology.Operations.Start_Operation);
+      end if;
+   exception
+      when others =>
+         if Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
+            Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+         end if;
+         if Started and then Flyology.Operations.Is_Active (Operation) then
+            Flyology.Operations.Drivers.Rollback_Start (Operation);
+         end if;
+         Release_Get_Lease (Operation);
+         Release_Get_State (Operation);
+         Flyology.Bytes.Clear (Operation.Final_Value);
+         raise;
+   end Get;
+
+   procedure Finish
+     (Operation      : in out Get_Operation;
+      Data           : out Flyology.Bytes.Unbounded_Bytes;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+   is
+   begin
+      if Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "Get Finish requires the moved token's pool";
+      elsif Flyology.Buffers.Has_Buffer (Payload_Buffer) then
+         raise Program_Error with "Get Finish requires a vacant same-pool handle";
+      end if;
+      Flyology.Bytes.Clear (Data);
+      Result := Invalid_State;
+      Flyology.Operations.Consume (Operation);
+      Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+      Release_Get_Lease (Operation);
+      Release_Get_State (Operation);
+      if Operation.Has_Saved_Error then
+         Ada.Exceptions.Raise_Exception
+           (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
+            Ada.Exceptions.Exception_Message (Operation.Saved_Error));
+      elsif not Operation.Has_Final_Result then
+         raise Program_Error with "Get operation has no terminal result";
+      end if;
+      Result := Operation.Final_Result;
+      if Result = Success then
+         Flyology.Bytes.Move (Data, Operation.Final_Value);
+      else
+         Flyology.Bytes.Clear (Operation.Final_Value);
+      end if;
+   end Finish;
+
+   procedure Get
+     (Item           : in out Database;
+      Txn            : aliased in out Transaction;
+      Family         : Column_Family;
+      Item_Key       : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Data           : out Flyology.Bytes.Unbounded_Bytes;
+      Result         : out Outcome_Code)
+   is
+      --  One public DB parent plus the established six-slot private selector
+      --  stack is the exact synchronous owner geometry. This is derived
+      --  scheduling capacity, not a public queue or persisted DB limit.
+      Synchronous_Get_Set_Capacity : constant := 7;
+      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Get_Set_Capacity);
+      Operation : Get_Operation
+        (Set'Access,
+         Item'Unchecked_Access,
+         Txn'Unchecked_Access,
+         Payload_Buffer.Owner,
+         Token);
+   begin
+      Get (Family, Item_Key, Payload_Buffer, Timeout, Operation);
+      Flyology.Operations.Wait_All (Set);
+      Finish (Operation, Data, Result, Payload_Buffer);
+      Flyology.Operations.Release (Operation);
+   exception
+      when others =>
+         Flyology.Bytes.Clear (Data);
+         raise;
+   end Get;
+
+   overriding procedure Finalize (Item : in out Get_Operation) is
+   begin
+      begin
+         Flyology.Operations.Finalize
+           (Flyology.Operations.Operation (Item));
+      exception
+         when others =>
+            null;
+      end;
+      Release_Get_Lease (Item);
+      Release_Get_State (Item);
       Flyology.Buffers.Release (Item.Payload);
    end Finalize;
 

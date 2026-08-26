@@ -1,5 +1,39 @@
 # Review record
 
+## Public storage-backed fixed-snapshot Get candidate
+
+- Parent: mixed SST-v1/v2 lazy selector commit `a41a879e4e0516bc04eb9421ae5a68a147bd2c77`.
+- API decision: preserve the established storage-free `Get` exactly and add a buffer-owned synchronous overload plus
+  reusable `Get_Operation`, operation-last initiation, and typed `Finish` directly in `Flyology.DB`. Scoped ownership
+  is a limited-operation property, not a second package tree. A limited constructor is deliberately absent from this
+  first slice: its access parameter would control tagged `Database` while its result controls `Get_Operation`, which
+  Ada rejects as one function dispatching on two tagged types. No alias or compatibility wrapper evades that rule.
+- Snapshot and isolation: initiation captures the exact engine incarnation, transaction identity, Begin sequence,
+  mutation version, family configuration, and key. Own Put/Delete wins without adding external Serializable read
+  authority. The retained committed suffix distinguishes a matching tombstone from complete absence; only absence
+  falls through to an exact copied checkpoint run slice. Conclusive external `Success` and `Not_Found` retain one
+  point observation after transaction consistency is revalidated.
+- Ownership and scheduling: lifecycle, transaction, pool, and optional cancellation borrows outlive terminal
+  publication. One exact caller token and absolute deadline cover the complete parent and private selector. Start
+  validates and reserves before moving the token; a busy completion set restores byte, length, tag, lease, and state.
+  Typed `Finish` accepts any vacant same-pool handle and is the sole normal restoration authority. The synchronous
+  overload is a literal seven-slot `Wait_All`/`Finish`: one public parent plus the established six-slot private child
+  stack. That value is derived fixture geometry, not a public or persisted limit.
+- Allocation and failure atomicity: operation state, copied run descriptors, and selector-child allocations are
+  lazy, checked at distinct test-only fault positions, and normalize to terminal `Capacity_Exceeded`. Each fault
+  publishes no value or Serializable observation and restores the exact token. Local/suffix/checkpoint failure,
+  cancellation, timeout, corruption, and provider failure publish no partial value; there is no helper task, retry,
+  cache, prefetch, or new provider/default policy.
+- Findings cycle: review fixed three P1 runtime defects. The local-value fast path first aliased the source with an
+  output cleared by completion, losing the value; it now moves through a distinct owner. Early uncertain/fenced
+  prechecks could then be overwritten by transaction-consistency validation before snapshot capture; an explicit
+  capture flag now gates that validation. The first post-proof sweep found that pre-start cancellation and an expired
+  deadline were checked only by the checkpoint child, allowing a local or suffix fast path to publish first; the
+  public parent now checks both before every successful path. The follow-up ownership sweep added capacity-one Start
+  rollback, three deterministic allocation-failure oracles, and direct cancelled/expired fast-path oracles. The full
+  maintained deterministic suite, serial formal gates, repository checks, and final P0/P1/P2 sweep remain the
+  acceptance boundary for this candidate.
+
 ## Mixed SST-v1/v2 lazy selector candidate
 
 - Parent: fixed-snapshot multi-run selector commit `3621ec5`.
