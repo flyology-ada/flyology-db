@@ -13,7 +13,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete, exact-two-run, and exact-three-run replacement operational and deletion safety proved; automatic/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
-| 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Public one-shot sync refresh operational; composable refresh and replica/promotion policy pending |
+| 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Public sync and owner-driven composable refresh operational; replica registration/promotion policy pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
 
 The current implementation unit is intentionally narrower than full Milestone 2 acceptance. It activates the
@@ -108,13 +108,15 @@ immutable identities. A listed object becomes deletable only after an explicit a
 recheck; deleted identities are never reused. Concrete age horizons, provider timestamp trust, deletion certainty,
 batching, scheduling, and an operational collector remain pending Milestone 6 decisions.
 
-Public `Refresh_Replica` can now refresh one caller-designated read-only-use handle synchronously. It drains the
-existing lifecycle, validates a complete cacheless recovery graph, and installs only a strictly newer
+Public `Refresh_Replica` can now refresh one caller-designated read-only-use handle synchronously or through a
+reusable owner-driven `Refresh_Operation`. Both paths consume one shared recovery request/consume machine, drain the
+existing lifecycle, validate a complete cacheless recovery graph, and install only a strictly newer
 transition-ordinal/writer-epoch pair. Same/older observations and safe allocation failure retain the prior engine; a
-fenced writer is not implicitly promoted. The public call reuses the already-qualified implementation and selects
-only one caller budget. The composable API and shared recovery-reader ownership are now frozen in
-[`replica-refresh.md`](replica-refresh.md); implementation remains pending. Enforced replica roles, polling, leases,
-registration and retention pins, and explicit promotion remain pending Milestone 8 decisions.
+fenced writer is not implicitly promoted. The composable operation uses one caller-selected scratch token and one
+absolute deadline, restores the exact token only through typed `Finish`, and drives provider-owned Head/range/whole
+children without retry or helper tasks. Enforced replica roles, polling, leases, registration and retention pins,
+and explicit promotion remain pending Milestone 8 decisions. See
+[`replica-refresh.md`](replica-refresh.md) for the ownership and qualification boundary.
 
 The LSM read-equivalence lane now exhausts all two-key/two-value captured views and later mutation maps, validates a
 concrete delete/put execution witness, rejects a replacement that omits one live key, and proves the arbitrary-key/

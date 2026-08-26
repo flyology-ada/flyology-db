@@ -3,6 +3,7 @@ with Ada.Streams;
 with Ada.Text_IO;
 with Flyology.Buffers;
 with Flyology.Bytes;
+with Flyology.Cancellation;
 with Flyology.DB.Object_Storage;
 with Flyology.HTTP;
 with Flyology.HTTP.Client;
@@ -101,7 +102,7 @@ procedure Flyology.DB.Client_Probe is
      Low_Level.Make_Credentials (Access_Key, Secret_Key);
    Context                : aliased Storage_Context;
    Created                : aliased Database;
-   Replica                : Database;
+   Replica                : aliased Database;
    Reopened               : Database;
    Txn                    : Transaction;
    Reader                 : Transaction;
@@ -271,6 +272,13 @@ procedure Flyology.DB.Client_Probe is
    Flush_Work                : Flush_Operation
      (Composable_Set'Access,
       Created'Access,
+      Context'Access,
+      Client'Access,
+      Flush_Pool'Access,
+      null);
+   Refresh_Work              : Refresh_Operation
+     (Composable_Set'Access,
+      Replica'Access,
       Context'Access,
       Client'Access,
       Flush_Pool'Access,
@@ -890,8 +898,175 @@ begin
       Rollback (Reader, Result);
       Expect (Result, Success, "stale replica reader rollback failed");
 
-      Refresh_Replica (Replica, Test_Operation_Timeout, Result => Result);
-      Expect (Result, Success, "client-backed replica refresh failed");
+      --  Refresh performs its own transaction around completion-slot and
+      --  lifecycle admission. A busy one-slot set must reject before moving
+      --  the exact byte/tag/length token or changing replica lifecycle mode.
+      declare
+         Rollback_Set    : aliased Flyology.Operations.Completion_Set (1);
+         Marker          : constant Ada.Streams.Stream_Element_Array := [16#A5#, 16#5A#, 16#C3#];
+         Rollback_Pool   : aliased Flyology.Buffers.Pool
+           (Block_Size => Positive (Marker'Length), Capacity => 1);
+         Rollback_Buffer : Flyology.Buffers.Unique_Buffer (Rollback_Pool'Access);
+         Rollback_Work   : Refresh_Operation
+           (Rollback_Set'Access,
+            Replica'Access,
+            Context'Access,
+            Client'Access,
+            Rollback_Pool'Access,
+            null);
+         Busy            : Timers.Timer_Operation :=
+           Timers.Sleep_For (Rollback_Set'Access, Test_Operation_Timeout);
+         Rejected        : Boolean := False;
+      begin
+         Flyology.Buffers.Acquire (Rollback_Buffer);
+         Flyology.Buffers.Copy_From (Rollback_Buffer, Marker);
+         Flyology.Buffers.Set_Tag (Rollback_Buffer, Flush_Token_Tag);
+         begin
+            Refresh_Replica (Rollback_Buffer, Test_Operation_Timeout, Rollback_Work);
+         exception
+            when Flyology.Operations.Capacity_Error =>
+               Rejected := True;
+         end;
+         if not Rejected
+           or else not Flyology.Buffers.Has_Buffer (Rollback_Buffer)
+           or else Flyology.Buffers.Length (Rollback_Buffer) /= Marker'Length
+           or else Flyology.Buffers.Tag (Rollback_Buffer) /= Flush_Token_Tag
+           or else not Same (Rollback_Buffer, Marker)
+         then
+            raise Program_Error with "composable refresh Start did not roll back its exact token";
+         end if;
+         Flyology.Operations.Cancel (Busy);
+         Flyology.Operations.Wait_All (Rollback_Set);
+         begin
+            Timers.Finish (Busy);
+         exception
+            when Flyology.Operations.Operation_Cancelled =>
+               null;
+         end;
+         Flyology.Operations.Release (Busy);
+         Flyology.Buffers.Release (Rollback_Buffer);
+      end;
+
+      --  The caller-selected scratch block is the only response-capacity
+      --  authority. An undersized token is rejected without partial install,
+      --  and typed Finish still restores that exact token.
+      declare
+         Tiny_Pool   : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
+         Tiny_Buffer : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
+         Tiny_Work   : Refresh_Operation
+           (Composable_Set'Access,
+            Replica'Access,
+            Context'Access,
+            Client'Access,
+            Tiny_Pool'Access,
+            null);
+      begin
+         Flyology.Buffers.Acquire (Tiny_Buffer);
+         Refresh_Replica (Tiny_Buffer, Test_Operation_Timeout, Tiny_Work);
+         Flyology.Operations.Wait_All (Composable_Set);
+         Finish (Tiny_Work, Result, Tiny_Buffer);
+         Expect (Result, Capacity_Exceeded, "undersized composable refresh was not rejected");
+         if not Flyology.Buffers.Has_Buffer (Tiny_Buffer) then
+            raise Program_Error with "undersized composable refresh lost its token";
+         end if;
+         Flyology.Buffers.Release (Tiny_Buffer);
+      end;
+
+      --  A cancellation recorded before Start is terminal but still follows
+      --  the normal move/drain/Finish path. The following successful refresh
+      --  proves cancellation returned the lifecycle to Opened.
+      declare
+         Stop        : aliased Flyology.Cancellation.Token;
+         Cancel_Work : Refresh_Operation
+           (Composable_Set'Access,
+            Replica'Access,
+            Context'Access,
+            Client'Access,
+            Flush_Pool'Access,
+            Stop'Access);
+      begin
+         Stop.Request;
+         Refresh_Replica (Flush_Buffer, Test_Operation_Timeout, Cancel_Work);
+         Flyology.Operations.Wait_All (Composable_Set);
+         Finish (Cancel_Work, Result, Restored_Buffer);
+         Expect (Result, Cancelled, "pre-requested composable refresh cancellation was lost");
+         if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+           or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+           or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+         then
+            raise Program_Error with "cancelled composable refresh did not restore its exact token";
+         end if;
+         Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+      end;
+
+      --  Scope abandonment is the fallback ownership authority. A terminal
+      --  unconsumed refresh releases its operation-owned token to the pool;
+      --  it never writes through the finalized initiating handle.
+      declare
+         --  Pre-requested cancellation terminalizes in the DB parent, so one
+         --  slot is the exact abandonment fixture geometry.
+         Abandon_Set  : aliased Flyology.Operations.Completion_Set (1);
+         --  No provider body is read; one byte is the pool type's minimum and
+         --  makes only token ownership observable.
+         Abandon_Pool : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
+         Stop         : aliased Flyology.Cancellation.Token;
+      begin
+         Stop.Request;
+         declare
+            Abandon_Buffer : Flyology.Buffers.Unique_Buffer (Abandon_Pool'Access);
+            Abandon_Work   : Refresh_Operation
+              (Abandon_Set'Access,
+               Replica'Access,
+               Context'Access,
+               Client'Access,
+               Abandon_Pool'Access,
+               Stop'Access);
+         begin
+            Flyology.Buffers.Acquire (Abandon_Buffer);
+            Refresh_Replica (Abandon_Buffer, Test_Operation_Timeout, Abandon_Work);
+            Flyology.Operations.Wait_All (Abandon_Set);
+            if Flyology.Buffers.Has_Buffer (Abandon_Buffer) then
+               raise Program_Error with "abandoned composable refresh never acquired token ownership";
+            end if;
+         end;
+         declare
+            Snapshot : constant Flyology.Buffers.Pool_Snapshot :=
+              Flyology.Buffers.Current (Abandon_Pool);
+         begin
+            if Snapshot.Available /= 1 or else Snapshot.Outstanding /= 0 then
+               raise Program_Error with "abandoned composable refresh did not release its token";
+            end if;
+         end;
+      end;
+
+      --  The caller-composable path moves the exact tagged scratch token and
+      --  restores it through an arbitrary vacant same-pool handle. Its first
+      --  run installs the newer graph; restarting the consumed operation then
+      --  observes the same authoritative head as a monotonic no-op.
+      Refresh_Replica (Flush_Buffer, Test_Operation_Timeout, Refresh_Work);
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer) then
+         raise Program_Error with "composable refresh did not acquire its scratch token";
+      end if;
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Refresh_Work, Result, Restored_Buffer);
+      Expect (Result, Success, "client-backed composable replica refresh failed");
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "composable refresh did not restore its exact token";
+      end if;
+
+      Refresh_Replica (Restored_Buffer, Test_Operation_Timeout, Refresh_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Refresh_Work, Result, Flush_Buffer);
+      Expect (Result, Success, "restarted composable replica refresh failed");
+      if Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "restarted composable refresh lost its exact token";
+      end if;
       Open_Column_Family (Replica, 1, Replica_Family, Result);
       Expect (Result, Success, "refreshed replica family lookup failed");
       Begin_Transaction (Replica, Replica_Refreshed_Reader_ID, Reader, Result);

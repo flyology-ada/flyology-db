@@ -5,14 +5,14 @@
 - Dependency: `flyology_object_storage`
 - Source: clean local clone `.deps/flyology-object-storage`
 - Author checkout origin: `../flyology-object-storage` (observed read-only)
-- Commit: `179b16c414090662924c04355a5d292c29d33204`
+- Commit: `4401e0ecdc413668160078611c61e8434700cf74`
 - Published constraint: `flyology_object_storage = "=0.1.0-dev"`
-- Flyology Alire index: `ade6ebbddd254f9fa0515fa8bb11397427d0a76b`
+- Flyology Alire index: `4f7124b277e3eb6dd1922c35c065f2e510bcdc99`
 - Pin: root `alire.toml` filesystem path pin
 - Transitive HTTP/QUIC solve: indexed, unpinned `flyology_http=0.1.3-dev` and
   `flyology_quic=0.1.3-dev`, both from immutable source commit
   `eb09a80a7e06274e93289861c2cae1ca7e8cb1af`
-- Observed: 2026-08-25, America/Edmonton
+- Observed: 2026-08-25, America/Los_Angeles
 
 The published dependency is materialized through the local development clone. Before a deterministic campaign,
 update that clean clone by fast-forward from its local origin, verify it is clean, and replace this record with the

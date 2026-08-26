@@ -28,6 +28,7 @@ package body Flyology.DB is
    package UStrings renames Ada.Strings.Unbounded;
 
    use type Ada.Real_Time.Time;
+   use type Ada.Exceptions.Exception_Id;
    use type Ada.Streams.Stream_Element_Offset;
    use type Ada.Streams.Stream_Element;
    use type Interfaces.C.int;
@@ -5733,14 +5734,14 @@ package body Flyology.DB is
          end if;
          Active_Calls := Active_Calls - 1;
          if Active_Calls = 0
-           and then Mode = Checkpointing
+           and then Mode in Resolving | Checkpointing
            and then Flyology.Wake_Sources.Descriptor (Quiescence_Wake) >= 0
            and then not Quiescence_Signalled
          then
-            --  Checkpoint waiters borrow this persistent descriptor under the
-            --  same protected lock. Publishing the zero count before the wake
-            --  prevents a missed transition even if signalling reports an
-            --  operating-system failure.
+            --  Checkpoint and refresh waiters borrow this persistent
+            --  descriptor under the same protected lock. Publishing the zero
+            --  count before the wake prevents a missed transition even if
+            --  signalling reports an operating-system failure.
             Flyology.Wake_Sources.Signal (Quiescence_Wake);
             Quiescence_Signalled := True;
          end if;
@@ -5769,6 +5770,27 @@ package body Flyology.DB is
             Result := Success;
          end if;
       end Begin_Resolve;
+
+      procedure Begin_Composable_Resolve
+        (State  : out Engine_State_Access;
+         Result : out Outcome_Code)
+      is
+      begin
+         State := null;
+         if Mode /= Opened or else Current = null then
+            Result := Invalid_State;
+            return;
+         end if;
+         if Active_Calls > 0 then
+            --  Create the serialized wake before lifecycle admission so a
+            --  descriptor failure leaves the open database unchanged.
+            Flyology.Wake_Sources.Ensure (Quiescence_Wake);
+         end if;
+         Quiescence_Signalled := False;
+         Mode := Resolving;
+         State := Current;
+         Result := Success;
+      end Begin_Composable_Resolve;
 
       procedure Begin_Checkpoint (State : out Engine_State_Access; Result : out Outcome_Code) is
       begin
@@ -5866,6 +5888,30 @@ package body Flyology.DB is
          end if;
       end Checkpoint_Wait_Source;
 
+      procedure Resolve_Wait_Source
+        (Descriptor : out Interfaces.C.int;
+         Ready_Now  : out Boolean)
+      is
+      begin
+         if Mode /= Resolving or else Current = null then
+            raise Program_Error with "refresh wait source outside resolving mode";
+         end if;
+         if Active_Calls = 0 then
+            if Quiescence_Signalled then
+               Flyology.Wake_Sources.Consume_All (Quiescence_Wake);
+               Quiescence_Signalled := False;
+            end if;
+            --  Flyology.IO fixes negative descriptors as invalid. Once the
+            --  lifecycle is quiescent no borrowed wake remains to arm.
+            Descriptor := -1;
+            Ready_Now := True;
+         else
+            Flyology.Wake_Sources.Ensure (Quiescence_Wake);
+            Descriptor := Flyology.Wake_Sources.Descriptor (Quiescence_Wake);
+            Ready_Now := False;
+         end if;
+      end Resolve_Wait_Source;
+
       entry Await_Quiescent when Mode in Closing | Resolving | Checkpointing and then Active_Calls = 0 is
       begin
          null;
@@ -5888,6 +5934,8 @@ package body Flyology.DB is
          Current := State;
          Last_Visible := Visible;
          Mode := Opened;
+         Flyology.Wake_Sources.Release (Quiescence_Wake);
+         Quiescence_Signalled := False;
       end Finish_Resolve;
 
       procedure Cancel_Resolve is
@@ -5896,6 +5944,8 @@ package body Flyology.DB is
             raise Program_Error with "invalid database resolution cancellation";
          end if;
          Mode := Opened;
+         Flyology.Wake_Sources.Release (Quiescence_Wake);
+         Quiescence_Signalled := False;
       end Cancel_Resolve;
 
       procedure Finish_Checkpoint is
@@ -8388,6 +8438,33 @@ package body Flyology.DB is
       SST_Admission       : SST_Read_Admission;
       Current_Batch_ID    : Identifier := Zero_Identifier;
    end record;
+
+   --  Owner-stack scheduling phases only. Positions are never persisted or
+   --  exposed. A header request uses HeadObject followed by one generation-
+   --  bound range child; all other requests use one bounded whole-Get child.
+   type Refresh_Driver_Phase is
+     (Refresh_Idle,
+      Refresh_Waiting_For_Quiescence,
+      Refresh_Reading_Header_Head,
+      Refresh_Reading_Header_Range,
+      Refresh_Reading_Whole,
+      Refresh_Terminal);
+
+   type Refresh_Driver_State is record
+      Engine                : Engine_State_Access := null;
+      Current_Head          : Head_Snapshot;
+      Current_Generation    : Generation_Value;
+      Traversal             : Recovery_Traversal;
+      Request               : Recovery_Request;
+      Current_Object_Length : Natural := 0;
+      Request_Generation    : Generation_Value;
+      Phase                 : Refresh_Driver_Phase := Refresh_Idle;
+      Precheck_Result       : Outcome_Code := Success;
+      Resolve_Admitted      : Boolean := False;
+   end record;
+
+   procedure Free_Refresh_Driver_State is new
+     Ada.Unchecked_Deallocation (Refresh_Driver_State, Refresh_Driver_State_Access);
 
    procedure Fail_Recovery (State : in out Recovery_Traversal; Result : Outcome_Code) is
    begin
@@ -11955,6 +12032,8 @@ package body Flyology.DB is
        or else
          (Left.Transition_Number = Right.Transition_Number and then Left.Epoch < Right.Epoch));
 
+   procedure Stop_Replaced_Engine (State : in out Engine_State_Access);
+
    procedure Refresh_Replica
      (Item    : in out Database;
       Timeout : Duration;
@@ -12069,15 +12148,1032 @@ package body Flyology.DB is
       if Result /= Success then
          return;
       end if;
-      State.Gate.Request_Close;
-      State.Gate.Join;
-      Free_Worker (State.Worker);
-      Release_State_Images (State);
-      Free_State (State);
+      Stop_Replaced_Engine (State);
       Item.Life.Finish_Resolve (New_State, Observed_Head.Highest);
       Guard.Active := False;
       Result := Success;
    end Refresh_Replica;
+
+   function Refresh_Read_Failure
+     (Failure : Client_Common.Failure_Reason) return Read_Outcome
+   is
+   begin
+      return
+        (case Failure is
+           when Client_Common.Cancelled          => Read_Cancelled,
+           when Client_Common.Timed_Out          => Read_Timed_Out,
+           when Client_Common.Response_Too_Large => Read_Capacity_Exceeded,
+           when others                           => Read_Failed);
+   end Refresh_Read_Failure;
+
+   function Refresh_Read_Rejection
+     (Status : Flyology.HTTP.Status_Code) return Read_Outcome
+   is
+   begin
+      --  S3 Get/Head binds missing objects to HTTP 404 and failed If-Match to
+      --  HTTP 412. These wire statuses preserve the existing Storage_Port
+      --  normalization and therefore recovery compatibility.
+      return
+        (if Status = 404
+         then Object_Missing
+         elsif Status = 412
+         then Read_Precondition_Failed
+         else Read_Failed);
+   end Refresh_Read_Rejection;
+
+   function Refresh_Request_Key
+     (Item    : Refresh_Operation;
+      Request : Recovery_Request) return String
+   is
+   begin
+      case Request.Kind is
+         when Recovery_Head_Request =>
+            return Full_Key (Item.Storage.all, Head_Key_Suffix);
+         when Recovery_Manifest_Header_Request | Recovery_Manifest_Body_Request =>
+            return Manifest_Key (Item.Storage.all, Request.Object_ID);
+         when Recovery_SST_Header_Request | Recovery_SST_Body_Request =>
+            return Run_Key (Item.Storage.all, Request.Object_ID);
+         when Recovery_Batch_Request =>
+            return Batch_Key (Item.Storage.all, Request.Object_ID);
+         when Recovery_No_Request =>
+            raise Program_Error with "terminal refresh request has no object key";
+      end case;
+   end Refresh_Request_Key;
+
+   procedure Copy_Refresh_Payload
+     (Source : Flyology.Buffers.Unique_Buffer;
+      Data   : out Flyology.Bytes.Unbounded_Bytes)
+   is
+      procedure Copy (Bytes : Ada.Streams.Stream_Element_Array) is
+      begin
+         Flyology.Bytes.Reserve_Capacity (Data, Bytes'Length);
+         Flyology.Bytes.Append (Data, Bytes);
+         Image_Accounting.Record_Sink_Bytes (Bytes'Length);
+      end Copy;
+   begin
+      Flyology.Bytes.Clear (Data);
+      Flyology.Buffers.With_Readable_Data (Source, Copy'Access);
+   end Copy_Refresh_Payload;
+
+   procedure Copy_Refresh_Head
+     (Source : Flyology.Buffers.Unique_Buffer;
+      Data   : out Small_Metadata_Buffer;
+      Length : out Natural;
+      Valid  : out Boolean)
+   is
+      procedure Copy (Bytes : Ada.Streams.Stream_Element_Array) is
+      begin
+         if Bytes'Length > Data'Length then
+            return;
+         end if;
+         if Bytes'Length > 0 then
+            for Offset in Natural range 0 .. Bytes'Length - 1 loop
+               Data (Offset) :=
+                 Byte (Bytes (Bytes'First + Ada.Streams.Stream_Element_Offset (Offset)));
+            end loop;
+         end if;
+         Valid := True;
+      end Copy;
+   begin
+      Data := [others => 0];
+      Length := Flyology.Buffers.Length (Source);
+      Valid := False;
+      Flyology.Buffers.With_Readable_Data (Source, Copy'Access);
+   end Copy_Refresh_Head;
+
+   procedure Release_Refresh_Driver (Item : in out Refresh_Operation) is
+   begin
+      if Item.Driver_State /= null then
+         if Item.Driver_State.Resolve_Admitted then
+            Item.Driver_State.Resolve_Admitted := False;
+            Item.Item.Life.Cancel_Resolve;
+         end if;
+         Release_Recovery (Item.Driver_State.Traversal);
+         Free_Refresh_Driver_State (Item.Driver_State);
+      end if;
+   end Release_Refresh_Driver;
+
+   procedure Complete_Composable_Refresh
+     (Item   : in out Refresh_Operation;
+      Result : Outcome_Code;
+      Kind   : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded)
+   is
+   begin
+      if Item.Driver_State /= null then
+         if Item.Driver_State.Resolve_Admitted then
+            Item.Driver_State.Resolve_Admitted := False;
+            Item.Item.Life.Cancel_Resolve;
+         end if;
+         Release_Recovery (Item.Driver_State.Traversal);
+         Item.Driver_State.Phase := Refresh_Terminal;
+      end if;
+      Item.Final_Result := Result;
+      Item.Has_Final_Result := True;
+      Flyology.Operations.Drivers.Complete (Item, Kind);
+   end Complete_Composable_Refresh;
+
+   procedure Fail_Composable_Refresh
+     (Item  : in out Refresh_Operation;
+      Error : Ada.Exceptions.Exception_Occurrence)
+   is
+   begin
+      if Ada.Exceptions.Exception_Identity (Error) = Storage_Error'Identity then
+         --  Allocation during request preparation or response ownership is
+         --  safe backpressure. It must not escape as an unclassified provider
+         --  exception or install a partial recovery graph.
+         Complete_Composable_Refresh (Item, Capacity_Exceeded);
+         return;
+      end if;
+      Item.Has_Saved_Error := True;
+      Ada.Exceptions.Save_Occurrence (Item.Saved_Error, Error);
+      Complete_Composable_Refresh
+        (Item, Storage_Failure, Flyology.Operations.Failed);
+   exception
+      when others =>
+         if Flyology.Operations.Is_Active (Item) then
+            Flyology.Operations.Drivers.Complete (Item, Flyology.Operations.Failed);
+         end if;
+   end Fail_Composable_Refresh;
+
+   procedure Advance_Composable_Refresh (Item : in out Refresh_Operation);
+
+   procedure Consume_Refresh_Header
+     (Item        : in out Refresh_Operation;
+      Data        : Flyology.Bytes.Unbounded_Bytes;
+      Object_Size : Natural;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome)
+   is
+   begin
+      case Item.Driver_State.Request.Kind is
+         when Recovery_Manifest_Header_Request =>
+            Consume_Recovery_Manifest_Header
+              (Item.Driver_State.Traversal,
+               Data,
+               Object_Size,
+               Generation,
+               Read_Result);
+         when Recovery_SST_Header_Request =>
+            Consume_Recovery_SST_Header
+              (Item.Driver_State.Traversal,
+               Data,
+               Object_Size,
+               Generation,
+               Read_Result);
+         when others =>
+            raise Program_Error with "non-header refresh request consumed as a header";
+      end case;
+      Advance_Composable_Refresh (Item);
+   end Consume_Refresh_Header;
+
+   procedure Consume_Refresh_Whole
+     (Item        : in out Refresh_Operation;
+      Data        : in out Flyology.Bytes.Unbounded_Bytes;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome)
+   is
+      Head_Data   : Small_Metadata_Buffer;
+      Head_Length : Natural := 0;
+      Head_Valid  : Boolean := False;
+   begin
+      case Item.Driver_State.Request.Kind is
+         when Recovery_Head_Request =>
+            if Read_Result = Object_Read then
+               Copy_Refresh_Head (Item.Payload, Head_Data, Head_Length, Head_Valid);
+            else
+               Head_Data := [others => 0];
+            end if;
+            Consume_Recovery_Head
+              (Item.Driver_State.Traversal,
+               Head_Data,
+               Head_Length,
+               Generation,
+               (if Read_Result = Object_Read and then not Head_Valid
+                then Read_Capacity_Exceeded
+                else Read_Result));
+
+         when Recovery_Manifest_Body_Request =>
+            Consume_Recovery_Manifest_Body
+              (Item.Driver_State.Traversal,
+               Data,
+               Flyology.Bytes.Length (Data),
+               Generation,
+               Read_Result);
+
+         when Recovery_SST_Body_Request =>
+            Consume_Recovery_SST_Body
+              (Item.Driver_State.Traversal,
+               Data,
+               Flyology.Bytes.Length (Data),
+               Generation,
+               Read_Result);
+
+         when Recovery_Batch_Request =>
+            Consume_Recovery_Batch
+              (Item.Driver_State.Traversal, Data, Read_Result);
+
+         when others =>
+            raise Program_Error with "non-whole refresh request consumed as whole";
+      end case;
+      Advance_Composable_Refresh (Item);
+   end Consume_Refresh_Whole;
+
+   procedure Consume_Refresh_Whole_Failure
+     (Item        : in out Refresh_Operation;
+      Read_Result : Read_Outcome)
+   is
+      Data : Flyology.Bytes.Unbounded_Bytes;
+   begin
+      Consume_Refresh_Whole (Item, Data, (others => <>), Read_Result);
+   end Consume_Refresh_Whole_Failure;
+
+   procedure Complete_Refresh_Install (Item : in out Refresh_Operation) is
+      State               : Refresh_Driver_State renames Item.Driver_State.all;
+      Observed_Head       : Head_Snapshot;
+      Observed_Generation : Generation_Value;
+      Manifest            : Manifests.Manifest;
+      Root                : Manifests.Manifest;
+      LSM_Authority       : Engine_LSM_Authority;
+      Checkpoint          : Checkpoint_Plan;
+      History             : Batch_History_Access := null;
+      History_Count       : Natural := 0;
+      New_State           : Engine_State_Access := null;
+      Installed           : Boolean := False;
+      Stamp               : Engine_Incarnation;
+      Result              : Outcome_Code;
+   begin
+      Finish_Recovery
+        (State.Traversal,
+         Observed_Head,
+         Observed_Generation,
+         Manifest,
+         Root,
+         LSM_Authority,
+         Checkpoint,
+         History,
+         History_Count,
+         Result);
+      if Result /= Success then
+         Complete_Composable_Refresh (Item, Result);
+         return;
+      elsif Observed_Head.Database_ID /= State.Current_Head.Database_ID then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Complete_Composable_Refresh (Item, Corrupt);
+         return;
+      elsif Observed_Head.Transition_Number = State.Current_Head.Transition_Number
+        and then Observed_Head.Epoch = State.Current_Head.Epoch
+      then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         if Same_Head (Observed_Head, State.Current_Head) then
+            Complete_Composable_Refresh (Item, Success);
+         else
+            Complete_Composable_Refresh (Item, Corrupt);
+         end if;
+         return;
+      elsif not Head_Pair_Less (State.Current_Head, Observed_Head) then
+         --  A complete older provider snapshot is a successful no-op. It can
+         --  never roll the installed high-water pair back.
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Complete_Composable_Refresh (Item, Success);
+         return;
+      end if;
+
+      Incarnation_Source.Allocate (Stamp, Result);
+      if Result /= Success then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Complete_Composable_Refresh (Item, Result);
+         return;
+      end if;
+      Allocate_Engine
+        --  Refresh_Operation's public Item discriminant must outlive terminal
+        --  Finish or abandonment. A successfully installed engine remains
+        --  owned by that same Database lifecycle after this operation ends.
+        (Item.Item.Life'Unchecked_Access,
+         Item.Storage,
+         Observed_Head,
+         Observed_Generation,
+         Manifest,
+         LSM_Authority,
+         Checkpoint,
+         Stamp,
+         History,
+         History_Count,
+         New_State,
+         Result);
+      if Result /= Success then
+         Complete_Composable_Refresh (Item, Result);
+         return;
+      end if;
+      Stop_Replaced_Engine (State.Engine);
+      Item.Item.Life.Finish_Resolve (New_State, Observed_Head.Highest);
+      Installed := True;
+      State.Resolve_Admitted := False;
+      Complete_Composable_Refresh (Item, Success);
+   exception
+      when Storage_Error =>
+         if New_State /= null and then not Installed then
+            Stop_Replaced_Engine (New_State);
+         end if;
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Complete_Composable_Refresh (Item, Capacity_Exceeded);
+      when Error : others =>
+         if New_State /= null and then not Installed then
+            Stop_Replaced_Engine (New_State);
+         end if;
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Fail_Composable_Refresh (Item, Error);
+   end Complete_Refresh_Install;
+
+   procedure Start_Refresh_Header_Range (Item : in out Refresh_Operation) is
+      State : Refresh_Driver_State renames Item.Driver_State.all;
+   begin
+      if State.Request.Maximum = 0
+        or else State.Request.Maximum > Flyology.Buffers.Buffer_Capacity (Item.Payload)
+      then
+         Consume_Refresh_Header
+           (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
+         return;
+      end if;
+      Client_Objects.Get_Range
+        (Item.HTTP,
+         Item.Storage.Client_Origin,
+         UStrings.To_String (Item.Storage.Bucket),
+         Refresh_Request_Key (Item, State.Request),
+         State.Request.Requested,
+         Item.Payload'Unchecked_Access,
+         Item.Storage.Client_Identity.all,
+         Item.HTTP_Deadline,
+         Quoted_Generation (State.Request_Generation),
+         Region                => UStrings.To_String (Item.Storage.Client_Region),
+         Style                 => Item.Storage.Client_Style,
+         Expected_Bucket_Owner => UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
+         Request_Payer         => UStrings.To_String (Item.Storage.Client_Request_Payer),
+         Checksum_Mode         => Item.Storage.Client_Checksum_Mode,
+         Token                 => Item.Cancellation,
+         Operation             => Item.Range_Child.all);
+      State.Phase := Refresh_Reading_Header_Range;
+      Flyology.Operations.Continue_After (Item, Item.Range_Child.all);
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         Consume_Refresh_Header
+           (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
+      when Error : others =>
+         Fail_Composable_Refresh (Item, Error);
+   end Start_Refresh_Header_Range;
+
+   procedure Complete_Refresh_Header_Head (Item : in out Refresh_Operation) is
+      State      : Refresh_Driver_State renames Item.Driver_State.all;
+      Outcome    : Client_Objects.Head_Result;
+      Read_Result : Read_Outcome := Read_Failed;
+      Valid      : Boolean := False;
+   begin
+      begin
+         Client_Objects.Finish (Item.Head_Child.all, Outcome);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Head_Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Head_Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Head_Child.all)
+            then
+               Flyology.Operations.Release (Item.Head_Child.all);
+            end if;
+            Fail_Composable_Refresh (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Head_Child.all);
+      if Outcome.Kind = Client_Objects.Head_Exchange_Failed then
+         Read_Result := Refresh_Read_Failure (Outcome.Failure);
+      elsif Outcome.Response.Kind = Client_Low_Level.Head_Object_Rejected then
+         Read_Result := Refresh_Read_Rejection (Outcome.Response.Status);
+      --  HeadObject's modeled success is HTTP 200. Any other complete shape
+      --  is corrupt provider evidence and cannot authenticate a range read.
+      elsif Outcome.Response.Status /= 200
+        or else Outcome.Response.Result.Content_Length > OS.Byte_Count (Natural'Last)
+      then
+         Read_Result := Read_Corrupt;
+      else
+         Set_Quoted_Generation
+           (State.Request_Generation,
+            UStrings.To_String (Outcome.Response.Result.Entity_Tag),
+            Valid);
+         if Valid then
+            State.Current_Object_Length := Natural (Outcome.Response.Result.Content_Length);
+            Start_Refresh_Header_Range (Item);
+            return;
+         end if;
+         Read_Result := Read_Corrupt;
+      end if;
+      Consume_Refresh_Header
+        (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Result);
+   exception
+      when Error : others =>
+         Fail_Composable_Refresh (Item, Error);
+   end Complete_Refresh_Header_Head;
+
+   procedure Complete_Refresh_Header_Range (Item : in out Refresh_Operation) is
+      State       : Refresh_Driver_State renames Item.Driver_State.all;
+      Outcome     : Client_Objects.Range_Get_Result;
+      Data        : Flyology.Bytes.Unbounded_Bytes;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome := Read_Failed;
+      Valid       : Boolean := False;
+   begin
+      begin
+         Client_Objects.Finish (Item.Range_Child.all, Outcome);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Range_Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Range_Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Range_Child.all)
+            then
+               Flyology.Operations.Release (Item.Range_Child.all);
+            end if;
+            Fail_Composable_Refresh (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Range_Child.all);
+      if Outcome.Kind = Client_Objects.Range_Get_Exchange_Failed then
+         Read_Result := Refresh_Read_Failure (Outcome.Failure);
+      elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
+         Read_Result := Refresh_Read_Rejection (Outcome.Response.Status);
+      else
+         Set_Quoted_Generation
+           (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+         --  A bounded S3 range response is HTTP 206 with an exact
+         --  Content-Range. These wire checks bind the header bytes and total
+         --  object length to the preceding HeadObject generation.
+         if not Valid
+           or else Generation /= State.Request_Generation
+           or else Outcome.Response.Status /= 206
+           or else not Outcome.Has_Resolved_Range
+           or else Outcome.Resolved.First /= State.Request.Requested.First
+           or else Outcome.Resolved.Last /= State.Request.Requested.Last
+           or else Outcome.Resolved.Total_Length /= OS.Byte_Count (State.Current_Object_Length)
+           or else Flyology.Buffers.Length (Item.Payload) /= State.Request.Maximum
+         then
+            Read_Result := Read_Corrupt;
+         else
+            begin
+               Copy_Refresh_Payload (Item.Payload, Data);
+               Read_Result := Object_Read;
+            exception
+               when Storage_Error =>
+                  Read_Result := Read_Capacity_Exceeded;
+            end;
+         end if;
+      end if;
+      Consume_Refresh_Header
+        (Item,
+         Data,
+         (if Read_Result = Object_Read then State.Current_Object_Length else 0),
+         Generation,
+         Read_Result);
+   exception
+      when Error : others =>
+         Fail_Composable_Refresh (Item, Error);
+   end Complete_Refresh_Header_Range;
+
+   procedure Complete_Refresh_Whole (Item : in out Refresh_Operation) is
+      State       : Refresh_Driver_State renames Item.Driver_State.all;
+      Outcome     : Client_Objects.Whole_Get_Result;
+      Data        : Flyology.Bytes.Unbounded_Bytes;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome := Read_Failed;
+      Valid       : Boolean := False;
+   begin
+      begin
+         Client_Objects.Finish (Item.Read_Child.all, Outcome);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Read_Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Read_Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Read_Child.all)
+            then
+               Flyology.Operations.Release (Item.Read_Child.all);
+            end if;
+            Fail_Composable_Refresh (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Read_Child.all);
+      if Outcome.Kind = Client_Objects.Whole_Get_Exchange_Failed then
+         Read_Result := Refresh_Read_Failure (Outcome.Failure);
+      elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
+         Read_Result := Refresh_Read_Rejection (Outcome.Response.Status);
+      else
+         Set_Quoted_Generation
+           (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+         --  Whole GetObject success is HTTP 200. Exact Content-Length and the
+         --  optional authenticated ETag are recovery framing authority, not a
+         --  transport optimization.
+         if not Valid
+           or else Outcome.Response.Status /= 200
+           or else not Outcome.Response.Result.Content_Length.Is_Set
+           or else Outcome.Response.Result.Content_Length.Value > OS.Byte_Count (Natural'Last)
+           or else Natural (Outcome.Response.Result.Content_Length.Value) > State.Request.Maximum
+           or else Natural (Outcome.Response.Result.Content_Length.Value)
+                     /= Flyology.Buffers.Length (Item.Payload)
+           or else
+             (State.Request.Expected_Generation.Length > 0
+              and then Generation /= State.Request.Expected_Generation)
+         then
+            Read_Result :=
+              (if Outcome.Response.Result.Content_Length.Is_Set
+                 and then Outcome.Response.Result.Content_Length.Value <= OS.Byte_Count (Natural'Last)
+                 and then Natural (Outcome.Response.Result.Content_Length.Value) > State.Request.Maximum
+               then Read_Capacity_Exceeded
+               else Read_Corrupt);
+         else
+            begin
+               Copy_Refresh_Payload (Item.Payload, Data);
+               Read_Result := Object_Read;
+            exception
+               when Storage_Error =>
+                  Read_Result := Read_Capacity_Exceeded;
+            end;
+         end if;
+      end if;
+      Consume_Refresh_Whole (Item, Data, Generation, Read_Result);
+   exception
+      when Error : others =>
+         Fail_Composable_Refresh (Item, Error);
+   end Complete_Refresh_Whole;
+
+   procedure Start_Refresh_Whole (Item : in out Refresh_Operation) is
+      State : Refresh_Driver_State renames Item.Driver_State.all;
+   begin
+      if State.Request.Maximum = 0
+        or else State.Request.Maximum > Flyology.Buffers.Buffer_Capacity (Item.Payload)
+      then
+         Consume_Refresh_Whole_Failure (Item, Read_Capacity_Exceeded);
+         return;
+      end if;
+      Client_Objects.Get_Whole
+        (Item.HTTP,
+         Item.Storage.Client_Origin,
+         UStrings.To_String (Item.Storage.Bucket),
+         Refresh_Request_Key (Item, State.Request),
+         Item.Payload'Unchecked_Access,
+         Item.Storage.Client_Identity.all,
+         Item.HTTP_Deadline,
+         --  The controller's first HEAD-object read is intentionally
+         --  unconditional. Later immutable body requests carry the exact
+         --  generation authenticated by their preceding header range.
+         Expected_Entity_Tag   =>
+           (if State.Request.Expected_Generation.Length = 0
+            then ""
+            else Quoted_Generation (State.Request.Expected_Generation)),
+         Region                => UStrings.To_String (Item.Storage.Client_Region),
+         Style                 => Item.Storage.Client_Style,
+         Expected_Bucket_Owner => UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
+         Request_Payer         => UStrings.To_String (Item.Storage.Client_Request_Payer),
+         Checksum_Mode         => Item.Storage.Client_Checksum_Mode,
+         Token                 => Item.Cancellation,
+         Operation             => Item.Read_Child.all);
+      State.Phase := Refresh_Reading_Whole;
+      Flyology.Operations.Continue_After (Item, Item.Read_Child.all);
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         Consume_Refresh_Whole_Failure (Item, Read_Capacity_Exceeded);
+      when Error : others =>
+         Fail_Composable_Refresh (Item, Error);
+   end Start_Refresh_Whole;
+
+   procedure Start_Refresh_Header_Head (Item : in out Refresh_Operation) is
+      State      : Refresh_Driver_State renames Item.Driver_State.all;
+      Parameters : Client_Low_Level.Head_Object_Parameters := (others => <>);
+   begin
+      if State.Request.Maximum = 0
+        or else State.Request.Maximum > Flyology.Buffers.Buffer_Capacity (Item.Payload)
+      then
+         Consume_Refresh_Header
+           (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
+         return;
+      end if;
+      State.Current_Object_Length := 0;
+      State.Request_Generation := (others => <>);
+      Parameters.Expected_Bucket_Owner := Item.Storage.Expected_Bucket_Owner;
+      Parameters.Request_Payer := Item.Storage.Client_Request_Payer;
+      Parameters.Checksum_Mode := Item.Storage.Client_Checksum_Mode;
+      Client_Objects.Head_Object
+        (Item.HTTP,
+         Item.Storage.Client_Origin,
+         UStrings.To_String (Item.Storage.Bucket),
+         Refresh_Request_Key (Item, State.Request),
+         Parameters,
+         Item.Storage.Client_Identity.all,
+         Item.HTTP_Deadline,
+         UStrings.To_String (Item.Storage.Client_Region),
+         Item.Storage.Client_Style,
+         Item.Cancellation,
+         Item.Head_Child.all);
+      State.Phase := Refresh_Reading_Header_Head;
+      Flyology.Operations.Continue_After (Item, Item.Head_Child.all);
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         Consume_Refresh_Header
+           (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
+      when Error : others =>
+         Fail_Composable_Refresh (Item, Error);
+   end Start_Refresh_Header_Head;
+
+   procedure Advance_Composable_Refresh (Item : in out Refresh_Operation) is
+      State : Refresh_Driver_State renames Item.Driver_State.all;
+      Fault : Storage_Fault_Mode;
+   begin
+      Next_Recovery_Request (State.Traversal, State.Request);
+      if State.Request.Kind = Recovery_No_Request then
+         Complete_Refresh_Install (Item);
+         return;
+      elsif Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Composable_Refresh (Item, Cancelled);
+         return;
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Composable_Refresh (Item, Timed_Out);
+         return;
+      end if;
+      Consume_Fault
+        (Item.Storage.all,
+         (if State.Request.Kind
+               in Recovery_Manifest_Header_Request | Recovery_Manifest_Body_Request
+          then Before_Manifest_Get
+          else Before_Get),
+         Fault);
+      if Fault /= No_Fault then
+         if State.Request.Kind
+           in Recovery_Manifest_Header_Request | Recovery_SST_Header_Request
+         then
+            Consume_Refresh_Header
+              (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Failed);
+         else
+            Consume_Refresh_Whole_Failure (Item, Read_Failed);
+         end if;
+      elsif State.Request.Kind
+        in Recovery_Manifest_Header_Request | Recovery_SST_Header_Request
+      then
+         Start_Refresh_Header_Head (Item);
+      else
+         Start_Refresh_Whole (Item);
+      end if;
+   exception
+      when Error : others =>
+         Fail_Composable_Refresh (Item, Error);
+   end Advance_Composable_Refresh;
+
+   procedure Prepare_Composable_Refresh (Item : in out Refresh_Operation) is
+      State     : Refresh_Driver_State renames Item.Driver_State.all;
+      Uncertain : Boolean;
+      Fenced    : Boolean;
+   begin
+      State.Engine.Gate.Snapshot
+        (State.Current_Head, State.Current_Generation, Uncertain, Fenced);
+      if Uncertain then
+         Complete_Composable_Refresh (Item, Outcome_Unknown);
+      elsif Fenced then
+         Complete_Composable_Refresh (Item, Stale_Writer);
+      else
+         Start_Recovery
+           (State.Traversal, State.Current_Head.Database_ID, Zero_Identifier);
+         Advance_Composable_Refresh (Item);
+      end if;
+   exception
+      when Error : others =>
+         Fail_Composable_Refresh (Item, Error);
+   end Prepare_Composable_Refresh;
+
+   procedure Await_Composable_Refresh_Quiescence
+     (Item : in out Refresh_Operation)
+   is
+      Descriptor        : Interfaces.C.int;
+      --  Flyology.IO fixes negative descriptors as invalid; this initializer
+      --  is overwritten only when the optional cancellation source is live.
+      Cancellation_FD   : Interfaces.C.int := -1;
+      Ready_Now         : Boolean;
+      Already_Cancelled : Boolean := False;
+      --  Exactly two owner-stack sources can be live here: lifecycle
+      --  quiescence and the optional cancellation token. The absolute
+      --  deadline is armed in the same visible operation slot.
+      Sources           : Flyology.Operations.Drivers.Readiness_Source_Array (1 .. 2);
+      Count             : Natural := 0;
+   begin
+      if Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Composable_Refresh (Item, Cancelled);
+         return;
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Composable_Refresh (Item, Timed_Out);
+         return;
+      end if;
+      Item.Item.Life.Resolve_Wait_Source (Descriptor, Ready_Now);
+      if Ready_Now then
+         Prepare_Composable_Refresh (Item);
+         return;
+      end if;
+      Count := Count + 1;
+      Sources (Count) := (Descriptor => Descriptor, For_Write => False);
+      if Item.Cancellation /= null then
+         Item.Cancellation.Wait_Source (Cancellation_FD, Already_Cancelled);
+         if Already_Cancelled then
+            Complete_Composable_Refresh (Item, Cancelled);
+            return;
+         end if;
+         Count := Count + 1;
+         Sources (Count) := (Descriptor => Cancellation_FD, For_Write => False);
+      end if;
+      Flyology.Operations.Drivers.Arm_Readiness (Item, Sources (1 .. Count));
+      Flyology.Operations.Drivers.Arm_Deadline (Item, Remaining_Time (Item.Deadline));
+      Item.Driver_State.Phase := Refresh_Waiting_For_Quiescence;
+   exception
+      when Error : others =>
+         Fail_Composable_Refresh (Item, Error);
+   end Await_Composable_Refresh_Quiescence;
+
+   overriding procedure Drive
+     (Item : in out Refresh_Operation;
+      Event : Flyology.Operations.Driver_Event)
+   is
+   begin
+      if Event in Flyology.Operations.Start_Operation | Flyology.Operations.Source_Ready then
+         Await_Composable_Refresh_Quiescence (Item);
+      elsif Event = Flyology.Operations.Deadline_Reached
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Refresh_Waiting_For_Quiescence
+      then
+         Complete_Composable_Refresh (Item, Timed_Out);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Refresh_Reading_Header_Head
+        and then Item.Head_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Head_Child.all)
+      then
+         Complete_Refresh_Header_Head (Item);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Refresh_Reading_Header_Range
+        and then Item.Range_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Range_Child.all)
+      then
+         Complete_Refresh_Header_Range (Item);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Refresh_Reading_Whole
+        and then Item.Read_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Read_Child.all)
+      then
+         Complete_Refresh_Whole (Item);
+      else
+         raise Program_Error with "invalid composable refresh driver event";
+      end if;
+   exception
+      when Error : others =>
+         if Flyology.Operations.Is_Active (Item) then
+            Fail_Composable_Refresh (Item, Error);
+         end if;
+   end Drive;
+
+   overriding procedure Request_Cancellation (Item : in out Refresh_Operation) is
+   begin
+      if Item.Head_Child /= null and then Flyology.Operations.Is_Active (Item.Head_Child.all) then
+         Flyology.Operations.Cancel (Item.Head_Child.all);
+      elsif Item.Head_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Head_Child.all)
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Refresh_Reading_Header_Head
+      then
+         Complete_Refresh_Header_Head (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Request_Cancellation (Item);
+         end if;
+      elsif Item.Range_Child /= null and then Flyology.Operations.Is_Active (Item.Range_Child.all) then
+         Flyology.Operations.Cancel (Item.Range_Child.all);
+      elsif Item.Range_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Range_Child.all)
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Refresh_Reading_Header_Range
+      then
+         Complete_Refresh_Header_Range (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Request_Cancellation (Item);
+         end if;
+      elsif Item.Read_Child /= null and then Flyology.Operations.Is_Active (Item.Read_Child.all) then
+         Flyology.Operations.Cancel (Item.Read_Child.all);
+      elsif Item.Read_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Read_Child.all)
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Refresh_Reading_Whole
+      then
+         Complete_Refresh_Whole (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Request_Cancellation (Item);
+         end if;
+      elsif Flyology.Operations.Is_Active (Item) then
+         Complete_Composable_Refresh
+           (Item, Cancelled, Flyology.Operations.Cancelled);
+      end if;
+   exception
+      when others =>
+         if Flyology.Operations.Is_Active (Item) then
+            begin
+               Complete_Composable_Refresh
+                 (Item, Storage_Failure, Flyology.Operations.Failed);
+            exception
+               when others =>
+                  null;
+            end;
+         end if;
+   end Request_Cancellation;
+
+   procedure Refresh_Replica
+     (Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Refresh_Operation)
+   is
+      Result  : Outcome_Code;
+      Moved   : Boolean := False;
+      Started : Boolean := False;
+   begin
+      if Operation.Storage.HTTP_Client /= Operation.HTTP
+        or else Operation.Storage.Client_Identity = null
+      then
+         raise Program_Error with "refresh operation does not match client-bound storage";
+      elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "refresh payload belongs to a different pool";
+      elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
+        or else Operation.Driver_State /= null
+        or else Operation.Read_Child /= null
+        or else Operation.Range_Child /= null
+        or else Operation.Head_Child /= null
+      then
+         raise Program_Error with "refresh operation retains unconsumed ownership";
+      end if;
+
+      Operation.Deadline := Deadline_After (Timeout);
+      Operation.HTTP_Deadline :=
+        (if Operation.Deadline = Ada.Real_Time.Time_Last
+         then Flyology.HTTP.Client.No_Deadline
+         else Flyology.HTTP.Client.Deadline_After (Remaining_Time (Operation.Deadline)));
+      Operation.Final_Result := Invalid_State;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+      begin
+         --  One lazily allocated owner record carries the persisted-limit-
+         --  derived traversal and partial graph. It introduces no DB ceiling.
+         Operation.Driver_State := new Refresh_Driver_State;
+      exception
+         when Storage_Error =>
+            null;
+      end;
+      if Operation.Driver_State /= null then
+         begin
+            --  These access values borrow only operation discriminant owners
+            --  and its inline scratch handle. The public contract keeps them
+            --  alive through terminal drain, and Finish/finalization frees
+            --  every child before any such borrow may end.
+            Operation.Read_Child :=
+              new Client_Objects.Whole_Get_Operation
+                (Operation.Set.all'Unchecked_Access,
+                 Operation.HTTP.all'Unchecked_Access,
+                 Operation.Payload'Unchecked_Access,
+                 (if Operation.Cancellation = null
+                  then null
+                  else Operation.Cancellation.all'Unchecked_Access));
+            Operation.Range_Child :=
+              new Client_Objects.Range_Get_Operation
+                (Operation.Set.all'Unchecked_Access,
+                 Operation.HTTP.all'Unchecked_Access,
+                 Operation.Payload'Unchecked_Access,
+                 (if Operation.Cancellation = null
+                  then null
+                  else Operation.Cancellation.all'Unchecked_Access));
+            Operation.Head_Child :=
+              new Client_Objects.Head_Operation
+                (Operation.Set.all'Unchecked_Access,
+                 Operation.HTTP.all'Unchecked_Access,
+                 (if Operation.Cancellation = null
+                  then null
+                  else Operation.Cancellation.all'Unchecked_Access));
+         exception
+            when Storage_Error =>
+               Operation.Driver_State.Precheck_Result := Capacity_Exceeded;
+         end;
+      end if;
+
+      Flyology.Operations.Drivers.Start (Operation);
+      Started := True;
+      if Operation.Driver_State /= null
+        and then Operation.Driver_State.Precheck_Result = Success
+      then
+         Operation.Item.Life.Begin_Composable_Resolve
+           (Operation.Driver_State.Engine, Result);
+         if Result = Success
+           and then Operation.Driver_State.Engine.Storage /= Operation.Storage
+         then
+            Operation.Item.Life.Cancel_Resolve;
+            raise Program_Error with "refresh storage does not own the open database";
+         elsif Result = Success then
+            Operation.Driver_State.Resolve_Admitted := True;
+            Operation.Driver_State.Engine.Gate.Drain_Queued_For_Resolution;
+         else
+            Operation.Driver_State.Precheck_Result := Result;
+         end if;
+      end if;
+      Flyology.Buffers.Move (Payload_Buffer, Operation.Payload);
+      Moved := True;
+      if Operation.Driver_State = null then
+         Operation.Final_Result := Capacity_Exceeded;
+         Operation.Has_Final_Result := True;
+         Flyology.Operations.Drivers.Complete
+           (Operation, Flyology.Operations.Succeeded);
+      elsif Operation.Driver_State.Precheck_Result /= Success then
+         Complete_Composable_Refresh
+           (Operation, Operation.Driver_State.Precheck_Result);
+      else
+         Flyology.Operations.Drive
+           (Flyology.Operations.Operation'Class (Operation),
+            Flyology.Operations.Start_Operation);
+      end if;
+   exception
+      when others =>
+         if Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
+            Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+         end if;
+         if Operation.Driver_State /= null
+           and then Operation.Driver_State.Resolve_Admitted
+         then
+            Operation.Driver_State.Resolve_Admitted := False;
+            Operation.Item.Life.Cancel_Resolve;
+         end if;
+         Release_Refresh_Driver (Operation);
+         if Operation.Read_Child /= null then
+            Free_Whole_Get_Operation (Operation.Read_Child);
+         end if;
+         if Operation.Range_Child /= null then
+            Free_Range_Get_Operation (Operation.Range_Child);
+         end if;
+         if Operation.Head_Child /= null then
+            Free_Head_Operation (Operation.Head_Child);
+         end if;
+         if Started and then Flyology.Operations.Is_Active (Operation) then
+            Flyology.Operations.Drivers.Rollback_Start (Operation);
+         end if;
+         raise;
+   end Refresh_Replica;
+
+   procedure Finish
+     (Operation      : in out Refresh_Operation;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+   is
+   begin
+      if Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "refresh Finish requires the original buffer pool";
+      end if;
+      Flyology.Operations.Consume (Operation);
+      Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+      Release_Refresh_Driver (Operation);
+      if Operation.Read_Child /= null then
+         Free_Whole_Get_Operation (Operation.Read_Child);
+      end if;
+      if Operation.Range_Child /= null then
+         Free_Range_Get_Operation (Operation.Range_Child);
+      end if;
+      if Operation.Head_Child /= null then
+         Free_Head_Operation (Operation.Head_Child);
+      end if;
+      if Operation.Has_Saved_Error then
+         Ada.Exceptions.Raise_Exception
+           (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
+            Ada.Exceptions.Exception_Message (Operation.Saved_Error));
+      elsif not Operation.Has_Final_Result then
+         raise Program_Error with "composable refresh has no terminal result";
+      end if;
+      Result := Operation.Final_Result;
+   end Finish;
+
+   overriding procedure Finalize (Item : in out Refresh_Operation) is
+   begin
+      begin
+         Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
+      exception
+         when others =>
+            null;
+      end;
+      Release_Refresh_Driver (Item);
+      if Item.Read_Child /= null then
+         Free_Whole_Get_Operation (Item.Read_Child);
+      end if;
+      if Item.Range_Child /= null then
+         Free_Range_Get_Operation (Item.Range_Child);
+      end if;
+      if Item.Head_Child /= null then
+         Free_Head_Operation (Item.Head_Child);
+      end if;
+      Flyology.Buffers.Release (Item.Payload);
+   end Finalize;
 
    function Receipt_Outcome (Item : Commit_Receipt) return Outcome_Code
    is (Item.Current_Outcome);

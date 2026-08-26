@@ -1,5 +1,40 @@
 # Review record
 
+## Accepted caller-composable replica-refresh candidate
+
+- Parent: shared recovery-controller commit `630fc4f`.
+- API and execution: add limited private `Refresh_Operation`, same-name operation-last `Refresh_Replica`, and typed
+  `Finish` directly in `Flyology.DB`. The operation drives the existing recovery request/consume controller through
+  provider-owned Object Storage Head, generation-bound range, and bounded whole-Get children in one caller-owned
+  completion set. One absolute monotonic deadline covers quiescence and all reads; there is no helper task, provider
+  retry, second recovery algorithm, compatibility child, public constant, or new persisted value.
+- Ownership and installation: Start validates owners, reserves the visible parent slot, and admits the lifecycle
+  before moving the exact acquired scratch token. Any Start exception restores the lifecycle, slot, and token exactly.
+  Typed Finish is the sole restoration authority and accepts any vacant same-pool handle. Cancellation and
+  abandonment drain and consume every child before releasing the partial recovery graph and detached token. A
+  complete equal or older graph is a successful no-op; only a complete strictly newer graph replaces the engine.
+- Failure and authority: request/body allocation failure is typed `Capacity_Exceeded` and cannot publish a partial
+  graph. The initial mutable DB HEAD read deliberately omits `If-Match`; immutable manifest/SST bodies require the
+  exact opaque generation authenticated by the preceding Head/range pair. HTTP 404 and 412 retain the established
+  recovery normalization. All allocation extents remain lazily derived with checked arithmetic from persisted
+  database/family limits and authenticated object lengths.
+- Findings cycle: the implementation sweep fixed four P1 defects: an exception handler could free an already
+  installed engine; an empty generation was serialized as `If-Match: ""`; batch response bytes were copied through
+  a second allocation; and request-preparation `Storage_Error` could escape without safe capacity classification.
+  The fixes add an installation ownership flag, omit the empty precondition, transfer the original owned batch bytes,
+  and centralize allocation failure as definite `Capacity_Exceeded`. P2 fixes document protocol-status authority,
+  every new `Unchecked_Access` lifetime, and refresh wake participation. Repeated API, concurrency, ownership,
+  lifecycle, deadline, cancellation, allocation, generation, compatibility, constants-authority, documentation,
+  formal-boundary, and unnecessary-surface review finds no remaining actionable P0/P1/P2 finding.
+- Verification: `./tests/scripts/test.sh` passes the exact deterministic tree, including client-backed
+  create/commit/Flush/compaction/composable-refresh/reopen, files crash recovery, the limited end-to-end profile, 32
+  comparative cases, and pinned TidesDB 4/4. `./tests/scripts/test-s3-matrix.sh` passes all 18 RustFS, SeaweedFS,
+  MinIO, and Flyology memory/files/SQLite lanes. `./scripts/check-tla.sh` passes every maintained lane, including
+  1,460 replica-refresh states and 11/11 obligations; `./scripts/prove.sh` proves 1,097/1,097 warning-strict checks.
+  Exact formal pre/post host audits are clean. The dependency is published Object Storage
+  `4401e0ecdc413668160078611c61e8434700cf74` from index
+  `4f7124b277e3eb6dd1922c35c065f2e510bcdc99`; its own exact-tree proof reports 936/936.
+
 ## Accepted recovery request/consume controller candidate
 
 - Parent: recovery-consumer commit `3533cf5`.

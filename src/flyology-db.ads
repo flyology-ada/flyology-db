@@ -179,6 +179,20 @@ package Flyology.DB is
       Payload_Pool : not null access Flyology.Buffers.Pool;
       Cancellation : access Flyology.Cancellation.Token) is
      new Flyology.Operations.Operation with private;
+   --  Caller-composable monotonic replica refresh. The discriminants are
+   --  retained borrows and must outlive terminal Finish or abandonment drain.
+   --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
+   --  caller-selected recovery scratch capacity; the DB introduces no body
+   --  size default or ceiling. The owner stack has the same four-slot geometry
+   --  as composable checkpoint I/O: DB, Object Storage, HTTP, and transport.
+   type Refresh_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation with private;
    --  Project admission policy documented by the synchronous topology: one
    --  public atomic group has at most eight members. This is a bounded API and
    --  coordinator-capacity choice, not a wire-count limit or database default.
@@ -251,6 +265,45 @@ package Flyology.DB is
       Timeout : Duration;
       Token   : access Flyology.Cancellation.Token := null;
       Result  : out Outcome_Code);
+
+   --  Start or restart one owner-driven replica refresh. All validation,
+   --  operation-slot reservation, and lifecycle admission occur before the
+   --  exact Payload_Buffer token moves into operation ownership. Every child
+   --  uses one absolute deadline and the shared recovery request/consume
+   --  machine; there is no helper task, retry, or retained caller-handle
+   --  pointer. On an exception during Start, the lifecycle and slot roll back
+   --  and Payload_Buffer is restored byte/tag/metadata/length exact.
+   --  @param Payload_Buffer Acquired caller-owned recovery scratch token
+   --  @param Timeout Whole-refresh monotonic timeout budget
+   --  @param Operation Fresh or consumed client-bound refresh operation
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Storage binding
+   procedure Refresh_Replica
+     (Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Refresh_Operation)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Consume a terminal owner-driven refresh and restore its exact scratch
+   --  token. Payload_Buffer may be any vacant handle from the original pool;
+   --  no pointer to the initiating handle is retained. An unexpected provider
+   --  exception is re-raised only after ownership restoration and operation
+   --  consumption.
+   --  @param Operation Terminal composable refresh operation
+   --  @param Result Monotonic install/no-op or typed failure outcome
+   --  @param Payload_Buffer Vacant same-pool destination for the exact token
+   procedure Finish
+     (Operation      : in out Refresh_Operation;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+     with Pre => Flyology.Operations.Is_Terminal (Operation)
+       and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool,
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Append one explicit immutable column-family configuration and publish
    --  one conditional manifest-bearing HEAD transition. Configuration supplies
@@ -1338,6 +1391,8 @@ private
 
    type Flush_Driver_State;
    type Flush_Driver_State_Access is access Flush_Driver_State;
+   type Refresh_Driver_State;
+   type Refresh_Driver_State_Access is access Refresh_Driver_State;
    type Whole_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Whole_Get_Operation;
    type Range_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Range_Get_Operation;
    type Head_Operation_Access is access Flyology.Object_Storage.Client.Objects.Head_Operation;
@@ -1382,6 +1437,39 @@ private
    overriding procedure Request_Cancellation (Item : in out Flush_Operation);
    --  @exclude
    overriding procedure Finalize (Item : in out Flush_Operation);
+
+   --  @exclude
+   type Refresh_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation (Set) with record
+      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Read_Child       : Whole_Get_Operation_Access := null;
+      Range_Child      : Range_Get_Operation_Access := null;
+      Head_Child       : Head_Operation_Access := null;
+      Driver_State     : Refresh_Driver_State_Access := null;
+      --  Vacant-operation sentinel only. Refresh_Replica replaces it with the
+      --  caller-derived monotonic deadline before the operation can be active.
+      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      HTTP_Deadline    : Flyology.HTTP.Client.Monotonic_Deadline;
+      Final_Result     : Outcome_Code := Invalid_State;
+      Has_Final_Result : Boolean := False;
+      Has_Saved_Error  : Boolean := False;
+      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+   end record;
+
+   --  @exclude
+   overriding procedure Drive
+     (Item : in out Refresh_Operation;
+      Event : Flyology.Operations.Driver_Event);
+   --  @exclude
+   overriding procedure Request_Cancellation (Item : in out Refresh_Operation);
+   --  @exclude
+   overriding procedure Finalize (Item : in out Refresh_Operation);
 
    type Storage_Fault_Point is
      (Before_Batch_Put,
@@ -1467,6 +1555,9 @@ private
       procedure Release;
       procedure Begin_Close (State : out Engine_State_Access; Result : out Outcome_Code);
       procedure Begin_Resolve (State : out Engine_State_Access; Result : out Outcome_Code);
+      procedure Begin_Composable_Resolve
+        (State  : out Engine_State_Access;
+         Result : out Outcome_Code);
       procedure Begin_Checkpoint (State : out Engine_State_Access; Result : out Outcome_Code);
       procedure Begin_Composable_Checkpoint
         (State  : out Engine_State_Access;
@@ -1477,6 +1568,9 @@ private
          State    : out Engine_State_Access;
          Result   : out Outcome_Code);
       procedure Checkpoint_Wait_Source
+        (Descriptor : out Interfaces.C.int;
+         Ready_Now  : out Boolean);
+      procedure Resolve_Wait_Source
         (Descriptor : out Interfaces.C.int;
          Ready_Now  : out Boolean);
       entry Await_Quiescent;

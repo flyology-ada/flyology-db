@@ -14,6 +14,15 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
+The caller-composable replica-refresh candidate preserves the exact warning-strict selected-unit boundary at
+1,097/1,097 proved checks. The owner-stack recovery driver, retained lifecycle wake, provider-owned Head/range/whole
+children, moved-buffer restoration, and monotonic engine installation remain executable integration boundaries rather
+than new SPARK claims. Their matching maintained TLA/TLAPS lane explores 1,460 distinct states to depth 15 and proves
+11/11 obligations, including fencing, lagging refresh, catch-up, stale-writer rejection, and replica rollback. The
+authenticated deterministic suite separately exercises slot rollback, capacity failure, cancellation, abandonment,
+typed Finish into a different same-pool handle, restart, newer installation, equal-head no-op, and cacheless reopen.
+No refinement proof between the executable driver and the model is claimed.
+
 The checkpoint-carried registry-append prerequisite adds the carrier-aware predecessor predicate to the selected
 `Manifest_Formats` proof boundary. The exact maintained campaign proves 1,091/1,091 checks: 167 by flow analysis and
 924 by provers, with zero warnings, unproved or justified checks, or `pragma Assume` statements. The deterministic

@@ -73,15 +73,13 @@ All allocation extents remain lazily derived with checked arithmetic from the au
 `Database_Limits`, per-family limits, exact header admission, and exact object lengths. An undersized caller buffer or
 allocation failure is `Capacity_Exceeded`; it does not partially install a graph or change the prior replica view.
 
-The shared reader now extracts the HEAD, manifest, SST, and batch consumers from blocking I/O. Each header
-consumer retains the decoder-admitted object length and opaque generation; each body consumer accepts only that
-exact length and generation before decoding. HEAD and batch consumers preserve the established format/status
-normalization without retaining transport state. `Recovery_Traversal` owns every manifest, run, and batch
-cursor plus the incomplete graph. `Next_Recovery_Request` exposes one exact
-key-kind/generation/maximum request; the blocking adapter executes it and feeds the result to the matching
-consumer. The obsolete monolithic traversal and its blocking manifest/SST wrappers have been removed. No
-composable API is exposed by this intermediate refactor; the next stage drives these same requests with
-provider-owned operations.
+`Recovery_Traversal` now owns every manifest, run, and batch cursor plus the incomplete graph.
+`Next_Recovery_Request` exposes one exact key-kind/generation/maximum request. The blocking adapter executes it
+through `Storage_Port`; `Refresh_Operation` executes it through provider-owned Object Storage operations. Each
+header request uses HeadObject to obtain the object length and opaque generation, followed by one exact
+generation-bound range Get. The initial database HEAD whole Get is intentionally unconditional; immutable manifest
+and SST body reads carry the generation authenticated by the preceding header request. The obsolete monolithic
+traversal and its blocking manifest/SST wrappers have been removed.
 
 ## Lifecycle and terminal rules
 
@@ -104,10 +102,11 @@ through a possibly finalized caller handle.
 
 ## Qualification boundary
 
-The existing replica-refresh TLC/TLAPS lane remains the monotonic-install and fencing safety oracle. The composable
-implementation adds deterministic owner-stack coverage for quiescence, cancellation at every read phase, deadline,
-undersized token, allocation rollback, equal/older observations, newer install, operation restart, typed Finish, and
-scope abandonment. The authenticated provider matrix must refresh a deliberately stale replica through the
-generation-bound checkpoint and batch path with no retry or mutation replay. Synchronous client refresh converges on
-the same reader before the composable API is declared complete; memory and files may retain blocking transport
-adapters while consuming the same request/consume kernel.
+The existing replica-refresh TLC/TLAPS lane remains the monotonic-install and fencing safety oracle. Deterministic
+owner-stack coverage exercises completion-slot rollback, undersized-token rejection, pre-requested cancellation,
+scope abandonment, a newer install, equal-head restart, typed Finish into a different same-pool handle, and
+cacheless reopen. The authenticated provider matrix refreshes a deliberately stale replica through the
+generation-bound checkpoint and batch path with no retry or mutation replay. Synchronous client refresh and the
+composable path consume the same request/consume machine; memory and files retain blocking transport adapters.
+Cancellation while each distinct provider child is actively blocked and deadline expiry at each read phase remain
+explicit expansion work rather than part of this first limited acceptance claim.
