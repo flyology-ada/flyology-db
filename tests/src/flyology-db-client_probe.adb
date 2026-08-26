@@ -133,6 +133,9 @@ procedure Flyology.DB.Client_Probe is
    Receipt                               : Create_Receipt;
    Family_Info                           : Column_Family_Receipt;
    Commit_Info                           : Commit_Receipt;
+   First_Sequence                        : Sequence_Number := 0;
+   Later_Sequence                        : Sequence_Number := 0;
+   Third_Sequence                        : Sequence_Number := 0;
    Flush_Info                            : Flush_Receipt;
    Action                                : L0_Checkpoint_Action;
    Requirement                           : L0_Checkpoint_Requirement;
@@ -284,6 +287,10 @@ procedure Flyology.DB.Client_Probe is
    --  owner stack of this serial proxy corpus. This is dependency-qualified
    --  test geometry, not a DB completion-set or connection-pool default.
    Composable_Set               : aliased Flyology.Operations.Completion_Set (5);
+   --  The multi-run fixture adds one DB selector parent above the qualified
+   --  five-slot one-run/Objects/HTTP/H1/transport stack. Six is therefore the
+   --  exact observed owner-stack depth, not a production completion default.
+   Lazy_Checkpoint_Set          : aliased Flyology.Operations.Completion_Set (6);
    --  The fixture selects its persisted live-state byte budget as the scratch
    --  block capacity and one token as serial operation geometry. Production
    --  callers select capacity from their own persisted family/database limits.
@@ -309,6 +316,9 @@ procedure Flyology.DB.Client_Probe is
    Lazy_Work                    :
      Lazy_SST_Read_Operation
        (Composable_Set'Access, Context'Access, Client'Access, Lazy_Pool'Access, null);
+   Lazy_Checkpoint_Work         :
+     Lazy_Checkpoint_Read_Operation
+       (Lazy_Checkpoint_Set'Access, Context'Access, Client'Access, Lazy_Pool'Access, null);
 
    procedure Test_Lazy_SST_Read is
       procedure Read_And_Expect
@@ -403,6 +413,160 @@ procedure Flyology.DB.Client_Probe is
          Flyology.Buffers.Release (Lazy_Restored_Buffer);
          raise;
    end Test_Lazy_SST_Read;
+
+   procedure Test_Lazy_Checkpoint_Read is
+      Runs : constant Lazy_SST_Run_Array :=
+        [(Run_ID                => Compaction_Run_ID,
+          Lowest_Sequence       => First_Sequence,
+          Highest_Sequence      => First_Sequence,
+          Entry_Total           => 1,
+          Logical_Payload_Bytes => Interfaces.Unsigned_64 (Key_Data'Length + Value_Data'Length)),
+         (Run_ID                => Later_Run_ID,
+          Lowest_Sequence       => Later_Sequence,
+          Highest_Sequence      => Later_Sequence,
+          Entry_Total           => 1,
+          Logical_Payload_Bytes => Interfaces.Unsigned_64 (Key_Data'Length + Later_Value_Data'Length)),
+         (Run_ID                => Third_Run_ID,
+          Lowest_Sequence       => Third_Sequence,
+          Highest_Sequence      => Third_Sequence,
+          Entry_Total           => 1,
+          Logical_Payload_Bytes => Interfaces.Unsigned_64 (Key_Data'Length + Third_Value_Data'Length))];
+      Invalid_Runs : constant Lazy_SST_Run_Array := [Runs (2), Runs (1)];
+
+      procedure Read_And_Expect
+        (Source               : in out Flyology.Buffers.Unique_Buffer;
+         Destination          : in out Flyology.Buffers.Unique_Buffer;
+         Key                  : Byte_Array;
+         Snapshot             : Sequence_Number;
+         Expected_Disposition : Lazy_SST_Entry_Disposition;
+         Expected_Sequence    : Sequence_Number;
+         Expected_Value       : Byte_Array;
+         Expected_Result      : Outcome_Code)
+      is
+         Disposition : Lazy_SST_Entry_Disposition;
+         Sequence    : Sequence_Number;
+         Value       : Flyology.Bytes.Unbounded_Bytes;
+         Read_Result : Outcome_Code;
+      begin
+         Read_Lazy_Checkpoint_Entry
+           (Probe_Database_ID,
+            Families (Families'First),
+            Runs,
+            Snapshot,
+            Key,
+            Source,
+            Test_Operation_Timeout,
+            Lazy_Checkpoint_Work);
+         if Flyology.Buffers.Has_Buffer (Source) then
+            raise Program_Error with "lazy checkpoint read did not move its scratch token";
+         end if;
+         Flyology.Operations.Wait_All (Lazy_Checkpoint_Set);
+         Finish_Lazy_Checkpoint_Read
+           (Lazy_Checkpoint_Work,
+            Disposition,
+            Sequence,
+            Value,
+            Read_Result,
+            Destination);
+         Expect (Read_Result, Expected_Result, "client-backed lazy checkpoint read failed");
+         if Disposition /= Expected_Disposition
+           or else Sequence /= Expected_Sequence
+           or else not Same (Value, Expected_Value)
+           or else not Flyology.Buffers.Has_Buffer (Destination)
+           or else Flyology.Buffers.Tag (Destination) /= Lazy_Token_Tag
+         then
+            raise Program_Error
+              with
+                "lazy checkpoint read returned the wrong entry: disposition="
+                & Lazy_SST_Entry_Disposition'Image (Disposition)
+                & " sequence="
+                & Sequence_Number'Image (Sequence)
+                & " value_length="
+                & Natural'Image (Flyology.Bytes.Length (Value))
+                & " result="
+                & Outcome_Code'Image (Read_Result);
+         end if;
+      end Read_And_Expect;
+   begin
+      Flyology.Buffers.Acquire (Lazy_Buffer);
+      Flyology.Buffers.Set_Tag (Lazy_Buffer, Lazy_Token_Tag);
+      declare
+         Disposition : Lazy_SST_Entry_Disposition;
+         Sequence    : Sequence_Number;
+         Value       : Flyology.Bytes.Unbounded_Bytes;
+         Read_Result : Outcome_Code;
+      begin
+         Read_Lazy_Checkpoint_Entry
+           (Probe_Database_ID,
+            Families (Families'First),
+            Invalid_Runs,
+            Later_Sequence,
+            Key_Data,
+            Lazy_Buffer,
+            Test_Operation_Timeout,
+            Lazy_Checkpoint_Work);
+         Flyology.Operations.Wait_All (Lazy_Checkpoint_Set);
+         Finish_Lazy_Checkpoint_Read
+           (Lazy_Checkpoint_Work,
+            Disposition,
+            Sequence,
+            Value,
+            Read_Result,
+            Lazy_Restored_Buffer);
+         if Read_Result /= Invalid_State
+           or else Disposition /= Lazy_Read_Failed
+           or else Sequence /= 0
+           or else Flyology.Bytes.Length (Value) /= 0
+           or else not Flyology.Buffers.Has_Buffer (Lazy_Restored_Buffer)
+           or else Flyology.Buffers.Tag (Lazy_Restored_Buffer) /= Lazy_Token_Tag
+         then
+            raise Program_Error with "lazy checkpoint read admitted an invalid run order";
+         end if;
+      end;
+      Read_And_Expect
+        (Lazy_Restored_Buffer,
+         Lazy_Buffer,
+         Key_Data,
+         Third_Sequence,
+         Lazy_Value_Found,
+         Third_Sequence,
+         Third_Value_Data,
+         Success);
+      Read_And_Expect
+        (Lazy_Buffer,
+         Lazy_Restored_Buffer,
+         Key_Data,
+         Later_Sequence,
+         Lazy_Value_Found,
+         Later_Sequence,
+         Later_Value_Data,
+         Success);
+      Read_And_Expect
+        (Lazy_Restored_Buffer,
+         Lazy_Buffer,
+         Key_Data,
+         First_Sequence,
+         Lazy_Value_Found,
+         First_Sequence,
+         Value_Data,
+         Success);
+      Read_And_Expect
+        (Lazy_Buffer,
+         Lazy_Restored_Buffer,
+         Bytes ("z"),
+         Third_Sequence,
+         Lazy_Key_Absent,
+         0,
+         Bytes (""),
+         Not_Found);
+      Flyology.Operations.Release (Lazy_Checkpoint_Work);
+      Flyology.Buffers.Release (Lazy_Restored_Buffer);
+   exception
+      when others =>
+         Flyology.Buffers.Release (Lazy_Buffer);
+         Flyology.Buffers.Release (Lazy_Restored_Buffer);
+         raise;
+   end Test_Lazy_Checkpoint_Read;
 begin
    if Proxy_Enabled then
       declare
@@ -471,6 +635,7 @@ begin
    Expect (Result, Success, "client-backed put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "client-backed commit failed");
+   First_Sequence := Receipt_Sequence (Commit_Info);
    Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "client-backed dirty checkpoint query failed");
    if Checkpoint_Requirement_Action (Requirement) /= Additive_Flush_Required
@@ -879,6 +1044,7 @@ begin
    Expect (Result, Success, "appended-family remote put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "later client-backed commit failed");
+   Later_Sequence := Receipt_Sequence (Commit_Info);
    Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "later client-backed checkpoint query failed");
    if Checkpoint_Requirement_Action (Requirement) /= Additive_Flush_Required
@@ -904,6 +1070,7 @@ begin
    Expect (Result, Success, "third client-backed put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "third client-backed commit failed");
+   Third_Sequence := Receipt_Sequence (Commit_Info);
    Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "third client-backed checkpoint query failed");
    if Checkpoint_Requirement_Action (Requirement) /= Additive_Flush_Required
@@ -921,6 +1088,12 @@ begin
       Receipt => Flush_Info,
       Result  => Result);
    Expect (Result, Success, "third client-backed additive Flush failed");
+
+   --  The exact current manifest order is oldest to newest. The private
+   --  selector traverses it newest first at one fixed snapshot, skipping
+   --  future runs without I/O and falling through only on authenticated
+   --  absence. It performs no retry and retains no caller descriptor borrow.
+   Test_Lazy_Checkpoint_Read;
 
    --  A definite selected-read failure precedes publication, restores the
    --  exact token, and leaves every identity reusable. The immediate retry of

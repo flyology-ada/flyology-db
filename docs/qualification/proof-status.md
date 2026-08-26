@@ -40,6 +40,21 @@ absent keys, moved-token restoration, cancellation, short v1 headers, and one cu
 and v2 runs through recovery allocation faults, compaction, and reopen. This is integration evidence, not a SPARK
 refinement proof of the dynamic codec, ownership state machine, or provider.
 
+The private fixed-snapshot multi-run selector changes no selected SPARK unit.
+Its finite TLA+ model exhausts 37 states at depth 6 with nonzero coverage for
+future-run skipping, absence fall-through, value/tombstone/complete-absence
+publication, and child failure. The arbitrary-domain TLAPS kernel proves 13/13
+request, cursor, publication, failure-atomicity, and quiescence obligations.
+The runtime exact descriptor copy, repeated typed child Finish/Release, dynamic
+allocation, v2-only limitation, and refinement to either model remain
+executable boundaries rather than SPARK claims.
+
+The exact-tree warning-strict SPARK campaign after this selector passed
+1,097/1,097 checks with no unproved or justified checks and no warning or
+`pragma Assume` finding. The host-wide post-run executable audit was clean for
+GNATprove, Why3, SMT provers, TLC, TLAPS, and Apalache before the shared formal
+lane was released.
+
 The owned physical scan merge implementation changes no selected SPARK unit and preserves the exact warning-strict
 campaign at 1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or `pragma Assume`
 statements. Its maintained TLA/TLC/TLAPS lane exhausts 21 distinct states to depth 6, detects independent

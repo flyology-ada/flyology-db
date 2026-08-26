@@ -1324,6 +1324,37 @@ grep -q 'Invariant WitnessPending is violated.' \
 grep -q 'All 41 obligations proved.' \
   "$temporary_root/tlaps-lazy-sst-read.log"
 
+#  Three ordered runs, two keys, and four values are finite qualification
+#  geometry for newest-visible fixed-snapshot selection. They are not a run
+#  ceiling, key/value limit, request count, retry policy, or public default.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 \
+  -metadir "$temporary_root/tlc-lazy-checkpoint-read-states" \
+  -config LazyCheckpointRead.cfg LazyCheckpointRead \
+  >"$temporary_root/tlc-lazy-checkpoint-read.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-lazy-checkpoint-read.log"
+! grep -q '^Warning:' "$temporary_root/tlc-lazy-checkpoint-read.log"
+grep -q '37 distinct states found' \
+  "$temporary_root/tlc-lazy-checkpoint-read.log"
+grep -q 'The depth of the complete state graph search is 6.' \
+  "$temporary_root/tlc-lazy-checkpoint-read.log"
+for action in Begin SkipFuture ReadAbsent PublishValue PublishTombstone \
+  PublishAbsent RejectRead
+do
+  grep -Eq "^<$action .*: [1-9]" \
+    "$temporary_root/tlc-lazy-checkpoint-read.log"
+done
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-lazy-checkpoint-read-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/LazyCheckpointReadSafetyProof.tla" \
+  >"$temporary_root/tlaps-lazy-checkpoint-read.log" 2>&1
+#  Initialization, exact-run advance, terminal publication/rejection, and
+#  quiescence establish the reviewed 13-obligation arbitrary-domain kernel.
+grep -q 'All 13 obligations proved.' \
+  "$temporary_root/tlaps-lazy-checkpoint-read.log"
+
 printf '%s\n' "Flyology.DB TLA+ checks passed"
 printf '%s\n' "  TLC   112031 distinct states, depth 14"
 printf '%s\n' "  TLAPS 23/23 obligations"
@@ -1406,5 +1437,7 @@ printf '%s\n' "  Owned merge/tombstone/concurrent witness validated"
 printf '%s\n' "  Negative partial-advance and stale-winner probes detected"
 printf '%s\n' "  Lazy SST read TLC 16 distinct states, depth 6"
 printf '%s\n' "  Lazy SST read TLAPS 41/41 obligations"
+printf '%s\n' "  Lazy checkpoint selector TLC 37 distinct states, depth 6"
+printf '%s\n' "  Lazy checkpoint selector TLAPS 13/13 obligations"
 printf '%s\n' "  Generation-bound allocation/replacement witness validated"
 printf '%s\n' "  Negative stale-generation and frame-swap probes detected"

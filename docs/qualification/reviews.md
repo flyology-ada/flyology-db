@@ -1,5 +1,46 @@
 # Review record
 
+## Fixed-snapshot multi-run lazy selector candidate
+
+- Parent: operational SST-v2 and one-run lazy reader commit `7fffa66`.
+- Scope: add one private parent operation over an exact oldest-to-newest run
+  descriptor slice. Public `Get`, scan APIs, persisted bytes, mutation
+  certainty, compaction policy, and provider defaults remain unchanged. The
+  selector is v2-only; mixed recovery is preserved without claiming lazy-v1
+  support.
+- Ownership: Start validates pool/client/configuration and exact run order,
+  copies the actual descriptor/key extents, reserves the parent slot, then
+  moves the caller token. Each one-run child receives and restores that exact
+  token through typed Finish and releases its slot before the next child.
+  Final Finish restores into any vacant same-pool handle. One deadline and
+  cancellation token cover the complete owner-stack traversal; no caller
+  descriptor borrow, helper task, fanout, retry, or original handle pointer is
+  retained. Future-run skips and absence fall-through reschedule one parent
+  step instead of recursively starting the next child.
+- Selection: runs are manifest-ordered with strictly increasing,
+  non-overlapping sequence intervals. Traversal is newest first. A run wholly
+  newer than the snapshot is skipped without I/O; authenticated absence falls
+  through; the first value wins and the first tombstone masks every older run.
+- Formal boundary: TLC explores 37 states at depth 6 with every selection and
+  failure action covered. TLAPS proves 13/13 arbitrary-domain action-kernel
+  obligations. Neither is a refinement proof of the Ada state machine or SST
+  codec.
+- Findings cycle: the first review found one P1 scheduling defect: an
+  already-terminal child may notify its parent before `Continue_After`
+  returns, so directly starting the next run after authenticated absence could
+  recurse once per persisted run. The parent now reschedules exactly one
+  future-run skip or absence fall-through per owner-stack step. The same review
+  tightened P1 result validation so inconsistent value, tombstone, absence,
+  sequence, and outcome combinations fail closed as `Corrupt`, and classified
+  dynamic allocation exhaustion as typed `Capacity_Exceeded`. A repeated
+  model review fixed a P2 trace-only defect where the two absence actions
+  recorded each other's diagnostic action name; the invariant and action
+  coverage were unaffected. The final repeated review found no remaining
+  actionable P0/P1/P2 findings. Exact-tree evidence:
+  the maintained deterministic suite, repository gate, TLC 37-state search,
+  TLAPS 13/13 obligations, GNATprove 1,097/1,097 checks, and a clean post-run
+  formal-process audit.
+
 ## Accepted operational SST-v2 and private lazy-read candidate
 
 - Parent: accepted private SST-v2 slice codec commit `7032d62`.

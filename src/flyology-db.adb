@@ -8655,6 +8655,29 @@ package body Flyology.DB is
    procedure Free_Lazy_SST_Read_State is new
      Ada.Unchecked_Deallocation (Lazy_SST_Read_State, Lazy_SST_Read_State_Access);
 
+   type Lazy_SST_Run_Array_Access is access Lazy_SST_Run_Array;
+
+   procedure Free_Lazy_SST_Run_Array is new
+     Ada.Unchecked_Deallocation (Lazy_SST_Run_Array, Lazy_SST_Run_Array_Access);
+
+   type Lazy_Checkpoint_Read_Phase is
+     (Lazy_Checkpoint_Idle, Lazy_Checkpoint_Reading, Lazy_Checkpoint_Terminal);
+
+   type Lazy_Checkpoint_Read_State is record
+      Database_ID     : Database_Identifier := Zero_Database_ID;
+      Family          : Column_Family_Configuration;
+      Runs            : Lazy_SST_Run_Array_Access := null;
+      Current_Index   : Natural := 0;
+      Snapshot_At     : Sequence_Number := 0;
+      Item_Key        : Flyology.Bytes.Unbounded_Bytes;
+      Phase           : Lazy_Checkpoint_Read_Phase := Lazy_Checkpoint_Idle;
+      Precheck_Result : Outcome_Code := Success;
+   end record;
+
+   procedure Free_Lazy_Checkpoint_Read_State is new
+     Ada.Unchecked_Deallocation
+       (Lazy_Checkpoint_Read_State, Lazy_Checkpoint_Read_State_Access);
+
    procedure Fail_Recovery (State : in out Recovery_Traversal; Result : Outcome_Code) is
    begin
       State.Terminal_Result := Result;
@@ -15675,7 +15698,9 @@ package body Flyology.DB is
          end if;
       exception
          when Storage_Error =>
-            null;
+            if Operation.Driver_State /= null then
+               Operation.Driver_State.Precheck_Result := Capacity_Exceeded;
+            end if;
       end;
       if Operation.Driver_State /= null then
          begin
@@ -15791,6 +15816,418 @@ package body Flyology.DB is
       if Item.Head_Child /= null then
          Free_Head_Operation (Item.Head_Child);
       end if;
+      Flyology.Buffers.Release (Item.Payload);
+   end Finalize;
+
+   procedure Release_Lazy_Checkpoint_Read_State
+     (Item : in out Lazy_Checkpoint_Read_Operation)
+   is
+   begin
+      if Item.Driver_State /= null then
+         Free_Lazy_SST_Run_Array (Item.Driver_State.Runs);
+         Free_Lazy_Checkpoint_Read_State (Item.Driver_State);
+      end if;
+   end Release_Lazy_Checkpoint_Read_State;
+
+   procedure Complete_Lazy_Checkpoint_Read
+     (Item        : in out Lazy_Checkpoint_Read_Operation;
+      Result      : Outcome_Code;
+      Disposition : Lazy_SST_Entry_Disposition := Lazy_Read_Failed;
+      Sequence    : Sequence_Number := 0;
+      Kind        : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded)
+   is
+   begin
+      if Item.Driver_State /= null then
+         Item.Driver_State.Phase := Lazy_Checkpoint_Terminal;
+      end if;
+      Item.Final_Result := Result;
+      Item.Final_Disposition := Disposition;
+      Item.Final_Sequence := Sequence;
+      Item.Has_Final_Result := True;
+      Flyology.Operations.Drivers.Complete (Item, Kind);
+   end Complete_Lazy_Checkpoint_Read;
+
+   procedure Fail_Lazy_Checkpoint_Read
+     (Item  : in out Lazy_Checkpoint_Read_Operation;
+      Error : Ada.Exceptions.Exception_Occurrence)
+   is
+   begin
+      if Ada.Exceptions.Exception_Identity (Error) = Storage_Error'Identity then
+         Complete_Lazy_Checkpoint_Read (Item, Capacity_Exceeded);
+         return;
+      end if;
+      Item.Has_Saved_Error := True;
+      Ada.Exceptions.Save_Occurrence (Item.Saved_Error, Error);
+      Complete_Lazy_Checkpoint_Read
+        (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
+   exception
+      when others =>
+         if Flyology.Operations.Is_Active (Item) then
+            Flyology.Operations.Drivers.Complete
+              (Item, Flyology.Operations.Failed);
+         end if;
+   end Fail_Lazy_Checkpoint_Read;
+
+   procedure Start_Next_Lazy_Checkpoint_Run
+     (Item : in out Lazy_Checkpoint_Read_Operation)
+   is
+      State : Lazy_Checkpoint_Read_State renames Item.Driver_State.all;
+   begin
+      if Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Lazy_Checkpoint_Read
+           (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
+         return;
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Lazy_Checkpoint_Read (Item, Timed_Out);
+         return;
+      end if;
+      if State.Current_Index > 0
+        and then State.Runs (State.Current_Index).Lowest_Sequence > State.Snapshot_At
+      then
+         State.Current_Index := State.Current_Index - 1;
+         State.Phase := Lazy_Checkpoint_Idle;
+         Flyology.Operations.Drivers.Reschedule (Item);
+         return;
+      end if;
+      if State.Current_Index = 0 then
+         Complete_Lazy_Checkpoint_Read
+           (Item, Not_Found, Lazy_Key_Absent);
+         return;
+      end if;
+      declare
+         Descriptor : Lazy_SST_Run_Descriptor renames State.Runs (State.Current_Index);
+         Raw_Key    : constant Ada.Streams.Stream_Element_Array :=
+           Flyology.Bytes.To_Array (State.Item_Key);
+         Key        : Byte_Array (1 .. Raw_Key'Length);
+      begin
+         for Index in Key'Range loop
+            Key (Index) := Byte (Raw_Key (Ada.Streams.Stream_Element_Offset (Index)));
+         end loop;
+         State.Phase := Lazy_Checkpoint_Reading;
+         Read_Lazy_SST_Entry
+           (State.Database_ID,
+            State.Family,
+            Descriptor.Run_ID,
+            Descriptor.Lowest_Sequence,
+            Descriptor.Highest_Sequence,
+            Descriptor.Entry_Total,
+            Descriptor.Logical_Payload_Bytes,
+            State.Snapshot_At,
+            Key,
+            Item.Payload,
+            Remaining_Time (Item.Deadline),
+            Item.Child);
+         Flyology.Operations.Continue_After (Item, Item.Child);
+      end;
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         Complete_Lazy_Checkpoint_Read (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Lazy_Checkpoint_Read (Item, Error);
+   end Start_Next_Lazy_Checkpoint_Run;
+
+   procedure Complete_Lazy_Checkpoint_Child
+     (Item : in out Lazy_Checkpoint_Read_Operation)
+   is
+      State       : Lazy_Checkpoint_Read_State renames Item.Driver_State.all;
+      Disposition : Lazy_SST_Entry_Disposition;
+      Sequence    : Sequence_Number;
+      Value       : Flyology.Bytes.Unbounded_Bytes;
+      Result      : Outcome_Code;
+   begin
+      begin
+         Finish_Lazy_SST_Read
+           (Item.Child,
+            Disposition,
+            Sequence,
+            Value,
+            Result,
+            Item.Payload);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Child) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Child)
+              and then not Flyology.Operations.Is_Terminal (Item.Child)
+            then
+               Flyology.Operations.Release (Item.Child);
+            end if;
+            Fail_Lazy_Checkpoint_Read (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Child);
+      case Disposition is
+         when Lazy_Value_Found =>
+            if Result /= Success
+              or else Sequence = 0
+              or else Sequence > State.Snapshot_At
+              or else Sequence < State.Runs (State.Current_Index).Lowest_Sequence
+              or else Sequence > State.Runs (State.Current_Index).Highest_Sequence
+            then
+               Complete_Lazy_Checkpoint_Read (Item, Corrupt);
+            else
+               Flyology.Bytes.Move (Item.Final_Value, Value);
+               Complete_Lazy_Checkpoint_Read
+                 (Item, Success, Lazy_Value_Found, Sequence);
+            end if;
+         when Lazy_Tombstone_Found =>
+            if Result /= Not_Found
+              or else Sequence = 0
+              or else Sequence > State.Snapshot_At
+              or else Sequence < State.Runs (State.Current_Index).Lowest_Sequence
+              or else Sequence > State.Runs (State.Current_Index).Highest_Sequence
+            then
+               Complete_Lazy_Checkpoint_Read (Item, Corrupt);
+            else
+               Complete_Lazy_Checkpoint_Read
+                 (Item, Not_Found, Lazy_Tombstone_Found, Sequence);
+            end if;
+         when Lazy_Key_Absent =>
+            if Result /= Not_Found
+              or else Sequence /= 0
+              or else Flyology.Bytes.Length (Value) /= 0
+            then
+               Complete_Lazy_Checkpoint_Read (Item, Corrupt);
+            else
+               State.Current_Index := State.Current_Index - 1;
+               State.Phase := Lazy_Checkpoint_Idle;
+               Flyology.Operations.Drivers.Reschedule (Item);
+            end if;
+         when Lazy_Read_Failed =>
+            Complete_Lazy_Checkpoint_Read
+              (Item,
+               (if Result in Success | Not_Found then Corrupt else Result));
+      end case;
+   exception
+      when Error : others =>
+         Fail_Lazy_Checkpoint_Read (Item, Error);
+   end Complete_Lazy_Checkpoint_Child;
+
+   overriding procedure Drive
+     (Item : in out Lazy_Checkpoint_Read_Operation;
+      Event : Flyology.Operations.Driver_Event)
+   is
+   begin
+      if Event = Flyology.Operations.Start_Operation
+        or else
+          (Event = Flyology.Operations.Continue_Operation
+           and then Item.Driver_State /= null
+           and then Item.Driver_State.Phase = Lazy_Checkpoint_Idle)
+      then
+         Start_Next_Lazy_Checkpoint_Run (Item);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Lazy_Checkpoint_Reading
+        and then Flyology.Operations.Is_Terminal (Item.Child)
+      then
+         Complete_Lazy_Checkpoint_Child (Item);
+      else
+         raise Program_Error with "invalid lazy checkpoint driver event";
+      end if;
+   exception
+      when Error : others =>
+         if Flyology.Operations.Is_Active (Item) then
+            Fail_Lazy_Checkpoint_Read (Item, Error);
+         end if;
+   end Drive;
+
+   overriding procedure Request_Cancellation
+     (Item : in out Lazy_Checkpoint_Read_Operation)
+   is
+   begin
+      if Flyology.Operations.Is_Active (Item.Child) then
+         Flyology.Operations.Cancel (Item.Child);
+      elsif Flyology.Operations.Is_Terminal (Item.Child)
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Lazy_Checkpoint_Reading
+      then
+         Complete_Lazy_Checkpoint_Child (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Request_Cancellation (Item);
+         end if;
+      elsif Flyology.Operations.Is_Active (Item) then
+         Complete_Lazy_Checkpoint_Read
+           (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
+      end if;
+   exception
+      when others =>
+         if Flyology.Operations.Is_Active (Item) then
+            begin
+               Complete_Lazy_Checkpoint_Read
+                 (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
+            exception
+               when others =>
+                  null;
+            end;
+         end if;
+   end Request_Cancellation;
+
+   procedure Read_Lazy_Checkpoint_Entry
+     (Database_ID    : Database_Identifier;
+      Family         : Column_Family_Configuration;
+      Runs           : Lazy_SST_Run_Array;
+      Snapshot_At    : Sequence_Number;
+      Item_Key       : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Lazy_Checkpoint_Read_Operation)
+   is
+      Moved   : Boolean := False;
+      Started : Boolean := False;
+   begin
+      if Operation.Storage.HTTP_Client /= Operation.HTTP
+        or else Operation.Storage.Client_Identity = null
+      then
+         raise Program_Error with "lazy checkpoint operation does not match client-bound storage";
+      elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "lazy checkpoint payload belongs to a different pool";
+      elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
+        or else Operation.Driver_State /= null
+      then
+         raise Program_Error with "lazy checkpoint operation retains unconsumed ownership";
+      end if;
+
+      Operation.Deadline := Deadline_After (Timeout);
+      Operation.Final_Result := Invalid_State;
+      Operation.Final_Disposition := Lazy_Read_Failed;
+      Operation.Final_Sequence := 0;
+      Flyology.Bytes.Clear (Operation.Final_Value);
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+      begin
+         Operation.Driver_State := new Lazy_Checkpoint_Read_State;
+         Operation.Driver_State.Database_ID := Database_ID;
+         Operation.Driver_State.Family := Family;
+         Operation.Driver_State.Snapshot_At := Snapshot_At;
+         if Runs'Length > 0 then
+            Operation.Driver_State.Runs := new Lazy_SST_Run_Array (1 .. Runs'Length);
+            for Offset in Natural range 0 .. Runs'Length - 1 loop
+               Operation.Driver_State.Runs (Offset + 1) := Runs (Runs'First + Offset);
+            end loop;
+            Operation.Driver_State.Current_Index := Runs'Length;
+         end if;
+         if Is_Zero (Database_ID)
+           or else not Manifests.Valid_Configuration
+                         (To_Manifest_Configuration (Family))
+           or else Interfaces.Unsigned_64 (Item_Key'Length) > Family.Max_Key_Bytes
+         then
+            Operation.Driver_State.Precheck_Result :=
+              (if Interfaces.Unsigned_64 (Item_Key'Length) > Family.Max_Key_Bytes
+               then Capacity_Exceeded
+               else Invalid_State);
+         else
+            for Index in Positive range 1 .. Runs'Length loop
+               declare
+                  Descriptor : Lazy_SST_Run_Descriptor renames
+                    Operation.Driver_State.Runs (Index);
+               begin
+                  if Is_Zero (Descriptor.Run_ID)
+                    or else Descriptor.Lowest_Sequence = 0
+                    or else Descriptor.Lowest_Sequence > Descriptor.Highest_Sequence
+                    or else Descriptor.Entry_Total = 0
+                    or else
+                      (Index > 1
+                       and then Operation.Driver_State.Runs (Index - 1).Highest_Sequence
+                                  >= Descriptor.Lowest_Sequence)
+                  then
+                     Operation.Driver_State.Precheck_Result := Invalid_State;
+                  end if;
+                  for Earlier in Positive range 1 .. Index - 1 loop
+                     if Operation.Driver_State.Runs (Earlier).Run_ID = Descriptor.Run_ID then
+                        Operation.Driver_State.Precheck_Result := Invalid_State;
+                     end if;
+                  end loop;
+               end;
+            end loop;
+            Flyology.Bytes.Reserve_Capacity
+              (Operation.Driver_State.Item_Key, Item_Key'Length);
+            for Value of Item_Key loop
+               Flyology.Bytes.Append
+                 (Operation.Driver_State.Item_Key,
+                  Ada.Streams.Stream_Element (Value));
+            end loop;
+         end if;
+      exception
+         when Storage_Error =>
+            if Operation.Driver_State /= null then
+               Operation.Driver_State.Precheck_Result := Capacity_Exceeded;
+            end if;
+      end;
+
+      Flyology.Operations.Drivers.Start (Operation);
+      Started := True;
+      Flyology.Buffers.Move (Payload_Buffer, Operation.Payload);
+      Moved := True;
+      if Operation.Driver_State = null then
+         Operation.Final_Result := Capacity_Exceeded;
+         Operation.Has_Final_Result := True;
+         Flyology.Operations.Drivers.Complete
+           (Operation, Flyology.Operations.Succeeded);
+      elsif Operation.Driver_State.Precheck_Result /= Success then
+         Complete_Lazy_Checkpoint_Read
+           (Operation, Operation.Driver_State.Precheck_Result);
+      else
+         Flyology.Operations.Drive
+           (Flyology.Operations.Operation'Class (Operation),
+            Flyology.Operations.Start_Operation);
+      end if;
+   exception
+      when others =>
+         if Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
+            Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+         end if;
+         Release_Lazy_Checkpoint_Read_State (Operation);
+         if Started and then Flyology.Operations.Is_Active (Operation) then
+            Flyology.Operations.Drivers.Rollback_Start (Operation);
+         end if;
+         raise;
+   end Read_Lazy_Checkpoint_Entry;
+
+   procedure Finish_Lazy_Checkpoint_Read
+     (Operation      : in out Lazy_Checkpoint_Read_Operation;
+      Disposition    : out Lazy_SST_Entry_Disposition;
+      Sequence       : out Sequence_Number;
+      Value          : out Flyology.Bytes.Unbounded_Bytes;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+   is
+   begin
+      if Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "lazy checkpoint Finish requires the moved token's pool";
+      elsif Flyology.Buffers.Has_Buffer (Payload_Buffer) then
+         raise Program_Error with "lazy checkpoint Finish requires a vacant same-pool handle";
+      end if;
+      Disposition := Lazy_Read_Failed;
+      Sequence := 0;
+      Flyology.Bytes.Clear (Value);
+      Result := Invalid_State;
+      Flyology.Operations.Consume (Operation);
+      Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+      Release_Lazy_Checkpoint_Read_State (Operation);
+      if Operation.Has_Saved_Error then
+         Ada.Exceptions.Raise_Exception
+           (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
+            Ada.Exceptions.Exception_Message (Operation.Saved_Error));
+      elsif not Operation.Has_Final_Result then
+         raise Program_Error with "lazy checkpoint operation has no terminal result";
+      end if;
+      Disposition := Operation.Final_Disposition;
+      Sequence := Operation.Final_Sequence;
+      Flyology.Bytes.Move (Value, Operation.Final_Value);
+      Result := Operation.Final_Result;
+   end Finish_Lazy_Checkpoint_Read;
+
+   overriding procedure Finalize
+     (Item : in out Lazy_Checkpoint_Read_Operation)
+   is
+   begin
+      begin
+         Flyology.Operations.Finalize
+           (Flyology.Operations.Operation (Item));
+      exception
+         when others =>
+            null;
+      end;
+      Release_Lazy_Checkpoint_Read_State (Item);
       Flyology.Buffers.Release (Item.Payload);
    end Finalize;
 

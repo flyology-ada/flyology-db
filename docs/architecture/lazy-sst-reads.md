@@ -11,6 +11,24 @@ compaction-selection policy. The private caller-driven operation supplies explic
 buffer ownership, and completion-set authority. Existing public APIs that promise no storage I/O remain unchanged
 until a later public execution decision composes this mechanism into them.
 
+The next private layer composes that one-run mechanism across one exact
+oldest-to-newest manifest run slice at a fixed transaction snapshot. It copies
+the exact descriptor extent into operation-owned storage, traverses newest to
+oldest, skips a run without I/O when its lowest sequence is newer than the
+snapshot, and falls through only after an authenticated key absence. The first
+visible value is returned; the first visible tombstone conclusively masks all
+older values. One absolute deadline, cancellation token, and moved scratch
+token govern the complete traversal. Every child is finished and released
+before the next starts, so there is no helper task, parallel fanout, automatic
+retry, or library-selected run cap. Future-run skipping and authenticated-
+absence fall-through each reschedule one bounded parent step, so an exact
+persisted run count never becomes recursive owner-stack depth.
+
+This composed path currently accepts SST-v2 runs. Mixed SST-v1/v2 manifests
+remain recovery-compatible, but the private selector reports the established
+unsupported-format outcome if it reaches a v1 run; a whole-v1 fallback has not
+yet been added and no mixed lazy-read claim is made.
+
 ## Why SST version 1 cannot stream safely
 
 SST version 1 is one variable-length entry stream followed by a single object CRC. Its header authenticates total
@@ -83,6 +101,15 @@ follows Begin, index, allocation rejection, exact frame, concurrent replacement,
 finite generation, key, and value sets. Replacement between HEAD and header validation is outside the published
 candidate state and must fail through the generation-bound Object Storage range result.
 
+`LazyCheckpointRead.tla` checks fixed-snapshot newest-to-oldest selection,
+future-run skipping, authenticated-absence fall-through, tombstone masking,
+exact value publication, and failure atomicity. Its three runs, two keys, and
+four values are finite qualification geometry only. The companion
+`LazyCheckpointReadSafetyProof.tla` proves the publication, failure, request,
+and cursor-preservation action kernel for arbitrary nonempty snapshot, key,
+value, and exact run-count domains; the finite model, not the kernel, owns the
+newest-visible-run calculation.
+
 The formal geometry is not a format bound, cache size, request count, retry budget, or public default. The model does
 not prove CRC arithmetic, byte offsets, range arithmetic, the Ada codec, provider behavior, progress, concurrency,
 or refinement. The private whole-object codec covers independent v1/v2 goldens, v1 compatibility, every v2
@@ -91,6 +118,9 @@ substitution, shifted lower bounds, trailing bytes, persisted key/value limits, 
 rejection, hostile U64 extent overflow, and standalone index/frame truncation, CRC, geometry, ordering, binding, and
 shifted-bound cases. The executable operation covers typed start rollback and finish restoration, cancellation,
 wrong-generation provider results, a found and absent key against the actual Flush output, and generation-bound
-header/index/frame execution. Recovery covers complete local loss and an actual mixed-version manifest. Broad
+header/index/frame execution. The composed client fixture uses three actual
+published v2 runs to select newest and two historical snapshots, reject an
+invalid run order before I/O, and exhaust all runs for absence while preserving
+the exact moved token. Recovery covers complete local loss and an actual mixed-version manifest. Broad
 provider qualification of this private path remains a later campaign; the maintained authenticated client fixture
 is the current provider seam.

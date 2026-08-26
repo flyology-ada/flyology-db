@@ -296,6 +296,21 @@ failure atomicity, exact successful output, and quiescence. The model proves no 
 allocation implementation, provider behavior, progress, public API, or refinement to Ada. Those remain codec and
 executable qualification boundaries documented in `docs/architecture/lazy-sst-reads.md`.
 
+`LazyCheckpointRead.tla` composes the one-run result across one exact
+oldest-to-newest run slice at a fixed snapshot. TLC exhausts 37 distinct states
+at depth 6 with nonzero coverage for future-run skipping, authenticated
+absence fall-through, value publication, tombstone masking, complete absence,
+and child failure. The three runs, two keys, and four values are qualification
+geometry, not a run ceiling, key/value limit, request budget, retry policy, or
+public default.
+
+`LazyCheckpointReadSafetyProof.tla` proves 13 obligations for initialization,
+cursor advance, exact terminal value/not-found publication, failure atomicity,
+request binding, and quiescence over arbitrary snapshot, key, value, and exact
+run-count domains. Its abstract `Expected` function assumes the finite model's
+newest-visible selection result; neither artifact proves SST authentication,
+allocation, provider behavior, progress, Ada execution, or refinement.
+
 ## Witness projection
 
 `CommitPublicationWitness.tla` adds a deliberate invariant violation that asks TLC for one useful path. The

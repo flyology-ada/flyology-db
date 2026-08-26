@@ -1538,8 +1538,18 @@ private
    type Refresh_Driver_State_Access is access Refresh_Driver_State;
    type Lazy_SST_Read_State;
    type Lazy_SST_Read_State_Access is access Lazy_SST_Read_State;
+   type Lazy_Checkpoint_Read_State;
+   type Lazy_Checkpoint_Read_State_Access is access Lazy_Checkpoint_Read_State;
    type Lazy_SST_Entry_Disposition is
      (Lazy_Value_Found, Lazy_Tombstone_Found, Lazy_Key_Absent, Lazy_Read_Failed);
+   type Lazy_SST_Run_Descriptor is record
+      Run_ID                : Identifier := Zero_Identifier;
+      Lowest_Sequence       : Sequence_Number := 0;
+      Highest_Sequence      : Sequence_Number := 0;
+      Entry_Total           : Interfaces.Unsigned_32 := 0;
+      Logical_Payload_Bytes : Interfaces.Unsigned_64 := 0;
+   end record;
+   type Lazy_SST_Run_Array is array (Positive range <>) of Lazy_SST_Run_Descriptor;
    type Whole_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Whole_Get_Operation;
    type Range_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Range_Get_Operation;
    type Head_Operation_Access is access Flyology.Object_Storage.Client.Objects.Head_Operation;
@@ -1670,6 +1680,54 @@ private
       Event : Flyology.Operations.Driver_Event);
    overriding procedure Request_Cancellation (Item : in out Lazy_SST_Read_Operation);
    overriding procedure Finalize (Item : in out Lazy_SST_Read_Operation);
+
+   --  Private fixed-snapshot parent over one exact oldest-to-newest manifest
+   --  run slice. The dynamic retained copy has the caller/persisted extent;
+   --  this operation introduces no run ceiling or public read contract.
+   type Lazy_Checkpoint_Read_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation (Set) with record
+      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Child            : aliased Lazy_SST_Read_Operation
+        (Set, Storage, HTTP, Payload_Pool, Cancellation);
+      Driver_State     : Lazy_Checkpoint_Read_State_Access := null;
+      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      Final_Result     : Outcome_Code := Invalid_State;
+      Final_Disposition : Lazy_SST_Entry_Disposition := Lazy_Read_Failed;
+      Final_Sequence   : Sequence_Number := 0;
+      Final_Value      : Flyology.Bytes.Unbounded_Bytes;
+      Has_Final_Result : Boolean := False;
+      Has_Saved_Error  : Boolean := False;
+      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+   end record;
+
+   procedure Read_Lazy_Checkpoint_Entry
+     (Database_ID    : Database_Identifier;
+      Family         : Column_Family_Configuration;
+      Runs           : Lazy_SST_Run_Array;
+      Snapshot_At    : Sequence_Number;
+      Item_Key       : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Lazy_Checkpoint_Read_Operation);
+
+   procedure Finish_Lazy_Checkpoint_Read
+     (Operation      : in out Lazy_Checkpoint_Read_Operation;
+      Disposition    : out Lazy_SST_Entry_Disposition;
+      Sequence       : out Sequence_Number;
+      Value          : out Flyology.Bytes.Unbounded_Bytes;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer);
+
+   overriding procedure Drive
+     (Item : in out Lazy_Checkpoint_Read_Operation;
+      Event : Flyology.Operations.Driver_Event);
+   overriding procedure Request_Cancellation (Item : in out Lazy_Checkpoint_Read_Operation);
+   overriding procedure Finalize (Item : in out Lazy_Checkpoint_Read_Operation);
 
    type Storage_Fault_Point is
      (Before_Batch_Put,
