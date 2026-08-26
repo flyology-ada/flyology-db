@@ -8348,6 +8348,69 @@ package body Flyology.DB is
       end if;
    end Decode_Stored_Batch;
 
+   procedure Decode_Recovery_Head
+     (Data        : Small_Metadata_Buffer;
+      Length      : Natural;
+      Database_ID : Database_Identifier;
+      Head        : out Head_Snapshot;
+      Result      : out Outcome_Code)
+   is
+      Image         : Formats.Head_Image;
+      Value         : Heads.Head_State;
+      Decode_Result : Formats.Decode_Status;
+   begin
+      Head := (others => <>);
+      if Length /= Formats.Head_Image_Length then
+         Result := Corrupt;
+         return;
+      end if;
+      for Index in Formats.Head_Image_Index loop
+         Image (Index) := Data (Index);
+      end loop;
+      Formats.Decode_Head (Image, To_Head_ID (Database_ID), Value, Decode_Result);
+      if Decode_Result /= Formats.Decoded then
+         Result :=
+           (if Decode_Result = Formats.Unsupported_Version then Unsupported_Format else Corrupt);
+         return;
+      end if;
+      Head := From_Head (Value);
+      if Head.Version = Interfaces.Unsigned_16 (Heads.Legacy_Format) then
+         Result := Unsupported_Format;
+      elsif Head.Version /= Interfaces.Unsigned_16 (Heads.Current_Format)
+        or else Is_Zero (Head.Latest_Manifest)
+      then
+         Result := Corrupt;
+      else
+         Result := Success;
+      end if;
+   end Decode_Recovery_Head;
+
+   procedure Decode_Recovery_Batch_Response
+     (Data              : in out Flyology.Bytes.Unbounded_Bytes;
+      Read_Result       : Read_Outcome;
+      Expected_Database : Database_Identifier;
+      Limits            : Database_Limits;
+      Head              : Head_Snapshot;
+      Batch             : out Runtime_Batch;
+      Result            : out Outcome_Code) is
+   begin
+      Batch := (others => <>);
+      if Read_Result /= Object_Read then
+         Result :=
+           (if Read_Result = Read_Cancelled
+            then Cancelled
+            elsif Read_Result = Read_Timed_Out
+            then Timed_Out
+            elsif Read_Result = Read_Capacity_Exceeded
+            then Capacity_Exceeded
+            elsif Read_Result in Object_Missing | Read_Corrupt
+            then Corrupt
+            else Storage_Failure);
+         return;
+      end if;
+      Decode_Stored_Batch (Data, Expected_Database, Limits, False, Head, Batch, Result);
+   end Decode_Recovery_Batch_Response;
+
    procedure Read_Recovery
      (Storage       : in out Storage_Context;
       Database_ID   : Database_Identifier;
@@ -8369,7 +8432,6 @@ package body Flyology.DB is
       Length              : Natural;
       Batch_Data          : Flyology.Bytes.Unbounded_Bytes;
       Read_Result         : Read_Outcome;
-      Decode_Result       : Formats.Decode_Status;
       Batch_Result        : Outcome_Code;
       Current_Batch_ID    : Identifier;
       Ignored_Generation  : Generation_Value;
@@ -8438,32 +8500,9 @@ package body Flyology.DB is
                then Corrupt
                else Storage_Failure);
             return;
-         elsif Length /= Formats.Head_Image_Length then
-            Result := Corrupt;
-            return;
          end if;
-         declare
-            Image : Formats.Head_Image;
-            Value : Heads.Head_State;
-         begin
-            for Index in Formats.Head_Image_Index loop
-               Image (Index) := Data (Index);
-            end loop;
-            Formats.Decode_Head (Image, To_Head_ID (Database_ID), Value, Decode_Result);
-            if Decode_Result /= Formats.Decoded then
-               Result :=
-                 (if Decode_Result = Formats.Unsupported_Version then Unsupported_Format else Corrupt);
-               return;
-            end if;
-            Head := From_Head (Value);
-         end;
-         if Head.Version = Interfaces.Unsigned_16 (Heads.Legacy_Format) then
-            Result := Unsupported_Format;
-            return;
-         elsif Head.Version /= Interfaces.Unsigned_16 (Heads.Current_Format)
-           or else Is_Zero (Head.Latest_Manifest)
-         then
-            Result := Corrupt;
+         Decode_Recovery_Head (Data, Length, Database_ID, Head, Result);
+         if Result /= Success then
             return;
          end if;
 
@@ -8622,24 +8661,26 @@ package body Flyology.DB is
                Read_Result,
                Maximum_Runtime_Batch_Length (Manifest.Limits));
             if Read_Result /= Object_Read then
-               Result :=
-                 (if Read_Result = Read_Cancelled
-                  then Cancelled
-                  elsif Read_Result = Read_Timed_Out
-                  then Timed_Out
-                  elsif Read_Result = Read_Capacity_Exceeded
-                  then Capacity_Exceeded
-                  elsif Read_Result in Object_Missing | Read_Corrupt
-                  then Corrupt
-                  else Storage_Failure);
+               declare
+                  Ignored_Batch : Runtime_Batch;
+               begin
+                  Decode_Recovery_Batch_Response
+                    (Batch_Data,
+                     Read_Result,
+                     Database_ID,
+                     To_Public_Limits (Manifest.Limits),
+                     Head,
+                     Ignored_Batch,
+                     Result);
+               end;
                return;
             end if;
             Count := Count + 1;
-            Decode_Stored_Batch
+            Decode_Recovery_Batch_Response
               (Batch_Data,
+               Read_Result,
                Database_ID,
                To_Public_Limits (Manifest.Limits),
-               False,
                Head,
                History (Count),
                Batch_Result);

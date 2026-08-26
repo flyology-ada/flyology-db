@@ -73,11 +73,12 @@ All allocation extents remain lazily derived with checked arithmetic from the au
 `Database_Limits`, per-family limits, exact header admission, and exact object lengths. An undersized caller buffer or
 allocation failure is `Capacity_Exceeded`; it does not partially install a graph or change the prior replica view.
 
-The first implementation stage extracts the manifest and SST header/body consumers from blocking I/O. Each header
+The first implementation stage extracts the HEAD, manifest, SST, and batch consumers from blocking I/O. Each header
 consumer retains the decoder-admitted object length and opaque generation; each body consumer accepts only that
-exact length and generation before decoding. The established blocking traversal now calls those consumers directly.
-HEAD/batch traversal and explicit request scheduling remain in `Read_Recovery` until the next stage moves the whole
-control flow into the shared machine; no composable API is exposed by this intermediate refactor.
+exact length and generation before decoding. HEAD and batch consumers preserve the established format/status
+normalization without retaining transport state. The blocking traversal now calls those consumers directly. Explicit
+request scheduling remains in `Read_Recovery` until the next stage moves the whole control flow into the shared
+machine; no composable API is exposed by this intermediate refactor.
 
 ## Lifecycle and terminal rules
 

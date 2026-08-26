@@ -1,5 +1,22 @@
 # Review record
 
+## Accepted recovery HEAD/batch consumer extraction candidate
+
+- Parent: generation-bound recovery-consumer commit `d6962da`.
+- Scope: extract fixed HEAD authentication and batch response/decode normalization from the blocking recovery loop.
+  The loop issues the same requests, advances the same counters only after each provider return, and retains all
+  predecessor/checkpoint anchoring in place. No public declaration, stored byte, request, limit, allocation, task,
+  retry, deadline, cancellation, or lifecycle rule changes.
+- Failure and ownership: HEAD length/version/database checks and batch missing/cancel/timeout/capacity/corruption
+  mappings are exact copies of the prior branches. A failed batch consumer returns a vacant batch, and the enclosing
+  recovery owner still releases every earlier history/checkpoint object on failure or exception.
+- Verification and findings: the first sweep found one P1 sequencing drift: the extraction advanced the retained
+  history count after every provider return rather than only after `Object_Read`. The failure slot was vacant, but
+  the controller boundary must preserve exact ownership state; the count now advances at the original point. After
+  that fix, `alr build`, `./tests/scripts/test.sh`, repository, diff, and 110-column checks pass on the exact tree. A
+  repeated comparison against the parent finds no changed request, counter, decode, chain, allocation, cleanup,
+  compatibility, or constants-authority behavior and no remaining actionable P0/P1/P2 finding.
+
 ## Accepted generation-bound recovery-consumer extraction candidate
 
 - Parent: composable replica-refresh architecture commit `2f4eadb`.
