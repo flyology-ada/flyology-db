@@ -559,6 +559,30 @@ procedure Flyology.DB.Client_Probe is
          0,
          Bytes (""),
          Not_Found);
+      --  Convert only the oldest immutable fixture run to the frozen v1 wire
+      --  format. The selector must authenticate it whole at the same manifest
+      --  descriptor while newer v2 runs retain their lazy range path.
+      Convert_Test_Run_To_V1
+        (Context, Compaction_Run_ID, Test_Operation_Timeout, Result);
+      Expect (Result, Success, "client-backed v1 fallback fixture conversion failed");
+      Read_And_Expect
+        (Lazy_Restored_Buffer,
+         Lazy_Buffer,
+         Key_Data,
+         First_Sequence,
+         Lazy_Value_Found,
+         First_Sequence,
+         Value_Data,
+         Success);
+      Read_And_Expect
+        (Lazy_Buffer,
+         Lazy_Restored_Buffer,
+         Bytes ("z"),
+         First_Sequence,
+         Lazy_Key_Absent,
+         0,
+         Bytes (""),
+         Not_Found);
       Flyology.Operations.Release (Lazy_Checkpoint_Work);
       Flyology.Buffers.Release (Lazy_Restored_Buffer);
    exception

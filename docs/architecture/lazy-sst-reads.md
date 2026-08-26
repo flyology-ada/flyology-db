@@ -24,10 +24,15 @@ retry, or library-selected run cap. Future-run skipping and authenticated-
 absence fall-through each reschedule one bounded parent step, so an exact
 persisted run count never becomes recursive owner-stack depth.
 
-This composed path currently accepts SST-v2 runs. Mixed SST-v1/v2 manifests
-remain recovery-compatible, but the private selector reports the established
-unsupported-format outcome if it reaches a v1 run; a whole-v1 fallback has not
-yet been added and no mixed lazy-read claim is made.
+The composed path accepts mixed SST-v1/v2 runs. A bounded prefix first
+authenticates either frozen header against the exact manifest descriptor and
+observed generation. Version 2 continues through its index and one selected
+frame. Version 1 has no independently authenticated index or frame, so it uses
+one generation-bound whole Get only when the header-admitted exact object
+length fits the caller-owned scratch token, decodes the complete object, and
+selects the first snapshot-visible entry. Capacity rejection, generation or
+length mismatch, corruption, cancellation, and failure publish no value and
+do not fall through to an older run.
 
 ## Why SST version 1 cannot stream safely
 
@@ -119,8 +124,10 @@ rejection, hostile U64 extent overflow, and standalone index/frame truncation, C
 shifted-bound cases. The executable operation covers typed start rollback and finish restoration, cancellation,
 wrong-generation provider results, a found and absent key against the actual Flush output, and generation-bound
 header/index/frame execution. The composed client fixture uses three actual
-published v2 runs to select newest and two historical snapshots, reject an
+published runs to select newest and two historical snapshots, reject an
 invalid run order before I/O, and exhaust all runs for absence while preserving
-the exact moved token. Recovery covers complete local loss and an actual mixed-version manifest. Broad
+the exact moved token. It then converts the oldest run to frozen v1 and repeats
+historical-value and complete-absence selection across the mixed manifest.
+Recovery covers complete local loss and an actual mixed-version manifest. Broad
 provider qualification of this private path remains a later campaign; the maintained authenticated client fixture
 is the current provider seam.

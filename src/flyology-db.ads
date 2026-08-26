@@ -1628,7 +1628,9 @@ private
    --  @exclude
    overriding procedure Finalize (Item : in out Refresh_Operation);
 
-   --  Private engine operation for one generation-bound SST-v2 point lookup.
+   --  Private engine operation for one generation-bound SST-v1/v2 point
+   --  lookup. Version 2 reads only header/index/one frame; version 1 uses the
+   --  frozen authenticated whole-object compatibility fallback.
    --  The retained borrows and moved token follow the public operation
    --  convention, but this type deliberately adds no public read contract.
    type Lazy_SST_Read_Operation
@@ -1639,6 +1641,7 @@ private
       Cancellation : access Flyology.Cancellation.Token) is
      new Flyology.Operations.Operation (Set) with record
       Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Whole_Child      : Whole_Get_Operation_Access := null;
       Range_Child      : Range_Get_Operation_Access := null;
       Head_Child       : Head_Operation_Access := null;
       Driver_State     : Lazy_SST_Read_State_Access := null;
@@ -1899,7 +1902,10 @@ private
       Family_ID : Column_Family_ID;
       Result    : out Outcome_Code);
    procedure Convert_Test_Run_To_V1
-     (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code);
+     (Item    : in out Storage_Context;
+      Run_ID  : Identifier;
+      Timeout : Duration;
+      Result  : out Outcome_Code);
    procedure Rewrite_Test_Manifest
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;

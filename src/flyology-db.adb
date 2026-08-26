@@ -8631,6 +8631,7 @@ package body Flyology.DB is
      (Lazy_Read_Idle,
       Lazy_Read_Head,
       Lazy_Read_Header,
+      Lazy_Read_Whole,
       Lazy_Read_Index,
       Lazy_Read_Frame,
       Lazy_Read_Terminal);
@@ -15192,6 +15193,81 @@ package body Flyology.DB is
       return True;
    end Lazy_Index_Key_Matches;
 
+   function Lazy_SST_Key_Matches
+     (Table    : LSM_Runtime.SST;
+      Position : Positive;
+      Key      : Flyology.Bytes.Unbounded_Bytes) return Boolean
+   is
+      Item_Entry : LSM_Runtime.SST_Entry renames Table.Entries (Position);
+   begin
+      if Item_Entry.Key_Byte_Total /= Flyology.Bytes.Length (Key) then
+         return False;
+      elsif Item_Entry.Key_Byte_Total = 0 then
+         return True;
+      end if;
+      for Offset in Natural range 0 .. Item_Entry.Key_Byte_Total - 1 loop
+         if Table.Payload (Item_Entry.Key_Offset + Offset)
+           /= Byte (Flyology.Bytes.Element (Key, Offset + 1))
+         then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end Lazy_SST_Key_Matches;
+
+   procedure Select_Lazy_Whole_SST_Entry
+     (Item  : in out Lazy_SST_Read_Operation;
+      Table : in out LSM_Runtime.SST_Access)
+   is
+      State    : Lazy_SST_Read_State renames Item.Driver_State.all;
+      Selected : Natural := 0;
+   begin
+      for Position in Table.Entries'Range loop
+         if Lazy_SST_Key_Matches (Table.all, Position, State.Item_Key)
+           and then Table.Entries (Position).Sequence
+                      <= Interfaces.Unsigned_64 (State.Snapshot_At)
+         then
+            Selected := Position;
+            exit;
+         end if;
+      end loop;
+      if Selected = 0 then
+         LSM_Runtime.Release (Table);
+         Complete_Lazy_SST_Read (Item, Not_Found, Lazy_Key_Absent);
+      elsif Table.Entries (Selected).Operation = LSM_Runtime.LSM.Delete_Operation then
+         declare
+            Sequence : constant Sequence_Number :=
+              Sequence_Number (Table.Entries (Selected).Sequence);
+         begin
+            LSM_Runtime.Release (Table);
+            Complete_Lazy_SST_Read
+              (Item, Not_Found, Lazy_Tombstone_Found, Sequence);
+         end;
+      else
+         declare
+            Item_Entry : LSM_Runtime.SST_Entry renames Table.Entries (Selected);
+            Sequence : constant Sequence_Number := Sequence_Number (Item_Entry.Sequence);
+         begin
+            Flyology.Bytes.Clear (Item.Final_Value);
+            Flyology.Bytes.Reserve_Capacity
+              (Item.Final_Value, Item_Entry.Value_Byte_Total);
+            for Offset in Natural range 1 .. Item_Entry.Value_Byte_Total loop
+               Flyology.Bytes.Append
+                 (Item.Final_Value,
+                  Ada.Streams.Stream_Element
+                    (Table.Payload (Item_Entry.Value_Offset + Offset - 1)));
+            end loop;
+            LSM_Runtime.Release (Table);
+            Complete_Lazy_SST_Read
+              (Item, Success, Lazy_Value_Found, Sequence);
+         end;
+      end if;
+   exception
+      when others =>
+         LSM_Runtime.Release (Table);
+         raise;
+   end Select_Lazy_Whole_SST_Entry;
+
    procedure Start_Lazy_SST_Range
      (Item  : in out Lazy_SST_Read_Operation;
       First : Natural;
@@ -15251,6 +15327,45 @@ package body Flyology.DB is
          Fail_Lazy_SST_Read (Item, Error);
    end Start_Lazy_SST_Range;
 
+   procedure Start_Lazy_SST_Whole (Item : in out Lazy_SST_Read_Operation) is
+      State : Lazy_SST_Read_State renames Item.Driver_State.all;
+   begin
+      if Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Lazy_SST_Read
+           (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
+         return;
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Lazy_SST_Read (Item, Timed_Out);
+         return;
+      elsif State.Object_Length > Flyology.Buffers.Buffer_Capacity (Item.Payload) then
+         Complete_Lazy_SST_Read (Item, Capacity_Exceeded);
+         return;
+      end if;
+      Client_Objects.Get_Whole
+        (Item.HTTP,
+         Item.Storage.Client_Origin,
+         UStrings.To_String (Item.Storage.Bucket),
+         Run_Key (Item.Storage.all, To_Identifier (State.Descriptor.Run_ID)),
+         Item.Payload'Unchecked_Access,
+         Item.Storage.Client_Identity.all,
+         Item.HTTP_Deadline,
+         Expected_Entity_Tag   => Quoted_Generation (State.Generation),
+         Region                => UStrings.To_String (Item.Storage.Client_Region),
+         Style                 => Item.Storage.Client_Style,
+         Expected_Bucket_Owner => UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
+         Request_Payer         => UStrings.To_String (Item.Storage.Client_Request_Payer),
+         Checksum_Mode         => Item.Storage.Client_Checksum_Mode,
+         Token                 => Item.Cancellation,
+         Operation             => Item.Whole_Child.all);
+      State.Phase := Lazy_Read_Whole;
+      Flyology.Operations.Continue_After (Item, Item.Whole_Child.all);
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         Complete_Lazy_SST_Read (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Lazy_SST_Read (Item, Error);
+   end Start_Lazy_SST_Whole;
+
    procedure Start_Lazy_SST_Head (Item : in out Lazy_SST_Read_Operation) is
       State      : Lazy_SST_Read_State renames Item.Driver_State.all;
       Parameters : Client_Low_Level.Head_Object_Parameters := (others => <>);
@@ -15261,11 +15376,6 @@ package body Flyology.DB is
          return;
       elsif Item.Deadline <= Ada.Real_Time.Clock then
          Complete_Lazy_SST_Read (Item, Timed_Out);
-         return;
-      elsif LSM_Runtime.SST_V2_Header_Length
-        > Flyology.Buffers.Buffer_Capacity (Item.Payload)
-      then
-         Complete_Lazy_SST_Read (Item, Capacity_Exceeded);
          return;
       end if;
       Parameters.Expected_Bucket_Owner := Item.Storage.Expected_Bucket_Owner;
@@ -15329,12 +15439,17 @@ package body Flyology.DB is
             Valid);
          if Valid then
             State.Object_Length := Natural (Outcome.Response.Result.Content_Length);
-            if State.Object_Length < LSM_Runtime.SST_V2_Header_Length then
+            if State.Object_Length < Minimum_Compatible_SST_Length then
                Complete_Lazy_SST_Read (Item, Corrupt);
                return;
             end if;
-            Start_Lazy_SST_Range
-              (Item, 0, LSM_Runtime.SST_V2_Header_Length - 1, Lazy_Read_Header);
+            declare
+               Header_Length : constant Positive :=
+                 Positive'Min (Compatible_SST_Header_Length, State.Object_Length);
+            begin
+               Start_Lazy_SST_Range
+                 (Item, 0, Header_Length - 1, Lazy_Read_Header);
+            end;
             return;
          end if;
          Read_Result := Read_Corrupt;
@@ -15379,6 +15494,85 @@ package body Flyology.DB is
       when Error : others =>
          Fail_Lazy_SST_Read (Item, Error);
    end Select_Lazy_SST_Entry;
+
+   procedure Complete_Lazy_SST_Whole
+     (Item : in out Lazy_SST_Read_Operation)
+   is
+      State         : Lazy_SST_Read_State renames Item.Driver_State.all;
+      Outcome       : Client_Objects.Whole_Get_Result;
+      Read_Result   : Read_Outcome := Read_Failed;
+      Generation    : Generation_Value;
+      Image         : LSM_Runtime.Image_Access := null;
+      Table         : LSM_Runtime.SST_Access := null;
+      Decode_Status : LSM_Runtime.Decode_Status;
+      Valid         : Boolean := False;
+   begin
+      begin
+         Client_Objects.Finish (Item.Whole_Child.all, Outcome);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Whole_Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Whole_Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Whole_Child.all)
+            then
+               Flyology.Operations.Release (Item.Whole_Child.all);
+            end if;
+            Fail_Lazy_SST_Read (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Whole_Child.all);
+      if Outcome.Kind = Client_Objects.Whole_Get_Exchange_Failed then
+         Read_Result := Refresh_Read_Failure (Outcome.Failure);
+      elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
+         Read_Result := Refresh_Read_Rejection (Outcome.Response.Status);
+      else
+         Set_Quoted_Generation
+           (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+         if not Valid
+           or else Generation /= State.Generation
+           or else Outcome.Response.Status /= 200
+           or else not Outcome.Response.Result.Content_Length.Is_Set
+           or else Outcome.Response.Result.Content_Length.Value /= OS.Byte_Count (State.Object_Length)
+           or else Flyology.Buffers.Length (Item.Payload) /= State.Object_Length
+         then
+            Read_Result := Read_Corrupt;
+         else
+            Read_Result := Object_Read;
+         end if;
+      end if;
+      if Read_Result /= Object_Read then
+         Complete_Lazy_SST_Read (Item, Lazy_Read_Outcome (Read_Result));
+         return;
+      end if;
+
+      Copy_Selected_Payload (Item.Payload, Positive (State.Object_Length), Image);
+      LSM_Runtime.Decode_SST
+        (Image.all,
+         To_Head_ID (State.Database_ID),
+         Interfaces.Unsigned_32 (State.Family.ID),
+         State.Descriptor,
+         State.Family.Max_Key_Bytes,
+         State.Family.Max_Value_Bytes,
+         Table,
+         Decode_Status);
+      LSM_Runtime.Release (Image);
+      if Decode_Status /= LSM_Runtime.Decoded then
+         LSM_Runtime.Release (Table);
+         Complete_Lazy_SST_Read
+           (Item, Lazy_Decode_Outcome (Decode_Status));
+      else
+         Select_Lazy_Whole_SST_Entry (Item, Table);
+      end if;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Image);
+         LSM_Runtime.Release (Table);
+         Complete_Lazy_SST_Read (Item, Capacity_Exceeded);
+      when Error : others =>
+         LSM_Runtime.Release (Image);
+         LSM_Runtime.Release (Table);
+         Fail_Lazy_SST_Read (Item, Error);
+   end Complete_Lazy_SST_Whole;
 
    procedure Complete_Lazy_SST_Range
      (Item : in out Lazy_SST_Read_Operation)
@@ -15442,7 +15636,7 @@ package body Flyology.DB is
       Copy_Selected_Payload (Item.Payload, Expected, Image);
       case Finished_Phase is
          when Lazy_Read_Header =>
-            LSM_Runtime.Inspect_SST_V2_Header
+            Inspect_Compatible_SST_Header
               (Image.all,
                To_Head_ID (State.Database_ID),
                Interfaces.Unsigned_32 (State.Family.ID),
@@ -15454,6 +15648,8 @@ package body Flyology.DB is
             if Decode_Status /= LSM_Runtime.Decoded then
                Complete_Lazy_SST_Read
                  (Item, Lazy_Decode_Outcome (Decode_Status));
+            elsif State.Admission.Format_Version = LSM_Runtime.LSM.SST_Format_Version then
+               Start_Lazy_SST_Whole (Item);
             else
                Start_Lazy_SST_Range
                  (Item,
@@ -15556,6 +15752,13 @@ package body Flyology.DB is
          Complete_Lazy_SST_Head (Item);
       elsif Event = Flyology.Operations.Dependency_Changed
         and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Lazy_Read_Whole
+        and then Item.Whole_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Whole_Child.all)
+      then
+         Complete_Lazy_SST_Whole (Item);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
         and then Item.Driver_State.Phase
                    in Lazy_Read_Header | Lazy_Read_Index | Lazy_Read_Frame
         and then Item.Range_Child /= null
@@ -15586,6 +15789,19 @@ package body Flyology.DB is
         and then Item.Driver_State.Phase = Lazy_Read_Head
       then
          Complete_Lazy_SST_Head (Item);
+         if Flyology.Operations.Is_Active (Item) then
+            Request_Cancellation (Item);
+         end if;
+      elsif Item.Whole_Child /= null
+        and then Flyology.Operations.Is_Active (Item.Whole_Child.all)
+      then
+         Flyology.Operations.Cancel (Item.Whole_Child.all);
+      elsif Item.Whole_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Whole_Child.all)
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Lazy_Read_Whole
+      then
+         Complete_Lazy_SST_Whole (Item);
          if Flyology.Operations.Is_Active (Item) then
             Request_Cancellation (Item);
          end if;
@@ -15645,6 +15861,7 @@ package body Flyology.DB is
          raise Program_Error with "lazy SST payload belongs to a different pool";
       elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
         or else Operation.Driver_State /= null
+        or else Operation.Whole_Child /= null
         or else Operation.Range_Child /= null
         or else Operation.Head_Child /= null
       then
@@ -15704,6 +15921,14 @@ package body Flyology.DB is
       end;
       if Operation.Driver_State /= null then
          begin
+            Operation.Whole_Child :=
+              new Client_Objects.Whole_Get_Operation
+                (Operation.Set.all'Unchecked_Access,
+                 Operation.HTTP.all'Unchecked_Access,
+                 Operation.Payload'Unchecked_Access,
+                 (if Operation.Cancellation = null
+                  then null
+                  else Operation.Cancellation.all'Unchecked_Access));
             Operation.Range_Child :=
               new Client_Objects.Range_Get_Operation
                 (Operation.Set.all'Unchecked_Access,
@@ -15748,6 +15973,9 @@ package body Flyology.DB is
             Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
          end if;
          Release_Lazy_SST_Read_State (Operation);
+         if Operation.Whole_Child /= null then
+            Free_Whole_Get_Operation (Operation.Whole_Child);
+         end if;
          if Operation.Range_Child /= null then
             Free_Range_Get_Operation (Operation.Range_Child);
          end if;
@@ -15781,6 +16009,9 @@ package body Flyology.DB is
       Flyology.Operations.Consume (Operation);
       Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
       Release_Lazy_SST_Read_State (Operation);
+      if Operation.Whole_Child /= null then
+         Free_Whole_Get_Operation (Operation.Whole_Child);
+      end if;
       if Operation.Range_Child /= null then
          Free_Range_Get_Operation (Operation.Range_Child);
       end if;
@@ -15810,6 +16041,9 @@ package body Flyology.DB is
             null;
       end;
       Release_Lazy_SST_Read_State (Item);
+      if Item.Whole_Child /= null then
+         Free_Whole_Get_Operation (Item.Whole_Child);
+      end if;
       if Item.Range_Child /= null then
          Free_Range_Get_Operation (Item.Range_Child);
       end if;
@@ -19908,7 +20142,10 @@ package body Flyology.DB is
    end Rewrite_Test_Run_Family;
 
    procedure Convert_Test_Run_To_V1
-     (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code)
+     (Item    : in out Storage_Context;
+      Run_ID  : Identifier;
+      Timeout : Duration;
+      Result  : out Outcome_Code)
    is
       --  This private compatibility witness replaces one already-published
       --  fixture object only. Production runs remain immutable. The retained
@@ -19956,7 +20193,7 @@ package body Flyology.DB is
         (Item,
          Run_Key (Item, Run_ID),
          Run_Object,
-         Ada.Real_Time.Time_Last,
+         Deadline_After (Timeout),
          null,
          Data,
          Length,
@@ -19965,7 +20202,10 @@ package body Flyology.DB is
       if Read_Result /= Object_Read
         or else Length < LSM_Runtime.SST_V2_Header_Length + LSM_Runtime.LSM.Object_Trailer_Length
       then
-         Result := Storage_Failure;
+         Result :=
+           (if Read_Result = Object_Read
+            then Corrupt
+            else Lazy_Read_Outcome (Read_Result));
          return;
       end if;
 
@@ -20020,12 +20260,19 @@ package body Flyology.DB is
          Run_Key (Item, Run_ID),
          Owner,
          Generation,
-         Ada.Real_Time.Time_Last,
+         Deadline_After (Timeout),
          null,
          New_Generation,
          Put_Result);
       Release_Image (Owner);
-      Result := (if Put_Result = Object_Published then Success else Storage_Failure);
+      Result :=
+        (case Put_Result is
+           when Object_Published        => Success,
+           when Put_Precondition_Failed => Stale_Writer,
+           when Put_Outcome_Unknown     => Outcome_Unknown,
+           when Put_Cancelled           => Cancelled,
+           when Put_Timed_Out           => Timed_Out,
+           when Put_Definite_Failure    => Storage_Failure);
    exception
       when Storage_Error =>
          Release_Image (Owner);

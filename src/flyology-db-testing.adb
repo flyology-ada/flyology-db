@@ -203,7 +203,10 @@ package body Flyology.DB.Testing is
    procedure Convert_Run_To_V1
      (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code) is
    begin
-      Convert_Test_Run_To_V1 (Item, Run_ID, Result);
+      --  The established public testing adapter is backend-only, so this
+      --  client timeout formal is unused. Duration'Last preserves its former
+      --  no-deadline test-helper authority without becoming DB policy.
+      Convert_Test_Run_To_V1 (Item, Run_ID, Duration'Last, Result);
    end Convert_Run_To_V1;
 
    procedure Rewrite_Manifest

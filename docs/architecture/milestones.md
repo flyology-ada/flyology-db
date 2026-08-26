@@ -128,11 +128,13 @@ exists yet. See
 
 The private point-read path now also owns an exact manifest run slice and
 selects across it at one fixed snapshot. It skips future runs, authenticates
-one eligible v2 run at a time, falls through only on absence, and stops on the
-first value or tombstone. The maintained finite selector model explores 37
-states at depth 6 and the arbitrary-domain TLAPS kernel proves 13 obligations.
-Public `Get` remains unchanged, and v1 lazy fallback plus transaction/engine
-lifetime integration remain prerequisites for the additive public operation.
+one eligible run at a time, falls through only on absence, and stops on the
+first value or tombstone. SST-v2 uses authenticated index/frame ranges; frozen
+SST-v1 uses an exact generation-bound whole-object compatibility fallback. The
+maintained finite selector model explores 37 states at depth 6 and the
+arbitrary-domain TLAPS kernel proves 13 obligations. Public `Get` remains
+unchanged; transaction/engine lifetime integration remains the prerequisite
+for the additive public operation.
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
 pins, lagging-replica pins, required predecessor reachability, and unresolved publication attempts each retain exact

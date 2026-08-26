@@ -1,5 +1,45 @@
 # Review record
 
+## Mixed SST-v1/v2 lazy selector candidate
+
+- Parent: fixed-snapshot multi-run selector commit `3621ec5`.
+- Scope: extend the private one-run child with the frozen whole-object SST-v1
+  compatibility path. Public `Get`, persisted bytes, manifest selection,
+  mutation certainty, provider defaults, and the SST-v2 index/frame path remain
+  unchanged.
+- Authority and bounds: HEAD supplies the exact object length and generation;
+  the shared compatible-header validator binds version, database, family, and
+  descriptor before body allocation. SST-v1 proceeds only when that exact
+  length fits the caller-owned scratch token. The existing decoder derives its
+  entry/payload allocations from the authenticated header and enforces the
+  persisted per-family key/value limits with checked arithmetic.
+- Ownership and scheduling: the parent still moves one exact token. The
+  one-run child borrows it as the provider destination, finishes and releases
+  HEAD/header-range/whole-Get serially, releases the decoded table before
+  terminal publication, and restores the token only through typed Finish. One
+  absolute deadline and cancellation token cover the path; there is no helper
+  task, fanout, retry, or retained caller input.
+- Failure atomicity: generation, status, content length, retained length,
+  header, object CRC, descriptor, ordering, and entry bounds must all agree.
+  Any failure or capacity rejection terminates the current run and cannot be
+  mistaken for authenticated absence or fall through to an older run.
+- Test fixture: the authenticated client corpus converts the oldest of three
+  actual runs to frozen v1 with an explicit caller timeout, then proves a
+  historical value and complete absence across the mixed run slice. The
+  conditional replacement is one-shot; any ambiguous result remains
+  `Outcome_Unknown` and is not treated as success or retried.
+- Findings cycle: the first execution exposed a P1 test-helper deadline defect:
+  its former `Time_Last` sentinel became `Duration'Last` in the synchronous
+  Object Storage wrapper and overflowed deadline construction, first as a
+  swallowed read failure and then as ambiguous mutation admission. The helper
+  now receives the already-authorized caller timeout; the backend-only public
+  testing adapter preserves its unused no-deadline sentinel. The repeated
+  ownership, bounds, certainty, constants, and test review found no remaining
+  actionable P0/P1/P2 findings. The final exact tree passed the full maintained
+  deterministic suite, repository checks, the complete maintained TLA/TLC/TLAPS
+  gate, and warning-strict GNATprove at 1,097/1,097 with a clean post-run host
+  audit.
+
 ## Fixed-snapshot multi-run lazy selector candidate
 
 - Parent: operational SST-v2 and one-run lazy reader commit `7fffa66`.

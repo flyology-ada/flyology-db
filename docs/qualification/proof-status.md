@@ -55,6 +55,19 @@ The exact-tree warning-strict SPARK campaign after this selector passed
 GNATprove, Why3, SMT provers, TLC, TLAPS, and Apalache before the shared formal
 lane was released.
 
+The mixed SST-v1/v2 fallback changes the private owner-driven reader and the
+authenticated executable corpus, not a selected SPARK unit or the abstract
+newest-visible selector actions. The maintained suite converts one real
+published run to frozen v1, validates historical value and absence across a
+mixed slice, and preserves the caller token. Whole-v1 Object Storage behavior,
+dynamic allocation, decoder execution, and refinement to the unchanged TLA+
+selector remain executable rather than SPARK claims. The exact-tree maintained
+TLA/TLC/TLAPS gate remained green, including 37 selector states to depth 6 and
+13/13 TLAPS obligations. The warning-strict SPARK rerun then proved
+1,097/1,097 checks with the maintained success sentinel. The host-wide
+post-run audit found no GNATprove, Why3/SMT, TLC, TLAPS, or Apalache process
+before the exclusive formal lane was released.
+
 The owned physical scan merge implementation changes no selected SPARK unit and preserves the exact warning-strict
 campaign at 1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or `pragma Assume`
 statements. Its maintained TLA/TLC/TLAPS lane exhausts 21 distinct states to depth 6, detects independent
