@@ -73,12 +73,15 @@ All allocation extents remain lazily derived with checked arithmetic from the au
 `Database_Limits`, per-family limits, exact header admission, and exact object lengths. An undersized caller buffer or
 allocation failure is `Capacity_Exceeded`; it does not partially install a graph or change the prior replica view.
 
-The first implementation stage extracts the HEAD, manifest, SST, and batch consumers from blocking I/O. Each header
+The shared reader now extracts the HEAD, manifest, SST, and batch consumers from blocking I/O. Each header
 consumer retains the decoder-admitted object length and opaque generation; each body consumer accepts only that
 exact length and generation before decoding. HEAD and batch consumers preserve the established format/status
-normalization without retaining transport state. The blocking traversal now calls those consumers directly. Explicit
-request scheduling remains in `Read_Recovery` until the next stage moves the whole control flow into the shared
-machine; no composable API is exposed by this intermediate refactor.
+normalization without retaining transport state. `Recovery_Traversal` owns every manifest, run, and batch
+cursor plus the incomplete graph. `Next_Recovery_Request` exposes one exact
+key-kind/generation/maximum request; the blocking adapter executes it and feeds the result to the matching
+consumer. The obsolete monolithic traversal and its blocking manifest/SST wrappers have been removed. No
+composable API is exposed by this intermediate refactor; the next stage drives these same requests with
+provider-owned operations.
 
 ## Lifecycle and terminal rules
 

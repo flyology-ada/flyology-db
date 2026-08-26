@@ -1,5 +1,39 @@
 # Review record
 
+## Accepted recovery request/consume controller candidate
+
+- Parent: recovery-consumer commit `3533cf5`.
+- Scope: move the complete blocking recovery traversal onto one private `Recovery_Traversal`. It owns the
+  HEAD, manifest-chain, checkpoint-SST, and batch-chain cursors and all partially decoded objects. The
+  blocking adapter asks for one exact request, executes it through the established `Storage_Port`, and feeds
+  one response to the matching consumer. The obsolete monolithic traversal and blocking manifest/SST wrappers
+  are removed.
+- Preserved contract: request keys, object kinds, range offsets, generation preconditions, decoder-admitted
+  maxima, persisted history limits, allocation fault points, predecessor/checkpoint anchors, sought-manifest
+  observation, and every status mapping retain their parent order and authority. The controller introduces no
+  queue, retry, task, timeout, buffer ceiling, public declaration, or stored value.
+- Ownership: success moves one complete checkpoint/history graph to the caller. Every typed failure or
+  unexpected exception releases the complete partial graph. SST traversal follows the manifest's authenticated
+  flat run order and resolves each run back to its exact family descriptor before issuing I/O.
+- Findings cycle: the first sweep found one P2 architecture-fidelity gap: header ranges were derived again in
+  the blocking adapter rather than carried by the controller request as frozen. The request now owns the exact
+  derived `Byte_Range`, and every adapter consumes it directly. Final parent comparison found one P1
+  exception-observation drift: the old adapter cleared `Sought_Found` before I/O and exposed a found manifest
+  even if a later request raised. The adapter now preserves both writes without retaining that pointer in the
+  shared controller. The repeated sweep finds no remaining P0/P1/P2 in phase progression, generation binding,
+  allocation, failure mapping, cleanup, format compatibility, or constants authority.
+- Verification: `./tests/scripts/test.sh` passes the exact deterministic tree, including the limited
+  end-to-end profile and client-backed create/commit/Flush/compaction/refresh/reopen. The maintained
+  `./tests/scripts/test-s3-matrix.sh` passes all 18 RustFS, SeaweedFS, MinIO, and Flyology
+  memory/files/SQLite lanes. The maintained
+  `./scripts/check-tla.sh` gate passes every TLC/TLAPS lane, including 1,460 replica-refresh states and 11/11
+  refresh obligations, and `./scripts/prove.sh` proves 1,097/1,097 warning-strict checks. Formal pre/post host
+  audits are clean. Repository, diff, dead-wrapper, and changed-source line-width checks pass.
+- Upstream coordination: Object Storage's unpublished integrated head `4401e0e` separately proves 936/936
+  checks with zero warnings, unproved/justified checks, or `pragma Assume`, followed by a clean formal host
+  audit. This is pending-handoff evidence, not DB dependency provenance; the controller gates above consume
+  published source `179b16c414090662924c04355a5d292c29d33204`.
+
 ## Accepted recovery HEAD/batch consumer extraction candidate
 
 - Parent: generation-bound recovery-consumer commit `d6962da`.

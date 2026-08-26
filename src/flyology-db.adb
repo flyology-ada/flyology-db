@@ -7584,88 +7584,6 @@ package body Flyology.DB is
          raise;
    end Decode_Leading_Manifest_Body;
 
-   procedure Read_Leading_Manifest
-     (Storage           : in out Storage_Context;
-      Manifest_ID       : Identifier;
-      Expected_Database : Database_Identifier;
-      Deadline          : Ada.Real_Time.Time;
-      Token             : access Flyology.Cancellation.Token;
-      Value             : out Manifests.Manifest;
-      LSM_Authority     : out Engine_LSM_Authority;
-      Checkpoint        : out LSM_Runtime.Checkpoint_Manifest_Access;
-      Result            : out Outcome_Code)
-   is
-      --  The header range is derived from the persisted checkpoint format and
-      --  is consumed by Inspect_Leading_Manifest_Header above.
-      Header_Length     : constant Natural := LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length;
-      Header_Data       : Flyology.Bytes.Unbounded_Bytes;
-      Whole_Data        : Flyology.Bytes.Unbounded_Bytes;
-      Object_Length     : Natural;
-      Whole_Length      : Natural;
-      Header_Generation : Generation_Value;
-      Whole_Generation  : Generation_Value;
-      Read_Result       : Read_Outcome;
-      Admission         : Manifest_Read_Admission;
-   begin
-      Value := Manifests.Empty_Manifest;
-      LSM_Authority := No_LSM_Authority;
-      Checkpoint := null;
-      Storage_Port.Get_Selected
-        (Storage,
-         Manifest_Key (Storage, Manifest_ID),
-         Manifest_Object,
-         (Kind => OS.Bounded_Range, First => 0, Last => OS.Byte_Count (Header_Length - 1), Count => 0),
-         (others => <>),
-         Deadline,
-         Token,
-         Header_Data,
-         Object_Length,
-         Header_Generation,
-         Read_Result,
-         Header_Length);
-      if Read_Result /= Object_Read then
-         Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
-         return;
-      end if;
-      Inspect_Leading_Manifest_Header
-        (Header_Data,
-         Object_Length,
-         Header_Generation,
-         Expected_Database,
-         Admission,
-         Result);
-      if Result /= Success then
-         return;
-      end if;
-      Storage_Port.Get_Selected
-        (Storage,
-         Manifest_Key (Storage, Manifest_ID),
-         Manifest_Object,
-         OS.Whole_Object,
-         Admission.Generation,
-         Deadline,
-         Token,
-         Whole_Data,
-         Whole_Length,
-         Whole_Generation,
-         Read_Result,
-         Admission.Object_Length);
-      if Read_Result /= Object_Read then
-         Result := Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True);
-         return;
-      end if;
-      Decode_Leading_Manifest_Body
-        (Whole_Data,
-         Whole_Length,
-         Whole_Generation,
-         Expected_Database,
-         Admission,
-         Value,
-         LSM_Authority,
-         Checkpoint,
-         Result);
-   end Read_Leading_Manifest;
-
    type SST_Read_Admission is record
       Object_Length : Natural := 0;
       Generation    : Generation_Value;
@@ -8411,11 +8329,566 @@ package body Flyology.DB is
       Decode_Stored_Batch (Data, Expected_Database, Limits, False, Head, Batch, Result);
    end Decode_Recovery_Batch_Response;
 
-   procedure Read_Recovery
-     (Storage       : in out Storage_Context;
-      Database_ID   : Database_Identifier;
-      Deadline      : Ada.Real_Time.Time;
-      Token         : access Flyology.Cancellation.Token;
+   type Recovery_Request_Kind is
+     (Recovery_Head_Request,
+      Recovery_Manifest_Header_Request,
+      Recovery_Manifest_Body_Request,
+      Recovery_SST_Header_Request,
+      Recovery_SST_Body_Request,
+      Recovery_Batch_Request,
+      Recovery_No_Request);
+
+   type Recovery_Request is record
+      Kind                : Recovery_Request_Kind := Recovery_No_Request;
+      Object_ID           : Identifier := Zero_Identifier;
+      Requested           : OS.Byte_Range := OS.Whole_Object;
+      Expected_Generation : Generation_Value;
+      Maximum             : Natural := 0;
+   end record;
+
+   type Recovery_Traversal_Phase is
+     (Recovery_Needs_Head,
+      Recovery_Needs_Manifest_Header,
+      Recovery_Needs_Manifest_Body,
+      Recovery_Needs_SST_Header,
+      Recovery_Needs_SST_Body,
+      Recovery_Needs_Batch,
+      Recovery_Completed,
+      Recovery_Failed);
+
+   type Checkpoint_Manifest_Flag_Array is array (History_Slot) of Boolean;
+   type Checkpoint_Replay_Boundary_Array is array (History_Slot) of Interfaces.Unsigned_64;
+
+   type Recovery_Traversal is record
+      Database_ID       : Database_Identifier := Zero_Database_ID;
+      Sought_Manifest   : Identifier := Zero_Identifier;
+      Found_Sought      : Boolean := False;
+      Phase             : Recovery_Traversal_Phase := Recovery_Needs_Head;
+      Terminal_Result   : Outcome_Code := Invalid_State;
+      Head              : Head_Snapshot;
+      Generation        : Generation_Value;
+      Manifest          : Manifests.Manifest;
+      Root              : Manifests.Manifest;
+      LSM_Authority     : Engine_LSM_Authority;
+      Checkpoint        : Checkpoint_Plan;
+      History           : Batch_History_Access := null;
+      Count             : Natural := 0;
+      Manifests_Seen    : Manifest_History := [others => Manifests.Empty_Manifest];
+      --  These runtime witnesses record which retained fixed bases were
+      --  authenticated as complete checkpoint manifests. Their positions are
+      --  private traversal state and are never persisted.
+      Checkpoint_Manifests : Checkpoint_Manifest_Flag_Array := [others => False];
+      Checkpoint_Replay_Boundaries : Checkpoint_Replay_Boundary_Array := [others => 0];
+      Manifest_Count      : Natural := 0;
+      Current_Manifest_ID : Identifier := Zero_Identifier;
+      Manifest_Admission  : Manifest_Read_Admission;
+      Replay_Boundary     : Sequence_Number := 0;
+      SST_Run_Index       : Natural := 0;
+      SST_Family_Index    : Natural := 0;
+      SST_Admission       : SST_Read_Admission;
+      Current_Batch_ID    : Identifier := Zero_Identifier;
+   end record;
+
+   procedure Fail_Recovery (State : in out Recovery_Traversal; Result : Outcome_Code) is
+   begin
+      State.Terminal_Result := Result;
+      State.Phase := Recovery_Failed;
+   end Fail_Recovery;
+
+   procedure Complete_Recovery (State : in out Recovery_Traversal) is
+   begin
+      State.Terminal_Result := Success;
+      State.Phase := Recovery_Completed;
+   end Complete_Recovery;
+
+   procedure Release_Recovery (State : in out Recovery_Traversal) is
+   begin
+      Release_History (State.History, State.Count);
+      Release_Checkpoint_Plan (State.Checkpoint);
+      State.Phase := Recovery_Failed;
+   end Release_Recovery;
+
+   function Starts_After_Checkpoint
+     (State : Recovery_Traversal;
+      Batch : Runtime_Batch) return Boolean
+   is
+   begin
+      for Index in Positive range 1 .. State.Manifest_Count loop
+         if State.Checkpoint_Manifests (Index)
+           and then State.Checkpoint_Replay_Boundaries (Index)
+                      = Interfaces.Unsigned_64 (State.Replay_Boundary)
+           and then To_Database_ID (State.Manifests_Seen (Index).Database_ID) = Batch.Database_ID
+           and then State.Manifests_Seen (Index).Writer_Epoch = Batch.Epoch
+           and then To_Identifier (State.Manifests_Seen (Index).Publication_Transition_ID)
+                      = Batch.Expected_Transition_ID
+           and then State.Manifests_Seen (Index).Publication_Transition_Number
+                      = Batch.Expected_Transition_Number
+         then
+            return True;
+         end if;
+      end loop;
+      return False;
+   end Starts_After_Checkpoint;
+
+   procedure Start_Recovery
+     (State           : out Recovery_Traversal;
+      Database_ID     : Database_Identifier;
+      Sought_Manifest : Identifier) is
+   begin
+      State :=
+        (Database_ID     => Database_ID,
+         Sought_Manifest => Sought_Manifest,
+         others          => <>);
+   end Start_Recovery;
+
+   procedure Next_Recovery_Request
+     (State   : Recovery_Traversal;
+      Request : out Recovery_Request)
+   is
+   begin
+      Request := (others => <>);
+      case State.Phase is
+         when Recovery_Needs_Head =>
+            Request.Kind := Recovery_Head_Request;
+            Request.Maximum := Formats.Head_Image_Length;
+
+         when Recovery_Needs_Manifest_Header =>
+            Request.Kind := Recovery_Manifest_Header_Request;
+            Request.Object_ID := State.Current_Manifest_ID;
+            Request.Maximum := LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length;
+            Request.Requested :=
+              (Kind  => OS.Bounded_Range,
+               First => 0,
+               Last  => OS.Byte_Count (Request.Maximum - 1),
+               Count => 0);
+
+         when Recovery_Needs_Manifest_Body =>
+            Request.Kind := Recovery_Manifest_Body_Request;
+            Request.Object_ID := State.Current_Manifest_ID;
+            Request.Expected_Generation := State.Manifest_Admission.Generation;
+            Request.Maximum := State.Manifest_Admission.Object_Length;
+
+         when Recovery_Needs_SST_Header =>
+            Request.Kind := Recovery_SST_Header_Request;
+            Request.Object_ID :=
+              To_Identifier (State.Checkpoint.Manifest.Runs (State.SST_Run_Index).Run_ID);
+            Request.Maximum := LSM_Runtime.LSM.SST_Header_Length;
+            Request.Requested :=
+              (Kind  => OS.Bounded_Range,
+               First => 0,
+               Last  => OS.Byte_Count (Request.Maximum - 1),
+               Count => 0);
+
+         when Recovery_Needs_SST_Body =>
+            Request.Kind := Recovery_SST_Body_Request;
+            Request.Object_ID :=
+              To_Identifier (State.Checkpoint.Manifest.Runs (State.SST_Run_Index).Run_ID);
+            Request.Expected_Generation := State.SST_Admission.Generation;
+            Request.Maximum := State.SST_Admission.Object_Length;
+
+         when Recovery_Needs_Batch =>
+            Request.Kind := Recovery_Batch_Request;
+            Request.Object_ID := State.Current_Batch_ID;
+            Request.Maximum := Maximum_Runtime_Batch_Length (State.Manifest.Limits);
+
+         when Recovery_Completed | Recovery_Failed =>
+            null;
+      end case;
+   end Next_Recovery_Request;
+
+   procedure Start_Next_Recovery_Batch (State : in out Recovery_Traversal) is
+   begin
+      if State.Count = Maximum_History_Batches
+        or else Interfaces.Unsigned_32 (State.Count) = State.Manifest.Limits.Maximum_Batch_History
+      then
+         Fail_Recovery (State, Corrupt);
+      else
+         State.Phase := Recovery_Needs_Batch;
+      end if;
+   end Start_Next_Recovery_Batch;
+
+   procedure Begin_Recovery_Batches (State : in out Recovery_Traversal) is
+      --  Persisted batch-history authority determines the lazy recovery
+      --  descriptor allocation; zero/unrepresentable values fail closed.
+      Capacity : constant Interfaces.Unsigned_32 := State.Manifest.Limits.Maximum_Batch_History;
+   begin
+      if State.Head.Highest = State.Replay_Boundary then
+         Complete_Recovery (State);
+         return;
+      elsif State.Head.Highest < State.Replay_Boundary then
+         Fail_Recovery (State, Corrupt);
+         return;
+      elsif Capacity = 0
+        or else Interfaces.Unsigned_64 (Capacity) > Interfaces.Unsigned_64 (Positive'Last)
+      then
+         Fail_Recovery (State, Capacity_Exceeded);
+         return;
+      end if;
+      Allocation_Faults.Check (Recovery_History_Allocation);
+      State.History := new Batch_History (1 .. Positive (Capacity));
+      State.Current_Batch_ID := State.Head.Latest_Batch;
+      Start_Next_Recovery_Batch (State);
+   exception
+      when Storage_Error =>
+         State.History := null;
+         Fail_Recovery (State, Capacity_Exceeded);
+   end Begin_Recovery_Batches;
+
+   procedure Start_Next_Recovery_SST (State : in out Recovery_Traversal) is
+   begin
+      if State.Checkpoint.Manifest = null then
+         Fail_Recovery (State, Invalid_State);
+         return;
+      elsif State.SST_Run_Index >= State.Checkpoint.Manifest.Run_Total then
+         Begin_Recovery_Batches (State);
+         return;
+      end if;
+      State.SST_Run_Index := State.SST_Run_Index + 1;
+      State.SST_Family_Index := 0;
+      for Family_Index in State.Checkpoint.Manifest.Families'Range loop
+         declare
+            Family : LSM_Runtime.Family_LSM_State renames
+              State.Checkpoint.Manifest.Families (Family_Index);
+         begin
+            if Family.Run_Total > 0
+              and then State.SST_Run_Index
+                         in Family.First_Run .. Family.First_Run + Family.Run_Total - 1
+            then
+               State.SST_Family_Index := Family_Index;
+               exit;
+            end if;
+         end;
+      end loop;
+      if State.SST_Family_Index = 0 then
+         Fail_Recovery (State, Corrupt);
+      else
+         State.SST_Admission := (others => <>);
+         State.Phase := Recovery_Needs_SST_Header;
+      end if;
+   end Start_Next_Recovery_SST;
+
+   procedure Consume_Recovery_Head
+     (State       : in out Recovery_Traversal;
+      Data        : Small_Metadata_Buffer;
+      Length      : Natural;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome)
+   is
+      Result : Outcome_Code;
+   begin
+      if Read_Result /= Object_Read then
+         Result :=
+           (if Read_Result = Object_Missing
+            then Not_Found
+            elsif Read_Result = Read_Cancelled
+            then Cancelled
+            elsif Read_Result = Read_Timed_Out
+            then Timed_Out
+            elsif Read_Result = Read_Capacity_Exceeded
+            then Capacity_Exceeded
+            elsif Read_Result = Read_Corrupt
+            then Corrupt
+            else Storage_Failure);
+         Fail_Recovery (State, Result);
+         return;
+      end if;
+      Decode_Recovery_Head (Data, Length, State.Database_ID, State.Head, Result);
+      if Result /= Success then
+         Fail_Recovery (State, Result);
+         return;
+      end if;
+      State.Generation := Generation;
+      State.Current_Manifest_ID := State.Head.Latest_Manifest;
+      State.Manifest_Count := 1;
+      State.Phase := Recovery_Needs_Manifest_Header;
+   end Consume_Recovery_Head;
+
+   procedure Consume_Recovery_Manifest_Header
+     (State       : in out Recovery_Traversal;
+      Data        : Flyology.Bytes.Unbounded_Bytes;
+      Length      : Natural;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome)
+   is
+      Result : Outcome_Code;
+   begin
+      if Read_Result /= Object_Read then
+         Fail_Recovery (State, Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True));
+         return;
+      end if;
+      Inspect_Leading_Manifest_Header
+        (Data,
+         Length,
+         Generation,
+         State.Database_ID,
+         State.Manifest_Admission,
+         Result);
+      if Result = Success then
+         State.Phase := Recovery_Needs_Manifest_Body;
+      else
+         Fail_Recovery (State, Result);
+      end if;
+   end Consume_Recovery_Manifest_Header;
+
+   procedure Consume_Recovery_Manifest_Body
+     (State       : in out Recovery_Traversal;
+      Data        : Flyology.Bytes.Unbounded_Bytes;
+      Length      : Natural;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome)
+   is
+      Decoded_Manifest   : Manifests.Manifest;
+      Decoded_Authority  : Engine_LSM_Authority;
+      Decoded_Checkpoint : LSM_Runtime.Checkpoint_Manifest_Access := null;
+      Result             : Outcome_Code;
+   begin
+      if Read_Result /= Object_Read then
+         Fail_Recovery (State, Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True));
+         return;
+      end if;
+      Decode_Leading_Manifest_Body
+        (Data,
+         Length,
+         Generation,
+         State.Database_ID,
+         State.Manifest_Admission,
+         Decoded_Manifest,
+         Decoded_Authority,
+         Decoded_Checkpoint,
+         Result);
+      if Result /= Success then
+         Fail_Recovery (State, Result);
+         return;
+      end if;
+      State.Manifests_Seen (State.Manifest_Count) := Decoded_Manifest;
+      State.Checkpoint_Manifests (State.Manifest_Count) := Decoded_Checkpoint /= null;
+      if Decoded_Checkpoint /= null then
+         State.Checkpoint_Replay_Boundaries (State.Manifest_Count) := Decoded_Checkpoint.Replay_Boundary;
+      end if;
+      if State.Manifest_Count = 1 then
+         State.LSM_Authority := Decoded_Authority;
+         State.Checkpoint.Manifest := Decoded_Checkpoint;
+         Decoded_Checkpoint := null;
+      end if;
+      LSM_Runtime.Release (Decoded_Checkpoint);
+
+      if To_Identifier (Decoded_Manifest.Manifest_ID) /= State.Current_Manifest_ID then
+         Fail_Recovery (State, Corrupt);
+         return;
+      elsif not Is_Zero (State.Sought_Manifest)
+        and then State.Current_Manifest_ID = State.Sought_Manifest
+      then
+         State.Found_Sought := True;
+      end if;
+      if State.Manifest_Count = 1
+        and then not Manifests.Referenced_By (Decoded_Manifest, To_Head (State.Head))
+      then
+         Fail_Recovery (State, Corrupt);
+         return;
+      elsif State.Manifest_Count > 1
+        and then (if State.Checkpoint_Manifests (State.Manifest_Count - 1)
+                  then
+                    not Manifests.Valid_Checkpoint_Chain_Predecessor
+                          (State.Manifests_Seen (State.Manifest_Count - 1), Decoded_Manifest)
+                  else
+                    not Manifests.Valid_Predecessor
+                          (State.Manifests_Seen (State.Manifest_Count - 1), Decoded_Manifest))
+      then
+         Fail_Recovery (State, Corrupt);
+         return;
+      elsif not Manifests.Is_Root (Decoded_Manifest) then
+         if State.Manifest_Count = Maximum_History_Batches then
+            Result :=
+              (if State.Manifests_Seen (1).Limits.Maximum_Manifest_History <= Maximum_History_Batches
+               then Corrupt
+               else Capacity_Exceeded);
+            Fail_Recovery (State, Result);
+            return;
+         elsif Interfaces.Unsigned_32 (State.Manifest_Count)
+                 = State.Manifests_Seen (1).Limits.Maximum_Manifest_History
+         then
+            Fail_Recovery (State, Corrupt);
+            return;
+         end if;
+         State.Current_Manifest_ID := To_Identifier (Decoded_Manifest.Previous_Manifest_ID);
+         State.Manifest_Count := State.Manifest_Count + 1;
+         State.Manifest_Admission := (others => <>);
+         State.Phase := Recovery_Needs_Manifest_Header;
+         return;
+      end if;
+
+      State.Root := Decoded_Manifest;
+      State.Manifest := State.Manifests_Seen (1);
+      if not Manifests.Runtime_Compatible (State.Manifest) then
+         Fail_Recovery (State, Capacity_Exceeded);
+         return;
+      elsif State.Checkpoint.Manifest /= null
+        and then not Manifests.Is_Root (State.Checkpoint.Manifest.Base)
+      then
+         if State.Checkpoint.Manifest.Replay_Boundary = 0
+           or else State.Checkpoint.Manifest.Replay_Boundary > Interfaces.Unsigned_64 (State.Head.Highest)
+         then
+            Fail_Recovery (State, Corrupt);
+            return;
+         end if;
+         State.Replay_Boundary := Sequence_Number (State.Checkpoint.Manifest.Replay_Boundary);
+         if State.Checkpoint.Manifest.Run_Total > 0 then
+            Allocation_Faults.Check (Recovery_SST_Image_Allocation);
+            State.Checkpoint.Recovered_SSTs :=
+              new Recovered_SST_Array'(1 .. State.Checkpoint.Manifest.Run_Total => null);
+         end if;
+         State.SST_Run_Index := 0;
+         Start_Next_Recovery_SST (State);
+      else
+         if State.Checkpoint.Manifest /= null then
+            LSM_Runtime.Release (State.Checkpoint.Manifest);
+         end if;
+         Begin_Recovery_Batches (State);
+      end if;
+   exception
+      when Storage_Error =>
+         LSM_Runtime.Release (Decoded_Checkpoint);
+         Fail_Recovery (State, Capacity_Exceeded);
+      when others =>
+         LSM_Runtime.Release (Decoded_Checkpoint);
+         raise;
+   end Consume_Recovery_Manifest_Body;
+
+   procedure Consume_Recovery_SST_Header
+     (State       : in out Recovery_Traversal;
+      Data        : Flyology.Bytes.Unbounded_Bytes;
+      Length      : Natural;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome)
+   is
+      Result : Outcome_Code;
+   begin
+      if Read_Result /= Object_Read then
+         Fail_Recovery (State, Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True));
+         return;
+      end if;
+      Inspect_Recovery_SST_Header
+        (Data,
+         Length,
+         Generation,
+         State.Checkpoint.Manifest,
+         State.SST_Family_Index,
+         State.Checkpoint.Manifest.Runs (State.SST_Run_Index),
+         State.SST_Admission,
+         Result);
+      if Result = Success then
+         State.Phase := Recovery_Needs_SST_Body;
+      else
+         Fail_Recovery (State, Result);
+      end if;
+   end Consume_Recovery_SST_Header;
+
+   procedure Consume_Recovery_SST_Body
+     (State       : in out Recovery_Traversal;
+      Data        : Flyology.Bytes.Unbounded_Bytes;
+      Length      : Natural;
+      Generation  : Generation_Value;
+      Read_Result : Read_Outcome)
+   is
+      Result : Outcome_Code;
+   begin
+      if Read_Result /= Object_Read then
+         Fail_Recovery (State, Read_Failure_Outcome (Read_Result, Missing_Is_Corrupt => True));
+         return;
+      end if;
+      Decode_Recovery_SST_Body
+        (Data,
+         Length,
+         Generation,
+         State.Checkpoint.Manifest,
+         State.SST_Family_Index,
+         State.Checkpoint.Manifest.Runs (State.SST_Run_Index),
+         State.SST_Admission,
+         State.Checkpoint.Recovered_SSTs (State.SST_Run_Index),
+         Result);
+      if Result = Success then
+         Start_Next_Recovery_SST (State);
+      else
+         Fail_Recovery (State, Result);
+      end if;
+   end Consume_Recovery_SST_Body;
+
+   procedure Consume_Recovery_Batch
+     (State       : in out Recovery_Traversal;
+      Data        : in out Flyology.Bytes.Unbounded_Bytes;
+      Read_Result : Read_Outcome)
+   is
+      Batch_Result : Outcome_Code;
+   begin
+      if Read_Result /= Object_Read then
+         declare
+            Ignored_Batch : Runtime_Batch;
+         begin
+            Decode_Recovery_Batch_Response
+              (Data,
+               Read_Result,
+               State.Database_ID,
+               To_Public_Limits (State.Manifest.Limits),
+               State.Head,
+               Ignored_Batch,
+               Batch_Result);
+         end;
+         Fail_Recovery (State, Batch_Result);
+         return;
+      end if;
+      State.Count := State.Count + 1;
+      Decode_Recovery_Batch_Response
+        (Data,
+         Read_Result,
+         State.Database_ID,
+         To_Public_Limits (State.Manifest.Limits),
+         State.Head,
+         State.History (State.Count),
+         Batch_Result);
+      if Batch_Result /= Success then
+         Fail_Recovery (State, Batch_Result);
+         return;
+      elsif State.Count = 1
+        and then not Runtime_Published_By (State.History (State.Count), State.Head)
+        and then
+          not Runtime_Anchored_By_Manifest_Chain
+                (State.History (State.Count), State.Head, State.Manifests_Seen, State.Manifest_Count)
+      then
+         Fail_Recovery (State, Corrupt);
+         return;
+      elsif State.History (State.Count).Batch_ID /= State.Current_Batch_ID then
+         Fail_Recovery (State, Corrupt);
+         return;
+      elsif State.Count > 1
+        and then not Runtime_Valid_Predecessor
+                       (State.History (State.Count - 1), State.History (State.Count))
+      then
+         Fail_Recovery (State, Corrupt);
+         return;
+      elsif State.Replay_Boundary = 0 then
+         if State.History (State.Count).First_Sequence = 1
+           and then Is_Zero (State.History (State.Count).Previous_Batch_ID)
+         then
+            Complete_Recovery (State);
+            return;
+         end if;
+      elsif State.History (State.Count).First_Sequence = State.Replay_Boundary + 1 then
+         if not Starts_After_Checkpoint (State, State.History (State.Count)) then
+            Fail_Recovery (State, Corrupt);
+         else
+            Complete_Recovery (State);
+         end if;
+         return;
+      elsif State.History (State.Count).First_Sequence <= State.Replay_Boundary then
+         Fail_Recovery (State, Corrupt);
+         return;
+      end if;
+      State.Current_Batch_ID := State.History (State.Count).Previous_Batch_ID;
+      Start_Next_Recovery_Batch (State);
+   end Consume_Recovery_Batch;
+
+   procedure Finish_Recovery
+     (State         : in out Recovery_Traversal;
       Head          : out Head_Snapshot;
       Generation    : out Generation_Value;
       Manifest      : out Manifests.Manifest;
@@ -8424,50 +8897,23 @@ package body Flyology.DB is
       Checkpoint    : out Checkpoint_Plan;
       History       : out Batch_History_Access;
       Count         : out Natural;
-      Result        : out Outcome_Code;
-      Sought_Manifest : Identifier := Zero_Identifier;
-      Sought_Found    : access Boolean := null)
+      Result        : out Outcome_Code)
    is
-      Data                : Small_Metadata_Buffer;
-      Length              : Natural;
-      Batch_Data          : Flyology.Bytes.Unbounded_Bytes;
-      Read_Result         : Read_Outcome;
-      Batch_Result        : Outcome_Code;
-      Current_Batch_ID    : Identifier;
-      Ignored_Generation  : Generation_Value;
-      Manifests_Seen      : Manifest_History := [others => Manifests.Empty_Manifest];
-      --  True records that header-first decoding structurally validated the
-      --  corresponding dynamic checkpoint before its owned payload was
-      --  released; immutable-chain validation thereafter needs only its base.
-      Checkpoint_Manifests : array (History_Slot) of Boolean := [others => False];
-      Checkpoint_Replay_Boundaries : array (History_Slot) of Interfaces.Unsigned_64 := [others => 0];
-      Manifest_Count      : Natural := 0;
-      Current_Manifest_ID : Identifier;
-      Replay_Boundary     : Sequence_Number := 0;
-
-      function Starts_After_Checkpoint (Batch : Runtime_Batch) return Boolean is
-      begin
-         for Index in Positive range 1 .. Manifest_Count loop
-            if Checkpoint_Manifests (Index)
-              and then Checkpoint_Replay_Boundaries (Index) = Interfaces.Unsigned_64 (Replay_Boundary)
-              and then To_Database_ID (Manifests_Seen (Index).Database_ID) = Batch.Database_ID
-              and then Manifests_Seen (Index).Writer_Epoch = Batch.Epoch
-              and then To_Identifier (Manifests_Seen (Index).Publication_Transition_ID)
-                         = Batch.Expected_Transition_ID
-              and then Manifests_Seen (Index).Publication_Transition_Number
-                         = Batch.Expected_Transition_Number
-            then
-               return True;
-            end if;
-         end loop;
-         return False;
-      end Starts_After_Checkpoint;
-
-      procedure Load is
-      begin
-         if Sought_Found /= null then
-            Sought_Found.all := False;
-         end if;
+   begin
+      Result := State.Terminal_Result;
+      if State.Phase = Recovery_Completed then
+         Head := State.Head;
+         Generation := State.Generation;
+         Manifest := State.Manifest;
+         Root := State.Root;
+         LSM_Authority := State.LSM_Authority;
+         Checkpoint := State.Checkpoint;
+         State.Checkpoint := (others => <>);
+         History := State.History;
+         Count := State.Count;
+         State.History := null;
+         State.Count := 0;
+      else
          Head := (others => <>);
          Generation := (others => <>);
          Manifest := Manifests.Empty_Manifest;
@@ -8476,259 +8922,161 @@ package body Flyology.DB is
          Checkpoint := (others => <>);
          History := null;
          Count := 0;
-         Storage_Port.Get_Whole
-           (Storage,
-            Full_Key (Storage, Head_Key_Suffix),
-            Head_Object,
-            Deadline,
-            Token,
-            Data,
-            Length,
-            Generation,
-            Read_Result);
-         if Read_Result /= Object_Read then
-            Result :=
-              (if Read_Result = Object_Missing
-               then Not_Found
-               elsif Read_Result = Read_Cancelled
-               then Cancelled
-               elsif Read_Result = Read_Timed_Out
-               then Timed_Out
-               elsif Read_Result = Read_Capacity_Exceeded
-               then Capacity_Exceeded
-               elsif Read_Result = Read_Corrupt
-               then Corrupt
-               else Storage_Failure);
-            return;
-         end if;
-         Decode_Recovery_Head (Data, Length, Database_ID, Head, Result);
-         if Result /= Success then
-            return;
-         end if;
+         Release_Recovery (State);
+      end if;
+   end Finish_Recovery;
 
-         Current_Manifest_ID := Head.Latest_Manifest;
-         loop
-            if Manifest_Count = Maximum_History_Batches then
-               Result :=
-                 (if Manifests_Seen (1).Limits.Maximum_Manifest_History <= Maximum_History_Batches
-                  then Corrupt
-                  else Capacity_Exceeded);
-               return;
-            elsif Manifest_Count > 0
-              and then Interfaces.Unsigned_32 (Manifest_Count)
-                       = Manifests_Seen (1).Limits.Maximum_Manifest_History
-            then
-               Result := Corrupt;
-               return;
-            end if;
-            Manifest_Count := Manifest_Count + 1;
-            if Manifest_Count = 1 then
-               Read_Leading_Manifest
+   procedure Read_Recovery
+     (Storage         : in out Storage_Context;
+      Database_ID     : Database_Identifier;
+      Deadline        : Ada.Real_Time.Time;
+      Token           : access Flyology.Cancellation.Token;
+      Head            : out Head_Snapshot;
+      Generation      : out Generation_Value;
+      Manifest        : out Manifests.Manifest;
+      Root            : out Manifests.Manifest;
+      LSM_Authority   : out Engine_LSM_Authority;
+      Checkpoint      : out Checkpoint_Plan;
+      History         : out Batch_History_Access;
+      Count           : out Natural;
+      Result          : out Outcome_Code;
+      Sought_Manifest : Identifier := Zero_Identifier;
+      Sought_Found    : access Boolean := null)
+   is
+      State      : Recovery_Traversal;
+      Request    : Recovery_Request;
+      Small_Data : Small_Metadata_Buffer;
+      Data       : Flyology.Bytes.Unbounded_Bytes;
+      Length     : Natural;
+      Generation_Value_Read : Generation_Value;
+      Read_Result : Read_Outcome;
+   begin
+      if Sought_Found /= null then
+         Sought_Found.all := False;
+      end if;
+      Start_Recovery (State, Database_ID, Sought_Manifest);
+      loop
+         Next_Recovery_Request (State, Request);
+         case Request.Kind is
+            when Recovery_Head_Request =>
+               Storage_Port.Get_Whole
                  (Storage,
-                  Current_Manifest_ID,
-                  Database_ID,
+                  Full_Key (Storage, Head_Key_Suffix),
+                  Head_Object,
                   Deadline,
                   Token,
-                  Manifests_Seen (Manifest_Count),
-                  LSM_Authority,
-                  Checkpoint.Manifest,
-                  Result);
-               Checkpoint_Manifests (Manifest_Count) := Checkpoint.Manifest /= null;
-               if Checkpoint.Manifest /= null then
-                  Checkpoint_Replay_Boundaries (Manifest_Count) := Checkpoint.Manifest.Replay_Boundary;
-               end if;
-            else
-               declare
-                  Prior_Authority  : Engine_LSM_Authority;
-                  Prior_Checkpoint : LSM_Runtime.Checkpoint_Manifest_Access := null;
-               begin
-                  --  Every predecessor may itself be a dynamically sized
-                  --  checkpoint manifest. Header-first whole-object decoding
-                  --  validates it before only its fixed base is retained for
-                  --  immutable-chain validation.
-                  Read_Leading_Manifest
-                    (Storage,
-                     Current_Manifest_ID,
-                     Database_ID,
-                     Deadline,
-                     Token,
-                     Manifests_Seen (Manifest_Count),
-                     Prior_Authority,
-                     Prior_Checkpoint,
-                     Result);
-                  Checkpoint_Manifests (Manifest_Count) := Prior_Checkpoint /= null;
-                  if Prior_Checkpoint /= null then
-                     Checkpoint_Replay_Boundaries (Manifest_Count) := Prior_Checkpoint.Replay_Boundary;
-                  end if;
-                  LSM_Runtime.Release (Prior_Checkpoint);
-               end;
-            end if;
-            if Result /= Success then
-               return;
-            elsif To_Identifier (Manifests_Seen (Manifest_Count).Manifest_ID) /= Current_Manifest_ID then
-               Result := Corrupt;
-               return;
-            end if;
-            if Sought_Found /= null
-              and then not Is_Zero (Sought_Manifest)
-              and then Current_Manifest_ID = Sought_Manifest
-            then
-               Sought_Found.all := True;
-            end if;
-            if Manifest_Count = 1 and then not Manifests.Referenced_By (Manifests_Seen (1), To_Head (Head))
-            then
-               Result := Corrupt;
-               return;
-            elsif Manifest_Count > 1
-              and then (if Checkpoint_Manifests (Manifest_Count - 1)
-                        then
-                          not Manifests.Valid_Checkpoint_Chain_Predecessor
-                                (Manifests_Seen (Manifest_Count - 1), Manifests_Seen (Manifest_Count))
-                        else
-                          not Manifests.Valid_Predecessor
-                                (Manifests_Seen (Manifest_Count - 1), Manifests_Seen (Manifest_Count)))
-            then
-               Result := Corrupt;
-               return;
-            elsif Manifests.Is_Root (Manifests_Seen (Manifest_Count)) then
-               Root := Manifests_Seen (Manifest_Count);
-               exit;
-            end if;
-            Current_Manifest_ID := To_Identifier (Manifests_Seen (Manifest_Count).Previous_Manifest_ID);
-         end loop;
-         Manifest := Manifests_Seen (1);
-         if not Manifests.Runtime_Compatible (Manifest) then
-            Result := Capacity_Exceeded;
-            return;
-         elsif Checkpoint.Manifest /= null and then not Manifests.Is_Root (Checkpoint.Manifest.Base) then
-            if Checkpoint.Manifest.Replay_Boundary = 0
-              or else Checkpoint.Manifest.Replay_Boundary > Interfaces.Unsigned_64 (Head.Highest)
-            then
-               Result := Corrupt;
-               return;
-            end if;
-            Replay_Boundary := Sequence_Number (Checkpoint.Manifest.Replay_Boundary);
-            Read_Checkpoint_SSTs (Storage, Deadline, Token, Checkpoint, Result);
-            if Result /= Success then
-               return;
-            end if;
-         elsif Checkpoint.Manifest /= null then
-            LSM_Runtime.Release (Checkpoint.Manifest);
-         end if;
-         if Head.Highest = Replay_Boundary then
-            Result := Success;
-            return;
-         elsif Head.Highest < Replay_Boundary then
-            Result := Corrupt;
-            return;
-         end if;
+                  Small_Data,
+                  Length,
+                  Generation_Value_Read,
+                  Read_Result);
+               Consume_Recovery_Head
+                 (State, Small_Data, Length, Generation_Value_Read, Read_Result);
 
-         declare
-            --  Persisted batch-history authority determines the lazy recovery
-            --  descriptor allocation; zero/unrepresentable values fail closed.
-            Capacity : constant Interfaces.Unsigned_32 := Manifest.Limits.Maximum_Batch_History;
-         begin
-            if Capacity = 0 or else Interfaces.Unsigned_64 (Capacity) > Interfaces.Unsigned_64 (Positive'Last)
-            then
-               Result := Capacity_Exceeded;
-               return;
-            end if;
-            Allocation_Faults.Check (Recovery_History_Allocation);
-            History := new Batch_History (1 .. Positive (Capacity));
-         exception
-            when Storage_Error =>
-               History := null;
-               Result := Capacity_Exceeded;
-               return;
-         end;
+            when Recovery_Manifest_Header_Request =>
+               Storage_Port.Get_Selected
+                 (Storage,
+                  Manifest_Key (Storage, Request.Object_ID),
+                  Manifest_Object,
+                  Request.Requested,
+                  (others => <>),
+                  Deadline,
+                  Token,
+                  Data,
+                  Length,
+                  Generation_Value_Read,
+                  Read_Result,
+                  Request.Maximum);
+               Consume_Recovery_Manifest_Header
+                 (State, Data, Length, Generation_Value_Read, Read_Result);
 
-         Current_Batch_ID := Head.Latest_Batch;
-         loop
-            if Count = Maximum_History_Batches
-              or else Interfaces.Unsigned_32 (Count) = Manifest.Limits.Maximum_Batch_History
-            then
-               Result := Corrupt;
-               return;
-            end if;
-            Storage_Port.Get_Whole
-              (Storage,
-               Batch_Key (Storage, Current_Batch_ID),
-               Batch_Object,
-               Deadline,
-               Token,
-               Batch_Data,
-               Ignored_Generation,
-               Read_Result,
-               Maximum_Runtime_Batch_Length (Manifest.Limits));
-            if Read_Result /= Object_Read then
-               declare
-                  Ignored_Batch : Runtime_Batch;
-               begin
-                  Decode_Recovery_Batch_Response
-                    (Batch_Data,
-                     Read_Result,
-                     Database_ID,
-                     To_Public_Limits (Manifest.Limits),
-                     Head,
-                     Ignored_Batch,
-                     Result);
-               end;
-               return;
-            end if;
-            Count := Count + 1;
-            Decode_Recovery_Batch_Response
-              (Batch_Data,
-               Read_Result,
-               Database_ID,
-               To_Public_Limits (Manifest.Limits),
-               Head,
-               History (Count),
-               Batch_Result);
-            if Batch_Result /= Success then
-               Result := Batch_Result;
-               return;
-            elsif Count = 1
-              and then not Runtime_Published_By (History (Count), Head)
-              and then
-                not Runtime_Anchored_By_Manifest_Chain
-                      (History (Count), Head, Manifests_Seen, Manifest_Count)
-            then
-               Result := Corrupt;
-               return;
-            elsif History (Count).Batch_ID /= Current_Batch_ID then
-               Result := Corrupt;
-               return;
-            elsif Count > 1 and then not Runtime_Valid_Predecessor (History (Count - 1), History (Count)) then
-               Result := Corrupt;
-               return;
-            elsif Replay_Boundary = 0 then
-               if History (Count).First_Sequence = 1 and then Is_Zero (History (Count).Previous_Batch_ID) then
-                  exit;
-               end if;
-            elsif History (Count).First_Sequence = Replay_Boundary + 1 then
-               if not Starts_After_Checkpoint (History (Count)) then
-                  Result := Corrupt;
-                  return;
-               end if;
+            when Recovery_Manifest_Body_Request =>
+               Storage_Port.Get_Selected
+                 (Storage,
+                  Manifest_Key (Storage, Request.Object_ID),
+                  Manifest_Object,
+                  Request.Requested,
+                  Request.Expected_Generation,
+                  Deadline,
+                  Token,
+                  Data,
+                  Length,
+                  Generation_Value_Read,
+                  Read_Result,
+                  Request.Maximum);
+               Consume_Recovery_Manifest_Body
+                 (State, Data, Length, Generation_Value_Read, Read_Result);
+
+            when Recovery_SST_Header_Request =>
+               Storage_Port.Get_Selected
+                 (Storage,
+                  Run_Key (Storage, Request.Object_ID),
+                  Run_Object,
+                  Request.Requested,
+                  (others => <>),
+                  Deadline,
+                  Token,
+                  Data,
+                  Length,
+                  Generation_Value_Read,
+                  Read_Result,
+                  Request.Maximum);
+               Consume_Recovery_SST_Header
+                 (State, Data, Length, Generation_Value_Read, Read_Result);
+
+            when Recovery_SST_Body_Request =>
+               Storage_Port.Get_Selected
+                 (Storage,
+                  Run_Key (Storage, Request.Object_ID),
+                  Run_Object,
+                  Request.Requested,
+                  Request.Expected_Generation,
+                  Deadline,
+                  Token,
+                  Data,
+                  Length,
+                  Generation_Value_Read,
+                  Read_Result,
+                  Request.Maximum);
+               Consume_Recovery_SST_Body
+                 (State, Data, Length, Generation_Value_Read, Read_Result);
+
+            when Recovery_Batch_Request =>
+               Storage_Port.Get_Whole
+                 (Storage,
+                  Batch_Key (Storage, Request.Object_ID),
+                  Batch_Object,
+                  Deadline,
+                  Token,
+                  Data,
+                  Generation_Value_Read,
+                  Read_Result,
+                  Request.Maximum);
+               Consume_Recovery_Batch (State, Data, Read_Result);
+
+            when Recovery_No_Request =>
                exit;
-            elsif History (Count).First_Sequence <= Replay_Boundary then
-               Result := Corrupt;
-               return;
-            end if;
-            Current_Batch_ID := History (Count).Previous_Batch_ID;
-         end loop;
-         Result := Success;
-      end Load;
-   begin
-      Load;
-      if Result /= Success then
-         Release_History (History, Count);
-         Release_Checkpoint_Plan (Checkpoint);
+         end case;
+      end loop;
+      if Sought_Found /= null then
+         Sought_Found.all := State.Found_Sought;
       end if;
+      Finish_Recovery
+        (State,
+         Head,
+         Generation,
+         Manifest,
+         Root,
+         LSM_Authority,
+         Checkpoint,
+         History,
+         Count,
+         Result);
    exception
       when others =>
-         Release_History (History, Count);
-         Release_Checkpoint_Plan (Checkpoint);
+         if Sought_Found /= null then
+            Sought_Found.all := State.Found_Sought;
+         end if;
+         Release_Recovery (State);
          raise;
    end Read_Recovery;
 
