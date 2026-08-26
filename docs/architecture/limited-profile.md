@@ -36,12 +36,14 @@ One maintained executable must perform the following sequence using only public 
 
 1. Receive every database identity, object identity, column-family limit, database limit, timeout, provider endpoint,
    bucket, prefix, and credential choice explicitly from its fixture or caller.
-2. Create a database with one explicit family and reopen it by stable ID and exact name.
-3. Commit exact byte keys and values, then Flush a complete first checkpoint.
+2. Create a database with one explicit family, observe no checkpoint work, and reopen it by stable ID and exact name.
+3. Commit exact byte keys and values, require the additive action, then Flush a complete first checkpoint and observe
+   no remaining work.
 4. Append one independently bounded higher-ID family with caller-stable manifest and transition identities, then
    reopen it by stable ID and exact name.
 5. Atomically commit a group whose members affect both families, verify one all-or-nothing visible sequence, delete
-   one key, verify ordered half-open scanning, and Flush the suffix without changing prior run identity.
+   one key, verify ordered half-open scanning, require the additive action, and Flush the suffix without changing
+   prior run identity; observe no remaining checkpoint work afterward.
 6. Compact the exact adjacent root-family pair under caller-supplied output, manifest, and transition identities,
    then verify that the second family and complete logical view remain unchanged.
 7. Close the database, discard every process-local DB object and buffer, construct a fresh database value, and Open

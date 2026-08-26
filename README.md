@@ -25,8 +25,9 @@ immutable manifest and conditional HEAD, and retains exact same-identity reconci
 operation-last overload uses the existing caller-owned `Flush_Operation`; the client-backed synchronous form is a
 literal wait over that state machine. It derives all
 allocation extents from persisted database and family limits; fresh-root and unflushed-suffix calls reject before
-publication because no caller-owned SST identity may be invented. The public files showcase checkpoints one root
-family, appends a second, writes and Flushes both, compacts the exact adjacent root-family pair, discards all local
+publication because no caller-owned SST identity may be invented. The public files showcase observes additive work,
+checkpoints one root family, confirms the clean boundary, appends a second, writes and observes additive work for
+both, Flushes and confirms the clean boundary, compacts the exact adjacent root-family pair, discards all local
 state, and recovers both families from object storage alone. An
 additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a bounded completion
 set, moving one caller-sized unique-buffer token until typed `Finish`. Client-bound synchronous `Flush` is a literal

@@ -1,5 +1,19 @@
 # Review record
 
+## Accepted limited-profile checkpoint-observation integration candidate
+
+- Parent: public L0 checkpoint-action observation commit `dbff9d6`.
+- Scope and behavior: route the maintained Files-backed public acceptance executable through
+  `Required_L0_Checkpoint_Action` at fresh, dirty, and successfully checkpointed boundaries. The showcase requires
+  additive Flush before each caller-identified checkpoint and no work afterward. Its exact adjacent compaction
+  remains an explicit independent caller selection; the change adds no automatic execution, identity generation,
+  trigger, fanout, retry, or provider policy.
+- Verification and findings: `./showcases/run-limited-e2e.sh` rebuilds and passes the complete create, transaction,
+  family append, cross-family Flush, adjacent compaction, close, complete-local-loss, and authoritative reopen path.
+  Project-aware GNATformat was applied only to the new helper and call ranges; repository diff checks are clean.
+  The API, sequencing, certainty, constants, documentation, and unnecessary-surface sweep finds no actionable
+  P0/P1/P2 finding.
+
 ## Accepted public L0 checkpoint-action observation candidate
 
 - Parent: public one-shot monotonic replica refresh commit `4ec2816`.

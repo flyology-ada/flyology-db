@@ -17,6 +17,7 @@ procedure Flyology_DB_Limited_E2E is
    use type DB.Checkpoint_Run_Identity;
    use type DB.Column_Family_ID;
    use type DB.Identifier;
+   use type DB.L0_Checkpoint_Action;
    use type DB.Outcome_Code;
    use type DB.Sequence_Number;
    use type OS.Status;
@@ -35,6 +36,21 @@ procedure Flyology_DB_Limited_E2E is
          raise Program_Error with Context & ": " & DB.Outcome_Code'Image (Actual);
       end if;
    end Expect;
+
+   procedure Expect_Checkpoint_Action
+     (Item     : in out DB.Database;
+      Expected : DB.L0_Checkpoint_Action;
+      Context  : String)
+   is
+      Actual : DB.L0_Checkpoint_Action;
+      Result : DB.Outcome_Code;
+   begin
+      DB.Required_L0_Checkpoint_Action (Item, Actual, Result);
+      Expect (Result, DB.Success, Context & " query failed");
+      if Actual /= Expected then
+         raise Program_Error with Context & ": " & DB.L0_Checkpoint_Action'Image (Actual);
+      end if;
+   end Expect_Checkpoint_Action;
 
    function Root_Argument return String is
    begin
@@ -255,6 +271,7 @@ procedure Flyology_DB_Limited_E2E is
          Receipt => Create_Info,
          Result  => Result);
       Expect (Result, DB.Success, "database create failed");
+      Expect_Checkpoint_Action (Created, DB.No_L0_Checkpoint_Work, "fresh database checkpoint action");
       DB.Open_Column_Family (Created, 1, Accounts, Result);
       Expect (Result, DB.Success, "accounts open failed");
       DB.Begin_Transaction (Created, Transaction_ID (4), DB.Snapshot, Txn, Result);
@@ -271,6 +288,7 @@ procedure Flyology_DB_Limited_E2E is
       DB.Commit (Created, Txn, Operation_Timeout, Receipt => Commit_Info, Result => Result);
       Expect (Result, DB.Success, "second commit failed");
 
+      Expect_Checkpoint_Action (Created, DB.Additive_Flush_Required, "first checkpoint action");
       DB.Flush
         (Created,
          First_Runs,
@@ -281,6 +299,7 @@ procedure Flyology_DB_Limited_E2E is
          Result  => Result);
       Expect (Result, DB.Success, "first Flush failed");
       Require (DB.Flush_Receipt_Run_Total (Flush_Info) = 1, "first Flush did not publish the root family");
+      Expect_Checkpoint_Action (Created, DB.No_L0_Checkpoint_Work, "first checkpoint completion");
 
       DB.Add_Column_Family
         (Created,
@@ -327,6 +346,7 @@ procedure Flyology_DB_Limited_E2E is
       DB.Commit (Created, Txn, Operation_Timeout, Receipt => Commit_Info, Result => Result);
       Expect (Result, DB.Success, "suffix commit failed");
 
+      Expect_Checkpoint_Action (Created, DB.Additive_Flush_Required, "suffix checkpoint action");
       DB.Flush
         (Created,
          Second_Runs,
@@ -337,6 +357,7 @@ procedure Flyology_DB_Limited_E2E is
          Result  => Result);
       Expect (Result, DB.Success, "suffix Flush failed");
       Require (DB.Flush_Receipt_Run_Total (Flush_Info) = 2, "suffix Flush did not publish both families");
+      Expect_Checkpoint_Action (Created, DB.No_L0_Checkpoint_Work, "suffix checkpoint completion");
 
       DB.Compact
         (Created,
