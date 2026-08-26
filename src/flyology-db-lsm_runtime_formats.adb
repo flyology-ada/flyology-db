@@ -29,8 +29,8 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Character'Pos ('0'),
       Character'Pos ('1')];
 
-   --  FLYSST01 is the accepted SST-v1 magic frozen by the persisted-format
-   --  table; changing it requires a new compatibility decision and golden.
+   --  FLYSST01 identifies the SST object family; its version field selects
+   --  v1 or v2. Changing it requires a compatibility decision and goldens.
    SST_Magic : constant Formats.Byte_Array (0 .. 7) :=
      [Character'Pos ('F'),
       Character'Pos ('L'),
@@ -1022,9 +1022,167 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Admission :=
         (Object_Length => Natural (Object_Length),
          Entry_Total   => Natural (Entry_Wire),
-         Payload_Bytes => Natural (Expected_Descriptor.Logical_Payload_Bytes));
+         Payload_Bytes => Natural (Expected_Descriptor.Logical_Payload_Bytes),
+         Format_Version => LSM.SST_Format_Version,
+         Header_Length  => LSM.SST_Header_Length,
+         Frame_Offset   => LSM.SST_Header_Length,
+         Frame_Bytes    => Natural (Payload_Length),
+         Index_Offset   => 0,
+         Index_Bytes    => 0);
       Status := Decoded;
    end Inspect_SST_Header;
+
+   procedure Inspect_SST_V2_Header
+     (Header              : Formats.Byte_Array;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Object_Length       : Interfaces.Unsigned_64;
+      Admission           : out SST_Header_Admission;
+      Status              : out Decode_Status)
+   is
+      Fixed            : Formats.Byte_Array (0 .. SST_V2_Header_Length - 1);
+      Payload_Length   : Interfaces.Unsigned_64;
+      Entry_Wire       : Interfaces.Unsigned_32;
+      Frame_Offset     : Interfaces.Unsigned_64;
+      Frame_Bytes      : Interfaces.Unsigned_64;
+      Index_Offset     : Interfaces.Unsigned_64;
+      Index_Bytes      : Interfaces.Unsigned_64;
+      Entry_Bytes      : Interfaces.Unsigned_64;
+      Exact_Frame      : Interfaces.Unsigned_64;
+      Index_Fixed      : Interfaces.Unsigned_64;
+      Minimum_Index    : Interfaces.Unsigned_64;
+      Maximum_Index    : Interfaces.Unsigned_64;
+      Expected_Index   : Interfaces.Unsigned_64;
+      Expected_Payload : Interfaces.Unsigned_64;
+      Expected_Total   : Interfaces.Unsigned_64;
+   begin
+      Admission := Empty_SST_Header_Admission;
+      if Header'Length /= SST_V2_Header_Length then
+         Status := Invalid_Length;
+         return;
+      end if;
+      Fixed := Header;
+      if Fixed (0 .. 7) /= SST_Magic then
+         Status := Invalid_Magic;
+         return;
+      elsif Read_U16 (Fixed, 8) /= SST_V2_Format_Version then
+         Status := Unsupported_Version;
+         return;
+      elsif Fixed (10) /= LSM.SST_Object_Kind then
+         Status := Invalid_Object_Kind;
+         return;
+      elsif Fixed (11) /= 0 then
+         Status := Invalid_Flags;
+         return;
+      elsif Read_Identifier (Fixed, 12) /= Expected_Database then
+         Status := Wrong_Database;
+         return;
+      elsif Read_U32 (Fixed, 28) /= Interfaces.Unsigned_32 (SST_V2_Header_Length) then
+         Status := Invalid_Length;
+         return;
+      elsif Read_U32 (Fixed, 40) /= Header_Checksum (Fixed, SST_V2_Header_Length) then
+         Status := Header_Checksum_Failed;
+         return;
+      elsif not Valid_Run_Descriptor (Expected_Descriptor) or else Expected_Family = 0 then
+         Status := Invalid_SST_State;
+         return;
+      end if;
+
+      Payload_Length := Read_U64 (Fixed, 32);
+      Entry_Wire := Read_U32 (Fixed, 80);
+      Frame_Offset := Read_U64 (Fixed, 96);
+      Frame_Bytes := Read_U64 (Fixed, 104);
+      Index_Offset := Read_U64 (Fixed, 112);
+      Index_Bytes := Read_U64 (Fixed, 120);
+      if Read_U32 (Fixed, 84) /= 0 then
+         Status := Invalid_SST_State;
+         return;
+      elsif Read_Identifier (Fixed, 44) /= Expected_Descriptor.Run_ID
+        or else Read_U32 (Fixed, 60) /= Expected_Family
+        or else Read_U64 (Fixed, 64) /= Expected_Descriptor.Lowest_Sequence
+        or else Read_U64 (Fixed, 72) /= Expected_Descriptor.Highest_Sequence
+        or else Entry_Wire /= Expected_Descriptor.Entry_Total
+        or else Read_U64 (Fixed, 88) /= Expected_Descriptor.Logical_Payload_Bytes
+      then
+         Status := Invalid_SST_State;
+         return;
+      end if;
+
+      if not Multiply_U64
+               (Interfaces.Unsigned_64 (Entry_Wire),
+                Interfaces.Unsigned_64
+                  (SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length),
+                Entry_Bytes)
+        or else not Add_U64
+                      (Entry_Bytes, Expected_Descriptor.Logical_Payload_Bytes, Exact_Frame)
+        or else not Multiply_U64
+                      (Interfaces.Unsigned_64 (Entry_Wire),
+                       Interfaces.Unsigned_64 (SST_V2_Index_Entry_Header_Length),
+                       Index_Fixed)
+        or else not Add_U64
+                      (Index_Fixed,
+                       Interfaces.Unsigned_64 (SST_V2_Index_Trailer_Length),
+                       Minimum_Index)
+        or else not Add_U64
+                      (Minimum_Index,
+                       Expected_Descriptor.Logical_Payload_Bytes,
+                       Maximum_Index)
+      then
+         Status := Invalid_Length;
+         return;
+      end if;
+
+      Expected_Index := Interfaces.Unsigned_64 (SST_V2_Header_Length);
+      if not Add_U64 (Expected_Index, Exact_Frame, Expected_Index)
+        or else not Add_U64 (Frame_Bytes, Index_Bytes, Expected_Payload)
+      then
+         Status := Invalid_Length;
+         return;
+      end if;
+      Expected_Total := Expected_Index;
+      if not Add_U64 (Expected_Total, Index_Bytes, Expected_Total)
+        or else not Add_U64
+                      (Expected_Total,
+                       Interfaces.Unsigned_64 (LSM.Object_Trailer_Length),
+                       Expected_Total)
+      then
+         Status := Invalid_Length;
+         return;
+      end if;
+
+      if Object_Length < Interfaces.Unsigned_64
+           (SST_V2_Header_Length + SST_V2_Index_Trailer_Length + LSM.Object_Trailer_Length)
+        or else Object_Length > Interfaces.Unsigned_64 (Natural'Last)
+        or else Payload_Length /= Expected_Payload
+        or else Frame_Offset /= Interfaces.Unsigned_64 (SST_V2_Header_Length)
+        or else Frame_Bytes /= Exact_Frame
+        or else Index_Offset /= Expected_Index
+        or else Index_Bytes < Minimum_Index
+        or else Index_Bytes > Maximum_Index
+        or else Expected_Total /= Object_Length
+        or else Expected_Descriptor.Logical_Payload_Bytes
+                > Interfaces.Unsigned_64 (Natural'Last)
+        or else Frame_Bytes > Interfaces.Unsigned_64 (Natural'Last)
+        or else Index_Offset > Interfaces.Unsigned_64 (Natural'Last)
+        or else Index_Bytes > Interfaces.Unsigned_64 (Natural'Last)
+      then
+         Status := Invalid_Length;
+         return;
+      end if;
+
+      Admission :=
+        (Object_Length => Natural (Object_Length),
+         Entry_Total   => Natural (Entry_Wire),
+         Payload_Bytes => Natural (Expected_Descriptor.Logical_Payload_Bytes),
+         Format_Version => SST_V2_Format_Version,
+         Header_Length  => SST_V2_Header_Length,
+         Frame_Offset   => Natural (Frame_Offset),
+         Frame_Bytes    => Natural (Frame_Bytes),
+         Index_Offset   => Natural (Index_Offset),
+         Index_Bytes    => Natural (Index_Bytes));
+      Status := Decoded;
+   end Inspect_SST_V2_Header;
 
    function Same_Key
      (Data         : Formats.Byte_Array;
@@ -1969,6 +2127,149 @@ package body Flyology.DB.LSM_Runtime_Formats is
          Status := Allocation_Failed;
    end Encode_SST;
 
+   procedure Encode_SST_V2 (Value : SST; Image : out Image_Access; Status : out Encode_Status) is
+      Frame_Fixed  : Interfaces.Unsigned_64;
+      Frame_Bytes  : Interfaces.Unsigned_64;
+      Index_Fixed  : Interfaces.Unsigned_64;
+      Index_Bytes  : Interfaces.Unsigned_64;
+      Key_Bytes    : Interfaces.Unsigned_64 := 0;
+      Total        : Interfaces.Unsigned_64;
+      Length       : Natural;
+      Frame_Cursor : Natural := SST_V2_Header_Length;
+      Index_Cursor : Natural;
+      Object_CRC   : Natural;
+   begin
+      Image := null;
+      if not Structurally_Valid (Value) then
+         Status := Invalid_Value;
+         return;
+      end if;
+      for Item of Value.Entries loop
+         if not Add_U64 (Key_Bytes, Interfaces.Unsigned_64 (Item.Key_Byte_Total), Key_Bytes) then
+            Status := Length_Overflow;
+            return;
+         end if;
+      end loop;
+      if not Multiply_U64
+               (Interfaces.Unsigned_64 (Value.Entry_Total),
+                Interfaces.Unsigned_64
+                  (SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length),
+                Frame_Fixed)
+        or else not Add_U64
+                      (Frame_Fixed, Interfaces.Unsigned_64 (Value.Payload_Byte_Total), Frame_Bytes)
+        or else not Multiply_U64
+                      (Interfaces.Unsigned_64 (Value.Entry_Total),
+                       Interfaces.Unsigned_64 (SST_V2_Index_Entry_Header_Length),
+                       Index_Fixed)
+        or else not Add_U64 (Index_Fixed, Key_Bytes, Index_Bytes)
+        or else not Add_U64
+                      (Index_Bytes,
+                       Interfaces.Unsigned_64 (SST_V2_Index_Trailer_Length),
+                       Index_Bytes)
+      then
+         Status := Length_Overflow;
+         return;
+      end if;
+      Total := Interfaces.Unsigned_64 (SST_V2_Header_Length + LSM.Object_Trailer_Length);
+      if not Add_U64 (Total, Frame_Bytes, Total)
+        or else not Add_U64 (Total, Index_Bytes, Total)
+        or else Total > Interfaces.Unsigned_64 (Natural'Last)
+      then
+         Status := Length_Overflow;
+         return;
+      end if;
+      Length := Natural (Total);
+      Index_Cursor := SST_V2_Header_Length + Natural (Frame_Bytes);
+      Object_CRC := Length - LSM.Object_Trailer_Length;
+      Image := new Formats.Byte_Array'(0 .. Length - 1 => 0);
+
+      --  Frozen SST-v2 offsets extend the v1 authenticated descriptor prefix:
+      --  frame offset/bytes are 96/104 and index offset/bytes are 112/120.
+      Image (0 .. 7) := SST_Magic;
+      Put_U16 (Image.all, 8, SST_V2_Format_Version);
+      Image (10) := LSM.SST_Object_Kind;
+      Image (11) := 0;
+      Put_Identifier (Image.all, 12, Value.Database_ID);
+      Put_U32 (Image.all, 28, Interfaces.Unsigned_32 (SST_V2_Header_Length));
+      Put_U64 (Image.all, 32, Frame_Bytes + Index_Bytes);
+      Put_Identifier (Image.all, 44, Value.Run_ID);
+      Put_U32 (Image.all, 60, Value.Family_ID);
+      Put_U64 (Image.all, 64, Value.Lowest_Sequence);
+      Put_U64 (Image.all, 72, Value.Highest_Sequence);
+      Put_U32 (Image.all, 80, Interfaces.Unsigned_32 (Value.Entry_Total));
+      Put_U32 (Image.all, 84, 0);
+      Put_U64 (Image.all, 88, Value.Logical_Payload_Bytes);
+      Put_U64 (Image.all, 96, Interfaces.Unsigned_64 (SST_V2_Header_Length));
+      Put_U64 (Image.all, 104, Frame_Bytes);
+      Put_U64 (Image.all, 112, Interfaces.Unsigned_64 (Index_Cursor));
+      Put_U64 (Image.all, 120, Index_Bytes);
+      Put_U32
+        (Image.all,
+         40,
+         Header_Checksum (Image (0 .. SST_V2_Header_Length - 1), SST_V2_Header_Length));
+
+      for Item of Value.Entries loop
+         declare
+            Frame_Start  : constant Natural := Frame_Cursor;
+            Frame_Extent : Natural;
+         begin
+            Put_U64 (Image.all, Frame_Cursor, Item.Sequence);
+            Image (Frame_Cursor + 8) := Item.Operation;
+            Image (Frame_Cursor + 9) := 0;
+            Put_U16 (Image.all, Frame_Cursor + 10, 0);
+            Put_U32 (Image.all, Frame_Cursor + 12, Interfaces.Unsigned_32 (Item.Key_Byte_Total));
+            Put_U32
+              (Image.all, Frame_Cursor + 16, Interfaces.Unsigned_32 (Item.Value_Byte_Total));
+            Frame_Cursor := Frame_Cursor + SST_V2_Frame_Header_Length;
+            for Offset in Natural range 1 .. Item.Key_Byte_Total loop
+               Image (Frame_Cursor + Offset - 1) := Value.Payload (Item.Key_Offset + Offset - 1);
+            end loop;
+            Frame_Cursor := Frame_Cursor + Item.Key_Byte_Total;
+            for Offset in Natural range 1 .. Item.Value_Byte_Total loop
+               Image (Frame_Cursor + Offset - 1) := Value.Payload (Item.Value_Offset + Offset - 1);
+            end loop;
+            Frame_Cursor := Frame_Cursor + Item.Value_Byte_Total;
+            Put_U32 (Image.all, Frame_Cursor, Formats.CRC_32C (Image (Frame_Start .. Frame_Cursor - 1)));
+            Frame_Cursor := Frame_Cursor + SST_V2_Frame_Trailer_Length;
+            Frame_Extent := Frame_Cursor - Frame_Start;
+
+            Put_U64 (Image.all, Index_Cursor, Interfaces.Unsigned_64 (Frame_Start));
+            Put_U64 (Image.all, Index_Cursor + 8, Interfaces.Unsigned_64 (Frame_Extent));
+            Put_U64 (Image.all, Index_Cursor + 16, Item.Sequence);
+            Image (Index_Cursor + 24) := Item.Operation;
+            Image (Index_Cursor + 25) := 0;
+            Put_U16 (Image.all, Index_Cursor + 26, 0);
+            Put_U32 (Image.all, Index_Cursor + 28, Interfaces.Unsigned_32 (Item.Key_Byte_Total));
+            Put_U32 (Image.all, Index_Cursor + 32, Interfaces.Unsigned_32 (Item.Value_Byte_Total));
+            Index_Cursor := Index_Cursor + SST_V2_Index_Entry_Header_Length;
+            for Offset in Natural range 1 .. Item.Key_Byte_Total loop
+               Image (Index_Cursor + Offset - 1) := Value.Payload (Item.Key_Offset + Offset - 1);
+            end loop;
+            Index_Cursor := Index_Cursor + Item.Key_Byte_Total;
+         end;
+      end loop;
+      if Frame_Cursor /= Natural (Read_U64 (Image.all, 112))
+        or else Index_Cursor + SST_V2_Index_Trailer_Length /= Object_CRC
+      then
+         Release (Image);
+         Status := Invalid_Value;
+         return;
+      end if;
+      Put_U32
+        (Image.all,
+         Index_Cursor,
+         Formats.CRC_32C
+           (Image
+              (Natural (Read_U64 (Image.all, 112))
+               .. Index_Cursor - 1)));
+      Put_U32 (Image.all, Object_CRC, Formats.CRC_32C (Image (0 .. Object_CRC - 1)));
+      Status := Encoded;
+   exception
+      when Storage_Error =>
+         Release (Image);
+         Status := Allocation_Failed;
+   end Encode_SST_V2;
+
    procedure Decode_SST
      (Image               : Formats.Byte_Array;
       Expected_Database   : Head_Policy.Identifier;
@@ -2160,5 +2461,271 @@ package body Flyology.DB.LSM_Runtime_Formats is
          Value := null;
          Status := Allocation_Failed;
    end Decode_SST;
+
+   procedure Decode_SST_V2
+     (Image               : Formats.Byte_Array;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Maximum_Key_Bytes   : Interfaces.Unsigned_64;
+      Maximum_Value_Bytes : Interfaces.Unsigned_64;
+      Value               : out SST_Access;
+      Status              : out Decode_Status)
+   is
+      Admission          : SST_Header_Admission;
+      Candidate          : SST_Access := null;
+      Allocation         : Allocation_Status;
+      Frame_Cursor       : Natural := SST_V2_Header_Length;
+      Frame_End          : Natural;
+      Index_Cursor       : Natural;
+      Index_Data_End     : Natural;
+      Object_CRC         : Natural;
+      Logical            : Interfaces.Unsigned_64 := 0;
+      Lowest             : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
+      Highest            : Interfaces.Unsigned_64 := 0;
+      Previous_Key       : Natural := 0;
+      Previous_Key_Total : Natural := 0;
+      Previous_Sequence  : Interfaces.Unsigned_64 := 0;
+   begin
+      Value := null;
+      if Image'Length
+        < SST_V2_Header_Length + SST_V2_Index_Trailer_Length + LSM.Object_Trailer_Length
+      then
+         Status := Invalid_Length;
+         return;
+      end if;
+      Inspect_SST_V2_Header
+        (Image (Image'First .. Image'First + SST_V2_Header_Length - 1),
+         Expected_Database,
+         Expected_Family,
+         Expected_Descriptor,
+         Interfaces.Unsigned_64 (Image'Length),
+         Admission,
+         Status);
+      if Status /= Decoded then
+         return;
+      end if;
+      Object_CRC := Image'Length - LSM.Object_Trailer_Length;
+      if Read_U32 (Image, Object_CRC)
+        /= Formats.CRC_32C (Image (Image'First .. Image'First + Object_CRC - 1))
+      then
+         Status := Object_Checksum_Failed;
+         return;
+      end if;
+      Frame_Cursor := Admission.Frame_Offset;
+      Frame_End := Admission.Index_Offset;
+      Index_Cursor := Admission.Index_Offset;
+      Index_Data_End := Object_CRC - SST_V2_Index_Trailer_Length;
+      if Read_U32 (Image, Index_Data_End)
+        /= Formats.CRC_32C
+             (Image
+                (Image'First + Admission.Index_Offset
+                 .. Image'First + Index_Data_End - 1))
+      then
+         Status := Index_Checksum_Failed;
+         return;
+      end if;
+
+      --  First pass authenticates the whole-object, index, each independent
+      --  frame, every duplicated binding fact, and canonical ordering before
+      --  allocating descriptors or logical payload bytes.
+      for Index in Positive range 1 .. Admission.Entry_Total loop
+         declare
+            Frame_Start   : constant Natural := Frame_Cursor;
+            Sequence      : Interfaces.Unsigned_64;
+            Operation     : Formats.Byte;
+            Key_Wire      : Interfaces.Unsigned_32;
+            Value_Wire    : Interfaces.Unsigned_32;
+            Key_Total     : Natural;
+            Value_Total   : Natural;
+            Key_Start     : Natural;
+            Frame_CRC     : Natural;
+            Frame_Extent  : Natural;
+            Index_Key     : Natural;
+            Item_Bytes    : Interfaces.Unsigned_64;
+         begin
+            if Frame_Cursor > Frame_End
+              or else
+                SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length
+                > Frame_End - Frame_Cursor
+            then
+               Status := Invalid_Entry;
+               return;
+            end if;
+            Sequence := Read_U64 (Image, Frame_Cursor);
+            Operation := Byte_At (Image, Frame_Cursor + 8);
+            Key_Wire := Read_U32 (Image, Frame_Cursor + 12);
+            Value_Wire := Read_U32 (Image, Frame_Cursor + 16);
+            if Byte_At (Image, Frame_Cursor + 9) /= 0
+              or else Read_U16 (Image, Frame_Cursor + 10) /= 0
+              or else Sequence = 0
+              or else Sequence < Expected_Descriptor.Lowest_Sequence
+              or else Sequence > Expected_Descriptor.Highest_Sequence
+              or else Operation not in LSM.Put_Operation | LSM.Delete_Operation
+              or else (Operation = LSM.Delete_Operation and then Value_Wire /= 0)
+            then
+               Status := Invalid_Entry;
+               return;
+            elsif Interfaces.Unsigned_64 (Key_Wire) > Maximum_Key_Bytes
+              or else Interfaces.Unsigned_64 (Value_Wire) > Maximum_Value_Bytes
+              or else Interfaces.Unsigned_64 (Key_Wire) > Interfaces.Unsigned_64 (Natural'Last)
+              or else Interfaces.Unsigned_64 (Value_Wire) > Interfaces.Unsigned_64 (Natural'Last)
+            then
+               Status := Limit_Exceeded;
+               return;
+            end if;
+            Key_Total := Natural (Key_Wire);
+            Value_Total := Natural (Value_Wire);
+            Frame_Cursor := Frame_Cursor + SST_V2_Frame_Header_Length;
+            if Key_Total > Frame_End - Frame_Cursor
+              or else Value_Total > Frame_End - Frame_Cursor - Key_Total
+              or else SST_V2_Frame_Trailer_Length
+                      > Frame_End - Frame_Cursor - Key_Total - Value_Total
+            then
+               Status := Invalid_Entry;
+               return;
+            end if;
+            Key_Start := Frame_Cursor;
+            Frame_CRC := Frame_Cursor + Key_Total + Value_Total;
+            if Read_U32 (Image, Frame_CRC)
+              /= Formats.CRC_32C
+                   (Image
+                      (Image'First + Frame_Start
+                       .. Image'First + Frame_CRC - 1))
+            then
+               Status := Frame_Checksum_Failed;
+               return;
+            end if;
+            Frame_Cursor := Frame_CRC + SST_V2_Frame_Trailer_Length;
+            Frame_Extent := Frame_Cursor - Frame_Start;
+
+            if Index_Cursor > Index_Data_End
+              or else SST_V2_Index_Entry_Header_Length > Index_Data_End - Index_Cursor
+            then
+               Status := Invalid_Entry;
+               return;
+            end if;
+            if Read_U64 (Image, Index_Cursor) /= Interfaces.Unsigned_64 (Frame_Start)
+              or else Read_U64 (Image, Index_Cursor + 8)
+                      /= Interfaces.Unsigned_64 (Frame_Extent)
+              or else Read_U64 (Image, Index_Cursor + 16) /= Sequence
+              or else Byte_At (Image, Index_Cursor + 24) /= Operation
+              or else Byte_At (Image, Index_Cursor + 25) /= 0
+              or else Read_U16 (Image, Index_Cursor + 26) /= 0
+              or else Read_U32 (Image, Index_Cursor + 28) /= Key_Wire
+              or else Read_U32 (Image, Index_Cursor + 32) /= Value_Wire
+            then
+               Status := Invalid_SST_State;
+               return;
+            end if;
+            Index_Cursor := Index_Cursor + SST_V2_Index_Entry_Header_Length;
+            if Key_Total > Index_Data_End - Index_Cursor then
+               Status := Invalid_Entry;
+               return;
+            end if;
+            Index_Key := Index_Cursor;
+            if not Same_Key (Image, Key_Start, Key_Total, Index_Key, Key_Total) then
+               Status := Invalid_SST_State;
+               return;
+            end if;
+            Index_Cursor := Index_Cursor + Key_Total;
+
+            if Index > 1 then
+               if Same_Key (Image, Previous_Key, Previous_Key_Total, Key_Start, Key_Total) then
+                  if Previous_Sequence <= Sequence then
+                     Status := Invalid_SST_State;
+                     return;
+                  end if;
+               elsif not Key_Less (Image, Previous_Key, Previous_Key_Total, Key_Start, Key_Total) then
+                  Status := Invalid_SST_State;
+                  return;
+               end if;
+            end if;
+            Item_Bytes := Interfaces.Unsigned_64 (Key_Total) + Interfaces.Unsigned_64 (Value_Total);
+            if not Add_U64 (Logical, Item_Bytes, Logical) then
+               Status := Invalid_Length;
+               return;
+            end if;
+            Lowest := Interfaces.Unsigned_64'Min (Lowest, Sequence);
+            Highest := Interfaces.Unsigned_64'Max (Highest, Sequence);
+            Previous_Key := Key_Start;
+            Previous_Key_Total := Key_Total;
+            Previous_Sequence := Sequence;
+         end;
+      end loop;
+      if Frame_Cursor /= Frame_End or else Index_Cursor /= Index_Data_End then
+         Status := Invalid_Length;
+         return;
+      elsif Logical /= Expected_Descriptor.Logical_Payload_Bytes
+        or else Lowest /= Expected_Descriptor.Lowest_Sequence
+        or else Highest /= Expected_Descriptor.Highest_Sequence
+      then
+         Status := Invalid_SST_State;
+         return;
+      end if;
+
+      Create_SST (Admission.Entry_Total, Admission.Payload_Bytes, Candidate, Allocation);
+      if Allocation = Allocation_Failed then
+         Status := Allocation_Failed;
+         return;
+      elsif Allocation /= Allocated then
+         Status := Limit_Exceeded;
+         return;
+      end if;
+      Candidate.Database_ID := Expected_Database;
+      Candidate.Run_ID := Expected_Descriptor.Run_ID;
+      Candidate.Family_ID := Expected_Family;
+      Candidate.Lowest_Sequence := Expected_Descriptor.Lowest_Sequence;
+      Candidate.Highest_Sequence := Expected_Descriptor.Highest_Sequence;
+      Candidate.Logical_Payload_Bytes := Expected_Descriptor.Logical_Payload_Bytes;
+
+      Frame_Cursor := Admission.Frame_Offset;
+      declare
+         Payload_Cursor : Positive := 1;
+      begin
+         for Item of Candidate.Entries loop
+            declare
+               Key_Total   : constant Natural := Natural (Read_U32 (Image, Frame_Cursor + 12));
+               Value_Total : constant Natural := Natural (Read_U32 (Image, Frame_Cursor + 16));
+            begin
+               Item.Sequence := Read_U64 (Image, Frame_Cursor);
+               Item.Operation := Byte_At (Image, Frame_Cursor + 8);
+               Item.Key_Offset := Payload_Cursor;
+               Item.Key_Byte_Total := Key_Total;
+               Item.Value_Offset := Payload_Cursor + Key_Total;
+               Item.Value_Byte_Total := Value_Total;
+               Frame_Cursor := Frame_Cursor + SST_V2_Frame_Header_Length;
+               for Offset in Natural range 1 .. Key_Total loop
+                  Candidate.Payload (Payload_Cursor + Offset - 1) :=
+                    Byte_At (Image, Frame_Cursor + Offset - 1);
+               end loop;
+               Frame_Cursor := Frame_Cursor + Key_Total;
+               Payload_Cursor := Payload_Cursor + Key_Total;
+               for Offset in Natural range 1 .. Value_Total loop
+                  Candidate.Payload (Payload_Cursor + Offset - 1) :=
+                    Byte_At (Image, Frame_Cursor + Offset - 1);
+               end loop;
+               Frame_Cursor := Frame_Cursor + Value_Total + SST_V2_Frame_Trailer_Length;
+               Payload_Cursor := Payload_Cursor + Value_Total;
+            end;
+         end loop;
+      end;
+      if Frame_Cursor /= Frame_End
+        or else not Structurally_Valid (Candidate.all)
+        or else not Descriptor_Matches
+                      (Candidate.all, Expected_Database, Expected_Family, Expected_Descriptor)
+      then
+         Release (Candidate);
+         Status := Invalid_SST_State;
+         return;
+      end if;
+      Value := Candidate;
+      Status := Decoded;
+   exception
+      when Storage_Error =>
+         Release (Candidate);
+         Value := null;
+         Status := Allocation_Failed;
+   end Decode_SST_V2;
 
 end Flyology.DB.LSM_Runtime_Formats;

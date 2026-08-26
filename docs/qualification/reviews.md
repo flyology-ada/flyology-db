@@ -1,5 +1,41 @@
 # Review record
 
+## Accepted private SST-v2 whole-object codec candidate
+
+- Parent: accepted generation-bound lazy SST read formal/design commit `508000a`.
+- Scope and compatibility: add a private operational whole-object SST-v2 encoder, header admission, and decoder plus
+  an independent golden generator and fail-closed corpus. The active writer, manifest recovery, compaction output,
+  public API, provider calls, retry behavior, task topology, and v1 bytes remain unchanged. This freezes the v2 wire
+  representation but does not activate it.
+- Format and authority: v2 retains `FLYSST01`, object kind 4, database/run/family/sequence identity, and canonical
+  key/sequence ordering. The authenticated 128-byte header adds exact frame/index offsets and extents; each frame and
+  the complete index have independent CRC32C authentication, and the whole-object CRC remains. One entry per frame
+  deliberately selects no block size. Exact allocation derives lazily through checked arithmetic from the
+  authenticated descriptor and persisted database/per-family key and value limits.
+- Failure atomicity and ownership: header geometry is admitted without variable allocation. The decoder verifies the
+  whole object, authenticates the index before trusting any record, authenticates every frame and duplicated binding,
+  and validates ordering and persisted limits before allocating an exact candidate. Truncation, corruption, hostile
+  extent arithmetic, allocation failure, or structural mismatch publishes no SST.
+- Findings cycle: the first implementation review found one P1 authentication-order defect: index records were parsed
+  before the index CRC was checked. The CRC check now precedes every record read. The arithmetic sweep also verified
+  that the operational `Natural` entry/key/value extents are a strict subset of persisted U32 on the selected GNAT
+  profile; adding redundant U32 guards was rejected by the warnings-as-errors build. The P2 corpus sweep added
+  repaired-checksum frame/index mismatch, intact-frame substitution, common-envelope kind/flags/database failures,
+  hostile U64 extent overflow, shifted lower bounds, and persisted key/value-limit rejection. Constants review
+  confirms every
+  consequential version, width, derived fixture coordinate, and compatibility impact has adjacent stable authority;
+  no public default, capacity, timeout, retry count, cache policy, or block geometry was introduced. The repeated
+  compatibility, arithmetic, allocation, ownership, format, tests, proof-boundary, and unnecessary-surface sweep finds
+  no remaining actionable P0/P1/P2 finding.
+- Verification: the independent generator emits the exact 323-byte v2 golden; root and nested test builds pass; the
+  maintained deterministic suite, limited end-to-end profile, files crash/recovery, and client-backed
+  create/commit/Flush/compaction/refresh/reopen paths pass against Object Storage
+  `99706cceaef0add2578f3665e48af37cd52bafdc`. The maintained TLA/TLC/TLAPS gate passes every lane, including lazy SST
+  at 16 states/depth 6 and 41/41 obligations. The warning-strict GNATprove gate preserves 1,097/1,097 selected checks,
+  and the post-run host audit is clean. GNATformat's project-aware default proposes broad pre-existing formatting
+  changes, so no formatter-clean claim or mass-format edit is made; all changed handwritten Ada lines are at most
+  110 columns. Repository and diff checks pass.
+
 ## Accepted generation-bound lazy SST read formal/design candidate
 
 - Parent: accepted owned physical scan merge implementation commit `21f685f`.

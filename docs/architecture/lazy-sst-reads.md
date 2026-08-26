@@ -22,7 +22,7 @@ The implementation therefore must not claim lazy SST-v1 validation. A v1 run is 
 fails. Mixed manifests may retain v1 and v2 runs; compaction may read either version and emits only the current writer
 version after that version is accepted.
 
-## SST version 2 candidate
+## SST version 2 codec
 
 SST v2 retains the same database, run, family, sequence interval, entry count, logical byte count, canonical
 unsigned-byte key order, descending sequence order within a key, operation encoding, and immutable object identity.
@@ -41,9 +41,9 @@ Frame and index extents derive by checked arithmetic from exact admitted entry/k
 database and column-family limits. The index may be retained or cached only under separately admitted byte authority;
 allocation failure is typed backpressure and publishes no partial read state.
 
-The exact wire offsets, widths, version/magic bytes, and golden image become immutable compatibility authority in the
-codec implementation unit. They will be documented adjacent to their declarations and in `persisted-formats.md` when
-the codec lands; this design candidate does not predeclare numeric offsets before the implementation and proof agree.
+The exact wire offsets, widths, version/magic bytes, and golden image are now frozen in the private whole-object codec
+and documented adjacent to their declarations and in `persisted-formats.md`. This does not activate v2 durable writes
+or expose a range-read operation; those remain separate compatibility and execution changes.
 
 ## Range-read protocol
 
@@ -77,6 +77,8 @@ candidate state and must fail through the generation-bound Object Storage range 
 
 The formal geometry is not a format bound, cache size, request count, retry budget, or public default. The model does
 not prove CRC arithmetic, byte offsets, range arithmetic, the Ada codec, provider behavior, progress, concurrency,
-or refinement. Codec acceptance additionally requires golden v1/v2 fixtures, v1 compatibility, every header/index/
-frame truncation and corruption class, wrong identity/kind/version/generation, offset overflow, swapped frames,
-trailing bytes, mixed-version manifests, complete local loss, and all maintained providers.
+or refinement. The private whole-object codec now covers independent v1/v2 goldens, v1 compatibility, every v2
+object truncation, exact extent checks, whole/index/frame CRCs, repaired-checksum index/frame binding, intact-frame
+substitution, shifted lower bounds, trailing bytes, persisted key/value limits, common-envelope identity/kind/flags
+rejection, and hostile U64 extent overflow. Activation additionally requires wrong-generation provider results,
+mixed-version manifests, generation-bound range execution, complete local loss, and all maintained providers.

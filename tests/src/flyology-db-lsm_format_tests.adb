@@ -50,6 +50,7 @@ package body Flyology.DB.LSM_Format_Tests is
    Previous_Manifest_Length : constant := 358;
    Manifest_Length          : constant := 366;
    SST_Length               : constant := 164;
+   SST_V2_Length            : constant := 323;
 
    --  Each equality restates the normative field-width formula rather than an
    --  independent expected size. A failure is a wire-table/golden drift event.
@@ -78,6 +79,14 @@ package body Flyology.DB.LSM_Format_Tests is
    pragma
      Compile_Time_Error
        (LSM.SST_Entry_Header_Length /= 8 + 1 + 1 + 2 + 4 + 4, "SST entry header arithmetic changed");
+   pragma
+     Compile_Time_Error
+       (Runtime.SST_V2_Header_Length /= LSM.SST_Header_Length + 4 * 8,
+        "SST-v2 header arithmetic changed");
+   pragma
+     Compile_Time_Error
+       (Runtime.SST_V2_Index_Entry_Header_Length /= 8 + 8 + 8 + 1 + 1 + 2 + 4 + 4,
+        "SST-v2 index-entry arithmetic changed");
 
    function ID (Last : Interfaces.Unsigned_8) return Head.Identifier is
       Result : Head.Identifier := [others => 0];
@@ -148,6 +157,19 @@ package body Flyology.DB.LSM_Format_Tests is
         & "0000000000000000000000000000000900000001000000000000000100000000000000020000000300000000"
         & "0000000000000004000000000000000201000000000000010000000161780000000000000001020000000000"
         & "00010000000061000000000000000201000000000000010000000062AE274ADA");
+
+   --  Independent SST-v2 compatibility image. It retains the v1 logical
+   --  fixture while adding exact frame/index integrity and binding bytes.
+   SST_V2_Golden : constant Formats.Byte_Array (0 .. SST_V2_Length - 1) :=
+     Hex
+       ("464C59535354303100020400000000000000000000000000000000010000008000000000000000BFDFD7FF89"
+        & "0000000000000000000000000000000900000001000000000000000100000000000000020000000300000000"
+        & "00000000000000040000000000000080000000000000004C00000000000000CC000000000000007300000000"
+        & "0000000201000000000000010000000161780C57D6640000000000000001020000000000000100000000618764"
+        & "3E65000000000000000201000000000000010000000062394B7AF40000000000000080000000000000001A0000"
+        & "00000000000201000000000000010000000161000000000000009A000000000000001900000000000000010200"
+        & "000000000001000000006100000000000000B30000000000000019000000000000000201000000000000010000"
+        & "000062C526D303F8B8AAF8");
 
    function Base_Manifest return Manifests.Manifest is
       Result : Manifests.Manifest := Manifests.Empty_Manifest;
@@ -280,6 +302,25 @@ package body Flyology.DB.LSM_Format_Tests is
       Put_U32 (Image, 40, Formats.CRC_32C (Header));
       Put_U32 (Image, Image'Last - 3, Formats.CRC_32C (Image (0 .. Image'Last - 4)));
    end Repair_Checksums;
+
+   procedure Repair_Object_Checksum (Image : in out Formats.Byte_Array) is
+   begin
+      Put_U32 (Image, Image'Last - 3, Formats.CRC_32C (Image (0 .. Image'Last - 4)));
+   end Repair_Object_Checksum;
+
+   procedure Repair_SST_V2_Index_And_Object (Image : in out Formats.Byte_Array) is
+      --  Exact fixture derivations: three frame overheads plus four logical
+      --  bytes precede the index; three 36-byte records plus three one-byte
+      --  keys precede its CRC. These are golden geometry, not format limits.
+      Index_Offset : constant :=
+        Runtime.SST_V2_Header_Length
+        + 3 * (Runtime.SST_V2_Frame_Header_Length + Runtime.SST_V2_Frame_Trailer_Length)
+        + 4;
+      Index_CRC : constant := Index_Offset + 3 * Runtime.SST_V2_Index_Entry_Header_Length + 3;
+   begin
+      Put_U32 (Image, Index_CRC, Formats.CRC_32C (Image (Index_Offset .. Index_CRC - 1)));
+      Repair_Object_Checksum (Image);
+   end Repair_SST_V2_Index_And_Object;
 
    procedure Expect_Manifest
      (Image    : Formats.Byte_Array;
@@ -646,6 +687,14 @@ package body Flyology.DB.LSM_Format_Tests is
          Highest_Sequence      => 2,
          Entry_Total           => 3,
          Logical_Payload_Bytes => 4);
+      --  Derived golden geometry: three framed entries carry four logical
+      --  bytes and three one-byte index keys. These values assert the fixture,
+      --  not a production frame count or object-size policy.
+      Fixture_Frame_Bytes : constant :=
+        3 * (Runtime.SST_V2_Frame_Header_Length + Runtime.SST_V2_Frame_Trailer_Length) + 4;
+      Fixture_Index_Offset : constant := Runtime.SST_V2_Header_Length + Fixture_Frame_Bytes;
+      Fixture_Index_Bytes : constant :=
+        3 * Runtime.SST_V2_Index_Entry_Header_Length + 3 + Runtime.SST_V2_Index_Trailer_Length;
    begin
       Runtime.Create_Checkpoint_Manifest (1, 1, 2, Manifest_Value, Allocation);
       if Allocation /= Runtime.Allocated then
@@ -812,14 +861,51 @@ package body Flyology.DB.LSM_Format_Tests is
          raise Program_Error with "runtime SST golden did not round-trip";
       end if;
 
+      Runtime.Release (Table_Image);
+      Runtime.Release (Table_Read);
+      Runtime.Encode_SST_V2 (Table_Value.all, Table_Image, Encode_Status);
+      if Encode_Status /= Runtime.Encoded or else Table_Image.all /= SST_V2_Golden then
+         raise Program_Error with "runtime SST-v2 differs from independent golden";
+      end if;
+      Runtime.Inspect_SST_V2_Header
+        (SST_V2_Golden (0 .. Runtime.SST_V2_Header_Length - 1),
+         ID (1),
+         1,
+         Descriptor,
+         SST_V2_Golden'Length,
+         Table_Head,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Table_Head.Object_Length /= SST_V2_Length
+        or else Table_Head.Format_Version /= Runtime.SST_V2_Format_Version
+        or else Table_Head.Header_Length /= Runtime.SST_V2_Header_Length
+        or else Table_Head.Frame_Offset /= Runtime.SST_V2_Header_Length
+        or else Table_Head.Frame_Bytes /= Fixture_Frame_Bytes
+        or else Table_Head.Index_Offset /= Fixture_Index_Offset
+        or else Table_Head.Index_Bytes /= Fixture_Index_Bytes
+      then
+         raise Program_Error with "runtime SST-v2 header admission mismatch";
+      end if;
+      Runtime.Decode_SST_V2
+        (SST_V2_Golden, ID (1), 1, Descriptor, 8, 8, Table_Read, Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else not Runtime.Structurally_Valid (Table_Read.all)
+        or else not Runtime.Descriptor_Matches (Table_Read.all, ID (1), 1, Descriptor)
+      then
+         raise Program_Error with "runtime SST-v2 golden did not round-trip";
+      end if;
+
       declare
          --  Nonzero lower bounds verify that operational parsing is positional;
          --  these test shifts are not persisted offsets or allocation policy.
          Shifted_Manifest       : constant Formats.Byte_Array (7 .. 7 + Manifest_Length - 1) :=
            Manifest_Golden;
          Shifted_SST            : constant Formats.Byte_Array (11 .. 11 + SST_Length - 1) := SST_Golden;
+         Shifted_SST_V2         : constant Formats.Byte_Array (13 .. 13 + SST_V2_Length - 1) :=
+           SST_V2_Golden;
          Shifted_Manifest_Value : Runtime.Checkpoint_Manifest_Access;
          Shifted_Table_Value    : Runtime.SST_Access;
+         Shifted_Table_V2_Value : Runtime.SST_Access;
       begin
          Runtime.Decode_Checkpoint_Manifest (Shifted_Manifest, ID (1), Shifted_Manifest_Value, Decode_Status);
          if Decode_Status /= Runtime.Decoded then
@@ -830,8 +916,23 @@ package body Flyology.DB.LSM_Format_Tests is
             Runtime.Release (Shifted_Manifest_Value);
             raise Program_Error with "runtime SST rejected shifted lower bound";
          end if;
+         Runtime.Decode_SST_V2
+           (Shifted_SST_V2,
+            ID (1),
+            1,
+            Descriptor,
+            8,
+            8,
+            Shifted_Table_V2_Value,
+            Decode_Status);
+         if Decode_Status /= Runtime.Decoded then
+            Runtime.Release (Shifted_Manifest_Value);
+            Runtime.Release (Shifted_Table_Value);
+            raise Program_Error with "runtime SST-v2 rejected shifted lower bound";
+         end if;
          Runtime.Release (Shifted_Manifest_Value);
          Runtime.Release (Shifted_Table_Value);
+         Runtime.Release (Shifted_Table_V2_Value);
       end;
 
       Runtime.Release (Manifest_Image);
@@ -850,6 +951,175 @@ package body Flyology.DB.LSM_Format_Tests is
          Runtime.Release (Table_Value);
          raise;
    end Test_Runtime_Golden_Parity;
+
+   procedure Test_Runtime_SST_V2_Rejection is
+      Descriptor : constant Runtime.Run_Descriptor :=
+        (Run_ID                => ID (9),
+         Lowest_Sequence       => 1,
+         Highest_Sequence      => 2,
+         Entry_Total           => 3,
+         Logical_Payload_Bytes => 4);
+      Corrupt : Formats.Byte_Array (SST_V2_Golden'Range) := SST_V2_Golden;
+
+      --  Derived fixture positions: three frame overheads and four logical
+      --  bytes place the index; each of its three records has a one-byte key.
+      --  These are corruption-oracle coordinates, not format policy.
+      Index_Offset : constant :=
+        Runtime.SST_V2_Header_Length
+        + 3 * (Runtime.SST_V2_Frame_Header_Length + Runtime.SST_V2_Frame_Trailer_Length)
+        + 4;
+      Frame_Bytes : constant := Index_Offset - Runtime.SST_V2_Header_Length;
+      Index_Bytes : constant := SST_V2_Length - Index_Offset - Runtime.LSM.Object_Trailer_Length;
+      Index_CRC : constant := Index_Offset + 3 * Runtime.SST_V2_Index_Entry_Header_Length + 3;
+      First_Index_Key : constant := Index_Offset + Runtime.SST_V2_Index_Entry_Header_Length;
+      First_Frame_Value : constant :=
+        Runtime.SST_V2_Header_Length + Runtime.SST_V2_Frame_Header_Length + 1;
+      First_Frame_Extent : constant :=
+        Runtime.SST_V2_Frame_Header_Length + 2 + Runtime.SST_V2_Frame_Trailer_Length;
+      Second_Frame_Offset : constant := Runtime.SST_V2_Header_Length + First_Frame_Extent;
+      Swapped_Frame_Extent : constant :=
+        Runtime.SST_V2_Frame_Header_Length + 1 + Runtime.SST_V2_Frame_Trailer_Length;
+      Third_Frame_Offset : constant := Second_Frame_Offset + Swapped_Frame_Extent;
+
+      procedure Expect
+        (Image    : Formats.Byte_Array;
+         Expected : Runtime.Decode_Status;
+         Context  : String)
+      is
+         Decoded : Runtime.SST_Access;
+         Actual  : Runtime.Decode_Status;
+      begin
+         Runtime.Decode_SST_V2 (Image, ID (1), 1, Descriptor, 8, 8, Decoded, Actual);
+         if Actual /= Expected then
+            Runtime.Release (Decoded);
+            raise Program_Error
+              with Context & ": " & Runtime.Decode_Status'Image (Actual);
+         elsif Actual /= Runtime.Decoded and then Decoded /= null then
+            Runtime.Release (Decoded);
+            raise Program_Error with Context & ": partial SST-v2 output";
+         end if;
+         Runtime.Release (Decoded);
+      end Expect;
+   begin
+      for Size in Natural range 0 .. SST_V2_Length - 1 loop
+         declare
+            Short : Formats.Byte_Array (1 .. Size);
+         begin
+            if Size > 0 then
+               Short := SST_V2_Golden (0 .. Size - 1);
+            end if;
+            Expect (Short, Runtime.Invalid_Length, "truncated SST-v2 accepted");
+         end;
+      end loop;
+
+      declare
+         Long : Formats.Byte_Array (0 .. SST_V2_Length) := [others => 0];
+      begin
+         Long (0 .. SST_V2_Length - 1) := SST_V2_Golden;
+         Expect (Long, Runtime.Invalid_Length, "SST-v2 trailing byte accepted");
+      end;
+
+      Corrupt := SST_V2_Golden;
+      Corrupt (Corrupt'Last) := Corrupt (Corrupt'Last) xor 1;
+      Expect (Corrupt, Runtime.Object_Checksum_Failed, "SST-v2 object checksum");
+
+      Corrupt := SST_V2_Golden;
+      Corrupt (First_Frame_Value) := Corrupt (First_Frame_Value) xor 1;
+      Repair_Object_Checksum (Corrupt);
+      Expect (Corrupt, Runtime.Frame_Checksum_Failed, "SST-v2 frame checksum");
+
+      Corrupt := SST_V2_Golden;
+      Corrupt (Index_CRC) := Corrupt (Index_CRC) xor 1;
+      Repair_Object_Checksum (Corrupt);
+      Expect (Corrupt, Runtime.Index_Checksum_Failed, "SST-v2 index checksum");
+
+      Corrupt := SST_V2_Golden;
+      Corrupt (First_Index_Key) := Character'Pos ('b');
+      Repair_SST_V2_Index_And_Object (Corrupt);
+      Expect (Corrupt, Runtime.Invalid_SST_State, "SST-v2 frame/index key mismatch");
+
+      Corrupt := SST_V2_Golden;
+      declare
+         Second : constant Formats.Byte_Array (0 .. Swapped_Frame_Extent - 1) :=
+           Corrupt (Second_Frame_Offset .. Second_Frame_Offset + Swapped_Frame_Extent - 1);
+      begin
+         Corrupt (Second_Frame_Offset .. Second_Frame_Offset + Swapped_Frame_Extent - 1) :=
+           Corrupt (Third_Frame_Offset .. Third_Frame_Offset + Swapped_Frame_Extent - 1);
+         Corrupt (Third_Frame_Offset .. Third_Frame_Offset + Swapped_Frame_Extent - 1) := Second;
+      end;
+      Repair_Object_Checksum (Corrupt);
+      Expect (Corrupt, Runtime.Invalid_SST_State, "SST-v2 swapped frames");
+
+      Corrupt := SST_V2_Golden;
+      Put_U64 (Corrupt, LSM.SST_Header_Length, Runtime.SST_V2_Header_Length + 1);
+      Repair_Checksums (Corrupt, Runtime.SST_V2_Header_Length);
+      Expect (Corrupt, Runtime.Invalid_Length, "SST-v2 frame offset mismatch");
+
+      Corrupt := SST_V2_Golden;
+      Put_U64 (Corrupt, LSM.SST_Header_Length + 8, Frame_Bytes + 1);
+      Repair_Checksums (Corrupt, Runtime.SST_V2_Header_Length);
+      Expect (Corrupt, Runtime.Invalid_Length, "SST-v2 frame extent mismatch");
+
+      Corrupt := SST_V2_Golden;
+      Put_U64 (Corrupt, LSM.SST_Header_Length + 16, Index_Offset + 1);
+      Repair_Checksums (Corrupt, Runtime.SST_V2_Header_Length);
+      Expect (Corrupt, Runtime.Invalid_Length, "SST-v2 index offset mismatch");
+
+      Corrupt := SST_V2_Golden;
+      Put_U64 (Corrupt, LSM.SST_Header_Length + 24, Index_Bytes + 1);
+      Repair_Checksums (Corrupt, Runtime.SST_V2_Header_Length);
+      Expect (Corrupt, Runtime.Invalid_Length, "SST-v2 index extent mismatch");
+
+      Corrupt := SST_V2_Golden;
+      --  Common-envelope version byte 9 changes v2 to an unsupported v3.
+      Corrupt (9) := 3;
+      Repair_Checksums (Corrupt, Runtime.SST_V2_Header_Length);
+      Expect (Corrupt, Runtime.Unsupported_Version, "SST-v2 version corruption");
+
+      Corrupt := SST_V2_Golden;
+      --  Common-envelope byte 10 is the frozen object-kind code.
+      Corrupt (10) := Corrupt (10) + 1;
+      Repair_Checksums (Corrupt, Runtime.SST_V2_Header_Length);
+      Expect (Corrupt, Runtime.Invalid_Object_Kind, "SST-v2 kind corruption");
+
+      Corrupt := SST_V2_Golden;
+      --  Common-envelope byte 11 is the reserved zero flags byte.
+      Corrupt (11) := 1;
+      Repair_Checksums (Corrupt, Runtime.SST_V2_Header_Length);
+      Expect (Corrupt, Runtime.Invalid_Flags, "SST-v2 flags corruption");
+
+      Corrupt := SST_V2_Golden;
+      --  Common-envelope bytes 12..27 are the exact database identifier.
+      Corrupt (12) := Corrupt (12) xor 1;
+      Repair_Checksums (Corrupt, Runtime.SST_V2_Header_Length);
+      Expect (Corrupt, Runtime.Wrong_Database, "SST-v2 database corruption");
+
+      Corrupt := SST_V2_Golden;
+      --  Hostile persisted extents must fail checked U64 geometry before any
+      --  host conversion or allocation, even with authentic checksums.
+      Put_U64 (Corrupt, LSM.SST_Header_Length + 8, Interfaces.Unsigned_64'Last);
+      Put_U64 (Corrupt, LSM.SST_Header_Length + 24, 1);
+      Repair_Checksums (Corrupt, Runtime.SST_V2_Header_Length);
+      Expect (Corrupt, Runtime.Invalid_Length, "SST-v2 extent arithmetic overflow");
+
+      declare
+         Decoded : Runtime.SST_Access;
+         Actual  : Runtime.Decode_Status;
+      begin
+         Runtime.Decode_SST_V2
+           (SST_V2_Golden, ID (1), 1, Descriptor, 0, 8, Decoded, Actual);
+         if Actual /= Runtime.Limit_Exceeded or else Decoded /= null then
+            Runtime.Release (Decoded);
+            raise Program_Error with "SST-v2 key limit was not enforced before allocation";
+         end if;
+         Runtime.Decode_SST_V2
+           (SST_V2_Golden, ID (1), 1, Descriptor, 8, 0, Decoded, Actual);
+         if Actual /= Runtime.Limit_Exceeded or else Decoded /= null then
+            Runtime.Release (Decoded);
+            raise Program_Error with "SST-v2 value limit was not enforced before allocation";
+         end if;
+      end;
+   end Test_Runtime_SST_V2_Rejection;
 
    procedure Test_Runtime_Persisted_Limits is
       --  One beyond the retired 64/256 toy bounds demonstrates that the
@@ -1740,6 +2010,7 @@ package body Flyology.DB.LSM_Format_Tests is
       Test_Manifest_Rejection;
       Test_SST_Rejection;
       Test_Runtime_Golden_Parity;
+      Test_Runtime_SST_V2_Rejection;
       Test_Runtime_Persisted_Limits;
       Test_Runtime_Partial_Merge;
       Test_Runtime_Three_Run_Merge;

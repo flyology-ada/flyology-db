@@ -4,7 +4,7 @@ with Flyology.DB.LSM_Formats;
 with Flyology.DB.Manifest_Formats;
 with Interfaces;
 
---  Provides the operational checkpoint-manifest-v2/v3 and SST-v1 codec. Unlike
+--  Provides the operational checkpoint-manifest-v2/v3 and SST-v1/v2 codecs. Unlike
 --  the bounded proof oracle, retained arrays are sized exactly from validated
 --  persisted state and no library-selected key, value, run, or ledger ceiling
 --  is introduced.
@@ -31,6 +31,8 @@ private package Flyology.DB.LSM_Runtime_Formats is
       Wrong_Database,
       Invalid_Length,
       Header_Checksum_Failed,
+      Frame_Checksum_Failed,
+      Index_Checksum_Failed,
       Object_Checksum_Failed,
       Invalid_Manifest_State,
       Runtime_Incompatible,
@@ -137,12 +139,37 @@ private package Flyology.DB.LSM_Runtime_Formats is
       Value             : out Checkpoint_Manifest_Access;
       Status            : out Decode_Status);
 
+   --  SST-v2 retains the SST object family and advances its format selector.
+   --  Version 2 is persisted compatibility authority; changing it would make
+   --  existing v2 objects unreadable or ambiguous with v1.
+   SST_V2_Format_Version : constant Interfaces.Unsigned_16 := 2;
+
+   --  Persisted SST-v2 header 128 = v1 authenticated prefix 96 + four U64
+   --  frame/index offset-and-extent fields. Each frame reuses the frozen
+   --  20-byte entry prefix and adds one U32 CRC. Each index record 36 = U64
+   --  frame offset + U64 extent + U64 sequence + U8 operation + U8 flags +
+   --  U16 reserved + U32 key length + U32 value length; exact key bytes and
+   --  one trailing U32 index CRC follow. Changing a term is v2-incompatible.
+   SST_V2_Header_Length             : constant := 128;
+   SST_V2_Frame_Header_Length       : constant := LSM.SST_Entry_Header_Length;
+   SST_V2_Frame_Trailer_Length      : constant := 4;
+   SST_V2_Index_Entry_Header_Length : constant := 36;
+   SST_V2_Index_Trailer_Length      : constant := 4;
+
    type SST_Header_Admission is record
       --  Exact extent follows from the authenticated header and the manifest's
       --  exact descriptor; it is the only whole-object allocation authority.
       Object_Length : Natural := 0;
       Entry_Total   : Natural := 0;
       Payload_Bytes : Natural := 0;
+      --  Versioned authenticated extents. Version 1 reports its single entry
+      --  stream as the frame region and has no index region.
+      Format_Version : Interfaces.Unsigned_16 := 0;
+      Header_Length  : Natural := 0;
+      Frame_Offset   : Natural := 0;
+      Frame_Bytes    : Natural := 0;
+      Index_Offset   : Natural := 0;
+      Index_Bytes    : Natural := 0;
    end record;
 
    --  Canonical no-admission output. Zero fields never authorize a retained
@@ -150,6 +177,17 @@ private package Flyology.DB.LSM_Runtime_Formats is
    Empty_SST_Header_Admission : constant SST_Header_Admission := (others => <>);
 
    procedure Inspect_SST_Header
+     (Header              : Formats.Byte_Array;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Object_Length       : Interfaces.Unsigned_64;
+      Admission           : out SST_Header_Admission;
+      Status              : out Decode_Status);
+
+   --  Validate one exact SST-v2 header observed through a generation-bound
+   --  range read. No variable allocation or output publication occurs here.
+   procedure Inspect_SST_V2_Header
      (Header              : Formats.Byte_Array;
       Expected_Database   : Head_Policy.Identifier;
       Expected_Family     : Interfaces.Unsigned_32;
@@ -279,7 +317,23 @@ private package Flyology.DB.LSM_Runtime_Formats is
 
    procedure Encode_SST (Value : SST; Image : out Image_Access; Status : out Encode_Status);
 
+   --  Encode the additive SST-v2 entry-frame/index layout. Encode_SST remains
+   --  the v1 compatibility encoder until the operational writer migration.
+   procedure Encode_SST_V2 (Value : SST; Image : out Image_Access; Status : out Encode_Status);
+
    procedure Decode_SST
+     (Image               : Formats.Byte_Array;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Maximum_Key_Bytes   : Interfaces.Unsigned_64;
+      Maximum_Value_Bytes : Interfaces.Unsigned_64;
+      Value               : out SST_Access;
+      Status              : out Decode_Status);
+
+   --  Decode one complete SST-v2 image. This whole-object entry point proves
+   --  the wire codec before later range-decoder and lazy-operation activation.
+   procedure Decode_SST_V2
      (Image               : Formats.Byte_Array;
       Expected_Database   : Head_Policy.Identifier;
       Expected_Family     : Interfaces.Unsigned_32;

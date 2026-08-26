@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate independent checkpoint-manifest-v2/v3 and SST-v1 goldens.
+"""Generate independent checkpoint-manifest-v2/v3 and SST-v1/v2 goldens.
 
 This script deliberately does not import or invoke the Ada codec. The small
 fixture counts and byte strings exercise ordering, tombstones, empty values,
@@ -110,6 +110,35 @@ sst_payload = entry(2, 1, b"a", b"x") + entry(1, 2, b"a") + entry(2, 1, b"b")
 sst = envelope(b"FLYSST01", 1, 4, database_id, sst_header, sst_payload)
 assert len(sst) == 164
 
+
+def framed_entry(sequence: int, operation: int, key: bytes, value: bytes = b"") -> bytes:
+    # SST-v2 retains the v1 prefix and appends a CRC over that exact prefix and
+    # key/value extent. The U32 trailer is persisted integrity, not padding.
+    body = entry(sequence, operation, key, value)
+    return body + struct.pack(">I", crc32c(body))
+
+
+# SST-v2 compatibility authority: the 128-byte header adds four U64 region
+# fields. Index records use fixed 36-byte metadata plus exact key bytes and one
+# CRC for the complete index; no block-size or entries-per-block policy exists.
+fixture_entries = [(2, 1, b"a", b"x"), (1, 2, b"a", b""), (2, 1, b"b", b"")]
+frames = b""
+index_records = b""
+frame_offset = 128
+for sequence, operation, key, value in fixture_entries:
+    frame = framed_entry(sequence, operation, key, value)
+    frames += frame
+    index_records += struct.pack(">QQQBBHII", frame_offset, len(frame), sequence, operation, 0, 0, len(key), len(value))
+    index_records += key
+    frame_offset += len(frame)
+index = index_records + struct.pack(">I", crc32c(index_records))
+index_offset = 128 + len(frames)
+sst_v2_header = sst_header + struct.pack(">QQQQ", 128, len(frames), index_offset, len(index))
+assert len(sst_v2_header) == 128 - 44
+sst_v2 = envelope(b"FLYSST01", 2, 4, database_id, sst_v2_header, frames + index)
+assert len(sst_v2) == 323
+
 print("MANIFEST_V2_HEX=" + manifest_v2.hex().upper())
 print("MANIFEST_HEX=" + manifest.hex().upper())
 print("SST_HEX=" + sst.hex().upper())
+print("SST_V2_HEX=" + sst_v2.hex().upper())

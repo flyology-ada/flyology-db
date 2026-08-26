@@ -14,12 +14,20 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
-The generation-bound lazy-SST-read design changes no selected SPARK unit. Its maintained finite TLA+ lane exhausts
+The generation-bound lazy-SST-read design and private whole-object SST-v2 codec change no selected SPARK unit. The
+runtime codec remains an executable boundary qualified by its independent golden and fail-closed corruption corpus.
+Its maintained finite TLA+ lane exhausts
 16 distinct states to depth 6 with nonzero coverage for every normal and rejection action, detects stale-generation
 and frame-swap unsafe probes, and validates the allocation-rejection/provider-replacement witness. Its arbitrary-set
 TLAPS kernel proves 41/41 obligations for request typing, exact generation/frame binding, prepublication and failure
-atomicity, exact successful output, and quiescence. CRC arithmetic, byte-range arithmetic, SST-v2 codec refinement,
-allocation, Object Storage behavior, and the eventual owner-driven Ada read operation remain outside this claim.
+atomicity, exact successful output, and quiescence. CRC arithmetic, byte-range arithmetic, refinement of the runtime
+codec to this model, allocation, Object Storage behavior, and the eventual owner-driven Ada read operation remain
+outside this claim.
+
+The exact SST-v2 whole-object codec tree preserves the warning-strict selected-unit result at 1,097/1,097 proved
+checks, with zero warnings, unproved or justified checks, or `pragma Assume` statements. This rerun does not turn the
+dynamic runtime codec into a selected SPARK unit; checked U64 geometry, checksum ordering, failure atomicity, and
+persisted-limit enforcement are qualified by the independent generator and executable corruption corpus.
 
 The owned physical scan merge implementation changes no selected SPARK unit and preserves the exact warning-strict
 campaign at 1,097/1,097 proved checks, with zero warnings, unproved or justified checks, or `pragma Assume`

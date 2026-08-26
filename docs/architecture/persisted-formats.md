@@ -2,15 +2,17 @@
 
 This document is normative for HEAD versions 1 and 2 and the independent version-1 commit-batch and
 column-family-manifest encodings. Each object kind advances its own version constant: the HEAD kind accepts versions
-1 and 2, batch accepts version 1, manifest accepts versions 1 through 3, and SST accepts version 1. All multibyte integers
+1 and 2, batch accepts version 1, manifest accepts versions 1 through 3, and operational recovery accepts SST version
+1. The private operational codec also freezes additive SST version 2 without activating it. All multibyte integers
 are unsigned big-endian.
 Byte strings are length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is
 persisted.
 
-The first-LSM format unit freezes current manifest version 3, readable predecessor version 2, and SST version 1
-below. Its private generic codec remains the bounded reference/proof implementation. A byte-identical operational
-codec admits headers before whole-object allocation and retains exact dynamically sized run, identity, entry, key,
-and value extents. See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
+The first-LSM format unit freezes current manifest version 3, readable predecessor version 2, and operational SST
+version 1 below. Its private generic codec remains the bounded reference/proof implementation. A byte-identical
+operational codec admits headers before whole-object allocation and retains exact dynamically sized run, identity,
+entry, key, and value extents. The private SST-v2 whole-object codec extends that operational boundary without
+selecting it for publication or recovery. See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
 
 ## Common envelope
 
@@ -302,7 +304,7 @@ authenticated version, and derives whole-object allocation bounds from that sele
 The bounded SPARK reference codec encodes and decodes only current version 3; the operational decoder owns the exact
 version-2 backward-read golden. Every new allocation remains checked, lazy, and unpublished on failure.
 
-## Immutable SST run
+## Immutable SST run version 1
 
 SST version 1 uses magic `FLYSST01` and the next unused stable object-kind code, `4`. Its header is 96 bytes:
 
@@ -341,6 +343,44 @@ object containing the actual entry descriptors and compact key/value bytes. A se
 ownership return; all failures leave the result null. The operational and bounded encoders are gated against the same
 independently generated golden bytes.
 
+## Immutable SST run version 2 codec
+
+SST version 2 retains magic `FLYSST01`, object-kind code `4`, the common envelope, and every v1 descriptor and
+ordering rule. It extends the authenticated header from 96 to 128 bytes:
+
+| Field | Offset | Bytes |
+| --- | ---: | ---: |
+| version-1 header prefix | 0 | 96 |
+| frame-region offset | 96 | 8 |
+| frame-region extent | 104 | 8 |
+| index-region offset | 112 | 8 |
+| index-region extent | 120 | 8 |
+
+The frame region starts at byte 128. Each entry frame consists of the existing 20-byte entry prefix, exact key and
+value bytes, and a four-byte CRC32C over the prefix and payload. Consequently, the exact frame-region extent is
+`entry_count * 24 + logical_payload_bytes`; checked arithmetic must establish that formula before allocation or
+publication.
+
+The index follows the frame region without padding. Each canonical index record contains frame offset (8), frame
+extent (8), sequence (8), operation (1), zero flags (1), zero reserved bits (2), key length (4), value length (4),
+and the exact key bytes. A final four-byte CRC32C authenticates the complete index before any record is trusted.
+The object retains its final whole-object CRC32C for complete reads and offline validation.
+
+The decoder authenticates the common envelope and v2 header before deriving exact extents. It then authenticates
+the index CRC before parsing index records, authenticates every frame CRC, and requires each frame's offset, extent,
+sequence, operation, lengths, and key to match its index record exactly. Canonical key/sequence ordering, descriptor
+identity, persisted database and family limits, sequence endpoints, and logical-byte totals remain mandatory. Any
+failure returns no SST; allocation occurs lazily only after checked geometry and validation and publishes no partial
+state.
+
+The private operational codec is gated by an independently generated 323-byte golden image, shifted-lower-bound
+decoding, every truncation, trailing bytes, whole/index/frame checksum corruption, repaired-checksum index/frame
+mismatch, intact-frame substitution, malformed extents, unsupported version, and persisted key/value-limit
+rejection, common-envelope identity/kind/flags rejection, and hostile U64 extent overflow. This freezes the v2 wire
+representation without activating it for durable writes. The operational writer, manifest recovery, and compaction
+output remain v1 until a later focused change adds generation-bound range reads, mixed-version recovery,
+complete-loss recovery, and provider qualification.
+
 ## Evolution
 
 Batch version 1 remains the transaction-log encoding. Manifest version 1 is the legacy log-only registry encoding and
@@ -348,6 +388,7 @@ remains readable. Manifest version 2 remains readable as the first-LSM predecess
 observation authority. New databases use manifest version 3 from their root: the root has replay boundary zero, no
 runs, and no checkpoint identities, while persisting every explicit LSM and serializable-tracking limit. A nonempty
 current manifest is a later checkpoint successor and never rewrites or implicitly migrates a reachable older
-manifest. SST begins at version 1 under its independent kind. A future kind-specific format change records whether
-existing readers reject, read, or migrate it. Golden byte fixtures and explicit corruption cases gate each supported
+manifest. SST begins at version 1 under its independent kind. The private version-2 codec is additive but is not yet
+selected by the writer or recovery path. Activating it requires an explicit compatibility change rather than an
+implicit rewrite of reachable v1 runs. Golden byte fixtures and explicit corruption cases gate each supported
 version. Migration never rewrites a reachable immutable object in place.

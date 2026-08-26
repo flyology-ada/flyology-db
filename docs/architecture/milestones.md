@@ -114,13 +114,14 @@ image leases and copied transaction-local mutations across engine replacement, e
 global sorting. Object Storage streaming, automatic run selection, and constant-memory claims remain unfinished. See
 [`paged-scans.md`](paged-scans.md) and [`physical-scan-merge.md`](physical-scan-merge.md).
 
-Generation-bound lazy immutable-run reads now have a formal and format-design prerequisite. SST v1 remains a
-whole-object integrity format. The additive SST-v2 candidate independently frames each entry, authenticates a
-trailing key/offset index, and binds header, index, and frame reads to one opaque provider generation. TLC exhausts
-the replacement, allocation, stale-generation, and corruption boundaries; two unsafe probes fail and TLAPS proves
-the arbitrary-generation/key/value action kernel. No persisted v2 byte, public read operation, cache, prefetch,
-automatic retry, or block-size policy exists yet. The codec, golden/corruption corpus, and an explicit caller-driven
-storage-I/O operation are the next Milestone 4 units. See [`lazy-sst-reads.md`](lazy-sst-reads.md).
+Generation-bound lazy immutable-run reads now have a formal and initial codec prerequisite. SST v1 remains the
+active whole-object integrity format. The additive private SST-v2 whole-object codec independently frames each entry,
+authenticates a trailing key/offset index, and freezes exact v2 bytes through an independent golden and corruption
+corpus. TLC exhausts the replacement, allocation, stale-generation, and corruption boundaries; two unsafe probes fail
+and TLAPS proves the arbitrary-generation/key/value action kernel. No v2 writer/recovery activation, public read
+operation, cache, prefetch, automatic retry, or block-size policy exists yet. Header/index/frame slice decoders and an
+explicit caller-driven generation-bound storage-I/O operation are the next Milestone 4 units. See
+[`lazy-sst-reads.md`](lazy-sst-reads.md).
 
 The retention/GC safety rule is now independently model-checked and proved. Current HEAD authority, active snapshot
 pins, lagging-replica pins, required predecessor reachability, and unresolved publication attempts each retain exact
