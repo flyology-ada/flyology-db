@@ -28,20 +28,25 @@ bound. Initiation validates operation ownership, lifecycle, transaction identity
 the exact run descriptor extent before moving that token. A busy completion set or initiation exception rolls back
 the slot, lease, allocated state, and token byte/tag/metadata/length exact.
 
-The operation reads runs sequentially under one absolute monotonic deadline. SST-v1 and SST-v2 are admitted through
-their existing complete checked decoders and exact generation-bound reads, then merged with the captured committed
-suffix and transaction-local mutations by the same physical cursor builder used by storage-free initialization.
-There is no helper task, provider retry, prefetch, run-count default, or cache. Typed `Finish` is the sole token
-restoration and cursor-publication authority; it accepts any vacant handle from the original pool. Failure,
-cancellation, timeout, corruption, or allocation rejection preserves the caller's prior cursor exactly.
+The operation traverses runs sequentially under one absolute monotonic deadline. Each run yields one canonical
+snapshot-visible key/value or tombstone at a time through the generation-bound next-entry protocol. SST-v2 reads its
+header, index, and one selected frame; SST-v1 uses the integrity-required whole-object compatibility fallback. The
+operation compacts those selected entries into one exact owned source image per run and merges them with the captured
+committed suffix and transaction-local mutations through the same physical cursor builder used by storage-free
+initialization. It does not retain decoded whole SST images. There is no helper task, provider retry, prefetch,
+run-count default, or cache. Typed `Finish` is the sole token restoration and cursor-publication authority; it accepts
+any vacant handle from the original pool. Failure, cancellation, timeout, corruption, or allocation rejection
+preserves the caller's prior cursor exactly.
 
 The buffer-owned whole `Scan` overload is a literal blocking composition of that initialization and one complete
 page request using the cursor's persisted live-row and live-byte bounds. It adds no second storage reader or merge
 algorithm; page materialization retains the same atomic row and Serializable-predicate publication boundary.
 
 This is a deliberately limited end-to-end path. The caller buffer bounds each object transfer, while the completed
-cursor retains decoded immutable images for the selected run slice. Per-frame lazy scan traversal and a
-constant-memory claim remain later work; no hidden capacity or eviction policy is inferred from this implementation.
+cursor retains every selected snapshot-visible source entry needed by later storage-free pages. It no longer retains
+whole SST objects, but its memory still grows with the selected source-entry set. A storage-backed page operation that
+retains only current run heads, and any resulting constant-memory claim, remain later work; no hidden capacity or
+eviction policy is inferred from this implementation.
 
 The cursor fixes the transaction's own-write prefix by retaining the arena mutation version observed by
 `Start_Scan`. Every successful `Put` or `Delete` advances that version, including replacement of an existing arena

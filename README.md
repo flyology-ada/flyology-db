@@ -119,13 +119,14 @@ after a conclusive external result, and restores the token only through typed `F
 retry, cache, prefetch, or hidden storage bound.
 
 The storage-free `Start_Scan` remains available for already-materialized state. Its additive `Scan_Operation` and
-buffer-owned synchronous overload authenticate the exact manifest run slice from Object Storage, read those runs
-sequentially under one absolute deadline, and construct the same owned physical cursor used by whole and paged
-scans. Typed `Finish` alone restores the exact caller token and publishes the candidate cursor; every failure leaves
-the prior cursor unchanged. A buffer-owned whole `Scan` overload waits that same operation and requests one complete
-page from the cursor under persisted live-state limits; it does not add another visibility engine. This establishes
-an end-to-end remote scan path, but it currently retains each decoded run needed by the cursor and therefore makes
-no constant-memory or frame-streaming claim.
+buffer-owned synchronous overload authenticate the exact manifest run slice from Object Storage, traverse each run
+one canonical snapshot-visible entry at a time under one absolute deadline, and construct the same owned physical
+cursor used by whole and paged scans. SST-v2 uses header/index/frame ranges; frozen SST-v1 uses its required
+whole-object compatibility fallback. Typed `Finish` alone restores the exact caller token and publishes the candidate
+cursor; every failure leaves the prior cursor unchanged. A buffer-owned whole `Scan` overload waits that same
+operation and requests one complete page from the cursor under persisted live-state limits; it does not add another
+visibility engine. This establishes an end-to-end remote scan path without retaining whole SST objects, but the cursor
+still retains every selected source entry and therefore makes no constant-memory paging claim.
 
 ## Durability rule
 

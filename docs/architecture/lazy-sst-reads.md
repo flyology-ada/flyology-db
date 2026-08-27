@@ -35,8 +35,8 @@ selects the first snapshot-visible entry. Capacity rejection, generation or
 length mismatch, corruption, cancellation, and failure publish no value and
 do not fall through to an older run.
 
-The same private operation now has a next-visible-entry purpose for physical
-scan construction. Its caller supplies the fixed snapshot plus an optional
+The same private operation has a next-visible-entry purpose used by
+authenticated physical scan construction. Its caller supplies the fixed snapshot plus an optional
 inclusive or strict start and an optional exclusive upper bound. The operation
 selects the first canonical key whose first version no newer than the snapshot
 is admitted by those bounds. A tombstone is returned with its exact key and
@@ -45,7 +45,11 @@ the run; complete absence returns no key. SST-v2 authenticates the index and
 only the selected frame. SST-v1 uses the required whole-object fallback. Typed
 Finish returns one owned key/value pair and releases the decoded index/frame;
 the operation retains no whole run after Finish and introduces no page size,
-prefetch, cache, retry, or run-selection policy.
+prefetch, cache, retry, or run-selection policy. The scan parent repeats this
+strictly after each selected key, compacts the selected entries into one exact
+owned source image per run, and then invokes the established physical merge.
+This removes whole-run cursor retention but still retains every selected
+source entry; direct storage-backed page advancement remains separate work.
 
 ## Why SST version 1 cannot stream safely
 

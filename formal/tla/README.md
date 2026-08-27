@@ -315,6 +315,25 @@ output, and failure-atomicity preservation. Neither model proves byte ordering,
 CRC/format parsing, provider behavior, allocation, progress, Ada execution,
 refinement, or constant-memory paging.
 
+`AuthenticatedScanInitialization.tla` composes that one-run result across an
+ordered manifest run slice before cursor publication. Its calibrated finite
+graph has 24 distinct states at depth 10. Exact action coverage is frozen for
+begin, four entry reads, two authenticated absences, one future-run skip, one
+cursor publication, seven read rejections, and seven of eight allocation
+rejection attempts. The skipped-entry negative probe must violate `Safety`;
+the canonical witness exhausts two visible runs around one future run and
+publishes their exact compact source images only after all three runs are
+complete.
+
+`AuthenticatedScanInitializationSafetyProof.tla` is the arbitrary-domain
+action-preservation kernel. It assumes the one-run selector returns the exact
+next entry and proves exact prefix accumulation, run-order advancement,
+failure atomicity, and cursor publication only after every run is complete in
+13 obligations.
+Neither artifact proves SST authentication, parsing, the physical merge,
+provider behavior, allocation implementation, progress, Ada execution,
+refinement, or constant-memory paging.
+
 `LazyCheckpointRead.tla` composes the one-run result across one exact
 oldest-to-newest run slice at a fixed snapshot. TLC exhausts 37 distinct states
 at depth 6 with nonzero coverage for future-run skipping, authenticated

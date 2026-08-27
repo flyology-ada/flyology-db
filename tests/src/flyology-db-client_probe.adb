@@ -290,6 +290,12 @@ procedure Flyology.DB.Client_Probe is
    Value_Data                   : constant Byte_Array := Bytes ("client-value");
    Later_Value_Data             : constant Byte_Array := Bytes ("client-value-later");
    Third_Value_Data             : constant Byte_Array := Bytes ("client-value-third");
+   --  This auxiliary value is written in the second primary-family run and
+   --  tombstoned in the third. It is exact regression-fixture geometry for
+   --  authenticated multi-run scan suppression, not an application key or
+   --  public ordering policy.
+   Tombstone_Key_Data           : constant Byte_Array := Bytes ("gone");
+   Tombstone_Value_Data         : constant Byte_Array := Bytes ("obsolete");
    Audit_Key_Data               : constant Byte_Array := Bytes ("event-1");
    Audit_Value_Data             : constant Byte_Array := Bytes ("remote-append");
    --  One DB parent, one Object Storage child, its HTTP exchange, and the
@@ -559,13 +565,21 @@ procedure Flyology.DB.Client_Probe is
    end Test_Public_Get;
 
    procedure Test_Public_Scan is
-      --  The DB scan parent plus its whole-run provider/HTTP/transport stack
+      --  The DB scan parent plus its next-entry provider/HTTP/transport stack
       --  uses six exact fixture slots. This is scheduling geometry, not a DB
-      --  page, queue, or persisted capacity.
+      --  page, queue, or persisted capacity. One frozen SST-v2 header is also
+      --  the exact scratch size: every header/index/frame range in this
+      --  two-entry fixture fits, while no complete SST object does. This proves
+      --  the authenticated scan no longer depends on whole-run retention.
+      --  128 is the persisted SST-v2 header length frozen beside
+      --  Flyology.DB.LSM_Runtime_Formats.SST_V2_Header_Length; changing that
+      --  format authority requires this negative whole-object oracle to move
+      --  with it.
+      Scan_Scratch_Bytes : constant Positive := 128;
       Scan_Set       : aliased Flyology.Operations.Completion_Set (6);
       Scan_Pool      :
         aliased Flyology.Buffers.Pool
-                  (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
+                  (Block_Size => Scan_Scratch_Bytes, Capacity => 1);
       Scan_Buffer    : Flyology.Buffers.Unique_Buffer (Scan_Pool'Access);
       Restored       : Flyology.Buffers.Unique_Buffer (Scan_Pool'Access);
       Scan_Txn       : aliased Transaction;
@@ -660,6 +674,8 @@ procedure Flyology.DB.Client_Probe is
       Expect_Allocation_Rejection
         (Scan_Run_Array_Allocation, "authenticated scan run-array allocation failure was not typed");
       Expect_Allocation_Rejection
+        (Scan_Run_Entry_Allocation, "authenticated scan selected-entry allocation failure was not typed");
+      Expect_Allocation_Rejection
         (Scan_Child_Operation_Allocation, "authenticated scan child allocation failure was not typed");
 
       Stop.Request;
@@ -706,7 +722,7 @@ procedure Flyology.DB.Client_Probe is
       Next_Scan_Page (Created, Scan_Txn, Cursor, 1, Limits.Maximum_Live_State_Bytes, Rows, Done, Result);
       Expect (Result, Success, "authenticated scan page failed");
       if Scan_Row_Count (Rows) /= 1 or else not Done then
-         raise Program_Error with "authenticated scan returned the wrong row count";
+         raise Program_Error with "authenticated scan did not suppress its newer tombstone";
       end if;
       Read_Scan_Row (Rows, 1, Item_Key, Item_Value, Result);
       Expect (Result, Success, "authenticated scan row read failed");
@@ -1114,13 +1130,20 @@ procedure Flyology.DB.Client_Probe is
          (Run_ID                => Later_Run_ID,
           Lowest_Sequence       => Later_Sequence,
           Highest_Sequence      => Later_Sequence,
-          Entry_Total           => 1,
-          Logical_Payload_Bytes => Interfaces.Unsigned_64 (Key_Data'Length + Later_Value_Data'Length)),
+          Entry_Total           => 2,
+          Logical_Payload_Bytes =>
+            Interfaces.Unsigned_64
+              (Key_Data'Length
+               + Later_Value_Data'Length
+               + Tombstone_Key_Data'Length
+               + Tombstone_Value_Data'Length)),
          (Run_ID                => Third_Run_ID,
           Lowest_Sequence       => Third_Sequence,
           Highest_Sequence      => Third_Sequence,
-          Entry_Total           => 1,
-          Logical_Payload_Bytes => Interfaces.Unsigned_64 (Key_Data'Length + Third_Value_Data'Length))];
+          Entry_Total           => 2,
+          Logical_Payload_Bytes =>
+            Interfaces.Unsigned_64
+              (Key_Data'Length + Third_Value_Data'Length + Tombstone_Key_Data'Length))];
       Invalid_Runs : constant Lazy_SST_Run_Array := [Runs (2), Runs (1)];
 
       procedure Read_And_Expect
@@ -1799,6 +1822,8 @@ begin
    Expect (Result, Success, "later client-backed transaction begin failed");
    Put (Created, Txn, Family, Key_Data, Later_Value_Data, Result);
    Expect (Result, Success, "later client-backed put failed");
+   Put (Created, Txn, Family, Tombstone_Key_Data, Tombstone_Value_Data, Result);
+   Expect (Result, Success, "later client-backed tombstone fixture put failed");
    Put (Created, Txn, Audit_Family, Audit_Key_Data, Audit_Value_Data, Result);
    Expect (Result, Success, "appended-family remote put failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
@@ -1827,6 +1852,8 @@ begin
    Expect (Result, Success, "third client-backed transaction begin failed");
    Put (Created, Txn, Family, Key_Data, Third_Value_Data, Result);
    Expect (Result, Success, "third client-backed put failed");
+   Delete (Created, Txn, Family, Tombstone_Key_Data, Result);
+   Expect (Result, Success, "third client-backed tombstone fixture delete failed");
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
    Expect (Result, Success, "third client-backed commit failed");
    Third_Sequence := Receipt_Sequence (Commit_Info);

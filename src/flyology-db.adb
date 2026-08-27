@@ -8666,12 +8666,6 @@ package body Flyology.DB is
    procedure Free_Lazy_SST_Read_State is new
      Ada.Unchecked_Deallocation (Lazy_SST_Read_State, Lazy_SST_Read_State_Access);
 
-   type Lazy_SST_Table_Holder is record
-      Table : LSM_Runtime.SST_Access := null;
-   end record;
-   procedure Free_Lazy_SST_Table_Holder is new
-     Ada.Unchecked_Deallocation (Lazy_SST_Table_Holder, Lazy_SST_Table_Holder_Access);
-
    type Lazy_SST_Run_Array_Access is access Lazy_SST_Run_Array;
 
    procedure Free_Lazy_SST_Run_Array is new
@@ -8717,8 +8711,31 @@ package body Flyology.DB is
    procedure Free_Get_Driver_State is new
      Ada.Unchecked_Deallocation (Get_Driver_State, Get_Driver_State_Access);
 
+   type Scan_Loaded_Entry;
+   type Scan_Loaded_Entry_Access is access Scan_Loaded_Entry;
+   type Scan_Loaded_Entry is record
+      Sequence     : Sequence_Number := 0;
+      Key_Offset   : Natural := 0;
+      Key_Length   : Natural := 0;
+      Value_Offset : Natural := 0;
+      Value_Length : Natural := 0;
+      Operation    : Mutation_Kind := Put_Mutation;
+      Next         : Scan_Loaded_Entry_Access := null;
+   end record;
+   procedure Free_Scan_Loaded_Entry is new
+     Ada.Unchecked_Deallocation (Scan_Loaded_Entry, Scan_Loaded_Entry_Access);
+
+   --  Authenticated scan initialization retains only the exact
+   --  snapshot-visible key/value image selected one frame at a time. The
+   --  descriptor list grows lazily by one node per selected entry and cannot
+   --  exceed the run's persisted entry count. Complete records authenticated
+   --  exhaustion.
    type Scan_Loaded_Run is record
-      Table : LSM_Runtime.SST_Access := null;
+      First    : Scan_Loaded_Entry_Access := null;
+      Last     : Scan_Loaded_Entry_Access := null;
+      Count    : Natural := 0;
+      Complete : Boolean := False;
+      Payload  : Flyology.Bytes.Unbounded_Bytes;
       Image : Shared_Image_Access := null;
    end record;
    type Scan_Loaded_Run_Array is array (Positive range <>) of Scan_Loaded_Run;
@@ -8726,7 +8743,7 @@ package body Flyology.DB is
    procedure Free_Scan_Loaded_Run_Array is new
      Ada.Unchecked_Deallocation (Scan_Loaded_Run_Array, Scan_Loaded_Run_Array_Access);
 
-   type Scan_Driver_Phase is (Scan_Idle, Scan_Reading_Run, Scan_Terminal);
+   type Scan_Driver_Phase is (Scan_Idle, Scan_Reading_Entry, Scan_Terminal);
 
    type Scan_Driver_State is record
       Database_ID          : Database_Identifier := Zero_Database_ID;
@@ -11669,19 +11686,20 @@ package body Flyology.DB is
       begin
          if Loaded /= null then
             for Run of Loaded.all loop
-               if Run.Table = null or else Run.Image = null then
+               if not Run.Complete
+                 or else (Run.Count > 0
+                          and then (Run.First = null or else Run.Last = null or else Run.Image = null))
+                 or else (Run.Count = 0
+                          and then (Run.First /= null or else Run.Last /= null or else Run.Image /= null))
+               then
                   Result := Corrupt;
                   return;
                end if;
-               for SST_Item of Run.Table.Entries loop
-                  if SST_Item.Sequence <= Interfaces.Unsigned_64 (Txn.Snapshot_At) then
-                     if External_Count = Natural'Last then
-                        Result := Capacity_Exceeded;
-                        return;
-                     end if;
-                     External_Count := External_Count + 1;
-                  end if;
-               end loop;
+               if Run.Count > Natural'Last - External_Count then
+                  Result := Capacity_Exceeded;
+                  return;
+               end if;
+               External_Count := External_Count + Run.Count;
             end loop;
          end if;
          for Index in Positive range 1 .. Txn.Owner.Arena.Count loop
@@ -11742,18 +11760,28 @@ package body Flyology.DB is
                   Run       : Scan_Loaded_Run renames Loaded (Run_Index);
                   Authority : constant Natural := Run_Index - Loaded'First + 1;
                begin
-                  for Entry_Index in Run.Table.Entries'Range loop
-                     declare
-                        SST_Item : LSM_Runtime.SST_Entry renames Run.Table.Entries (Entry_Index);
-                     begin
-                        if SST_Item.Sequence <= Interfaces.Unsigned_64 (Txn.Snapshot_At) then
+                  declare
+                     Node        : Scan_Loaded_Entry_Access := Run.First;
+                     Entry_Index : Natural := 0;
+                  begin
+                     while Node /= null loop
+                        Entry_Index := Entry_Index + 1;
+                        declare
+                           SST_Item : Scan_Loaded_Entry renames Node.all;
+                        begin
                            if Captured = Raw'Length
                              or else SST_Item.Sequence = 0
-                             or else SST_Item.Key_Offset = 0
-                             or else SST_Item.Operation
-                                     not in LSM_Runtime.LSM.Put_Operation | LSM_Runtime.LSM.Delete_Operation
-                             or else (SST_Item.Operation = LSM_Runtime.LSM.Put_Operation
-                                      and then SST_Item.Value_Offset = 0)
+                             or else SST_Item.Sequence > Txn.Snapshot_At
+                             or else SST_Item.Key_Length > Flyology.Bytes.Length (Run.Image.Data)
+                             or else SST_Item.Key_Offset
+                                     > Flyology.Bytes.Length (Run.Image.Data) - SST_Item.Key_Length
+                             or else (SST_Item.Operation = Delete_Mutation
+                                      and then SST_Item.Value_Length /= 0)
+                             or else (SST_Item.Operation = Put_Mutation
+                                      and then (SST_Item.Value_Length > Flyology.Bytes.Length (Run.Image.Data)
+                                                or else SST_Item.Value_Offset
+                                                        > Flyology.Bytes.Length (Run.Image.Data)
+                                                          - SST_Item.Value_Length))
                            then
                               Release_Raw;
                               Result := Corrupt;
@@ -11762,28 +11790,27 @@ package body Flyology.DB is
                            Captured := Captured + 1;
                            Raw (Captured) :=
                              (Key_Image             => Run.Image,
-                              Key_Offset            => SST_Item.Key_Offset - 1,
-                              Key_Length            => SST_Item.Key_Byte_Total,
+                              Key_Offset            => SST_Item.Key_Offset,
+                              Key_Length            => SST_Item.Key_Length,
                               Authority             => Authority,
-                              Version               => Sequence_Number (SST_Item.Sequence),
+                              Version               => SST_Item.Sequence,
                               Order                 => Entry_Index,
-                              Operation             =>
-                                (if SST_Item.Operation = LSM_Runtime.LSM.Put_Operation
-                                 then Put_Mutation
-                                 else Delete_Mutation),
+                              Operation             => SST_Item.Operation,
                               Selected_Image        => Run.Image,
                               Selected_Value_Offset =>
-                                (if SST_Item.Operation = LSM_Runtime.LSM.Put_Operation
-                                 then SST_Item.Value_Offset - 1
-                                 else 0),
+                                (if SST_Item.Operation = Put_Mutation then SST_Item.Value_Offset else 0),
                               Selected_Value_Length =>
-                                (if SST_Item.Operation = LSM_Runtime.LSM.Put_Operation
-                                 then SST_Item.Value_Byte_Total
-                                 else 0),
+                                (if SST_Item.Operation = Put_Mutation then SST_Item.Value_Length else 0),
                               others                => <>);
-                        end if;
-                     end;
-                  end loop;
+                        end;
+                        Node := Node.Next;
+                     end loop;
+                     if Entry_Index /= Run.Count then
+                        Release_Raw;
+                        Result := Corrupt;
+                        return;
+                     end if;
+                  end;
                end;
             end loop;
          end if;
@@ -14934,21 +14961,12 @@ package body Flyology.DB is
       end if;
    end Release_Lazy_SST_Read_State;
 
-   procedure Release_Lazy_SST_Table (Holder : in out Lazy_SST_Table_Holder_Access) is
-   begin
-      if Holder /= null then
-         LSM_Runtime.Release (Holder.Table);
-         Free_Lazy_SST_Table_Holder (Holder);
-      end if;
-   end Release_Lazy_SST_Table;
-
    procedure Complete_Lazy_SST_Read
      (Item        : in out Lazy_SST_Read_Operation;
       Result      : Outcome_Code;
       Disposition : Lazy_SST_Entry_Disposition := Lazy_Read_Failed;
       Sequence    : Sequence_Number := 0;
-      Kind        : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded)
-   is
+      Kind        : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded) is
    begin
       if Item.Driver_State /= null then
          LSM_Runtime.Release (Item.Driver_State.Index);
@@ -15484,10 +15502,6 @@ package body Flyology.DB is
       if Decode_Status /= LSM_Runtime.Decoded then
          LSM_Runtime.Release (Table);
          Complete_Lazy_SST_Read (Item, Lazy_Decode_Outcome (Decode_Status));
-      elsif State.Purpose = Lazy_Whole_Run then
-         Item.Final_Table := new Lazy_SST_Table_Holder'(Table => Table);
-         Table := null;
-         Complete_Lazy_SST_Read (Item, Success);
       elsif State.Purpose = Lazy_Next_Entry then
          Select_Lazy_Whole_SST_Next_Entry (Item, Table);
       else
@@ -15576,11 +15590,8 @@ package body Flyology.DB is
                Decode_Status);
             LSM_Runtime.Release (Image);
             if Decode_Status /= LSM_Runtime.Decoded then
-               Complete_Lazy_SST_Read
-                 (Item, Lazy_Decode_Outcome (Decode_Status));
-            elsif State.Purpose = Lazy_Whole_Run
-              or else State.Admission.Format_Version = LSM_Runtime.LSM.SST_Format_Version
-            then
+               Complete_Lazy_SST_Read (Item, Lazy_Decode_Outcome (Decode_Status));
+            elsif State.Admission.Format_Version = LSM_Runtime.LSM.SST_Format_Version then
                Start_Lazy_SST_Whole (Item);
             else
                Start_Lazy_SST_Range
@@ -15815,7 +15826,6 @@ package body Flyology.DB is
       Operation.Final_Sequence := 0;
       Flyology.Bytes.Clear (Operation.Final_Key);
       Flyology.Bytes.Clear (Operation.Final_Value);
-      Release_Lazy_SST_Table (Operation.Final_Table);
       Operation.Final_Purpose := Purpose;
       Operation.Has_Final_Result := False;
       Operation.Has_Saved_Error := False;
@@ -16023,53 +16033,20 @@ package body Flyology.DB is
          Operation);
    end Read_Lazy_SST_Next_Entry;
 
-   procedure Read_Lazy_SST
-     (Database_ID           : Database_Identifier;
-      Family                : Column_Family_Configuration;
-      Run_ID                : Identifier;
-      Lowest_Sequence       : Sequence_Number;
-      Highest_Sequence      : Sequence_Number;
-      Entry_Total           : Interfaces.Unsigned_32;
-      Logical_Payload_Bytes : Interfaces.Unsigned_64;
-      Payload_Buffer        : in out Flyology.Buffers.Unique_Buffer;
-      Timeout               : Duration;
-      Operation             : in out Lazy_SST_Read_Operation) is
-   begin
-      Start_Lazy_SST_Read
-        (Database_ID,
-         Family,
-         Run_ID,
-         Lowest_Sequence,
-         Highest_Sequence,
-         Entry_Total,
-         Logical_Payload_Bytes,
-         Lazy_Whole_Run,
-         0,
-         [1 .. 0 => 0],
-         False,
-         False,
-         False,
-         [1 .. 0 => 0],
-         Payload_Buffer,
-         Timeout,
-         Operation);
-   end Read_Lazy_SST;
-
    procedure Finish_Lazy_SST_Read
      (Operation      : in out Lazy_SST_Read_Operation;
       Disposition    : out Lazy_SST_Entry_Disposition;
       Sequence       : out Sequence_Number;
       Value          : out Flyology.Bytes.Unbounded_Bytes;
       Result         : out Outcome_Code;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-   is
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "lazy SST Finish requires the moved token's pool";
       elsif Flyology.Buffers.Has_Buffer (Payload_Buffer) then
          raise Program_Error with "lazy SST Finish requires a vacant same-pool handle";
       elsif Operation.Has_Final_Result and then Operation.Final_Purpose /= Lazy_Point_Entry then
-         raise Program_Error with "point Finish does not match whole-run read";
+         raise Program_Error with "point Finish does not match another lazy read purpose";
       end if;
       Disposition := Lazy_Read_Failed;
       Sequence := 0;
@@ -16147,64 +16124,16 @@ package body Flyology.DB is
       Result := Operation.Final_Result;
    end Finish_Lazy_SST_Next_Entry;
 
-   procedure Finish_Lazy_SST_Read
-     (Operation      : in out Lazy_SST_Read_Operation;
-      Table          : out LSM_Runtime.SST_Access;
-      Result         : out Outcome_Code;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
-   begin
-      if Payload_Buffer.Owner /= Operation.Payload_Pool then
-         raise Program_Error with "lazy SST Finish requires the moved token's pool";
-      elsif Flyology.Buffers.Has_Buffer (Payload_Buffer) then
-         raise Program_Error with "lazy SST Finish requires a vacant same-pool handle";
-      elsif Operation.Has_Final_Result and then Operation.Final_Purpose /= Lazy_Whole_Run then
-         raise Program_Error with "whole-run Finish does not match point read";
-      end if;
-      Table := null;
-      Result := Invalid_State;
-      Flyology.Operations.Consume (Operation);
-      Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
-      Release_Lazy_SST_Read_State (Operation);
-      if Operation.Whole_Child /= null then
-         Free_Whole_Get_Operation (Operation.Whole_Child);
-      end if;
-      if Operation.Range_Child /= null then
-         Free_Range_Get_Operation (Operation.Range_Child);
-      end if;
-      if Operation.Head_Child /= null then
-         Free_Head_Operation (Operation.Head_Child);
-      end if;
-      if Operation.Has_Saved_Error then
-         Ada.Exceptions.Raise_Exception
-           (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
-            Ada.Exceptions.Exception_Message (Operation.Saved_Error));
-      elsif not Operation.Has_Final_Result then
-         raise Program_Error with "lazy SST operation has no terminal result";
-      end if;
-      Result := Operation.Final_Result;
-      if Result = Success then
-         if Operation.Final_Table = null then
-            raise Program_Error with "whole-run operation has no decoded table";
-         end if;
-         Table := Operation.Final_Table.Table;
-         Operation.Final_Table.Table := null;
-         Release_Lazy_SST_Table (Operation.Final_Table);
-      else
-         Release_Lazy_SST_Table (Operation.Final_Table);
-      end if;
-   end Finish_Lazy_SST_Read;
-
-   overriding procedure Finalize (Item : in out Lazy_SST_Read_Operation) is
+   overriding
+   procedure Finalize (Item : in out Lazy_SST_Read_Operation) is
    begin
       begin
-         Flyology.Operations.Finalize
-           (Flyology.Operations.Operation (Item));
+         Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
       exception
          when others =>
             null;
       end;
       Release_Lazy_SST_Read_State (Item);
-      Release_Lazy_SST_Table (Item.Final_Table);
       if Item.Whole_Child /= null then
          Free_Whole_Get_Operation (Item.Whole_Child);
       end if;
@@ -17259,7 +17188,15 @@ package body Flyology.DB is
          Free_Lazy_SST_Run_Array (Item.Driver_State.Runs);
          if Item.Driver_State.Loaded /= null then
             for Run of Item.Driver_State.Loaded.all loop
-               LSM_Runtime.Release (Run.Table);
+               while Run.First /= null loop
+                  declare
+                     Current : Scan_Loaded_Entry_Access := Run.First;
+                  begin
+                     Run.First := Current.Next;
+                     Free_Scan_Loaded_Entry (Current);
+                  end;
+               end loop;
+               Run.Last := null;
                Release_Image (Run.Image);
             end loop;
             Free_Scan_Loaded_Run_Array (Item.Driver_State.Loaded);
@@ -17362,50 +17299,141 @@ package body Flyology.DB is
          Fail_Scan (Item, Error);
    end Build_Authenticated_Scan_Cursor;
 
-   procedure Start_Next_Scan_Run (Item : in out Scan_Operation) is
+   procedure Start_Next_Scan_Entry (Item : in out Scan_Operation) is
       State : Scan_Driver_State renames Item.Driver_State.all;
+
+      procedure Start_Read (Start_Key, Upper_Key : Byte_Array) is
+         Run    : Lazy_SST_Run_Descriptor renames State.Runs (State.Current_Run);
+         Loaded : Scan_Loaded_Run renames State.Loaded (State.Current_Run);
+      begin
+         Read_Lazy_SST_Next_Entry
+           (State.Database_ID,
+            State.Family,
+            Run.Run_ID,
+            Run.Lowest_Sequence,
+            Run.Highest_Sequence,
+            Run.Entry_Total,
+            Run.Logical_Payload_Bytes,
+            State.Snapshot_At,
+            Has_Start       => Loaded.Count > 0 or else State.Has_Lower,
+            Start_Key       => Start_Key,
+            Start_Inclusive => Loaded.Count = 0,
+            Has_Upper       => State.Has_Upper,
+            Upper_Key       => Upper_Key,
+            Payload_Buffer  => Item.Payload,
+            Timeout         => Remaining_Time (Item.Deadline),
+            Operation       => Item.Child.all);
+         State.Phase := Scan_Reading_Entry;
+         Flyology.Operations.Continue_After (Item, Item.Child.all);
+      end Start_Read;
    begin
       if Item.Cancellation /= null and then Item.Cancellation.Requested then
          Complete_Scan (Item, Cancelled, Flyology.Operations.Cancelled);
       elsif Item.Deadline <= Ada.Real_Time.Clock then
          Complete_Scan (Item, Timed_Out);
-      elsif State.Runs = null or else State.Current_Run = State.Runs'Last then
+      elsif State.Runs = null then
          Build_Authenticated_Scan_Cursor (Item);
       else
-         State.Current_Run := State.Current_Run + 1;
+         if State.Current_Run = 0 then
+            State.Current_Run := State.Runs'First;
+         elsif State.Loaded (State.Current_Run).Complete then
+            if State.Current_Run = State.Runs'Last then
+               Build_Authenticated_Scan_Cursor (Item);
+               return;
+            end if;
+            State.Current_Run := State.Current_Run + 1;
+         end if;
+
+         while State.Runs (State.Current_Run).Lowest_Sequence > State.Snapshot_At loop
+            State.Loaded (State.Current_Run).Complete := True;
+            if State.Current_Run = State.Runs'Last then
+               Build_Authenticated_Scan_Cursor (Item);
+               return;
+            end if;
+            State.Current_Run := State.Current_Run + 1;
+         end loop;
+
          declare
             Run : Lazy_SST_Run_Descriptor renames State.Runs (State.Current_Run);
+            Loaded : Scan_Loaded_Run renames State.Loaded (State.Current_Run);
          begin
-            Read_Lazy_SST
-              (State.Database_ID,
-               State.Family,
-               Run.Run_ID,
-               Run.Lowest_Sequence,
-               Run.Highest_Sequence,
-               Run.Entry_Total,
-               Run.Logical_Payload_Bytes,
-               Item.Payload,
-               Remaining_Time (Item.Deadline),
-               Item.Child.all);
+            if Run.Entry_Total = 0 then
+               Complete_Scan (Item, Corrupt);
+               return;
+            end if;
+
+            if Loaded.Count > 0 then
+               declare
+                  Prior : Scan_Loaded_Entry renames Loaded.Last.all;
+                  Start : Byte_Array (1 .. Prior.Key_Length);
+               begin
+                  if Prior.Key_Length > 0 then
+                     for Offset in Natural range 0 .. Prior.Key_Length - 1 loop
+                        Start (Start'First + Offset) :=
+                          Byte (Flyology.Bytes.Element (Loaded.Payload, Prior.Key_Offset + Offset + 1));
+                     end loop;
+                  end if;
+                  if State.Has_Upper then
+                     Start_Read (Start, State.Upper.all);
+                  else
+                     Start_Read (Start, [1 .. 0 => 0]);
+                  end if;
+               end;
+            elsif State.Has_Lower then
+               if State.Has_Upper then
+                  Start_Read (State.Lower.all, State.Upper.all);
+               else
+                  Start_Read (State.Lower.all, [1 .. 0 => 0]);
+               end if;
+            elsif State.Has_Upper then
+               Start_Read ([1 .. 0 => 0], State.Upper.all);
+            else
+               Start_Read ([1 .. 0 => 0], [1 .. 0 => 0]);
+            end if;
          end;
-         State.Phase := Scan_Reading_Run;
-         Flyology.Operations.Continue_After (Item, Item.Child.all);
       end if;
    exception
       when Flyology.Operations.Capacity_Error =>
          Complete_Scan (Item, Capacity_Exceeded);
       when Error : others =>
          Fail_Scan (Item, Error);
-   end Start_Next_Scan_Run;
+   end Start_Next_Scan_Entry;
 
-   procedure Complete_Scan_Run (Item : in out Scan_Operation) is
+   procedure Complete_Scan_Entry (Item : in out Scan_Operation) is
       State  : Scan_Driver_State renames Item.Driver_State.all;
-      Table  : LSM_Runtime.SST_Access := null;
+      Disposition : Lazy_SST_Entry_Disposition;
+      Sequence    : Sequence_Number;
+      Item_Key    : Flyology.Bytes.Unbounded_Bytes;
+      Value       : Flyology.Bytes.Unbounded_Bytes;
       Result : Outcome_Code;
       Image  : Shared_Image_Access := null;
+
+      function Prior_Key_Before (Run : Scan_Loaded_Run; Key : Flyology.Bytes.Unbounded_Bytes) return Boolean
+      is
+         Prior  : Scan_Loaded_Entry renames Run.Last.all;
+         Common : constant Natural := Natural'Min (Prior.Key_Length, Flyology.Bytes.Length (Key));
+      begin
+         if Common > 0 then
+            for Offset in Natural range 0 .. Common - 1 loop
+               declare
+                  Left  : constant Ada.Streams.Stream_Element :=
+                    Flyology.Bytes.Element (Run.Payload, Prior.Key_Offset + Offset + 1);
+                  Right : constant Ada.Streams.Stream_Element := Flyology.Bytes.Element (Key, Offset + 1);
+               begin
+                  if Left < Right then
+                     return True;
+                  elsif Left > Right then
+                     return False;
+                  end if;
+               end;
+            end loop;
+         end if;
+         return Prior.Key_Length < Flyology.Bytes.Length (Key);
+      end Prior_Key_Before;
    begin
       begin
-         Finish_Lazy_SST_Read (Item.Child.all, Table, Result, Item.Payload);
+         Finish_Lazy_SST_Next_Entry
+           (Item.Child.all, Disposition, Sequence, Item_Key, Value, Result, Item.Payload);
       exception
          when Error : others =>
             if Flyology.Operations.Id (Item.Child.all) /= 0
@@ -17418,31 +17446,123 @@ package body Flyology.DB is
             return;
       end;
       Flyology.Operations.Release (Item.Child.all);
-      if Result /= Success then
-         LSM_Runtime.Release (Table);
+      if (Result = Success and then Disposition /= Lazy_Value_Found)
+        or else
+          (Result = Not_Found
+           and then Disposition not in Lazy_Tombstone_Found | Lazy_Key_Absent)
+        or else
+          (Result not in Success | Not_Found and then Disposition /= Lazy_Read_Failed)
+      then
+         Complete_Scan (Item, Corrupt);
+         return;
+      elsif Result not in Success | Not_Found then
          Complete_Scan (Item, Result);
          return;
-      elsif Table = null or else State.Loaded = null or else State.Current_Run not in State.Loaded'Range then
-         LSM_Runtime.Release (Table);
+      elsif State.Loaded = null or else State.Current_Run not in State.Loaded'Range then
          Complete_Scan (Item, Corrupt);
          return;
       end if;
-      Image := New_Image (Table.Payload);
-      State.Loaded (State.Current_Run) := (Table => Table, Image => Image);
-      Table := null;
-      Image := null;
+
+      declare
+         Run    : Lazy_SST_Run_Descriptor renames State.Runs (State.Current_Run);
+         Loaded : Scan_Loaded_Run renames State.Loaded (State.Current_Run);
+      begin
+         if Disposition = Lazy_Key_Absent then
+            if Flyology.Bytes.Length (Item_Key) /= 0
+              or else Flyology.Bytes.Length (Value) /= 0
+              or else Sequence /= 0
+            then
+               Complete_Scan (Item, Corrupt);
+               return;
+            end if;
+            if Loaded.Count > 0 then
+               Image := Allocate_Shared_Image;
+               Flyology.Bytes.Move (Image.Data, Loaded.Payload);
+               Loaded.Image := Image;
+               Image := null;
+            end if;
+            Loaded.Complete := True;
+         elsif Disposition in Lazy_Value_Found | Lazy_Tombstone_Found then
+            if Loaded.Count = Natural'Last then
+               Complete_Scan (Item, Capacity_Exceeded);
+               return;
+            elsif Interfaces.Unsigned_64 (Loaded.Count) >= Interfaces.Unsigned_64 (Run.Entry_Total)
+              or else Sequence = 0
+              or else Sequence < Run.Lowest_Sequence
+              or else Sequence > Run.Highest_Sequence
+              or else Sequence > State.Snapshot_At
+              or else Interfaces.Unsigned_64 (Flyology.Bytes.Length (Item_Key)) > State.Family.Max_Key_Bytes
+              or else Interfaces.Unsigned_64 (Flyology.Bytes.Length (Value)) > State.Family.Max_Value_Bytes
+              or else (Disposition = Lazy_Tombstone_Found and then Flyology.Bytes.Length (Value) /= 0)
+              or else (Loaded.Count > 0 and then not Prior_Key_Before (Loaded, Item_Key))
+            then
+               Complete_Scan (Item, Corrupt);
+               return;
+            end if;
+            declare
+               Key_Length   : constant Natural := Flyology.Bytes.Length (Item_Key);
+               Value_Length : constant Natural := Flyology.Bytes.Length (Value);
+               Prior_Length : constant Natural := Flyology.Bytes.Length (Loaded.Payload);
+               Candidate    : Scan_Loaded_Entry_Access := null;
+            begin
+               if Key_Length > Natural'Last - Value_Length
+                 or else Prior_Length > Natural'Last - (Key_Length + Value_Length)
+               then
+                  Complete_Scan (Item, Capacity_Exceeded);
+                  return;
+               end if;
+               Flyology.Bytes.Reserve_Capacity (Loaded.Payload, Prior_Length + Key_Length + Value_Length);
+               Allocation_Faults.Check (Scan_Run_Entry_Allocation);
+               Candidate :=
+                 new Scan_Loaded_Entry'
+                   (Sequence     => Sequence,
+                    Key_Offset   => Prior_Length,
+                    Key_Length   => Key_Length,
+                    Value_Offset => Prior_Length + Key_Length,
+                    Value_Length => Value_Length,
+                    Operation    =>
+                      (if Disposition = Lazy_Value_Found then Put_Mutation else Delete_Mutation),
+                    Next         => null);
+               begin
+                  if Key_Length > 0 then
+                     for Offset in Positive range 1 .. Key_Length loop
+                        Flyology.Bytes.Append (Loaded.Payload, Flyology.Bytes.Element (Item_Key, Offset));
+                     end loop;
+                  end if;
+                  if Value_Length > 0 then
+                     for Offset in Positive range 1 .. Value_Length loop
+                        Flyology.Bytes.Append (Loaded.Payload, Flyology.Bytes.Element (Value, Offset));
+                     end loop;
+                  end if;
+               exception
+                  when others =>
+                     Free_Scan_Loaded_Entry (Candidate);
+                     raise;
+               end;
+               if Loaded.Last = null then
+                  Loaded.First := Candidate;
+               else
+                  Loaded.Last.Next := Candidate;
+               end if;
+               Loaded.Last := Candidate;
+               Candidate := null;
+               Loaded.Count := Loaded.Count + 1;
+            end;
+         else
+            Complete_Scan (Item, Corrupt);
+            return;
+         end if;
+      end;
       State.Phase := Scan_Idle;
       Flyology.Operations.Drivers.Reschedule (Item);
    exception
       when Storage_Error =>
-         LSM_Runtime.Release (Table);
          Release_Image (Image);
          Complete_Scan (Item, Capacity_Exceeded);
       when Error : others =>
-         LSM_Runtime.Release (Table);
          Release_Image (Image);
          Fail_Scan (Item, Error);
-   end Complete_Scan_Run;
+   end Complete_Scan_Entry;
 
    overriding
    procedure Drive (Item : in out Scan_Operation; Event : Flyology.Operations.Driver_Event) is
@@ -17452,14 +17572,14 @@ package body Flyology.DB is
                  and then Item.Driver_State /= null
                  and then Item.Driver_State.Phase = Scan_Idle)
       then
-         Start_Next_Scan_Run (Item);
+         Start_Next_Scan_Entry (Item);
       elsif Event = Flyology.Operations.Dependency_Changed
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Phase = Scan_Reading_Run
+        and then Item.Driver_State.Phase = Scan_Reading_Entry
         and then Item.Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Child.all)
       then
-         Complete_Scan_Run (Item);
+         Complete_Scan_Entry (Item);
       else
          raise Program_Error with "invalid scan driver event";
       end if;
@@ -17478,9 +17598,9 @@ package body Flyology.DB is
       elsif Item.Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Child.all)
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Phase = Scan_Reading_Run
+        and then Item.Driver_State.Phase = Scan_Reading_Entry
       then
-         Complete_Scan_Run (Item);
+         Complete_Scan_Entry (Item);
          if Flyology.Operations.Is_Active (Item) then
             Request_Cancellation (Item);
          end if;
@@ -17708,7 +17828,7 @@ package body Flyology.DB is
       Cursor         : in out Scan_Cursor;
       Result         : out Outcome_Code)
    is
-      --  The public DB parent plus the private whole-run reader and its
+      --  The public DB parent plus the private next-entry reader and its
       --  provider/HTTP/transport stack need six exact owner slots. This is
       --  derived scheduling geometry, not a persisted or public capacity.
       Synchronous_Scan_Set_Capacity : constant := 6;

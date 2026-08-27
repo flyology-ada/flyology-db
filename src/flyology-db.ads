@@ -214,9 +214,12 @@ package Flyology.DB is
    --  Item and Txn are retained borrows through terminal publication; the
    --  caller must not use Txn while the operation is active. Payload_Pool
    --  supplies the sole caller-selected object-read scratch bound. The
-   --  operation reads the exact manifest run slice sequentially, creates the
-   --  same owned physical cursor used by Next_Scan_Page, and introduces no
-   --  helper task, retry, run cap, page default, prefetch, or cache.
+   --  operation reads each run's canonical snapshot-visible entries through
+   --  generation-bound next-entry reads, creates the same owned physical
+   --  cursor used by Next_Scan_Page without retaining whole SST images, and
+   --  introduces no helper task, retry, run cap, page default, prefetch, or
+   --  cache. The cursor still retains all selected source entries, so this is
+   --  not a constant-memory paging claim.
    type Scan_Operation
      (Set          : not null access Flyology.Operations.Completion_Set'Class;
       Item         : not null access Database;
@@ -665,9 +668,10 @@ package Flyology.DB is
       Result    : out Outcome_Code);
 
    --  Start or restart authenticated object-storage initialization of one
-   --  fixed-snapshot cursor. The exact manifest run slice is read under one
-   --  absolute monotonic deadline into caller-bounded scratch, then merged
-   --  with the captured committed suffix and transaction-local mutations.
+   --  fixed-snapshot cursor. The exact manifest run slice is traversed one
+   --  authenticated next entry at a time under one absolute monotonic
+   --  deadline and caller-bounded scratch, then merged with the captured
+   --  committed suffix and transaction-local mutations.
    --  Payload_Buffer moves into Operation only after validation and operation
    --  admission. Typed Finish is the sole restoration and cursor-publication
    --  authority. Any failure preserves the caller's prior cursor exactly.
@@ -1410,10 +1414,12 @@ private
       Get_Run_Descriptor_Allocation,
       Get_Child_Operation_Allocation,
       --  Test-only positions distinguish authenticated scan owner state, the
-      --  exact run-result array, and its private whole-run reader child. They
+      --  exact run array, lazily selected entry nodes, and its private
+      --  next-entry reader child. They
       --  are not persisted, public allocation policy, or stable ABI.
       Scan_Operation_State_Allocation,
       Scan_Run_Array_Allocation,
+      Scan_Run_Entry_Allocation,
       Scan_Child_Operation_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
    procedure Decode_Runtime_Image_For_Test
@@ -1773,13 +1779,11 @@ private
    type Scan_Driver_State_Access is access Scan_Driver_State;
    type Lazy_SST_Read_State;
    type Lazy_SST_Read_State_Access is access Lazy_SST_Read_State;
-   type Lazy_SST_Table_Holder;
-   type Lazy_SST_Table_Holder_Access is access Lazy_SST_Table_Holder;
    type Lazy_Checkpoint_Read_State;
    type Lazy_Checkpoint_Read_State_Access is access Lazy_Checkpoint_Read_State;
    type Lazy_SST_Entry_Disposition is
      (Lazy_Value_Found, Lazy_Tombstone_Found, Lazy_Key_Absent, Lazy_Read_Failed);
-   type Lazy_SST_Read_Purpose is (Lazy_Point_Entry, Lazy_Next_Entry, Lazy_Whole_Run);
+   type Lazy_SST_Read_Purpose is (Lazy_Point_Entry, Lazy_Next_Entry);
    type Lazy_SST_Run_Descriptor is record
       Run_ID                : Identifier := Zero_Identifier;
       Lowest_Sequence       : Sequence_Number := 0;
@@ -1866,10 +1870,10 @@ private
    --  @exclude
    overriding procedure Finalize (Item : in out Refresh_Operation);
 
-   --  Private engine operation for one generation-bound SST-v1/v2 point,
-   --  next-visible-entry, or whole-run read. Version 2 point/next reads only
-   --  header/index/one frame; version 1 uses the frozen authenticated
-   --  whole-object compatibility fallback.
+   --  Private engine operation for one generation-bound SST-v1/v2 point or
+   --  next-visible-entry read. Version 2 reads only header/index/one frame;
+   --  version 1 uses the frozen authenticated whole-object compatibility
+   --  fallback.
    --  The retained borrows and moved token follow the public operation
    --  convention, but this type deliberately adds no public read contract.
    type Lazy_SST_Read_Operation
@@ -1891,7 +1895,6 @@ private
       Final_Sequence   : Sequence_Number := 0;
       Final_Key        : Flyology.Bytes.Unbounded_Bytes;
       Final_Value      : Flyology.Bytes.Unbounded_Bytes;
-      Final_Table       : Lazy_SST_Table_Holder_Access := null;
       Final_Purpose     : Lazy_SST_Read_Purpose := Lazy_Point_Entry;
       Has_Final_Result : Boolean := False;
       Has_Saved_Error  : Boolean := False;

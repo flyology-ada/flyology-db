@@ -1427,6 +1427,77 @@ check_trace \
 grep -q 'All 17 obligations proved.' \
   "$temporary_root/tlaps-lazy-sst-next-entry.log"
 
+#  Three ordered runs, three keys, and three values are finite qualification
+#  geometry for exact multi-run next-entry accumulation. They are not a run,
+#  key, value, page, request, retry, or allocation limit.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 \
+  -metadir "$temporary_root/tlc-authenticated-scan-initialization-states" \
+  -config AuthenticatedScanInitialization.cfg AuthenticatedScanInitialization \
+  >"$temporary_root/tlc-authenticated-scan-initialization.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+! grep -q '^Warning:' "$temporary_root/tlc-authenticated-scan-initialization.log"
+grep -q '25 states generated, 24 distinct states found, 0 states left on queue.' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+grep -q 'The depth of the complete state graph search is 10.' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+grep -Eq '^<Begin .*: 1:1$' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+grep -Eq '^<ReadEntry .*: 4:4$' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+grep -Eq '^<ReadAbsent .*: 2:2$' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+grep -Eq '^<SkipFuture .*: 1:1$' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+grep -Eq '^<PublishCursor .*: 1:1$' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+grep -Eq '^<RejectRead .*: 7:7$' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+grep -Eq '^<RejectAllocation .*: 7:8$' \
+  "$temporary_root/tlc-authenticated-scan-initialization.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-authenticated-scan-initialization-skip-probe-states" \
+  -config AuthenticatedScanInitializationSkipProbe.cfg \
+  AuthenticatedScanInitializationSkipProbe \
+  >"$temporary_root/tlc-authenticated-scan-initialization-skip-probe.log" 2>&1
+authenticated_scan_initialization_skip_probe_status=$?
+set -e
+test "$authenticated_scan_initialization_skip_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-authenticated-scan-initialization-skip-probe.log"
+! grep -q '^Warning:' \
+  "$temporary_root/tlc-authenticated-scan-initialization-skip-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-authenticated-scan-initialization-witness-states" \
+  -config AuthenticatedScanInitializationWitness.cfg \
+  -dumpTrace json "$temporary_root/authenticated-scan-initialization-witness.json" \
+  AuthenticatedScanInitializationWitness \
+  >"$temporary_root/tlc-authenticated-scan-initialization-witness.log" 2>&1
+authenticated_scan_initialization_witness_status=$?
+set -e
+test "$authenticated_scan_initialization_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-authenticated-scan-initialization-witness.log"
+! grep -q '^Warning:' \
+  "$temporary_root/tlc-authenticated-scan-initialization-witness.log"
+check_trace \
+  "$temporary_root/authenticated-scan-initialization-witness.json" \
+  AuthenticatedScanInitializationWitness
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-authenticated-scan-initialization-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/AuthenticatedScanInitializationSafetyProof.tla" \
+  >"$temporary_root/tlaps-authenticated-scan-initialization.log" 2>&1
+grep -q 'All 13 obligations proved.' \
+  "$temporary_root/tlaps-authenticated-scan-initialization.log"
+
 #  Three ordered runs, two keys, and four values are finite qualification
 #  geometry for newest-visible fixed-snapshot selection. They are not a run
 #  ceiling, key/value limit, request count, retry policy, or public default.
@@ -1553,6 +1624,10 @@ printf '%s\n' "  Lazy SST next-entry TLC 75 distinct states, depth 5"
 printf '%s\n' "  Lazy SST next-entry TLAPS 17/17 obligations"
 printf '%s\n' "  Historical tombstone selection trace canonical"
 printf '%s\n' "  Negative skipped-first-visible-entry probe detected"
+printf '%s\n' "  Authenticated scan initialization TLC 24 distinct states, depth 10"
+printf '%s\n' "  Authenticated scan initialization TLAPS 13/13 obligations"
+printf '%s\n' "  Exact accumulated-source publication trace canonical"
+printf '%s\n' "  Negative skipped-entry initialization probe detected"
 printf '%s\n' "  Lazy checkpoint selector TLC 37 distinct states, depth 6"
 printf '%s\n' "  Lazy checkpoint selector TLAPS 13/13 obligations"
 printf '%s\n' "  Generation-bound allocation/replacement trace canonical"

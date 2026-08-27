@@ -40,6 +40,14 @@ test -f formal/tla/LazySSTNextEntryWitness.tla
 test -f formal/tla/LazySSTNextEntryWitness.cfg
 test -f formal/tla/LazySSTNextEntrySafetyProof.tla
 test -f formal/tla/traces/LazySSTNextEntryWitness.trace.json
+test -f formal/tla/AuthenticatedScanInitialization.tla
+test -f formal/tla/AuthenticatedScanInitialization.cfg
+test -f formal/tla/AuthenticatedScanInitializationSkipProbe.tla
+test -f formal/tla/AuthenticatedScanInitializationSkipProbe.cfg
+test -f formal/tla/AuthenticatedScanInitializationWitness.tla
+test -f formal/tla/AuthenticatedScanInitializationWitness.cfg
+test -f formal/tla/AuthenticatedScanInitializationSafetyProof.tla
+test -f formal/tla/traces/AuthenticatedScanInitializationWitness.trace.json
 test -x oracles/adapters/tidesdb/adapter.py
 test -x oracles/adapters/tidesdb/run_workload.py
 test -x oracles/adapters/tidesdb/scripts/build.sh
@@ -93,8 +101,10 @@ grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' tests/alire.toml
 ! grep -Eq '^flyology_tla = \{ (path|url)=' alire.toml
 ! grep -Eq '^flyology_tla = \{ (path|url)=' tests/alire.toml
 # The canonical trace/2 inventory is the established 36-artifact harness plus
-# the LazySSTNextEntry historical-tombstone witness added by this slice.
-test "$(find formal/tla/traces -type f -name '*.trace.json' | wc -l | tr -d ' ')" -eq 37
+# the LazySSTNextEntry historical-tombstone and AuthenticatedScanInitialization
+# accumulated-source witnesses. Thirty-eight is therefore a derived
+# fail-closed repository-shape oracle, not a trace, state, or product limit.
+test "$(find formal/tla/traces -type f -name '*.trace.json' | wc -l | tr -d ' ')" -eq 38
 for trace in formal/tla/traces/*.trace.json
 do
   grep -q '"format":"flyology[.]tla[.]trace/2"' "$trace"

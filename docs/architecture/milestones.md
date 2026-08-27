@@ -70,11 +70,12 @@ combined key/value bytes bounded by persisted live-entry/live-state limits. Allo
 retention failure leaves the caller's previous result unchanged; Serializable predicates become visible only after
 complete materialization. The additive paged cursor uses an owned physical merge snapshot, and whole `Scan` now
 requests one complete page from that same private engine under the persisted live limits. Authenticated Object
-Storage initialization now reads the exact manifest run slice sequentially and builds that same cursor. The private
-lazy-SST operation can now select one exact next snapshot-visible entry from a v2 authenticated index/frame or the
-required v1 whole-object fallback, with normalized start/upper bounds, conclusive tombstones, and failure-atomic token
-restoration. Composing that primitive into the multi-run cursor and removing retained whole-run images remain later
-Milestone 4 work; no constant-memory claim is made yet.
+Storage initialization now traverses the exact manifest run slice and builds that same cursor. The private lazy-SST
+operation selects one exact next snapshot-visible entry from a v2 authenticated index/frame or the required v1
+whole-object fallback, with normalized start/upper bounds, conclusive tombstones, and failure-atomic token
+restoration. Authenticated scan initialization composes that primitive across every run and retains compact selected
+source images rather than whole SST objects. The cursor still retains all selected entries, so direct storage-backed
+page advancement remains later Milestone 4 work; no constant-memory claim is made yet.
 
 The fixed-snapshot point-read rule is now separately model-checked and proved: read-your-writes precedes committed
 history, committed lookup selects the newest version no later than Begin, and incomplete checkpoint history returns a
@@ -116,8 +117,9 @@ owned immutable source snapshot, advances every equal-key head, and selects own 
 newest-to-oldest, then checkpoint, with tombstone suppression and atomic allocation rejection. Its finite TLC model,
 two negative probes, checked witness, and abstract TLAPS kernel are green. The Ada cursor retains exact immutable
 image leases and copied transaction-local mutations across engine replacement, eliminating repeated page capture and
-global sorting. Authenticated initialization now reads exact manifest SSTs sequentially under one deadline; lazy
-frame traversal, automatic run selection, and constant-memory claims remain unfinished. See
+global sorting. Authenticated initialization now traverses exact manifest SSTs one selected entry at a time under one
+deadline and retains compact source-entry images rather than whole runs; storage-backed page advancement, automatic
+run selection, and constant-memory claims remain unfinished. See
 [`paged-scans.md`](paged-scans.md) and [`physical-scan-merge.md`](physical-scan-merge.md).
 
 Generation-bound lazy immutable-run point reads now have a caller-driven execution path. New Flush and
@@ -131,8 +133,9 @@ boundaries; two unsafe probes fail and TLAPS proves the arbitrary-generation/key
 storage-free `Get`, `Scan`, `Start_Scan`, and `Next_Scan_Page` remain source-compatible. Additive buffer-owned
 `Get_Operation` and `Scan_Operation` paths opt into storage I/O without adding a cache, prefetch, automatic retry,
 or block-size policy. Its next-visible-entry purpose now shares one tested whole-table/index selector, returns an exact
-key plus value/tombstone, and releases index/frame state at typed Finish; this is the dependency for later
-frame-streamed scan composition, not the composition itself. See
+key plus value/tombstone, and releases index/frame state at typed Finish. Authenticated scan initialization composes
+that purpose across its run slice without retaining whole SSTs; a later storage-backed page operation is still needed
+before any constant-memory claim. See
 [`lazy-sst-reads.md`](lazy-sst-reads.md).
 
 The point-read path also owns an exact manifest run slice and

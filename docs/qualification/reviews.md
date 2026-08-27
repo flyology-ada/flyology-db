@@ -1,5 +1,39 @@
 # Review record
 
+## Authenticated next-entry scan initialization candidate
+
+- Parent: lazy SST next-visible-entry commit `4dad73f`.
+- Scope: replace authenticated scan initialization's whole-run reads with repeated exact next-visible-entry reads
+  through the existing private lazy-SST operation. Each run is exhausted under one fixed snapshot, optional lower
+  bound, optional exclusive upper bound, absolute deadline, and moved caller scratch token. The parent compacts only
+  selected key/value or tombstone bytes into one owned image per run before invoking the established physical merge.
+  SST-v2 reads header, index, and one frame at a time; frozen SST-v1 retains its required whole-object compatibility
+  fallback. The public scan API and same-state-machine blocking waits are unchanged. The completed cursor still owns
+  every selected source entry, so this unit makes no constant-memory paging claim.
+- Formal boundary: `AuthenticatedScanInitialization.tla` composes strict entry advance, authenticated exhaustion,
+  future-run skipping, terminal cursor publication, read rejection, and allocation rejection. Its unsafe child skips
+  one entry and must violate `Safety`; its shared-harness witness publishes only the completely accumulated source
+  set. The arbitrary-domain TLAPS kernel proves prefix accumulation, ordered run completion, failure atomicity, and
+  publication-after-exhaustion under the pre-existing exact-child-result assumption. Neither artifact proves SST
+  parsing/authentication, provider behavior, allocation implementation, the physical merge, Ada refinement,
+  progress, or constant-memory paging.
+- Findings cycle: P0 denotes data-loss, durable-authority, or safety failure; P1 denotes incorrect selection,
+  ownership, snapshot, capacity, failure, or qualification semantics; P2 denotes maintainability, documentation, or
+  test weakness. The implementation sweep fixed four P1 findings: a preallocated descriptor array scaled with the
+  persisted physical-entry total rather than selected entries; valid tombstone/absence child tuples were rejected
+  while inconsistent result/disposition tuples were not closed; a narrower host `Natural` could overflow before a
+  persisted 32-bit entry count was exhausted; and the witness lacked the shared `ALIAS`, so the locked normalizer
+  correctly rejected its raw TLC states. Lazy linked nodes, exact tuple validation, checked host-count exhaustion,
+  and the common harness projection close those defects without weakening publication safety. P2 fixes add a
+  two-entry-per-run tombstone suppression oracle, one-header scratch bound that rejects whole-SST dependence, exact
+  allocation injection, calibrated graph/action/obligation assertions, and architecture wording that distinguishes
+  selected-entry retention from future storage-backed paging.
+- Verification boundary: exact root and nested builds, the complete maintained deterministic suite, repository and
+  public leading-style documentation inspection, `git diff --check`, update-mode plus byte-stable ordinary
+  `./scripts/check-tla.sh`, warning-strict `./scripts/prove.sh`, and a clean coordinated formal-process audit are
+  required on the frozen source tree. GNATdoc is unavailable in the installed toolchain, so this unit makes no
+  generated-site claim.
+
 ## Lazy SST next-visible-entry candidate
 
 - Parent: authenticated whole-scan wait commit `aeeec3a`.

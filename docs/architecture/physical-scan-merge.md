@@ -13,7 +13,8 @@ A cursor does not retain raw coordinator, database, transaction, checkpoint, bat
 Close, replica refresh, checkpoint activation, and compaction may replace and reclaim the engine after a page call
 releases its lifecycle lease. The physical cursor instead owns a complete immutable merge snapshot:
 
-- one copied ordered descriptor/index view for the checkpoint base;
+- one copied ordered descriptor/index view for a storage-free checkpoint base,
+  or one compact authenticated snapshot-visible source image per manifest run;
 - one copied, key-ordered, newest-per-key descriptor/index view for each visible suffix batch;
 - one copied, key-ordered view of the transaction's unique own mutations;
 - one retained reference for every immutable image used by those descriptors; and
@@ -25,9 +26,10 @@ lazy. A source snapshot is fully built before it replaces prior cursor state; al
 or lifecycle failure releases all candidates and preserves the previous cursor. Retained images make the cursor safe
 across engine replacement without keeping a database lifecycle lease or original handle pointer.
 
-This is an owned in-memory physical merge cursor. It removes repeated source capture and global sorting per page,
-but it does not stream SST or batch objects from Object Storage and does not claim constant memory independent of the
-retained source descriptors.
+This is an owned in-memory physical merge cursor. Authenticated initialization now streams one selected entry at a
+time from each SST and does not retain whole run objects, but the completed cursor still retains every selected source
+entry so later pages remain storage-free. It therefore makes no constant-memory claim independent of the retained
+source descriptors and bytes.
 
 ## Merge rule
 
