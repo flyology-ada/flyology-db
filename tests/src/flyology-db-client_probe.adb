@@ -127,7 +127,7 @@ procedure Flyology.DB.Client_Probe is
    Context                               : aliased Storage_Context;
    Created                               : aliased Database;
    Replica                               : aliased Database;
-   Reopened                              : Database;
+   Reopened                              : aliased Database;
    Txn                                   : Transaction;
    Reader                                : Transaction;
    Family, Audit_Family, Metadata_Family : Column_Family;
@@ -303,11 +303,11 @@ procedure Flyology.DB.Client_Probe is
    Tombstone_Value_Data         : constant Byte_Array := Bytes ("obsolete");
    Audit_Key_Data               : constant Byte_Array := Bytes ("event-1");
    Audit_Value_Data             : constant Byte_Array := Bytes ("remote-append");
-   --  One DB parent, one Object Storage child, its HTTP exchange, and the
-   --  cold H1 connection plus transport children are the observed five-slot
-   --  owner stack of this serial proxy corpus. This is dependency-qualified
-   --  test geometry, not a DB completion-set or connection-pool default.
-   Composable_Set               : aliased Flyology.Operations.Completion_Set (5);
+   --  Reusable Flush, Refresh, and Open retain three DB operation slots. The
+   --  active Object Storage operation, its HTTP exchange, and HTTP's transport
+   --  child add three more. This is exact dependency-qualified test geometry,
+   --  not a DB completion-set or connection-pool default.
+   Composable_Set               : aliased Flyology.Operations.Completion_Set (6);
    --  The multi-run fixture adds one DB selector parent above the qualified
    --  five-slot one-run/Objects/HTTP/H1/transport stack. Six is therefore the
    --  exact observed owner-stack depth, not a production completion default.
@@ -334,6 +334,9 @@ procedure Flyology.DB.Client_Probe is
    Refresh_Work                 :
      Refresh_Operation
        (Composable_Set'Access, Replica'Access, Context'Access, Client'Access, Flush_Pool'Access, null);
+   Open_Work                    :
+     Open_Operation
+       (Composable_Set'Access, Reopened'Access, Context'Access, Client'Access, Flush_Pool'Access, null);
    Lazy_Work                    :
      Lazy_SST_Read_Operation
        (Composable_Set'Access, Context'Access, Client'Access, Lazy_Pool'Access, null);
@@ -1903,8 +1906,19 @@ begin
    --  It remains deliberately stale while the writer appends families, Flushes,
    --  and compacts; the final public refresh must install the complete newer
    --  graph without polling, retrying, or replaying a mutation.
-   Open (Replica, Context'Access, Probe_Database_ID, Test_Operation_Timeout, Result => Result);
+   Open
+     (Replica,
+      Context'Access,
+      Probe_Database_ID,
+      Restored_Buffer,
+      Test_Operation_Timeout,
+      Result => Result);
    Expect (Result, Success, "client-backed replica open failed");
+   if not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "synchronous owner-driven open did not restore its exact token";
+   end if;
 
    --  Family-registry publication must include the appended name/header in its
    --  caller-selected scratch requirement. A one-byte token is rejected before
@@ -2510,14 +2524,121 @@ begin
       Expect (Result, Success, "refreshed replica reader rollback failed");
    end;
 
-   Flyology.Buffers.Release (Flush_Buffer);
    Close (Created, Close_Result);
    Expect (Close_Result, Success, "client-backed close failed");
    Close (Replica, Close_Result);
    Expect (Close_Result, Success, "client-backed replica close failed");
 
-   Open (Reopened, Context'Access, Probe_Database_ID, Test_Operation_Timeout, Result => Result);
+   --  Cancellation recorded before Start still follows the move/drain/Finish
+   --  path. The later successful open on the same Database proves cancellation
+   --  returned its lifecycle to Closed without installing a partial engine.
+   declare
+      Stop        : aliased Flyology.Cancellation.Token;
+      Cancel_Open : Open_Operation
+        (Composable_Set'Access,
+         Reopened'Access,
+         Context'Access,
+         Client'Access,
+         Flush_Pool'Access,
+         Stop'Access);
+   begin
+      Stop.Request;
+      Open (Probe_Database_ID, Flush_Buffer, Test_Operation_Timeout, Cancel_Open);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Cancel_Open, Result, Restored_Buffer);
+      Flyology.Operations.Release (Cancel_Open);
+      Expect (Result, Cancelled, "pre-requested composable open cancellation was lost");
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "cancelled composable open did not restore its exact token";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+   end;
+
+   --  Scope abandonment is the fallback ownership authority. A terminal
+   --  unconsumed open returns its operation-owned token to the pool and leaves
+   --  the database Closed for the later successful open.
+   declare
+      Abandon_Set  : aliased Flyology.Operations.Completion_Set (1);
+      Abandon_Pool : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
+      Stop         : aliased Flyology.Cancellation.Token;
+   begin
+      Stop.Request;
+      declare
+         Abandon_Buffer : Flyology.Buffers.Unique_Buffer (Abandon_Pool'Access);
+         Abandon_Open   : Open_Operation
+           (Abandon_Set'Access,
+            Reopened'Access,
+            Context'Access,
+            Client'Access,
+            Abandon_Pool'Access,
+            Stop'Access);
+      begin
+         Flyology.Buffers.Acquire (Abandon_Buffer);
+         Open (Probe_Database_ID, Abandon_Buffer, Test_Operation_Timeout, Abandon_Open);
+         Flyology.Operations.Wait_All (Abandon_Set);
+         if Flyology.Buffers.Has_Buffer (Abandon_Buffer) then
+            raise Program_Error with "abandoned composable open did not retain its token";
+         end if;
+      end;
+      declare
+         Snapshot : constant Flyology.Buffers.Pool_Snapshot := Flyology.Buffers.Current (Abandon_Pool);
+      begin
+         if Snapshot.Available /= 1 or else Snapshot.Outstanding /= 0 then
+            raise Program_Error with "abandoned composable open did not release its token";
+         end if;
+      end;
+   end;
+
+   --  A caller token smaller than the first recovery object fails as bounded
+   --  backpressure, restores its exact token, and aborts lifecycle admission.
+   --  The following full-capacity restart on the same Database proves the
+   --  failed operation left no partial engine or stuck Opening state.
+   declare
+      Tiny_Pool     : aliased Flyology.Buffers.Pool (Block_Size => 1, Capacity => 1);
+      Tiny_Buffer   : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
+      Tiny_Restored : Flyology.Buffers.Unique_Buffer (Tiny_Pool'Access);
+      Tiny_Tag      : constant Interfaces.Unsigned_64 := 16#0E3A#;
+      Tiny_Open     : Open_Operation
+        (Composable_Set'Access,
+         Reopened'Access,
+         Context'Access,
+         Client'Access,
+         Tiny_Pool'Access,
+         null);
+   begin
+      Flyology.Buffers.Acquire (Tiny_Buffer);
+      Flyology.Buffers.Set_Tag (Tiny_Buffer, Tiny_Tag);
+      Open (Probe_Database_ID, Tiny_Buffer, Test_Operation_Timeout, Tiny_Open);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Tiny_Open, Result, Tiny_Restored);
+      Flyology.Operations.Release (Tiny_Open);
+      Expect (Result, Capacity_Exceeded, "undersized composable open was not rejected");
+      if Flyology.Buffers.Has_Buffer (Tiny_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Tiny_Restored)
+        or else Flyology.Buffers.Tag (Tiny_Restored) /= Tiny_Tag
+      then
+         raise Program_Error with "undersized composable open lost its exact token";
+      end if;
+      Flyology.Buffers.Release (Tiny_Restored);
+   end;
+
+   Open (Probe_Database_ID, Flush_Buffer, Test_Operation_Timeout, Open_Work);
+   if Flyology.Buffers.Has_Buffer (Flush_Buffer) then
+      raise Program_Error with "composable open did not acquire its scratch token";
+   end if;
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Open_Work, Result, Restored_Buffer);
+   Flyology.Operations.Release (Open_Work);
    Expect (Result, Success, "cacheless client-backed reopen failed");
+   if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "composable open did not restore its exact token";
+   end if;
    Begin_Transaction (Reopened, Reader_ID, Reader, Result);
    Expect (Result, Success, "client-backed reader begin failed");
    Open_Column_Family (Reopened, 1, Family, Result);
@@ -2542,6 +2663,7 @@ begin
    Expect (Result, Success, "client-backed reader rollback failed");
    Close (Reopened, Close_Result);
    Expect (Close_Result, Success, "reopened client-backed close failed");
+   Flyology.Buffers.Release (Restored_Buffer);
    Refresh_Proxy_Testing.Stop;
    Ada.Text_IO.Put_Line ("Flyology.DB client-backed create/commit/Flush/compaction/refresh/reopen passed");
 exception

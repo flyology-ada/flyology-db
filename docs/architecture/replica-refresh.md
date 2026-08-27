@@ -11,6 +11,20 @@ are discarded. Failure before installation leaves the prior engine exact, and a 
 The operation has one caller-supplied monotonic budget and optional cancellation token. It does not poll, retry,
 register a replica, acquire a lease, create a retention pin, or authorize promotion.
 
+## Cacheless open reuse
+
+Client-backed cacheless `Open` and replica refresh share the same internal recovery request/consume machine, but
+they keep distinct public operation types and lifecycle contracts. `Open_Operation` admits only a closed `Database`,
+copies the requested database identity, drives provider-owned Head/range/whole reads, and installs the recovered
+engine only after the complete authenticated graph validates. Any typed failure, cancellation, abandonment, or
+unexpected local exception aborts lifecycle admission and leaves the database Closed.
+
+The operation-last `Open` moves one exact caller scratch token. Typed `Finish` restores that token into any vacant
+same-pool handle before publishing a result or re-raising a saved unexpected exception. A buffer-owned synchronous
+overload literally waits that operation. The established storage-neutral synchronous overload remains direct and
+source-compatible because it has no caller scratch token and uses the backend-neutral blocking `Storage_Port`.
+Neither form selects retry, polling, helper-task, buffer-size, identity, or promotion policy.
+
 ## Composable API freeze
 
 The additive composable form remains directly in `Flyology.DB`; lifetime discipline is expressed by its limited

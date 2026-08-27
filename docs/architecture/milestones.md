@@ -173,6 +173,13 @@ children without retry or helper tasks. Enforced replica roles, polling, leases,
 and explicit promotion remain pending Milestone 8 decisions. See
 [`replica-refresh.md`](replica-refresh.md) for the ownership and qualification boundary.
 
+Client-backed cacheless `Open` now reuses that recovery request/consume machine through a distinct public
+`Open_Operation`, operation-last start, typed `Finish`, and buffer-owned synchronous wait. It admits only a closed
+database, owns one exact caller scratch token through terminal drain, and installs no engine until the complete
+authenticated graph validates. Failure and abandonment restore Closed. The storage-neutral synchronous `Open`
+remains direct and source-compatible; composable Create and mutation-resolution work remain separate Milestone 2
+units.
+
 The LSM read-equivalence lane now exhausts all two-key/two-value captured views and later mutation maps, validates a
 concrete delete/put execution witness, rejects a replacement that omits one live key, and proves the arbitrary-key/
 value reconstruction and later-delta equations with TLAPS. This strengthens the public complete-view replacement

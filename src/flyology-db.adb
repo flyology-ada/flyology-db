@@ -8664,7 +8664,14 @@ package body Flyology.DB is
       Refresh_Reading_Whole,
       Refresh_Terminal);
 
+   --  The historical Refresh_* helper names below now implement one shared
+   --  recovery traversal for the distinct refresh and cacheless-open public
+   --  contracts. Mode keeps their lifecycle/install semantics explicit.
+   type Recovery_Driver_Mode is (Refresh_Existing_Database, Open_Closed_Database);
+
    type Refresh_Driver_State is record
+      Mode                  : Recovery_Driver_Mode := Refresh_Existing_Database;
+      Database_ID           : Database_Identifier := Zero_Database_ID;
       Engine                : Engine_State_Access := null;
       Current_Head          : Head_Snapshot;
       Current_Generation    : Generation_Value;
@@ -8675,6 +8682,7 @@ package body Flyology.DB is
       Phase                 : Refresh_Driver_Phase := Refresh_Idle;
       Precheck_Result       : Outcome_Code := Success;
       Resolve_Admitted      : Boolean := False;
+      Open_Admitted         : Boolean := False;
    end record;
 
    procedure Free_Refresh_Driver_State is new
@@ -10816,6 +10824,72 @@ package body Flyology.DB is
          Release_History (History, History_Count);
          Release_Checkpoint_Plan (Checkpoint);
          Result := Storage_Failure;
+   end Open;
+
+   procedure Open
+     (Item           : in out Database;
+      Storage        : not null access Storage_Context;
+      Database_ID    : Database_Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Result         : out Outcome_Code)
+   is
+   begin
+      if not Storage_Bound (Storage.all)
+        or else Storage.HTTP_Client = null
+        or else Storage.Client_Identity = null
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+      declare
+         --  One DB parent, one Object Storage operation, its HTTP exchange,
+         --  and HTTP's one active transport child form the exact authenticated
+         --  recovery owner stack. This derived scheduling geometry is not a
+         --  persisted or public recovery-object bound.
+         Synchronous_Open_Set_Capacity : constant := 4;
+         Set : aliased Flyology.Operations.Completion_Set (Synchronous_Open_Set_Capacity);
+         Operation : Open_Operation
+           (Set'Access,
+            Item'Unchecked_Access,
+            Storage,
+            Storage.HTTP_Client,
+            Payload_Buffer.Owner,
+            Token);
+         Started : Boolean := False;
+      begin
+         Open (Database_ID, Payload_Buffer, Timeout, Operation);
+         Started := True;
+         Flyology.Operations.Wait_All (Set);
+         Finish (Operation, Result, Payload_Buffer);
+         Flyology.Operations.Release (Operation);
+      exception
+         when others =>
+            if Started then
+               if Flyology.Operations.Is_Active (Operation) then
+                  Flyology.Operations.Cancel (Operation);
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               if Flyology.Operations.Is_Terminal (Operation)
+                 and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+               then
+                  begin
+                     Finish (Operation, Result, Payload_Buffer);
+                  exception
+                     when others =>
+                        null;
+                  end;
+               end if;
+               begin
+                  Flyology.Operations.Release (Operation);
+               exception
+                  when others =>
+                     null;
+               end;
+            end if;
+            raise;
+      end;
    end Open;
 
    procedure Reset_Transaction (Txn : out Transaction) is
@@ -13381,7 +13455,7 @@ package body Flyology.DB is
          when Recovery_Batch_Request =>
             return Batch_Key (Item.Storage.all, Request.Object_ID);
          when Recovery_No_Request =>
-            raise Program_Error with "terminal refresh request has no object key";
+            raise Program_Error with "terminal recovery request has no object key";
       end case;
    end Refresh_Request_Key;
 
@@ -13432,6 +13506,9 @@ package body Flyology.DB is
          if Item.Driver_State.Resolve_Admitted then
             Item.Driver_State.Resolve_Admitted := False;
             Item.Item.Life.Cancel_Resolve;
+         elsif Item.Driver_State.Open_Admitted then
+            Item.Driver_State.Open_Admitted := False;
+            Item.Item.Life.Abort_Open;
          end if;
          Release_Recovery (Item.Driver_State.Traversal);
          Free_Refresh_Driver_State (Item.Driver_State);
@@ -13448,6 +13525,9 @@ package body Flyology.DB is
          if Item.Driver_State.Resolve_Admitted then
             Item.Driver_State.Resolve_Admitted := False;
             Item.Item.Life.Cancel_Resolve;
+         elsif Item.Driver_State.Open_Admitted then
+            Item.Driver_State.Open_Admitted := False;
+            Item.Item.Life.Abort_Open;
          end if;
          Release_Recovery (Item.Driver_State.Traversal);
          Item.Driver_State.Phase := Refresh_Terminal;
@@ -13506,7 +13586,7 @@ package body Flyology.DB is
                Generation,
                Read_Result);
          when others =>
-            raise Program_Error with "non-header refresh request consumed as a header";
+            raise Program_Error with "non-header recovery request consumed as a header";
       end case;
       Advance_Composable_Refresh (Item);
    end Consume_Refresh_Header;
@@ -13558,7 +13638,7 @@ package body Flyology.DB is
               (Item.Driver_State.Traversal, Data, Read_Result);
 
          when others =>
-            raise Program_Error with "non-whole refresh request consumed as whole";
+            raise Program_Error with "non-whole recovery request consumed as whole";
       end case;
       Advance_Composable_Refresh (Item);
    end Consume_Refresh_Whole;
@@ -13601,12 +13681,22 @@ package body Flyology.DB is
       if Result /= Success then
          Complete_Composable_Refresh (Item, Result);
          return;
-      elsif Observed_Head.Database_ID /= State.Current_Head.Database_ID then
+      elsif State.Mode = Open_Closed_Database
+        and then Observed_Head.Database_ID /= State.Database_ID
+      then
          Release_History (History, History_Count);
          Release_Checkpoint_Plan (Checkpoint);
          Complete_Composable_Refresh (Item, Corrupt);
          return;
-      elsif Observed_Head.Transition_Number = State.Current_Head.Transition_Number
+      elsif State.Mode = Refresh_Existing_Database
+        and then Observed_Head.Database_ID /= State.Current_Head.Database_ID
+      then
+         Release_History (History, History_Count);
+         Release_Checkpoint_Plan (Checkpoint);
+         Complete_Composable_Refresh (Item, Corrupt);
+         return;
+      elsif State.Mode = Refresh_Existing_Database
+        and then Observed_Head.Transition_Number = State.Current_Head.Transition_Number
         and then Observed_Head.Epoch = State.Current_Head.Epoch
       then
          Release_History (History, History_Count);
@@ -13617,7 +13707,9 @@ package body Flyology.DB is
             Complete_Composable_Refresh (Item, Corrupt);
          end if;
          return;
-      elsif not Head_Pair_Less (State.Current_Head, Observed_Head) then
+      elsif State.Mode = Refresh_Existing_Database
+        and then not Head_Pair_Less (State.Current_Head, Observed_Head)
+      then
          --  A complete older provider snapshot is a successful no-op. It can
          --  never roll the installed high-water pair back.
          Release_History (History, History_Count);
@@ -13634,8 +13726,8 @@ package body Flyology.DB is
          return;
       end if;
       Allocate_Engine
-        --  Refresh_Operation's public Item discriminant must outlive terminal
-        --  Finish or abandonment. A successfully installed engine remains
+        --  The recovery operation's public Item discriminant must outlive
+        --  terminal Finish or abandonment. A successfully installed engine remains
         --  owned by that same Database lifecycle after this operation ends.
         (Item.Item.Life'Unchecked_Access,
          Item.Storage,
@@ -13653,11 +13745,23 @@ package body Flyology.DB is
          Complete_Composable_Refresh (Item, Result);
          return;
       end if;
-      Stop_Replaced_Engine (State.Engine);
-      Item.Item.Life.Finish_Resolve (New_State, Observed_Head.Highest);
-      Installed := True;
-      State.Resolve_Admitted := False;
-      Complete_Composable_Refresh (Item, Success);
+      if State.Mode = Open_Closed_Database then
+         Item.Item.Life.Complete_Open (New_State, Observed_Head.Highest, Result);
+         if Result = Success then
+            Installed := True;
+            State.Open_Admitted := False;
+            Complete_Composable_Refresh (Item, Success);
+         else
+            Stop_Replaced_Engine (New_State);
+            Complete_Composable_Refresh (Item, Result);
+         end if;
+      else
+         Stop_Replaced_Engine (State.Engine);
+         Item.Item.Life.Finish_Resolve (New_State, Observed_Head.Highest);
+         Installed := True;
+         State.Resolve_Admitted := False;
+         Complete_Composable_Refresh (Item, Success);
+      end if;
    exception
       when Storage_Error =>
          if New_State /= null and then not Installed then
@@ -14015,16 +14119,21 @@ package body Flyology.DB is
       Uncertain : Boolean;
       Fenced    : Boolean;
    begin
-      State.Engine.Gate.Snapshot
-        (State.Current_Head, State.Current_Generation, Uncertain, Fenced);
-      if Uncertain then
-         Complete_Composable_Refresh (Item, Outcome_Unknown);
-      elsif Fenced then
-         Complete_Composable_Refresh (Item, Stale_Writer);
-      else
-         Start_Recovery
-           (State.Traversal, State.Current_Head.Database_ID, Zero_Identifier);
+      if State.Mode = Open_Closed_Database then
+         Start_Recovery (State.Traversal, State.Database_ID, Zero_Identifier);
          Advance_Composable_Refresh (Item);
+      else
+         State.Engine.Gate.Snapshot
+           (State.Current_Head, State.Current_Generation, Uncertain, Fenced);
+         if Uncertain then
+            Complete_Composable_Refresh (Item, Outcome_Unknown);
+         elsif Fenced then
+            Complete_Composable_Refresh (Item, Stale_Writer);
+         else
+            Start_Recovery
+              (State.Traversal, State.Current_Head.Database_ID, Zero_Identifier);
+            Advance_Composable_Refresh (Item);
+         end if;
       end if;
    exception
       when Error : others =>
@@ -14082,7 +14191,12 @@ package body Flyology.DB is
       Event : Flyology.Operations.Driver_Event)
    is
    begin
-      if Event in Flyology.Operations.Start_Operation | Flyology.Operations.Source_Ready then
+      if Event = Flyology.Operations.Start_Operation
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Mode = Open_Closed_Database
+      then
+         Prepare_Composable_Refresh (Item);
+      elsif Event in Flyology.Operations.Start_Operation | Flyology.Operations.Source_Ready then
          Await_Composable_Refresh_Quiescence (Item);
       elsif Event = Flyology.Operations.Deadline_Reached
         and then Item.Driver_State /= null
@@ -14111,7 +14225,7 @@ package body Flyology.DB is
       then
          Complete_Refresh_Whole (Item);
       else
-         raise Program_Error with "invalid composable refresh driver event";
+         raise Program_Error with "invalid composable recovery driver event";
       end if;
    exception
       when Error : others =>
@@ -14172,10 +14286,12 @@ package body Flyology.DB is
          end if;
    end Request_Cancellation;
 
-   procedure Refresh_Replica
+   procedure Start_Composable_Recovery
      (Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
-      Operation      : in out Refresh_Operation)
+      Operation      : in out Refresh_Operation;
+      Mode           : Recovery_Driver_Mode;
+      Database_ID    : Database_Identifier)
    is
       Result  : Outcome_Code;
       Moved   : Boolean := False;
@@ -14184,16 +14300,16 @@ package body Flyology.DB is
       if Operation.Storage.HTTP_Client /= Operation.HTTP
         or else Operation.Storage.Client_Identity = null
       then
-         raise Program_Error with "refresh operation does not match client-bound storage";
+         raise Program_Error with "recovery operation does not match client-bound storage";
       elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
-         raise Program_Error with "refresh payload belongs to a different pool";
+         raise Program_Error with "recovery payload belongs to a different pool";
       elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
         or else Operation.Driver_State /= null
         or else Operation.Read_Child /= null
         or else Operation.Range_Child /= null
         or else Operation.Head_Child /= null
       then
-         raise Program_Error with "refresh operation retains unconsumed ownership";
+         raise Program_Error with "recovery operation retains unconsumed ownership";
       end if;
 
       Operation.Deadline := Deadline_After (Timeout);
@@ -14213,6 +14329,8 @@ package body Flyology.DB is
             null;
       end;
       if Operation.Driver_State /= null then
+         Operation.Driver_State.Mode := Mode;
+         Operation.Driver_State.Database_ID := Database_ID;
          begin
             --  These access values borrow only operation discriminant owners
             --  and its inline scratch handle. The public contract keeps them
@@ -14252,18 +14370,31 @@ package body Flyology.DB is
       if Operation.Driver_State /= null
         and then Operation.Driver_State.Precheck_Result = Success
       then
-         Operation.Item.Life.Begin_Composable_Resolve
-           (Operation.Driver_State.Engine, Result);
-         if Result = Success
-           and then Operation.Driver_State.Engine.Storage /= Operation.Storage
-         then
-            Operation.Item.Life.Cancel_Resolve;
-            raise Program_Error with "refresh storage does not own the open database";
-         elsif Result = Success then
-            Operation.Driver_State.Resolve_Admitted := True;
-            Operation.Driver_State.Engine.Gate.Drain_Queued_For_Resolution;
+         if Mode = Open_Closed_Database then
+            if Is_Zero (Database_ID) then
+               Operation.Driver_State.Precheck_Result := Invalid_State;
+            else
+               Operation.Item.Life.Begin_Open (Result);
+               if Result = Success then
+                  Operation.Driver_State.Open_Admitted := True;
+               else
+                  Operation.Driver_State.Precheck_Result := Result;
+               end if;
+            end if;
          else
-            Operation.Driver_State.Precheck_Result := Result;
+            Operation.Item.Life.Begin_Composable_Resolve
+              (Operation.Driver_State.Engine, Result);
+            if Result = Success
+              and then Operation.Driver_State.Engine.Storage /= Operation.Storage
+            then
+               Operation.Item.Life.Cancel_Resolve;
+               raise Program_Error with "recovery storage does not own the open database";
+            elsif Result = Success then
+               Operation.Driver_State.Resolve_Admitted := True;
+               Operation.Driver_State.Engine.Gate.Drain_Queued_For_Resolution;
+            else
+               Operation.Driver_State.Precheck_Result := Result;
+            end if;
          end if;
       end if;
       Flyology.Buffers.Move (Payload_Buffer, Operation.Payload);
@@ -14306,7 +14437,34 @@ package body Flyology.DB is
             Flyology.Operations.Drivers.Rollback_Start (Operation);
          end if;
          raise;
+   end Start_Composable_Recovery;
+
+   procedure Refresh_Replica
+     (Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Refresh_Operation) is
+   begin
+      Start_Composable_Recovery
+        (Payload_Buffer,
+         Timeout,
+         Operation,
+         Refresh_Existing_Database,
+         Zero_Database_ID);
    end Refresh_Replica;
+
+   procedure Open
+     (Database_ID    : Database_Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Open_Operation) is
+   begin
+      Start_Composable_Recovery
+        (Payload_Buffer,
+         Timeout,
+         Refresh_Operation (Operation),
+         Open_Closed_Database,
+         Database_ID);
+   end Open;
 
    procedure Finish
      (Operation      : in out Refresh_Operation;
@@ -14315,7 +14473,7 @@ package body Flyology.DB is
    is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
-         raise Program_Error with "refresh Finish requires the original buffer pool";
+         raise Program_Error with "recovery Finish requires the original buffer pool";
       end if;
       Flyology.Operations.Consume (Operation);
       Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
@@ -14334,9 +14492,17 @@ package body Flyology.DB is
            (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
             Ada.Exceptions.Exception_Message (Operation.Saved_Error));
       elsif not Operation.Has_Final_Result then
-         raise Program_Error with "composable refresh has no terminal result";
+         raise Program_Error with "composable recovery has no terminal result";
       end if;
       Result := Operation.Final_Result;
+   end Finish;
+
+   overriding procedure Finish
+     (Operation      : in out Open_Operation;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
+   begin
+      Finish (Refresh_Operation (Operation), Result, Payload_Buffer);
    end Finish;
 
    overriding procedure Finalize (Item : in out Refresh_Operation) is
@@ -14359,6 +14525,13 @@ package body Flyology.DB is
       end if;
       Flyology.Buffers.Release (Item.Payload);
    end Finalize;
+
+   overriding procedure Drive
+     (Item : in out Open_Operation;
+      Event : Flyology.Operations.Driver_Event) is
+   begin
+      Drive (Refresh_Operation (Item), Event);
+   end Drive;
 
    function Receipt_Outcome (Item : Commit_Receipt) return Outcome_Code
    is (Item.Current_Outcome);

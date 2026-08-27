@@ -111,6 +111,12 @@ caller to read-only use. Under the existing exclusive lifecycle gate it installs
 `(HEAD ordinal, writer epoch)` pair. Same or older observations are discarded, allocation failure leaves the prior
 view intact, and a fenced writer cannot refresh itself into a promoted writer. The call supplies no polling task,
 lease duration, retry, registration, retention, or promotion policy.
+Cacheless client-backed `Open` now exposes the same owner-driven recovery machine through a reusable
+`Open_Operation`, operation-last initiation, typed `Finish`, and a buffer-owned synchronous wait. It moves one exact
+caller scratch token, authenticates and validates the complete persisted graph, and installs an engine only after
+full recovery succeeds. Cancellation, capacity failure, abandonment, or unexpected local failure restores the
+closed lifecycle without a partial engine or hidden retry. The established storage-neutral synchronous `Open`
+remains source-compatible and direct because it has no caller scratch token to compose.
 Transactions now capture a Begin-time sequence
 and reject exact written keys changed by later committed history. Fixed-snapshot point reads are operational;
 explicit serializable transactions retain and validate exact successful and absent point reads plus caller-observed

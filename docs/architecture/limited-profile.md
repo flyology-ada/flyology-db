@@ -30,12 +30,16 @@ performance, replica, automatic-maintenance, or general-provider qualification.
   manifest/transition identities and same-receipt resolution of immutable or HEAD uncertainty.
 - `Outcome_Unknown` receipts resolved only through the original identity; no application transaction or mutation is
   automatically replayed.
-- `Close`, complete loss of process-local DB state, and `Open` recovery solely from authoritative object storage.
+- `Close`, complete loss of process-local DB state, and synchronous or caller-composable `Open` recovery solely from
+  authoritative object storage.
 - Provider-neutral power-loss-durable Files and authenticated S3 runs of one shared complete database-level oracle.
 
 The synchronous profile is the first user-facing entry point. Its client-backed Flush and family append wait on the
 same DB operations and provider-owned Object Storage state machines as their caller-composable forms, so this
 boundary does not create a second transport or certainty implementation.
+The buffer-owned client-backed `Open` overload likewise waits the reusable `Open_Operation`; the established
+storage-neutral synchronous overload remains direct and source-compatible because it accepts no caller-owned scratch
+token. Both consume the same recovery request/validation machine and install only a complete authenticated graph.
 
 ## Acceptance scenario
 
@@ -107,6 +111,13 @@ read-only replica use. It validates and installs one complete newer authoritativ
 unchanged. It adds no polling, helper task, retry, lease, registration, retention, promotion, or timeout default, and
 a fenced handle remains fenced. Authenticated provider qualification exercises a deliberately stale checkpoint view
 followed by one exact refresh to the writer's compacted view.
+
+The additive composable `Open` surface makes cacheless client recovery usable by owner-driven applications without
+creating a parallel recovery algorithm. `Open_Operation`, its operation-last `Open`, typed `Finish`, and the
+buffer-owned synchronous overload share one absolute deadline, cancellation source, exact caller scratch token, and
+complete install boundary. Failed start, cancellation, insufficient scratch capacity, abandonment, and unexpected
+local failure return the database lifecycle to Closed. This adds no helper task, retry, polling, identity policy,
+buffer default, or storage-neutral API break.
 
 The public `Required_L0_Checkpoint_Action` closes the policy-free observation seam between
 persisted run ceilings and the already-public Flush/Compact algorithms without generating identities or scheduling

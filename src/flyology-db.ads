@@ -265,6 +265,20 @@ package Flyology.DB is
       Payload_Pool : not null access Flyology.Buffers.Pool;
       Cancellation : access Flyology.Cancellation.Token) is
      new Flyology.Operations.Operation with private;
+   --  Caller-composable cacheless open. The discriminants are retained borrows
+   --  and must outlive terminal Finish or abandonment drain. Storage must be
+   --  bound to the exact HTTP client. Payload_Pool supplies the caller-selected
+   --  recovery scratch capacity; the DB introduces no recovery-object bound,
+   --  helper task, retry, or timeout default. A failed or abandoned operation
+   --  restores Item to the closed lifecycle state.
+   type Open_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation with private;
    --  Caller-composable fixed-snapshot point read. Item and Txn are retained
    --  borrows through terminal publication; the caller must not use Txn while
    --  the operation is active. Payload_Pool supplies the sole caller-selected
@@ -348,6 +362,62 @@ package Flyology.DB is
       Timeout     : Duration;
       Token       : access Flyology.Cancellation.Token := null;
       Result      : out Outcome_Code);
+
+   --  Open through the owner-driven recovery operation while moving one exact
+   --  caller scratch token. This synchronous overload waits the same state
+   --  machine as the composable form below and restores Payload_Buffer before
+   --  return or propagation of an unexpected local exception.
+   --  @param Item Closed database to open
+   --  @param Storage Client-bound object-storage context retained until Close
+   --  @param Database_ID Exact persisted database identity to authenticate
+   --  @param Payload_Buffer Acquired caller-owned recovery scratch token
+   --  @param Timeout Whole-open monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Result Complete recovery/install or typed failure outcome
+   procedure Open
+     (Item           : in out Database;
+      Storage        : not null access Storage_Context;
+      Database_ID    : Database_Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Result         : out Outcome_Code)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Start or restart one cacheless open in an established caller-owned
+   --  operation. Lifecycle admission and owner validation precede moving the
+   --  exact Payload_Buffer token. Database_ID is copied before return.
+   --  @param Database_ID Exact persisted database identity to authenticate
+   --  @param Payload_Buffer Acquired caller-owned recovery scratch token
+   --  @param Timeout Whole-open monotonic timeout budget
+   --  @param Operation Fresh or consumed client-bound open operation
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Storage binding
+   procedure Open
+     (Database_ID    : Database_Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Open_Operation)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Consume one terminal owner-driven open and restore its exact scratch
+   --  token into any vacant same-pool handle. An unexpected provider exception
+   --  is re-raised only after ownership restoration and lifecycle cleanup.
+   --  @param Operation Terminal composable open operation
+   --  @param Result Complete recovery/install or typed failure outcome
+   --  @param Payload_Buffer Vacant same-pool destination for the exact token
+   procedure Finish
+     (Operation      : in out Open_Operation;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+     with Pre => Flyology.Operations.Is_Terminal (Operation)
+       and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool,
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Perform one caller-triggered monotonic refresh of an open handle used as
    --  a read-only replica. The caller must finish every transaction and other
@@ -2163,6 +2233,22 @@ private
    overriding procedure Request_Cancellation (Item : in out Refresh_Operation);
    --  @exclude
    overriding procedure Finalize (Item : in out Refresh_Operation);
+
+   --  @exclude
+   type Open_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Refresh_Operation (Set, Item, Storage, HTTP, Payload_Pool, Cancellation)
+       with null record;
+
+   --  @exclude
+   overriding procedure Drive
+     (Item : in out Open_Operation;
+      Event : Flyology.Operations.Driver_Event);
 
    --  Private engine operation for one generation-bound SST-v1/v2 point or
    --  next-visible-entry read. Version 2 reads only header/index/one frame;

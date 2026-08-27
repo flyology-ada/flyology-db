@@ -1,5 +1,43 @@
 # Review record
 
+## Caller-composable cacheless-open candidate
+
+- Parent: installed family-registry snapshot commit `4f64d5a`.
+- Scope and compatibility: add distinct limited `Open_Operation`, operation-last `Open`, typed `Finish`, and a
+  buffer-owned synchronous overload directly in `Flyology.DB`. The established storage-neutral synchronous `Open`
+  remains source-compatible and direct. No `.Scoped` child, compatibility alias, constructor, default, public
+  constant, helper task, retry, polling, or mutation path is added.
+- Recovery and lifecycle: client-backed open reuses the exact request/consume traversal already qualified for
+  `Refresh_Replica`, but admits a Closed database instead of snapshotting an installed engine. The requested
+  database identity is copied before return. A complete validated graph is installed atomically through
+  `Complete_Open`; every typed failure, cancellation, abandoned operation, allocation failure, or saved unexpected
+  exception aborts admission and leaves the database Closed.
+- Ownership and bounds: operation discriminants retain the database, storage context, exact HTTP client, buffer
+  pool, completion set, and optional cancellation token through terminal drain. Start moves one exact caller token;
+  typed `Finish` restores it into any vacant same-pool handle before publishing or propagating. The synchronous
+  wrapper's four slots derive from the DB/Object Storage/HTTP/transport stack. The authenticated fixture's six slots
+  additionally include its three deliberately retained reusable DB operation identities; neither is public policy.
+- Coverage: the authenticated client probe checks the buffer-owned synchronous wait, pre-requested cancellation,
+  one-byte capacity rejection, exact tagged-token restoration through arbitrary vacant handles, lifecycle rollback,
+  a later successful composable open on the same database, and cacheless reads of every recovered family. The
+  isolated authenticated probe passes after correcting one P2 test-fixture capacity assumption from five retained
+  slots to the derived six.
+- Nonformal evidence: warning-strict root and nested builds pass. `./tests/scripts/test.sh` passes the maintained
+  deterministic, authenticated, crash/recovery, 32-case differential, and pinned TidesDB lanes. The exact-tree
+  `./tests/scripts/test-s3-matrix.sh` run passes all 18 RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite
+  lanes. Repository, diff, shell, and 110-column Ada checks are green. GNATdoc leading comments use the established
+  exact tags, but no executable GNATdoc tool or maintained documentation wrapper is present, so no generated-site
+  claim is made. GNATformat is also unavailable in the configured toolchain, so no formatter claim is made.
+- Formal qualification rule: before commit, the literal final tree must pass an outside-sandbox update-mode
+  `check-tla.sh`, remain byte-stable with no generated-artifact delta, pass ordinary `check-tla.sh`, and pass the
+  maintained warning-strict `prove.sh`, strictly serial under the exclusive formal lane with clean pre/intermediate/
+  post audits. Retained runner reports and the coordinator's exact-identity acceptance are authoritative; this prose
+  does not substitute for them and no earlier-tree result qualifies the candidate.
+- Findings rubric: P0 is durable-authority, data-loss, security, or certainty failure; P1 is public-contract,
+  lifecycle, ownership, cancellation, failure-atomicity, or bound-authority failure; P2 is missing coverage,
+  documentation, or maintainability evidence. Review fixed P2 gaps in test-set capacity authority, abandonment pool
+  accounting, and recovery-neutral internal diagnostics. Re-review finds no actionable P0/P1/P2 finding.
+
 ## Installed family-registry snapshot candidate
 
 - Parent: installed configuration-read commit `3411947`.
