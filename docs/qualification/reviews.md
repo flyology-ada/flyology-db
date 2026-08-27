@@ -1,5 +1,38 @@
 # Review record
 
+## Storage-backed whole-scan candidate
+
+- Parent: storage-backed paged-scan implementation commit `8b07073`.
+- Scope and compatibility: the existing buffer-owned whole `Scan` signature now waits on
+  `Start_Storage_Backed_Scan` and the same storage-backed `Next_Scan_Page` state machine used by callers. The
+  compatibility `Start_Scan` declarations remain unchanged. No public name, mode, default, capacity, persisted value,
+  retry, task, cache, prefetch, or provider policy is added.
+- Deadline and ownership: one absolute monotonic deadline is established before initialization and the remaining
+  duration is passed to each phase. The exact caller scratch token returns after initialization and moves through the
+  page operation again; both existing typed `Finish` boundaries restore it before any result is published. A local
+  controlled candidate owns page rows until physical completion is confirmed.
+- Failure atomicity: storage, cancellation, timeout, corruption, allocation, or predicate-retention failure leaves
+  the caller's prior rows unchanged. A private complete-result page mode rejects a resumable prefix under the exact
+  persisted live-row/live-byte ceilings before page, cursor, or Serializable-predicate publication and returns
+  `Capacity_Exceeded`.
+- Constants authority: the complete-page budgets are copied from the authenticated cursor's persisted database
+  limits. The existing private six-slot synchronous scan geometry is shared by initialization, paging, and whole-scan
+  waits; the call adds no public or persisted constant, default, timeout, or allocation ceiling.
+- Findings cycle: initial self-review found one P1 atomicity defect: rejecting a resumable prefix in the outer wrapper
+  happened after the page operation had retained its Serializable predicate. The fix moves complete-result admission
+  into the private page driver so the budget boundary fails before typed page completion. A regression creates four
+  transaction-local rows over one persisted row and requires `Capacity_Exceeded`, zero retained scan ranges, the
+  prior row image, and the exact scratch token. The follow-up P0/P1/P2 sweep reports no actionable findings.
+- Verification status: root and test builds, `./tests/scripts/test.sh`, repository/diff/110-column checks, and the
+  18-lane RustFS, SeaweedFS, MinIO, Flyology memory/files/SQLite provider matrix are green. The client oracle also
+  arms the compatibility initializer's selected-run array allocation and requires whole `Scan` to succeed, proving
+  the descriptor-backed path is used. On the exact reviewed tree, update-mode and ordinary `check-tla.sh` both exit
+  zero with no generated-artifact delta and byte-stable canonical traces. All maintained TLC, action, negative, and
+  witness lanes pass; top-level publication reaches 112,031 distinct states at depth 14, StorageBackedPagedScan
+  reaches 1,111 distinct states at depth 20, and TLAPS proves 393/393 obligations. The maintained warning-strict
+  GNATprove gate proves 1,097/1,097 checks (168 flow and 929 prover), with zero justified/unproved checks, warnings,
+  or pragma Assume statements and a maximum of 6,890 steps. Pre-, intermediate, and post-run host audits are clean.
+
 ## Storage-backed paged-scan implementation candidate
 
 - Parent: storage-backed paged-scan formal-design commit `77c096c`, followed by the exact Object Storage dependency

@@ -114,4 +114,6 @@ its composable `Next_Scan_Page` operation advances at most one authenticated hea
 SST-v2 header/index/frame reads or the required frozen SST-v1 whole-object fallback. The page owns one caller scratch
 token and deadline; typed `Finish` jointly publishes the candidate cursor and result. Neither path adds a second
 visibility engine, retry, helper task, page default, run cap, or cache. Retained checkpoint state is proportional to
-selected run count during paging; this does not remove persisted run-count or local/suffix-state bounds.
+selected run count during paging. The authenticated whole `Scan` waits on that storage-backed initializer and one
+complete page under a single absolute deadline; it no longer traverses every selected entry before cursor publication.
+This does not remove persisted run-count or local/suffix-state bounds.

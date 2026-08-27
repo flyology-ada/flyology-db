@@ -124,9 +124,10 @@ and committed-suffix entries; it does not traverse the checkpoint during initial
 `Next_Scan_Page` overload retains at most one authenticated head per run while advancing SST-v2 through
 generation-bound header/index/frame reads and frozen SST-v1 through its required whole-object compatibility fallback.
 Typed `Finish` alone restores the exact caller token and atomically publishes the candidate cursor and page; every
-failure leaves the prior cursor, result, and predicate authority unchanged. A buffer-owned whole `Scan` overload
-continues to use the earlier complete initializer for compatibility. The new paged path bounds retained checkpoint
-state by selected run count, without adding a helper task, retry, cache, prefetch, or hidden page policy.
+failure leaves the prior cursor, result, and predicate authority unchanged. The buffer-owned whole `Scan` overload
+now composes that storage-backed initialization with one complete page under the persisted live-state bounds and one
+absolute timeout. The compatibility `Start_Scan` initializer remains available. Whole and paged paths bound retained
+checkpoint state by selected run count, without adding a helper task, retry, cache, prefetch, or hidden page policy.
 
 ## Durability rule
 

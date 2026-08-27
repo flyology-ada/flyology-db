@@ -8758,6 +8758,10 @@ package body Flyology.DB is
       Storage_Scan_Initialization,
       Storage_Scan_Page);
    type Scan_Driver_Phase is (Scan_Idle, Scan_Reading_Entry, Scan_Terminal);
+   --  DB scan parent, next-entry reader, provider, HTTP, and transport work fit
+   --  within six exact caller-owned slots. This is private scheduling geometry,
+   --  not a page, queue, persisted, or caller-selected capacity.
+   Synchronous_Scan_Set_Capacity : constant := 6;
 
    type Scan_Driver_State is record
       Purpose              : Scan_Driver_Purpose := Materialized_Scan_Initialization;
@@ -8777,6 +8781,11 @@ package body Flyology.DB is
       Upper                : Scan_Cursor_Byte_Array_Access := null;
       Maximum_Rows         : Interfaces.Unsigned_32 := 0;
       Maximum_Bytes        : Interfaces.Unsigned_64 := 0;
+      --  Whole-result compatibility calls require exhaustion under the
+      --  persisted live-state ceilings. This private operation mode prevents
+      --  a bounded prefix from publishing rows, cursor state, or predicates;
+      --  it is derived from the caller's existing all-or-failure contract.
+      Require_Complete     : Boolean := False;
       Expected_Revision    : Interfaces.Unsigned_64 := 0;
       Original_Cursor      : Scan_Cursor_State_Access := null;
       Page_First           : Scan_Loaded_Entry_Access := null;
@@ -18331,7 +18340,7 @@ package body Flyology.DB is
               or else Amount > State.Maximum_Bytes
               or else State.Page_Bytes > State.Maximum_Bytes - Amount
             then
-               if State.Page_Count = 0 then
+               if State.Page_Count = 0 or else State.Require_Complete then
                   Complete_Scan (Item, Capacity_Exceeded);
                else
                   Complete_Page (False);
@@ -18678,10 +18687,11 @@ package body Flyology.DB is
    end Start_Storage_Backed_Scan;
 
    procedure Prepare_Storage_Scan_Page
-     (Operation     : in out Scan_Operation;
-      Cursor        : in out Scan_Cursor;
-      Maximum_Rows  : Interfaces.Unsigned_32;
-      Maximum_Bytes : Interfaces.Unsigned_64)
+     (Operation        : in out Scan_Operation;
+      Cursor           : in out Scan_Cursor;
+      Maximum_Rows     : Interfaces.Unsigned_32;
+      Maximum_Bytes    : Interfaces.Unsigned_64;
+      Require_Complete : Boolean)
    is
       State      : Scan_Driver_State renames Operation.Driver_State.all;
       Source     : constant Scan_Cursor_State_Access := Cursor.Owner.State;
@@ -18789,6 +18799,7 @@ package body Flyology.DB is
       end Cursor_Well_Formed;
    begin
       State.Purpose := Storage_Scan_Page;
+      State.Require_Complete := Require_Complete;
       if Source = null
         or else not Source.Active
         or else Source.Done
@@ -18881,13 +18892,14 @@ package body Flyology.DB is
          State.Precheck_Result := Capacity_Exceeded;
    end Prepare_Storage_Scan_Page;
 
-   procedure Next_Scan_Page
-     (Cursor         : in out Scan_Cursor;
-      Maximum_Rows   : Interfaces.Unsigned_32;
-      Maximum_Bytes  : Interfaces.Unsigned_64;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
-      Timeout        : Duration;
-      Operation      : in out Scan_Operation)
+   procedure Start_Storage_Scan_Page
+     (Cursor           : in out Scan_Cursor;
+      Maximum_Rows     : Interfaces.Unsigned_32;
+      Maximum_Bytes    : Interfaces.Unsigned_64;
+      Payload_Buffer   : in out Flyology.Buffers.Unique_Buffer;
+      Timeout          : Duration;
+      Require_Complete : Boolean;
+      Operation        : in out Scan_Operation)
    is
       Started : Boolean := False;
       Moved   : Boolean := False;
@@ -18922,7 +18934,7 @@ package body Flyology.DB is
       end;
       if Operation.Driver_State /= null then
          Prepare_Storage_Scan_Page
-           (Operation, Cursor, Maximum_Rows, Maximum_Bytes);
+           (Operation, Cursor, Maximum_Rows, Maximum_Bytes, Require_Complete);
       end if;
       Flyology.Operations.Drivers.Start (Operation);
       Started := True;
@@ -18954,6 +18966,24 @@ package body Flyology.DB is
          Operation.Borrowed_Revision := 0;
          Operation.Final_Is_Page := False;
          raise;
+   end Start_Storage_Scan_Page;
+
+   procedure Next_Scan_Page
+     (Cursor         : in out Scan_Cursor;
+      Maximum_Rows   : Interfaces.Unsigned_32;
+      Maximum_Bytes  : Interfaces.Unsigned_64;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Scan_Operation) is
+   begin
+      Start_Storage_Scan_Page
+        (Cursor,
+         Maximum_Rows,
+         Maximum_Bytes,
+         Payload_Buffer,
+         Timeout,
+         False,
+         Operation);
    end Next_Scan_Page;
 
    procedure Finish
@@ -19106,10 +19136,6 @@ package body Flyology.DB is
       Cursor         : in out Scan_Cursor;
       Result         : out Outcome_Code)
    is
-      --  Initialization has the same exact owner-stack geometry as the
-      --  established authenticated scan: DB, next-entry reader, provider,
-      --  HTTP, and transport within six caller-owned completion slots.
-      Synchronous_Scan_Set_Capacity : constant := 6;
       Set : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
       Operation : Scan_Operation
         (Set'Access,
@@ -19146,10 +19172,19 @@ package body Flyology.DB is
       Rows           : in out Scan_Result;
       Result         : out Outcome_Code)
    is
-      Cursor : Scan_Cursor;
-      Done   : Boolean;
+      Deadline : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
+      Operation : Scan_Operation
+        (Set'Access,
+         Item'Unchecked_Access,
+         Txn'Unchecked_Access,
+         Payload_Buffer.Owner,
+         Token);
+      Cursor         : Scan_Cursor;
+      Candidate_Rows : Scan_Result;
+      Done           : Boolean;
    begin
-      Start_Scan
+      Start_Storage_Backed_Scan
         (Item,
          Txn,
          Family,
@@ -19158,7 +19193,7 @@ package body Flyology.DB is
          Has_Upper,
          Upper,
          Payload_Buffer,
-         Timeout,
+         Remaining_Time (Deadline),
          Token,
          Cursor,
          Result);
@@ -19172,16 +19207,29 @@ package body Flyology.DB is
             Result := Corrupt;
             return;
          end if;
-         Continue_Scan_Page
-           (Item,
-            Txn,
-            Cursor,
+         Start_Storage_Scan_Page
+           (Cursor,
             State.Maximum_Rows,
             State.Maximum_Bytes,
-            Require_Complete => True,
-            Rows             => Rows,
-            Done             => Done,
-            Result           => Result);
+            Payload_Buffer,
+            Remaining_Time (Deadline),
+            True,
+            Operation);
+      end;
+      Flyology.Operations.Wait_All (Set);
+      Finish (Operation, Cursor, Candidate_Rows, Done, Result, Payload_Buffer);
+      Flyology.Operations.Release (Operation);
+      if Result /= Success then
+         return;
+      elsif not Done then
+         raise Program_Error with "complete scan page returned a resumable prefix";
+      end if;
+      declare
+         Previous : constant Scan_Result_State_Access := Rows.Owner.State;
+      begin
+         Rows.Owner.State := Candidate_Rows.Owner.State;
+         Candidate_Rows.Owner.State := Previous;
+         Release_Scan_Result (Candidate_Rows.Owner.State);
       end;
    end Scan;
 
@@ -19198,11 +19246,7 @@ package body Flyology.DB is
       Done           : out Boolean;
       Result         : out Outcome_Code)
    is
-      --  The DB page parent plus its next-entry reader and the provider,
-      --  HTTP, and transport children require six exact owner slots. This is
-      --  derived synchronous scheduling geometry, not page or queue policy.
-      Synchronous_Page_Set_Capacity : constant := 6;
-      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Page_Set_Capacity);
+      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
       Operation : Scan_Operation
         (Set'Access,
          Item'Unchecked_Access,

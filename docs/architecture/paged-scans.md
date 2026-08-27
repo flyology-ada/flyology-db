@@ -40,9 +40,11 @@ is the sole token restoration and joint cursor/page publication authority; it ac
 original pool. Failure, cancellation, timeout, corruption, or allocation rejection preserves the caller's prior
 cursor and result exactly.
 
-The buffer-owned whole `Scan` overload is a literal blocking composition of that initialization and one complete
-page request using the cursor's persisted live-row and live-byte bounds. It adds no second storage reader or merge
-algorithm; page materialization retains the same atomic row and Serializable-predicate publication boundary.
+The buffer-owned whole `Scan` overload is a literal blocking composition of the storage-backed initialization and
+one complete page request using the cursor's persisted live-row and live-byte bounds. One absolute monotonic deadline
+covers both operations. A private complete-result mode rejects an oversized resumable prefix before page, cursor, or
+Serializable-predicate publication, while a local candidate preserves the caller's prior complete rows. The call adds
+no second storage reader or merge algorithm; page materialization retains the same atomic publication boundary.
 
 This is a deliberately limited end-to-end path. The caller buffer bounds each object transfer, while a published
 storage-backed cursor retains exact run descriptors, at most one current authenticated head per run, and bounded

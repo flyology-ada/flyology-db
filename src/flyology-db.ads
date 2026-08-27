@@ -874,12 +874,13 @@ package Flyology.DB is
      Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Materialize a complete authenticated fixed-snapshot interval by
-   --  waiting on the same Scan_Operation used by caller-composable cursor
-   --  initialization, then requesting one complete page from that cursor's
-   --  established physical merge engine. Persisted live-row and live-byte
-   --  limits are the complete-page budgets; no page default, second storage
-   --  path, helper task, retry, or additional capacity is introduced. Rows is
-   --  replaced only on Success, and Payload_Buffer is always restored.
+   --  waiting on the storage-backed Scan_Operation initialization, then
+   --  requesting one complete page from that cursor's established physical
+   --  merge engine. One absolute timeout covers both phases. Persisted
+   --  live-row and live-byte limits are the complete-page budgets; no page
+   --  default, second storage path, helper task, retry, or additional capacity
+   --  is introduced. Rows is replaced only on Success, and Payload_Buffer is
+   --  always restored.
    --  @param Item Open client-bound database owning the fixed snapshot
    --  @param Txn Active transaction retained for the duration of the call
    --  @param Family Valid handle selecting persisted family limits and identity
@@ -888,7 +889,7 @@ package Flyology.DB is
    --  @param Has_Upper True when Upper is the exclusive endpoint
    --  @param Upper Exclusive endpoint bytes, ignored when Has_Upper is false
    --  @param Payload_Buffer Acquired caller scratch token restored before return
-   --  @param Timeout Caller-selected duration for authenticated initialization
+   --  @param Timeout Caller-selected duration for the complete authenticated scan
    --  @param Token Optional caller-owned cancellation token
    --  @param Rows Controlled owned result replaced only on Success
    --  @param Result Success or the exact validation, capacity, storage, or lifecycle outcome

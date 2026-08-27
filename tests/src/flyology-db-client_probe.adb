@@ -260,10 +260,10 @@ procedure Flyology.DB.Client_Probe is
      Transaction_Identifier (Numbered_ID (38));
    Replica_Refreshed_Reader_ID  : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (39));
-   --  IDs 40 through 43 are the suffix-backed Get, checkpoint-backed Get,
-   --  authenticated scan reader, and storage-backed multi-page fixtures. They
-   --  are stable test identities, not allocation or transaction-ID generation
-   --  policy.
+   --  IDs 40 through 44 are the suffix-backed Get, checkpoint-backed Get,
+   --  authenticated scan reader, storage-backed multi-page, and whole-scan
+   --  overflow fixtures. They are stable test identities, not allocation or
+   --  transaction-ID generation policy.
    Suffix_Get_Reader_ID         : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (40));
    Checkpoint_Get_Reader_ID     : constant Transaction_Identifier :=
@@ -272,6 +272,8 @@ procedure Flyology.DB.Client_Probe is
      Transaction_Identifier (Numbered_ID (42));
    Storage_Page_Reader_ID       : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (43));
+   Whole_Overflow_Reader_ID     : constant Transaction_Identifier :=
+     Transaction_Identifier (Numbered_ID (44));
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag              : constant Interfaces.Unsigned_64 := 16#F105#;
@@ -604,6 +606,13 @@ procedure Flyology.DB.Client_Probe is
       --  product key, page size, or ordering policy.
       Paged_Key      : constant Byte_Array := Bytes ("local-page-key");
       Paged_Value    : constant Byte_Array := Bytes ("local-page-value");
+      --  Four local rows plus the one persisted row exceed the fixture's exact
+      --  four-row live-state authority. They exercise failure atomicity rather
+      --  than define a production key pattern or result-size policy.
+      Overflow_Key_1 : constant Byte_Array := Bytes ("whole-overflow-a");
+      Overflow_Key_2 : constant Byte_Array := Bytes ("whole-overflow-b");
+      Overflow_Key_3 : constant Byte_Array := Bytes ("whole-overflow-c");
+      Overflow_Key_4 : constant Byte_Array := Bytes ("whole-overflow-d");
 
       procedure Expect_Allocation_Rejection (Point : Internal_Allocation_Fault_Point; Context : String) is
       begin
@@ -877,6 +886,10 @@ procedure Flyology.DB.Client_Probe is
       --  The whole-result overload waits on that same authenticated cursor
       --  initializer and then requests one complete page under persisted live
       --  limits; it does not rebuild visibility through the local checkpoint.
+      --  Arming the compatibility initializer's selected-run array allocation
+      --  proves the whole call instead takes the descriptor-backed path. The
+      --  fault remains armed on success and is cleared explicitly afterward.
+      Set_Test_Allocation_Fault (Scan_Run_Array_Allocation);
       Scan
         (Created,
          Scan_Txn,
@@ -890,6 +903,7 @@ procedure Flyology.DB.Client_Probe is
          null,
          Rows,
          Result);
+      Set_Test_Allocation_Fault (No_Allocation_Fault);
       Expect (Result, Success, "whole authenticated scan failed");
       if Scan_Row_Count (Rows) /= 1 then
          raise Program_Error with "whole authenticated scan returned the wrong row count";
@@ -994,6 +1008,50 @@ procedure Flyology.DB.Client_Probe is
       Flyology.Operations.Release (Cancelled_Work);
       Rollback (Scan_Txn, Result);
       Expect (Result, Success, "storage-backed multi-page reader rollback failed");
+
+      --  A whole scan that exceeds persisted live-state authority must reject
+      --  before the private page driver publishes its bounded prefix or
+      --  retains a serializable predicate. The prior successful row and exact
+      --  buffer token remain caller-owned on failure.
+      Begin_Transaction
+        (Created, Whole_Overflow_Reader_ID, Serializable, Scan_Txn, Result);
+      Expect (Result, Success, "whole-scan overflow reader begin failed");
+      Put (Created, Scan_Txn, Family, Overflow_Key_1, Paged_Value, Result);
+      Expect (Result, Success, "whole-scan overflow first Put failed");
+      Put (Created, Scan_Txn, Family, Overflow_Key_2, Paged_Value, Result);
+      Expect (Result, Success, "whole-scan overflow second Put failed");
+      Put (Created, Scan_Txn, Family, Overflow_Key_3, Paged_Value, Result);
+      Expect (Result, Success, "whole-scan overflow third Put failed");
+      Put (Created, Scan_Txn, Family, Overflow_Key_4, Paged_Value, Result);
+      Expect (Result, Success, "whole-scan overflow fourth Put failed");
+      Scan
+        (Created,
+         Scan_Txn,
+         Family,
+         False,
+         Bytes (""),
+         False,
+         Bytes (""),
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Rows,
+         Result);
+      Expect (Result, Capacity_Exceeded, "whole-scan overflow published a bounded prefix");
+      if Scan_Txn.Owner.Arena.Scan_Range_Count /= 0
+        or else not Flyology.Buffers.Has_Buffer (Scan_Buffer)
+        or else Flyology.Buffers.Tag (Scan_Buffer) /= Scan_Tag
+        or else Scan_Row_Count (Rows) /= 1
+      then
+         raise Program_Error with "whole-scan overflow changed predicate, rows, or token authority";
+      end if;
+      Read_Scan_Row (Rows, 1, Item_Key, Item_Value, Result);
+      Expect (Result, Success, "whole-scan overflow changed prior row readability");
+      if not Same (Item_Key, Paged_Key) or else not Same (Item_Value, Paged_Value) then
+         raise Program_Error with "whole-scan overflow changed prior row bytes";
+      end if;
+      Rollback (Scan_Txn, Result);
+      Expect (Result, Success, "whole-scan overflow reader rollback failed");
       Flyology.Buffers.Release (Scan_Buffer);
    exception
       when others =>

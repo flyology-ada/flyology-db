@@ -9,7 +9,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 1 Publication | Atomic absent/matching-generation writes, generation reads, reconciliation, provider fault tests | Local/client paths and six-provider matrix operational; broader acceptance pending |
 | 2 Log-only transactions | Create/open, stable families, pooled cross-family commits, remote recovery | Limited owned sync/composable spine and remote matrix operational; broader acceptance pending |
 | 3 MVCC/isolation | Snapshot and serializable validation, rollback, receipts, controlled concurrency | Snapshot plus serializable point/range-predicate validation operational; broader acceptance pending |
-| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, complete-view replacement, and authenticated physical paged merge operational; partial compaction and frame-streamed paging pending |
+| 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, caller-selected replacement, and authenticated frame-backed whole/paged reads operational; automatic selection and history pruning pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete, exact-two-run, and exact-three-run replacement operational and deletion safety proved; automatic/collector policy pending |
 | 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
@@ -105,9 +105,8 @@ The additive DB-level `Flush_Operation` moves a caller-sized unique-buffer token
 without a helper task. Public `Start_Compaction` now builds one complete live-state run per nonempty family, publishes
 a successor manifest naming only those caller-identified fresh runs, and reconciles unknown immutable-object
 responses by rebuilding the exact replacement plan. Blocking `Compact` waits on that operation for client storage
-and drives the equivalent backend-neutral publisher for memory/files. Per-frame scan streaming, automatic selection,
-run pruning, and retention/GC policy remain later focused units, so Milestone 4
-remains incomplete.
+and drives the equivalent backend-neutral publisher for memory/files. Automatic selection, run pruning, and
+retention/GC policy remain later focused units, so Milestone 4 remains incomplete.
 
 The fixed-snapshot paged-scan contract now has an additive Ada cursor plus maintained formal and executable evidence.
 Caller-supplied row/byte budgets, maximal contiguous pages, empty-view completion, atomic capacity/allocation
@@ -119,7 +118,8 @@ two negative probes, checked witness, and abstract TLAPS kernel are green. The A
 image leases and copied transaction-local mutations across engine replacement, eliminating repeated page capture and
 global sorting. Authenticated initialization now also has a storage-backed form that retains exact run descriptors
 and advances at most one authenticated head per run during each atomic page. Automatic run selection and broader
-memory claims remain unfinished. See
+memory claims remain unfinished. The buffer-owned whole `Scan` now composes that same initializer and one complete
+page under the persisted live limits and one absolute deadline; compatibility `Start_Scan` remains available. See
 [`paged-scans.md`](paged-scans.md) and [`physical-scan-merge.md`](physical-scan-merge.md).
 
 Generation-bound lazy immutable-run point reads now have a caller-driven execution path. New Flush and
