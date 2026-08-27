@@ -1,5 +1,46 @@
 # Review record
 
+## Caller-composable create resolution
+
+- Parent: accepted provider-centric Create commit `95ae641`.
+- Scope and compatibility: add operation-last and buffer-owned synchronous `Resolve_Create` overloads directly in
+  `Flyology.DB`, reusing `Create_Operation` and its existing typed `Finish`. The established storage-neutral
+  synchronous overload remains direct and source-compatible. No resolution operation type, `.Scoped` child,
+  forwarding alias, helper task, retry, identity/default/limit choice, persisted-format change, or provider policy
+  is added.
+- Publication and certainty: Start decodes and validates the self-contained retained root, then authenticates the
+  provider's immutable bytes exactly. `No_Create_Publication` or `Manifest_Confirmed` may advance to the one exact
+  pending HEAD conditional Put; `Head_Publication_Unknown` enters only shared read-based recovery. Definite
+  pre-admission cancellation, deadline, capacity, and transport results retain their established typed outcomes;
+  possible HEAD admission remains `Outcome_Unknown`. No manifest or HEAD mutation is replayed.
+- Lifecycle and ownership: the complete receipt authority is copied into the operation and cleared from the caller
+  at successful Start, alongside the moved unique-buffer token. Typed `Finish` restores both; exceptional Start
+  rolls both back. Every terminal, cancellation, nested-recovery allocation, and abandonment path either installs
+  one complete authenticated engine or returns the lifecycle to Closed. The private synchronous capacity of five
+  is the already-established Create/recovery/Object Storage/HTTP/transport owner-stack extent.
+- Coverage and qualification evidence: the authenticated client probe first creates a resumable
+  manifest-confirmed receipt, verifies the buffer-owned synchronous deadline path restores that receipt and exact
+  tagged token, then drives one operation-last resolution through a lost HEAD response plus rejected recovery-owner
+  allocation. `Finish` returns `Outcome_Unknown` and the exact attempted transition. Reusing the consumed operation
+  resolves the published HEAD read-only, installs the root, and restores the exact token. Root/test builds,
+  repository checks, and the maintained deterministic suite are green. Exact publication counters prove the first
+  resolution adds one HEAD attempt and neither resolution adds a manifest or batch mutation; the read-only restart
+  adds no mutation at all. The maintained provider matrix is green on RustFS, SeaweedFS, MinIO, and Flyology
+  memory/files/SQLite, three repetitions each. GNATformat and GNATdoc are absent from the selected toolchain, so no
+  formatter or generated-site claim is made. Maintained update-mode and ordinary TLA campaigns are byte-stable with
+  all model/action/negative/witness lanes green and 393/393 TLAPS obligations proved. Maintained warning-strict
+  GNATprove proves 1,103/1,103 checks (172 flow and 931 prover), with zero failed, unproved, justified, warning, or
+  actual `pragma Assume` findings and a maximum of 6,522 steps. Pre-, intermediate, and post-run executable-aware
+  host audits are clean.
+- Findings cycle: the first exact publication-counter oracle exposed a P1 common-driver dispatch that replayed the
+  already-confirmed immutable manifest before the pending HEAD. The corrected resolver selects read-only manifest
+  confirmation instead. The subsequent ownership/compatibility sweep found and fixed two further P1s: terminal
+  cleanup could dereference an absent driver after state-allocation failure, and an already-confirmed receipt was
+  normalized as `Invalid_State` rather than the established `Local_Activation_Failed`. Focused counter, restart,
+  confirmed-receipt, and exact-token oracles cover all three repairs. Under the repository rubric (P0 data loss or
+  safety, P1 public contract/ownership/certainty, P2 maintainability/test/documentation), the final sweep found no
+  actionable P0/P1/P2 finding.
+
 ## Caller-composable database-create candidate
 
 - Parent: accepted caller-composable cacheless-open commit `ec72c0b`.

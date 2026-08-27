@@ -428,6 +428,49 @@ package Flyology.DB is
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
        Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
+   --  Start or restart receipt-driven Create resolution on the same provider-
+   --  owned state machine as Create. The exact receipt authority and scratch
+   --  token move into Operation until typed Finish. A confirmed manifest may
+   --  admit its exact HEAD mutation once; an unknown HEAD is reconciled only
+   --  by reads and is never replayed.
+   --  @param Receipt Exact resumable Create publication authority moved until Finish
+   --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Operation Fresh or consumed client-bound Create operation
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Storage binding
+   procedure Resolve_Create
+     (Receipt        : in out Create_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Create_Operation)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Resume or reconcile Create through the owner-driven operation while
+   --  moving one exact caller scratch token. Client-bound execution waits the
+   --  same state machine as the composable overload; backend-neutral storage
+   --  retains the established direct synchronous implementation.
+   --  @param Item Closed database to activate after conclusive resolution
+   --  @param Storage Exact storage binding retained by an activated database
+   --  @param Receipt Exact resumable Create publication authority
+   --  @param Payload_Buffer Acquired caller-owned resolution scratch token
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Result Definite terminal or presently unknown outcome
+   procedure Resolve_Create
+     (Item           : in out Database;
+      Storage        : not null access Storage_Context;
+      Receipt        : in out Create_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Result         : out Outcome_Code)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
    --  Resume a confirmed-manifest creation before HEAD admission, or reconcile
    --  a possibly admitted HEAD publication without replaying it.
    procedure Resolve_Create

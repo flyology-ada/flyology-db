@@ -30,7 +30,11 @@ suffix. Live activation replaces the coordinator without invalidating family han
 Client-backed database creation now exposes a provider-centric `Create_Operation`, operation-last `Create`, typed
 `Finish`, and a buffer-owned synchronous wait over the same state machine. It owns exact root-manifest and HEAD
 bytes, never replays either conditional mutation, and authenticates a complete existing graph when a HEAD collision
-or lost response requires reconciliation. The storage-neutral synchronous form remains direct and source-compatible.
+or lost response requires reconciliation. Receipt-driven `Resolve_Create` is colocated on that same operation:
+confirmed immutable authority can admit its exact pending HEAD once, while possible HEAD admission is resolved only
+through reads. Both the receipt and exact scratch token remain operation-owned until typed `Finish`; the client-
+backed synchronous overload is a wait over that operation, while the storage-neutral synchronous form remains direct
+and source-compatible.
 An
 exact-checkpoint `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
 immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. Its additive

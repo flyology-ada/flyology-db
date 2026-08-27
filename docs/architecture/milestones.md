@@ -185,7 +185,9 @@ buffer-owned synchronous wait directly in `Flyology.DB`. It owns the exact root 
 replays either conditional mutation, and uses the same recovery traversal as Open to distinguish an idempotent
 existing root from a conflicting database after a definite collision or ambiguous HEAD response. A five-slot set is
 derived only from the nested Create/recovery/provider/HTTP/transport owner stack. The storage-neutral synchronous
-Create remains direct and source-compatible; broader mutation-resolution rollout remains separate Milestone 2 work.
+Create remains direct and source-compatible. Receipt-driven resolution now composes through this same operation and
+Finish vocabulary: retained manifest bytes are authenticated before the exact pending HEAD can be admitted, and an
+unknown HEAD is reconciled without replay. Broader mutation-resolution rollout remains separate Milestone 2 work.
 
 The LSM read-equivalence lane now exhausts all two-key/two-value captured views and later mutation maps, validates a
 concrete delete/put execution witness, rejects a replacement that omits one live key, and proves the arbitrary-key/

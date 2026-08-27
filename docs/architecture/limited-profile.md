@@ -40,7 +40,10 @@ boundary does not create a second transport or certainty implementation.
 The buffer-owned client-backed `Create` overload likewise waits its reusable `Create_Operation`. Manifest and HEAD
 publication remain non-replaying, and an existing or ambiguously published HEAD is resolved through the shared
 cacheless recovery traversal before one complete engine is installed. The storage-neutral synchronous overload
-remains direct and source-compatible.
+remains direct and source-compatible. Receipt-driven `Resolve_Create` uses that identical operation and typed
+`Finish`: Start moves the self-contained receipt and scratch token, authenticates the retained immutable bytes
+against the provider, admits the exact HEAD only from the definite `Manifest_Confirmed` phase, and performs only
+read-based recovery from `Head_Publication_Unknown`. The buffer-owned synchronous form waits that same state machine.
 The buffer-owned client-backed `Open` overload likewise waits the reusable `Open_Operation`; the established
 storage-neutral synchronous overload remains direct and source-compatible because it accepts no caller-owned scratch
 token. Both consume the same recovery request/validation machine and install only a complete authenticated graph.
@@ -122,7 +125,9 @@ typed `Finish`, and the buffer-owned synchronous overload share one state machin
 definitely unadmitted HEAD remains safely resumable from `Manifest_Confirmed`; possible admission is never replayed
 and is reconciled by authenticating the complete existing graph. The five-slot worst case derives from the nested
 DB Create/recovery, Object Storage, HTTP, and transport owner stack. No helper task, retry, identity selection,
-object-size bound, timeout default, or second API namespace is added.
+object-size bound, timeout default, or second API namespace is added. Operation-last and buffer-owned synchronous
+`Resolve_Create` now reuse that same state machine rather than introducing a resolution operation or compatibility
+namespace. Exact receipt ownership moves with the scratch token and returns only through the existing typed Finish.
 
 The additive composable `Open` surface makes cacheless client recovery usable by owner-driven applications without
 creating a parallel recovery algorithm. `Open_Operation`, its operation-last `Open`, typed `Finish`, and the

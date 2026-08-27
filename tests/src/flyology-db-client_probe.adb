@@ -1704,48 +1704,138 @@ begin
       raise Program_Error with "definite pre-HEAD create lost resumable receipt or exact token";
    end if;
 
-   --  Lose the initial HEAD response after provider entry, then reject the
-   --  reconciliation owner allocation. Possible mutation admission must
-   --  dominate local capacity and retain the exact attempted transition.
-   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
-   Set_Test_Allocation_Fault (Recovery_Driver_State_Allocation);
-   Create
+   --  The client-bound synchronous form is a literal wait over the same
+   --  operation. An already-expired caller deadline must restore both owned
+   --  inputs without admitting the pending HEAD or changing its identity.
+   Resolve_Create
      (Created,
       Context'Access,
-      Probe_Database_ID,
-      Root_Manifest_ID,
-      Root_Transition_ID,
-      Limits,
-      Families,
+      Receipt,
       Flush_Buffer,
-      Test_Operation_Timeout,
-      Receipt => Receipt,
-      Result  => Result);
-   Expect (Result, Outcome_Unknown, "ambiguous create was weakened by reconciliation capacity");
+      0.0,
+      Result => Result);
+   Expect (Result, Timed_Out, "buffer-owned create resolution ignored its absolute deadline");
    if Create_Receipt_Manifest_ID (Receipt) /= Root_Manifest_ID
-     or else Create_Receipt_Transition_ID (Receipt) /= Root_Transition_ID
+     or else Create_Receipt_Transition_ID (Receipt) /= Zero_Identifier
      or else not Flyology.Buffers.Has_Buffer (Flush_Buffer)
      or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
    then
-      raise Program_Error with "ambiguous create lost its attempted transition or exact token";
+      raise Program_Error with "timed-out create resolution lost receipt authority or exact token";
    end if;
 
-   --  The retry uses the same stable identities. Both conditional mutations
-   --  are rejected as already present, then the shared recovery child
-   --  authenticates and installs the complete exact root without replay.
-   Create
-     (Created,
-      Context'Access,
-      Probe_Database_ID,
-      Root_Manifest_ID,
-      Root_Transition_ID,
-      Limits,
-      Families,
-      Flush_Buffer,
-      Test_Operation_Timeout,
-      Receipt => Receipt,
-      Result  => Result);
-   Expect (Result, Success, "client-backed create failed");
+   --  Resolve owns the exact receipt and token through typed Finish. Its first
+   --  use authenticates the already-confirmed immutable manifest, admits only
+   --  the exact pending HEAD, then loses that response. Local recovery
+   --  allocation failure cannot weaken possible admission or replay the PUT.
+   declare
+      Resolve_Work         : Create_Operation
+        (Composable_Set'Access,
+         Created'Access,
+         Context'Access,
+         Client'Access,
+         Flush_Pool'Access,
+         null);
+      Batch_Puts_Before    : Natural;
+      Manifest_Puts_Before : Natural;
+      Head_Puts_Before     : Natural;
+      Batch_Puts_After     : Natural;
+      Manifest_Puts_After  : Natural;
+      Head_Puts_After      : Natural;
+   begin
+      Context.Test_Control.Publication_Counts
+        (Batch_Puts_Before, Manifest_Puts_Before, Head_Puts_Before);
+      Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+      Set_Test_Allocation_Fault (Recovery_Driver_State_Allocation);
+      Resolve_Create (Receipt, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
+      if Create_Receipt_Manifest_ID (Receipt) /= Zero_Identifier
+        or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
+      then
+         raise Program_Error with "composable create resolution retained caller ownership";
+      end if;
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Resolve_Work, Receipt, Result, Restored_Buffer);
+      Flyology.Operations.Release (Resolve_Work);
+      Expect (Result, Outcome_Unknown, "ambiguous resolution was weakened by recovery capacity");
+      if Create_Receipt_Manifest_ID (Receipt) /= Root_Manifest_ID
+        or else Create_Receipt_Transition_ID (Receipt) /= Root_Transition_ID
+        or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "ambiguous resolution lost receipt authority or exact token";
+      end if;
+      Context.Test_Control.Publication_Counts
+        (Batch_Puts_After, Manifest_Puts_After, Head_Puts_After);
+      if Batch_Puts_After /= Batch_Puts_Before
+        or else Manifest_Puts_After /= Manifest_Puts_Before
+        or else Head_Puts_After /= Head_Puts_Before + 1
+      then
+         raise Program_Error
+           with
+             "create resolution mutation counts changed: before="
+             & Natural'Image (Batch_Puts_Before)
+             & "/"
+             & Natural'Image (Manifest_Puts_Before)
+             & "/"
+             & Natural'Image (Head_Puts_Before)
+             & " after="
+             & Natural'Image (Batch_Puts_After)
+             & "/"
+             & Natural'Image (Manifest_Puts_After)
+             & "/"
+             & Natural'Image (Head_Puts_After);
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+      --  Restarting the consumed operation with the unknown receipt is
+      --  strictly read-only: manifest authentication and shared recovery find
+      --  the already-published HEAD and install the exact root.
+      Resolve_Create (Receipt, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Resolve_Work, Receipt, Result, Restored_Buffer);
+      Flyology.Operations.Release (Resolve_Work);
+      Expect (Result, Success, "client-backed composable create resolution failed");
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "restarted create resolution lost its exact token";
+      end if;
+      Context.Test_Control.Publication_Counts
+        (Batch_Puts_After, Manifest_Puts_After, Head_Puts_After);
+      if Batch_Puts_After /= Batch_Puts_Before
+        or else Manifest_Puts_After /= Manifest_Puts_Before
+        or else Head_Puts_After /= Head_Puts_Before + 1
+      then
+         raise Program_Error with "unknown create resolution replayed a mutation";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+      --  A conclusive receipt has no remaining activation opportunity. The
+      --  provider-owned path retains the established direct resolver result,
+      --  restores both owners, and performs no read or mutation.
+      Resolve_Create (Receipt, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Resolve_Work, Receipt, Result, Restored_Buffer);
+      Flyology.Operations.Release (Resolve_Work);
+      Expect (Result, Local_Activation_Failed, "confirmed create resolution changed normalization");
+      if Create_Receipt_Manifest_ID (Receipt) /= Root_Manifest_ID
+        or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "confirmed create resolution lost receipt or exact token";
+      end if;
+      Context.Test_Control.Publication_Counts
+        (Batch_Puts_After, Manifest_Puts_After, Head_Puts_After);
+      if Batch_Puts_After /= Batch_Puts_Before
+        or else Manifest_Puts_After /= Manifest_Puts_Before
+        or else Head_Puts_After /= Head_Puts_Before + 1
+      then
+         raise Program_Error with "confirmed create resolution touched the provider";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+   end;
 
    --  Reusing the exact root against an existing HEAD exercises immutable
    --  comparison followed by the nested owner-driven recovery traversal. A

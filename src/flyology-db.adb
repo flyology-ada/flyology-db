@@ -2134,6 +2134,7 @@ package body Flyology.DB is
       Reading_Selected_Whole,
       Putting_Immutable,
       Reading_Immutable,
+      Reading_Create_Manifest,
       Putting_Head,
       Reading_Create_Reconciliation,
       Flush_Terminal);
@@ -2192,6 +2193,10 @@ package body Flyology.DB is
       Checkpoint_Admitted : Boolean := False;
       Create_Open_Admitted : Boolean := False;
       Create_Mutation_May_Have_Entered : Boolean := False;
+      --  Receipt resolution reuses Create's exact operation and Finish
+      --  vocabulary, but authenticates the retained immutable manifest before
+      --  either one permitted HEAD admission or read-only reconciliation.
+      Resolving_Create    : Boolean := False;
       --  Fresh-state additive mode is only a vacant initializer. Every Start
       --  assigns its explicit private constructor-selected algorithm before
       --  the driver can run.
@@ -14779,15 +14784,24 @@ package body Flyology.DB is
          end if;
       end loop;
 
-      LSM_Runtime.Encode_Checkpoint_Manifest (State.Plan.Manifest.all, Encoded, Encode_Result);
-      if Encode_Result /= LSM_Runtime.Encoded then
-         Result := Corrupt;
-         return;
+      if State.Resolving_Create then
+         --  The receipt's exact encoded bytes are the authority compared with
+         --  the immutable provider object. Decoding establishes structure;
+         --  re-encoding must not silently canonicalize a different image.
+         State.Manifest_Image.Owner := Item.Final_Create_Receipt.Retained_Manifest.Image;
+         State.Manifest_Image.Owner.References.Retain;
+         State.Manifest_Image.Digest := Digest_Image (State.Manifest_Image.Owner);
+      else
+         LSM_Runtime.Encode_Checkpoint_Manifest (State.Plan.Manifest.all, Encoded, Encode_Result);
+         if Encode_Result /= LSM_Runtime.Encoded then
+            Result := Corrupt;
+            return;
+         end if;
+         Adopt_Encoded_Image (Encoded, State.Manifest_Image);
       end if;
-      Adopt_Encoded_Image (Encoded, State.Manifest_Image);
       Maximum := Natural'Max (Maximum, Flyology.Bytes.Length (State.Manifest_Image.Owner.Data));
 
-      if State.Mode = Create_Plan then
+      if State.Mode = Create_Plan and then not State.Resolving_Create then
          --  Create_Receipt must outlive this operation when publication is
          --  ambiguous. Keep an independent exact-byte lease before the
          --  driver's prepared image is released at terminal completion.
@@ -14953,6 +14967,8 @@ package body Flyology.DB is
          Item.Final_Create_Receipt.Current_Outcome := Result;
          if Item.Final_Create_Receipt.Phase = No_Create_Publication
            and then Result /= Outcome_Unknown
+           and then Item.Driver_State /= null
+           and then not Item.Driver_State.Resolving_Create
          then
             Release_Retained_Manifest (Item.Final_Create_Receipt);
          end if;
@@ -15053,6 +15069,8 @@ package body Flyology.DB is
    procedure Start_Next_Immutable (Item : in out Flush_Operation);
    procedure Start_Head_Publication (Item : in out Flush_Operation);
    procedure Start_Immutable_Read (Item : in out Flush_Operation);
+   procedure Start_Create_Manifest_Confirmation (Item : in out Flush_Operation);
+   procedure Start_Create_Reconciliation (Item : in out Flush_Operation);
 
    procedure Start_Current_Put (Item : in out Flush_Operation) is
       State : Flush_Driver_State renames Item.Driver_State.all;
@@ -15323,6 +15341,128 @@ package body Flyology.DB is
          Finish_Composable_Phase (Item, Outcome_Unknown);
       end if;
    end Complete_Immutable_Read;
+
+   procedure Start_Create_Manifest_Confirmation (Item : in out Flush_Operation) is
+      State : Flush_Driver_State renames Item.Driver_State.all;
+      Fault : Storage_Fault_Mode;
+   begin
+      if not State.Resolving_Create or else State.Manifest_Image.Owner = null then
+         raise Program_Error with "Create resolution lost its retained manifest";
+      elsif Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Composable_Flush (Item, Cancelled);
+         return;
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Composable_Flush (Item, Timed_Out);
+         return;
+      end if;
+      Consume_Fault (Item.Storage.all, Before_Manifest_Get, Fault);
+      if Fault /= No_Fault then
+         Complete_Composable_Flush (Item, Outcome_Unknown);
+         return;
+      elsif Item.Read_Child = null then
+         raise Program_Error with "Create resolution read child was not prepared";
+      end if;
+      Client_Objects.Get_Whole
+        (Item.HTTP,
+         Item.Storage.Client_Origin,
+         UStrings.To_String (Item.Storage.Bucket),
+         Manifest_Key (Item.Storage.all, State.Manifest_ID),
+         Item.Payload'Unchecked_Access,
+         Item.Storage.Client_Identity.all,
+         Item.HTTP_Deadline,
+         Region                => UStrings.To_String (Item.Storage.Client_Region),
+         Style                 => Item.Storage.Client_Style,
+         Expected_Bucket_Owner => UStrings.To_String (Item.Storage.Expected_Bucket_Owner),
+         Request_Payer         => UStrings.To_String (Item.Storage.Client_Request_Payer),
+         Checksum_Mode         => Item.Storage.Client_Checksum_Mode,
+         Token                 => Item.Cancellation,
+         Operation             => Item.Read_Child.all);
+      State.Phase := Reading_Create_Manifest;
+      Flyology.Operations.Continue_After (Item, Item.Read_Child.all);
+   exception
+      when Flyology.Operations.Capacity_Error =>
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Composable_Flush (Item, Error);
+   end Start_Create_Manifest_Confirmation;
+
+   procedure Complete_Create_Manifest_Confirmation (Item : in out Flush_Operation) is
+      Outcome : Client_Objects.Whole_Get_Result;
+      Image   : constant Shared_Image_Access := Item.Driver_State.Manifest_Image.Owner;
+      Exact   : Boolean := False;
+      Missing : Boolean := False;
+      Result  : Outcome_Code := Outcome_Unknown;
+   begin
+      begin
+         Client_Objects.Finish (Item.Read_Child.all, Outcome);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Read_Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Read_Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Read_Child.all)
+            then
+               Flyology.Operations.Release (Item.Read_Child.all);
+            end if;
+            Fail_Composable_Flush (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Read_Child.all);
+      if Outcome.Kind = Client_Objects.Whole_Get_Response_Available then
+         if Outcome.Response.Kind = Client_Low_Level.Object_Opened then
+            Exact :=
+              Outcome.Response.Status = 200
+              and then Outcome.Response.Result.Content_Length.Is_Set
+              and then Outcome.Response.Result.Content_Length.Value =
+                OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
+              and then Payload_Matches (Item.Payload, Image);
+            if Exact then
+               if Item.Final_Create_Receipt.Phase = No_Create_Publication then
+                  Item.Final_Create_Receipt.Phase := Manifest_Confirmed;
+               end if;
+               if Item.Final_Create_Receipt.Phase = Manifest_Confirmed then
+                  Start_Head_Publication (Item);
+               else
+                  Start_Create_Reconciliation (Item);
+               end if;
+               return;
+            elsif Outcome.Response.Status = 200
+              and then Outcome.Response.Result.Content_Length.Is_Set
+              and then Outcome.Response.Result.Content_Length.Value =
+                OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
+            then
+               Result :=
+                 (if Item.Final_Create_Receipt.Phase = No_Create_Publication
+                  then Already_Exists
+                  else Corrupt);
+               Release_Retained_Manifest (Item.Final_Create_Receipt);
+               Complete_Composable_Flush (Item, Result);
+               return;
+            end if;
+         elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
+            Missing := Outcome.Response.Status = 404;
+         end if;
+      elsif Item.Final_Create_Receipt.Phase /= Head_Publication_Unknown then
+         Result :=
+           (case Outcome.Failure is
+              when Client_Common.Cancelled          => Cancelled,
+              when Client_Common.Timed_Out          => Timed_Out,
+              when Client_Common.Response_Too_Large => Capacity_Exceeded,
+              when others                           => Outcome_Unknown);
+      end if;
+      if Missing then
+         Result :=
+           (if Item.Final_Create_Receipt.Phase = No_Create_Publication
+            then Storage_Failure
+            else Corrupt);
+         if Result = Corrupt then
+            Release_Retained_Manifest (Item.Final_Create_Receipt);
+         end if;
+      end if;
+      Complete_Composable_Flush (Item, Result);
+   exception
+      when Error : others =>
+         Fail_Composable_Flush (Item, Error);
+   end Complete_Create_Manifest_Confirmation;
 
    procedure Activate_Composable_Family
      (Item       : in out Flush_Operation;
@@ -20062,7 +20202,11 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Timed_Out);
       else
          State.Current_Family_Slot := 0;
-         Start_Next_Immutable (Item);
+         if State.Resolving_Create then
+            Start_Create_Manifest_Confirmation (Item);
+         else
+            Start_Next_Immutable (Item);
+         end if;
       end if;
    exception
       when Storage_Error =>
@@ -20584,7 +20728,11 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Timed_Out);
       else
          State.Current_Family_Slot := 0;
-         Start_Next_Immutable (Item);
+         if State.Resolving_Create then
+            Start_Create_Manifest_Confirmation (Item);
+         else
+            Start_Next_Immutable (Item);
+         end if;
       end if;
    exception
       when Storage_Error =>
@@ -20690,6 +20838,13 @@ package body Flyology.DB is
          Complete_Immutable_Read (Item);
       elsif Event = Flyology.Operations.Dependency_Changed
         and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Reading_Create_Manifest
+        and then Item.Read_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Read_Child.all)
+      then
+         Complete_Create_Manifest_Confirmation (Item);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
         and then Item.Driver_State.Phase = Reading_Create_Reconciliation
         and then Item.Recovery_Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Recovery_Child.all)
@@ -20767,10 +20922,13 @@ package body Flyology.DB is
       elsif Item.Read_Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Read_Child.all)
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Phase in Reading_Selected_Whole | Reading_Immutable
+        and then Item.Driver_State.Phase
+          in Reading_Selected_Whole | Reading_Immutable | Reading_Create_Manifest
       then
          if Item.Driver_State.Phase = Reading_Selected_Whole then
             Complete_Selected_Whole (Item);
+         elsif Item.Driver_State.Phase = Reading_Create_Manifest then
+            Complete_Create_Manifest_Confirmation (Item);
          else
             Complete_Immutable_Read (Item);
          end if;
@@ -21100,6 +21258,266 @@ package body Flyology.DB is
          end if;
          raise;
    end Start_Composable_Create;
+
+   procedure Prepare_Create_Resolution
+     (Receipt : Create_Receipt;
+      Storage : Storage_Context;
+      State   : in out Flush_Driver_State;
+      Result  : out Outcome_Code)
+   is
+      Length : constant Natural :=
+        (if Receipt.Retained_Manifest.Image = null
+         then 0
+         else Flyology.Bytes.Length (Receipt.Retained_Manifest.Image.Data));
+   begin
+      State.Mode := Create_Plan;
+      State.Resolving_Create := True;
+      State.Manifest_ID := Receipt.Manifest_ID;
+      State.Transition_ID := Receipt.Attempted_Head.Transition_ID;
+      if Receipt.Phase = Head_Confirmed then
+         --  A conclusive prior publication has already consumed the local
+         --  activation opportunity. Match the established direct resolver
+         --  before requiring the no-longer-retained manifest bytes.
+         Result := Local_Activation_Failed;
+         return;
+      elsif Receipt.Phase not in No_Create_Publication | Manifest_Confirmed | Head_Publication_Unknown
+        or else Receipt.Database_ID = Zero_Database_ID
+        or else Is_Zero (Receipt.Manifest_ID)
+        or else Length = 0
+        or else not Storage_Bound (Storage)
+        or else not OS.Valid_Object_Key (Manifest_Key (Storage, Receipt.Manifest_ID))
+        or else not OS.Valid_Object_Key (Full_Key (Storage, Head_Key_Suffix))
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+      declare
+         Image      : Formats.Byte_Array (0 .. Length - 1);
+         Checkpoint : LSM_Runtime.Checkpoint_Manifest_Access := null;
+         Status     : LSM_Runtime.Decode_Status;
+      begin
+         for Index in Image'Range loop
+            Image (Index) :=
+              Byte (Flyology.Bytes.Element (Receipt.Retained_Manifest.Image.Data, Index + 1));
+         end loop;
+         LSM_Runtime.Decode_Checkpoint_Manifest
+           (Image, To_Head_ID (Receipt.Database_ID), Checkpoint, Status);
+         if Status = LSM_Runtime.Decoded
+           and then Checkpoint /= null
+           and then Checkpoint.Replay_Boundary = 0
+           and then Checkpoint.Run_Total = 0
+           and then Checkpoint.Identity_Total = 0
+           and then To_Identifier (Checkpoint.Base.Manifest_ID) = Receipt.Manifest_ID
+           and then
+             Manifests.Valid_Root_Publication
+               (To_Head (Receipt.Attempted_Head), Checkpoint.Base)
+         then
+            State.Plan.Manifest := Checkpoint;
+            Checkpoint := null;
+            Result := Success;
+         else
+            --  Resolve_Create treats a receipt that cannot reproduce its
+            --  exact canonical empty root as invalid caller authority. This
+            --  preserves the established synchronous normalization across
+            --  malformed, unsupported, incompatible, and failed decode.
+            Result := Invalid_State;
+         end if;
+         LSM_Runtime.Release (Checkpoint);
+      exception
+         when Storage_Error =>
+            LSM_Runtime.Release (Checkpoint);
+            Result := Invalid_State;
+         when others =>
+            LSM_Runtime.Release (Checkpoint);
+            raise;
+      end;
+   exception
+      when Storage_Error =>
+         Result := Invalid_State;
+   end Prepare_Create_Resolution;
+
+   procedure Start_Composable_Create_Resolution
+     (Receipt        : in out Create_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Flush_Operation)
+   is
+      Result        : Outcome_Code;
+      Buffer_Moved  : Boolean := False;
+      Receipt_Moved : Boolean := False;
+      Started       : Boolean := False;
+   begin
+      if Operation.Storage.HTTP_Client /= Operation.HTTP
+        or else Operation.Storage.Client_Identity = null
+      then
+         raise Program_Error with "Create resolution operation does not match client-bound storage";
+      elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "Create resolution payload belongs to a different pool";
+      elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
+        or else Operation.Driver_State /= null
+        or else Operation.Read_Child /= null
+        or else Operation.Range_Child /= null
+        or else Operation.Head_Child /= null
+        or else Operation.Recovery_Child /= null
+      then
+         raise Program_Error with "Create resolution operation retains unconsumed ownership";
+      end if;
+
+      Operation.Deadline := Deadline_After (Timeout);
+      Operation.HTTP_Deadline :=
+        (if Operation.Deadline = Ada.Real_Time.Time_Last
+         then Flyology.HTTP.Client.No_Deadline
+         else Flyology.HTTP.Client.Deadline_After (Remaining_Time (Operation.Deadline)));
+      Operation.Final_Receipt := (others => <>);
+      Operation.Final_Family_Receipt := (others => <>);
+      Operation.Final_Create_Receipt := Receipt;
+      Operation.Final_Is_Family_Append := False;
+      Operation.Final_Is_Create := True;
+      Operation.Final_Result := Invalid_State;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+
+      begin
+         Operation.Driver_State := new Flush_Driver_State;
+      exception
+         when Storage_Error =>
+            null;
+      end;
+      if Operation.Driver_State /= null then
+         Prepare_Create_Resolution
+           (Operation.Final_Create_Receipt,
+            Operation.Storage.all,
+            Operation.Driver_State.all,
+            Operation.Driver_State.Precheck_Result);
+         if Operation.Driver_State.Precheck_Result /= Success then
+            Release_Retained_Manifest (Operation.Final_Create_Receipt);
+         end if;
+      end if;
+
+      Flyology.Operations.Drivers.Start (Operation);
+      Started := True;
+      Receipt := (others => <>);
+      Receipt_Moved := True;
+      if Operation.Driver_State /= null
+        and then Operation.Driver_State.Precheck_Result = Success
+      then
+         Operation.Item.Life.Begin_Open (Result);
+         if Result = Success then
+            Operation.Driver_State.Create_Open_Admitted := True;
+         else
+            Operation.Driver_State.Precheck_Result := Result;
+         end if;
+      end if;
+      Flyology.Buffers.Move (Payload_Buffer, Operation.Payload);
+      Buffer_Moved := True;
+      if Operation.Driver_State = null then
+         Operation.Final_Result := Capacity_Exceeded;
+         Operation.Final_Create_Receipt.Current_Outcome := Capacity_Exceeded;
+         Operation.Has_Final_Result := True;
+         Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+      elsif Operation.Driver_State.Precheck_Result /= Success then
+         Complete_Composable_Flush (Operation, Operation.Driver_State.Precheck_Result);
+      else
+         Flyology.Operations.Drive
+           (Flyology.Operations.Operation'Class (Operation), Flyology.Operations.Start_Operation);
+      end if;
+   exception
+      when others =>
+         if Buffer_Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
+            Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+         end if;
+         if Operation.Driver_State /= null
+           and then Operation.Driver_State.Create_Open_Admitted
+         then
+            Operation.Driver_State.Create_Open_Admitted := False;
+            Operation.Item.Life.Abort_Open;
+         end if;
+         Release_Flush_State (Operation.Driver_State);
+         if Receipt_Moved then
+            Receipt := Operation.Final_Create_Receipt;
+         end if;
+         Release_Retained_Manifest (Operation.Final_Create_Receipt);
+         if Started and then Flyology.Operations.Is_Active (Operation) then
+            Flyology.Operations.Drivers.Rollback_Start (Operation);
+         end if;
+         raise;
+   end Start_Composable_Create_Resolution;
+
+   procedure Resolve_Create
+     (Receipt        : in out Create_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Create_Operation) is
+   begin
+      Start_Composable_Create_Resolution
+        (Receipt, Payload_Buffer, Timeout, Flush_Operation (Operation));
+   end Resolve_Create;
+
+   procedure Resolve_Create
+     (Item           : in out Database;
+      Storage        : not null access Storage_Context;
+      Receipt        : in out Create_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Result         : out Outcome_Code)
+   is
+      --  Five is the exact worst-case owner stack documented on
+      --  Create_Operation: resolution, recovery, Object Storage, HTTP, and
+      --  transport. It is derived private geometry, not a DB queue limit.
+      Synchronous_Set_Capacity : constant := 5;
+   begin
+      if Storage.HTTP_Client = null then
+         Resolve_Create (Item, Storage, Receipt, Timeout, Token, Result);
+         return;
+      elsif Storage.Client_Identity = null then
+         Result := Invalid_State;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      declare
+         Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+         Operation : Create_Operation
+           (Set'Access,
+            Item'Unchecked_Access,
+            Storage,
+            Storage.HTTP_Client,
+            Payload_Buffer.Owner,
+            Token);
+         Started : Boolean := False;
+      begin
+         Resolve_Create (Receipt, Payload_Buffer, Timeout, Operation);
+         Started := True;
+         Flyology.Operations.Wait_All (Set);
+         Finish (Operation, Receipt, Result, Payload_Buffer);
+         Flyology.Operations.Release (Operation);
+      exception
+         when others =>
+            if Started then
+               if Flyology.Operations.Is_Active (Operation) then
+                  Flyology.Operations.Cancel (Operation);
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               if Flyology.Operations.Is_Terminal (Operation)
+                 and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+               then
+                  begin
+                     Finish (Operation, Receipt, Result, Payload_Buffer);
+                  exception
+                     when others =>
+                        null;
+                  end;
+               end if;
+               begin
+                  Flyology.Operations.Release (Operation);
+               exception
+                  when others =>
+                     null;
+               end;
+            end if;
+            raise;
+      end;
+   end Resolve_Create;
 
    procedure Create
      (Database_ID           : Database_Identifier;
