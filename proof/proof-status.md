@@ -16,6 +16,10 @@ only bounds derived from the exact format formulas.
 - [x] LSM reference-format proof instance (level 1, mode all)
   - [x] `Flyology.DB.LSM_Formats.Reference`: 435/435 checks in the focused instance
   - [x] Repository selected-unit widening: 1,078/1,078 checks, 164 flow and 914 prover
+- [x] Checkpoint-manifest decoder proof-robustness decomposition
+  - [x] Public fail-closed wrapper: 2/2 checks
+  - [x] Private success-only candidate parser: 118/118 checks
+  - [x] Repository selected-unit widening: 1,103/1,103 checks, 172 flow and 931 prover
 
 ## Reviewed
 <!-- Before marking an item complete here, review it following the Review
@@ -23,12 +27,13 @@ only bounds derived from the exact format formulas.
 
 - [x] Encoder, decoder, structural-validation, exact-length, and identifier helper obligations reviewed after the
       focused instance proved
+- [x] Independent read-only review confirmed the open decoder goal was solver-resource
+      fragility and that parser/result decomposition preserves the public contract and
+      runtime outcomes
 
 ## In Progress
 <!-- A subagent executes the Tactical Loop for the subprogram below.
      It should update this section as it works. -->
-
-- [ ] No proof work remains in this format unit.
 
 ## Not Started
 <!-- Whenever a subprogram is added (due to refactoring) or discovered

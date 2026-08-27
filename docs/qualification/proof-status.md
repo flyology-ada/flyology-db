@@ -14,6 +14,20 @@ Authoritative command:
 No selected unit may report an unproved check or warning. Proof commands use `--output-header`; proof totals are read
 from retained tool output. No assumptions, false-positive suppressions, or imported ghost axioms are admitted.
 
+The caller-composable database `Create` operation changes the owner-driven runtime state machine, not the selected
+SPARK boundary. During its exact-tree qualification, solver variance exposed an expensive failure-postcondition
+split in the selected checkpoint-manifest reference decoder. The superseding decomposition places all parsing behind
+a private helper whose contract constrains only a complete decoded candidate; the public wrapper establishes the
+canonical empty value directly for every non-decoded status. This changes no decoder contract, wire format,
+successful value, failure status, or public API. The warning-strict maintained widening proves 1,103/1,103 checks:
+98 initialization, 531 run-time, 91 assertion, 308 functional-contract, and 75 termination checks; flow analysis
+discharges 172 and provers discharge 931, with maximum successful effort 6,522 steps. The public wrapper proves 2/2
+checks and the private candidate parser proves 118/118, with zero warnings, unproved or justified checks, or actual
+`pragma Assume` statements. This supersedes the timeout-sensitive earlier failure-boundary attempts rather than
+carrying their green evidence forward.
+Object Storage I/O, lifecycle scheduling, publication certainty, dynamic allocation, and refinement of the Create
+driver to the maintained models remain executable integration boundaries rather than new SPARK claims.
+
 The additive public storage-backed `Get` composes already-qualified transaction selection and the mixed-version
 checkpoint selector without changing a selected SPARK unit or either TLA+ action system. The runtime operation,
 database/transaction borrow lifetime, copied descriptor ownership, completion scheduling, and exact buffer movement

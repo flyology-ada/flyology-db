@@ -274,6 +274,13 @@ procedure Flyology.DB.Client_Probe is
      Transaction_Identifier (Numbered_ID (43));
    Whole_Overflow_Reader_ID     : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (44));
+   --  IDs 45 through 47 form one conflicting root publication fixture. The
+   --  provider admits its immutable manifest but the existing HEAD names the
+   --  real database, proving typed Already_Exists normalization and restart.
+   Conflicting_Database_ID      : constant Database_Identifier :=
+     Database_Identifier (Numbered_ID (45));
+   Conflicting_Manifest_ID      : constant Identifier := Numbered_ID (46);
+   Conflicting_Transition_ID    : constant Identifier := Numbered_ID (47);
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag              : constant Interfaces.Unsigned_64 := 16#F105#;
@@ -1632,6 +1639,50 @@ begin
       "",
       False);
 
+   Flyology.Buffers.Acquire (Flush_Buffer);
+   Flyology.Buffers.Set_Tag (Flush_Buffer, Flush_Token_Tag);
+
+   --  Pre-request cancellation still follows Start/move/drain/typed Finish.
+   --  The succeeding create on the same handle proves lifecycle rollback to
+   --  Closed; exact tag restoration proves ownership, not pool substitution.
+   declare
+      Stop        : aliased Flyology.Cancellation.Token;
+      Cancel_Work : Create_Operation
+        (Composable_Set'Access,
+         Created'Access,
+         Context'Access,
+         Client'Access,
+         Flush_Pool'Access,
+         Stop'Access);
+   begin
+      Stop.Request;
+      Create
+        (Probe_Database_ID,
+         Root_Manifest_ID,
+         Root_Transition_ID,
+         Limits,
+         Families,
+         Flush_Buffer,
+         Test_Operation_Timeout,
+         Cancel_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Cancel_Work, Receipt, Result, Restored_Buffer);
+      Flyology.Operations.Release (Cancel_Work);
+      Expect (Result, Cancelled, "pre-requested composable create cancellation was lost");
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "cancelled composable create did not restore its exact token";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+   end;
+
+   --  A definite failure before HEAD provider entry leaves the immutable root
+   --  confirmed and the attempted transition unadmitted. The same identities
+   --  may therefore be resumed safely; the following lost-response attempt
+   --  proves that no replacement identity or hidden replay is introduced.
+   Context.Test_Control.Arm (Before_Head_Put, Definite_Failure, 1);
    Create
      (Created,
       Context'Access,
@@ -1640,10 +1691,183 @@ begin
       Root_Transition_ID,
       Limits,
       Families,
+      Flush_Buffer,
+      Test_Operation_Timeout,
+      Receipt => Receipt,
+      Result  => Result);
+   Expect (Result, Storage_Failure, "definite pre-HEAD composable create failure was weakened");
+   if Create_Receipt_Manifest_ID (Receipt) /= Root_Manifest_ID
+     or else Create_Receipt_Transition_ID (Receipt) /= Zero_Identifier
+     or else not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "definite pre-HEAD create lost resumable receipt or exact token";
+   end if;
+
+   --  Lose the initial HEAD response after provider entry, then reject the
+   --  reconciliation owner allocation. Possible mutation admission must
+   --  dominate local capacity and retain the exact attempted transition.
+   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+   Set_Test_Allocation_Fault (Recovery_Driver_State_Allocation);
+   Create
+     (Created,
+      Context'Access,
+      Probe_Database_ID,
+      Root_Manifest_ID,
+      Root_Transition_ID,
+      Limits,
+      Families,
+      Flush_Buffer,
+      Test_Operation_Timeout,
+      Receipt => Receipt,
+      Result  => Result);
+   Expect (Result, Outcome_Unknown, "ambiguous create was weakened by reconciliation capacity");
+   if Create_Receipt_Manifest_ID (Receipt) /= Root_Manifest_ID
+     or else Create_Receipt_Transition_ID (Receipt) /= Root_Transition_ID
+     or else not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "ambiguous create lost its attempted transition or exact token";
+   end if;
+
+   --  The retry uses the same stable identities. Both conditional mutations
+   --  are rejected as already present, then the shared recovery child
+   --  authenticates and installs the complete exact root without replay.
+   Create
+     (Created,
+      Context'Access,
+      Probe_Database_ID,
+      Root_Manifest_ID,
+      Root_Transition_ID,
+      Limits,
+      Families,
+      Flush_Buffer,
       Test_Operation_Timeout,
       Receipt => Receipt,
       Result  => Result);
    Expect (Result, Success, "client-backed create failed");
+
+   --  Reusing the exact root against an existing HEAD exercises immutable
+   --  comparison followed by the nested owner-driven recovery traversal. A
+   --  matching complete root opens a second handle without replaying either
+   --  conditional mutation or weakening publication certainty.
+   declare
+      Existing      : aliased Database;
+      Existing_Work : Create_Operation
+        (Composable_Set'Access,
+         Existing'Access,
+         Context'Access,
+         Client'Access,
+         Flush_Pool'Access,
+         null);
+   begin
+      --  Failure before the nested recovery owner exists must leave the open
+      --  admission with Create, whose terminal cleanup returns the lifecycle
+      --  to Closed. Reusing the same operation immediately is the oracle.
+      Set_Test_Allocation_Fault (Recovery_Driver_State_Allocation);
+      Create
+        (Probe_Database_ID,
+         Root_Manifest_ID,
+         Root_Transition_ID,
+         Limits,
+         Families,
+         Flush_Buffer,
+         Test_Operation_Timeout,
+         Existing_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Existing_Work, Receipt, Result, Restored_Buffer);
+      Flyology.Operations.Release (Existing_Work);
+      Expect (Result, Capacity_Exceeded, "nested create recovery allocation failure was weakened");
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "nested recovery allocation failure lost its exact token";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+      Create
+        (Probe_Database_ID,
+         Root_Manifest_ID,
+         Root_Transition_ID,
+         Limits,
+         Families,
+         Flush_Buffer,
+         Test_Operation_Timeout,
+         Existing_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Existing_Work, Receipt, Result, Restored_Buffer);
+      Flyology.Operations.Release (Existing_Work);
+      Expect (Result, Success, "existing-root composable create reconciliation failed");
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "reconciled composable create lost its exact token";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+      Close (Existing, Close_Result);
+      Expect (Close_Result, Success, "reconciled composable create close failed");
+   end;
+
+   --  A complete existing graph under a different database identity is a
+   --  conclusive collision, not corrupt data or unknown admission. Reusing
+   --  the consumed operation for the matching root then proves lifecycle and
+   --  operation ownership were both returned exactly.
+   declare
+      Collision      : aliased Database;
+      Collision_Work : Create_Operation
+        (Composable_Set'Access,
+         Collision'Access,
+         Context'Access,
+         Client'Access,
+         Flush_Pool'Access,
+         null);
+   begin
+      Create
+        (Conflicting_Database_ID,
+         Conflicting_Manifest_ID,
+         Conflicting_Transition_ID,
+         Limits,
+         Families,
+         Flush_Buffer,
+         Test_Operation_Timeout,
+         Collision_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Collision_Work, Receipt, Result, Restored_Buffer);
+      Flyology.Operations.Release (Collision_Work);
+      Expect (Result, Already_Exists, "different-root composable create was not a typed collision");
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "colliding composable create lost its exact token";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+      Create
+        (Probe_Database_ID,
+         Root_Manifest_ID,
+         Root_Transition_ID,
+         Limits,
+         Families,
+         Flush_Buffer,
+         Test_Operation_Timeout,
+         Collision_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Collision_Work, Receipt, Result, Restored_Buffer);
+      Flyology.Operations.Release (Collision_Work);
+      Expect (Result, Success, "composable create did not restart after a typed collision");
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "restarted composable create lost its exact token";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+      Close (Collision, Close_Result);
+      Expect (Close_Result, Success, "restarted composable create close failed");
+   end;
    Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "client-backed initial checkpoint query failed");
    if Checkpoint_Requirement_Action (Requirement) /= No_L0_Checkpoint_Work
@@ -1823,10 +2047,8 @@ begin
       end;
    end;
 
-   Flyology.Buffers.Acquire (Flush_Buffer);
-   --  The operation may overwrite payload bytes and length, but ownership
-   --  transfer must retain this exact caller metadata tag through Finish.
-   Flyology.Buffers.Set_Tag (Flush_Buffer, Flush_Token_Tag);
+   --  Publication and reconciliation may overwrite payload bytes and length,
+   --  but every owner-driven operation retains the exact caller metadata tag.
 
    --  The synchronous client form is a literal owner-driven wait over the
    --  same Flush_Operation used below. A provider rejection before the first

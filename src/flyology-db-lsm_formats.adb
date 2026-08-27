@@ -541,12 +541,17 @@ is
          Status := Encoded;
       end Encode_Checkpoint_Manifest;
 
-      procedure Decode_Checkpoint_Manifest
+      procedure Decode_Checkpoint_Manifest_Candidate
         (Image             : Formats.Byte_Array;
          Expected_Database : Head_Policy.Identifier;
          Limits            : Checkpoint_Reader_Caps;
          Value             : out Checkpoint_Manifest;
          Status            : out Decode_Status)
+      with
+        Pre  => not Head_Policy.Is_Zero (Expected_Database),
+        Post =>
+          (if Status = Decoded
+           then Value.Base.Database_ID = Expected_Database and then Structurally_Valid (Value))
       is
          Fixed          : Checkpoint_Manifest_Image := [others => 0];
          Candidate      : Checkpoint_Manifest := Empty_Checkpoint_Manifest;
@@ -559,8 +564,8 @@ is
          Family_Wire    : Interfaces.Unsigned_32;
          Identity_Wire  : Interfaces.Unsigned_32;
       begin
-         --  Keep the failure result stable through every decoding loop so the
-         --  public failure postcondition has a local, bounded proof boundary.
+         --  The private parser always initializes its candidate output, while
+         --  its contract deliberately constrains only complete decoded values.
          Value := Empty_Checkpoint_Manifest;
          if Image'Last < Image'First
            or else Image'Last - Image'First < Checkpoint_Manifest_Header_Length + Object_Trailer_Length - 1
@@ -673,7 +678,6 @@ is
          for Family_Index in Manifests.Family_Slot range 1 .. Candidate.Base.Family_Total loop
             pragma Loop_Invariant (Cursor >= Checkpoint_Manifest_Header_Length);
             pragma Loop_Invariant (Cursor <= Payload_End);
-            pragma Loop_Invariant (Value = Empty_Checkpoint_Manifest);
             declare
                Base      : Manifests.Column_Family_Configuration;
                State     : Family_LSM_State;
@@ -727,7 +731,6 @@ is
                for Run_Index in Run_Slot range 1 .. State.Run_Total loop
                   pragma Loop_Invariant (Cursor >= Checkpoint_Manifest_Header_Length);
                   pragma Loop_Invariant (Cursor <= Payload_End);
-                  pragma Loop_Invariant (Value = Empty_Checkpoint_Manifest);
                   if Cursor > Payload_End or else Run_Descriptor_Length > Payload_End - Cursor then
                      Status := Invalid_Run;
                      return;
@@ -752,7 +755,6 @@ is
          for Index in Identity_Slot range 1 .. Candidate.Identity_Total loop
             pragma Loop_Invariant (Cursor >= Checkpoint_Manifest_Header_Length);
             pragma Loop_Invariant (Cursor <= Payload_End);
-            pragma Loop_Invariant (Value = Empty_Checkpoint_Manifest);
             if Cursor > Payload_End or else Head_Policy.Identifier_Length > Payload_End - Cursor then
                Status := Invalid_Identity;
                return;
@@ -769,6 +771,27 @@ is
          else
             Value := Candidate;
             Status := Decoded;
+         end if;
+      end Decode_Checkpoint_Manifest_Candidate;
+
+      procedure Decode_Checkpoint_Manifest
+        (Image             : Formats.Byte_Array;
+         Expected_Database : Head_Policy.Identifier;
+         Limits            : Checkpoint_Reader_Caps;
+         Value             : out Checkpoint_Manifest;
+         Status            : out Decode_Status)
+      is
+         Candidate : Checkpoint_Manifest;
+         Outcome   : Decode_Status;
+      begin
+         Decode_Checkpoint_Manifest_Candidate (Image, Expected_Database, Limits, Candidate, Outcome);
+         Status := Outcome;
+         if Outcome = Decoded then
+            Value := Candidate;
+         else
+            --  The public failure value is established outside the parser so
+            --  no nested-loop path carries full-record equality as an invariant.
+            Value := Empty_Checkpoint_Manifest;
          end if;
       end Decode_Checkpoint_Manifest;
 

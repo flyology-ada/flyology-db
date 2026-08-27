@@ -235,6 +235,22 @@ package Flyology.DB is
    --  Dynamic storage is derived from the observed persisted registry and is
    --  reclaimed automatically; the type retains no Database borrow.
    type L0_Checkpoint_Requirement is limited private;
+   --  Caller-composable initial database publication. The discriminants are
+   --  retained borrows and must outlive terminal Finish or abandonment drain.
+   --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
+   --  caller-selected publication/reconciliation scratch capacity; the DB
+   --  introduces no object-size bound, retry, helper task, or timeout default.
+   --  The worst-case owner stack needs five reusable slots while an existing
+   --  or ambiguously published HEAD is reconciled: DB Create, DB recovery,
+   --  Object Storage, HTTP exchange, and transport.
+   type Create_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation with private;
    --  Caller-composable checkpoint and family-registry publication. The discriminants are
    --  retained borrows: Set, Item, Storage, HTTP, Payload_Pool, and
    --  Cancellation must outlive terminal Finish or scope-abandonment drain.
@@ -333,6 +349,84 @@ package Flyology.DB is
       Token                 : access Flyology.Cancellation.Token := null;
       Receipt               : out Create_Receipt;
       Result                : out Outcome_Code);
+
+   --  Create through the owner-driven publication operation while moving one
+   --  exact caller scratch token. The client-bound path waits the same state
+   --  machine as the composable form; backend-neutral storage retains the
+   --  established synchronous implementation. Payload_Buffer is restored
+   --  before return or propagation of an unexpected local exception.
+   --  @param Item Closed database to create or reconcile idempotently
+   --  @param Storage Client-bound context, or backend-neutral synchronous context
+   --  @param Database_ID Exact new database identity
+   --  @param Manifest_ID Stable immutable root-manifest identity
+   --  @param Initial_Transition_ID Stable initial HEAD transition identity
+   --  @param Limits Complete caller-selected persisted database limits
+   --  @param Initial_Families Complete caller-selected initial family registry
+   --  @param Payload_Buffer Acquired caller-owned publication/recovery scratch token
+   --  @param Timeout Whole-create monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Receipt Exact publication and reconciliation authority
+   --  @param Result Definite terminal or presently unknown outcome
+   procedure Create
+     (Item                  : in out Database;
+      Storage               : not null access Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Limits                : Database_Limits;
+      Initial_Families      : Column_Family_Configuration_Array;
+      Payload_Buffer        : in out Flyology.Buffers.Unique_Buffer;
+      Timeout               : Duration;
+      Token                 : access Flyology.Cancellation.Token := null;
+      Receipt               : out Create_Receipt;
+      Result                : out Outcome_Code)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Start or restart one owner-driven initial publication. All caller input
+   --  is copied into owned manifest/HEAD state before return. Conditional
+   --  mutation is never replayed; ambiguous admission retains exact receipt
+   --  authority for Resolve_Create.
+   --  @param Database_ID Exact new database identity copied before return
+   --  @param Manifest_ID Stable immutable root-manifest identity
+   --  @param Initial_Transition_ID Stable initial HEAD transition identity
+   --  @param Limits Complete caller-selected persisted database limits
+   --  @param Initial_Families Complete caller-selected initial family registry
+   --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
+   --  @param Timeout Whole-create monotonic timeout budget
+   --  @param Operation Fresh or consumed client-bound Create operation
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Storage binding
+   procedure Create
+     (Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Limits                : Database_Limits;
+      Initial_Families      : Column_Family_Configuration_Array;
+      Payload_Buffer        : in out Flyology.Buffers.Unique_Buffer;
+      Timeout               : Duration;
+      Operation             : in out Create_Operation)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Consume one terminal Create and restore its exact token into any vacant
+   --  same-pool handle. Receipt remains self-contained for caller-driven
+   --  reconciliation when Result is Outcome_Unknown.
+   --  @param Operation Terminal caller-owned Create operation
+   --  @param Receipt Exact publication and reconciliation authority
+   --  @param Result Definite terminal or presently unknown outcome
+   --  @param Payload_Buffer Vacant same-pool destination for the exact token
+   procedure Finish
+     (Operation      : in out Create_Operation;
+      Receipt        : out Create_Receipt;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+     with Pre => Flyology.Operations.Is_Terminal (Operation)
+       and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool,
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Resume a confirmed-manifest creation before HEAD admission, or reconcile
    --  a possibly admitted HEAD publication without replaying it.
@@ -1722,6 +1816,9 @@ private
       Batch_Descriptor_Allocation,
       Storage_Sink_Allocation,
       Recovery_History_Allocation,
+      --  Test-only owner-state failure before any recovery lifecycle
+      --  admission is transferred. This is neither persisted nor policy.
+      Recovery_Driver_State_Allocation,
       Engine_State_Allocation,
       Identity_Table_Allocation,
       Projection_Scratch_Allocation,
@@ -2137,6 +2234,7 @@ private
    type Flush_Driver_State_Access is access Flush_Driver_State;
    type Refresh_Driver_State;
    type Refresh_Driver_State_Access is access Refresh_Driver_State;
+   type Refresh_Operation_Access is access Refresh_Operation;
    type Get_Driver_State;
    type Get_Driver_State_Access is access Get_Driver_State;
    type Scan_Driver_State;
@@ -2175,6 +2273,7 @@ private
       Read_Child       : Whole_Get_Operation_Access := null;
       Range_Child      : Range_Get_Operation_Access := null;
       Head_Child       : Head_Operation_Access := null;
+      Recovery_Child   : Refresh_Operation_Access := null;
       Driver_State     : Flush_Driver_State_Access := null;
       --  Vacant-operation sentinel only. Start_Flush replaces it with the one
       --  caller-derived monotonic deadline before the operation can be active.
@@ -2182,10 +2281,12 @@ private
       HTTP_Deadline    : Flyology.HTTP.Client.Monotonic_Deadline;
       Final_Receipt    : Flush_Receipt;
       Final_Family_Receipt : Column_Family_Receipt;
+      Final_Create_Receipt : Create_Receipt;
       --  Runtime terminal-result discriminator for the two typed Finish
       --  overloads sharing this checkpoint state machine. It is never
       --  persisted and prevents the wrong Finish from consuming ownership.
       Final_Is_Family_Append : Boolean := False;
+      Final_Is_Create  : Boolean := False;
       Final_Result     : Outcome_Code := Invalid_State;
       Has_Final_Result : Boolean := False;
       Has_Saved_Error  : Boolean := False;
@@ -2200,6 +2301,22 @@ private
    overriding procedure Request_Cancellation (Item : in out Flush_Operation);
    --  @exclude
    overriding procedure Finalize (Item : in out Flush_Operation);
+
+   --  @exclude
+   type Create_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Storage      : not null access Storage_Context;
+      HTTP         : not null access Flyology.HTTP.Client.Client;
+      Payload_Pool : not null access Flyology.Buffers.Pool;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flush_Operation (Set, Item, Storage, HTTP, Payload_Pool, Cancellation)
+       with null record;
+
+   --  @exclude
+   overriding procedure Drive
+     (Item : in out Create_Operation;
+      Event : Flyology.Operations.Driver_Event);
 
    --  @exclude
    type Refresh_Operation

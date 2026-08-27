@@ -1,5 +1,55 @@
 # Review record
 
+## Caller-composable database-create candidate
+
+- Parent: accepted caller-composable cacheless-open commit `ec72c0b`.
+- Scope and compatibility: add distinct limited `Create_Operation`, operation-last `Create`, typed `Finish`, and a
+  buffer-owned synchronous overload directly in `Flyology.DB`. Client-bound synchronous Create literally waits the
+  same state machine; the established backend-neutral overload remains direct and source-compatible. No `.Scoped`
+  child, alias, helper task, retry, generated identity, default, new public constant, persisted-format change, or
+  provider policy is added.
+- Publication and certainty: the operation owns one exact root manifest and initial HEAD image. It uses only
+  provider-owned non-replaying conditional Put operations. A definite pre-admission HEAD failure leaves the exact
+  manifest-confirmed receipt resumable; possible admission remains `Outcome_Unknown`. A collision or lost response
+  starts the shared cacheless recovery traversal and installs only a complete graph whose database identity, exact
+  root manifest, and persisted LSM policy match the attempted creation. A different valid database is
+  `Already_Exists`; malformed or unsupported authority remains typed and fail-closed.
+- Lifecycle, ownership, and bounds: Start copies the complete caller registry/limits/identities into owned root state
+  before return, admits only a Closed database, then moves one exact caller buffer token. Typed `Finish` restores that
+  token into any vacant same-pool handle and transfers a self-contained receipt. Every terminal, cancellation,
+  exception, and abandonment path either installs one complete engine or returns the lifecycle to Closed. The
+  private synchronous set capacity of five is derived from the worst-case Create/recovery/Object Storage/HTTP/
+  transport owner stack; the operation adds no object-size or queue limit.
+- Coverage and nonformal evidence: the authenticated client probe covers pre-request cancellation, definite pre-HEAD
+  failure with a resumable exact receipt, a lost initial HEAD response reconciled without replay, buffer-owned
+  synchronous wait, an idempotent existing-root restart, a different-database collision followed by reuse, and a
+  nested recovery-owner allocation failure. Every case checks exact tagged-token restoration and lifecycle rollback
+  or complete installation. Warning-strict root and nested builds pass. `./tests/scripts/test.sh` passes the maintained
+  deterministic, authenticated, crash/recovery, 32-case differential, and pinned TidesDB lanes. The current-tree
+  `./tests/scripts/test-s3-matrix.sh` passes all 18 RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite lanes.
+  Repository, diff, shell-syntax, and 110-column Ada checks are green. GNATformat and GNATdoc are absent from the
+  configured toolchain and no maintained documentation wrapper exists, so no formatter or generated-site claim is
+  made.
+- Formal evidence: outside-sandbox update-mode and ordinary `check-tla.sh` runs both exit zero with byte-stable
+  canonical artifacts, every maintained TLC/action/negative/witness/Ada replay lane green, and TLAPS 393/393. The
+  first maintained proof run failed closed on one timeout-sensitive checkpoint-decoder failure postcondition. An
+  independent proof review first replaced full-record loop invariants with a local explicit-output failure boundary;
+  one run proved every selected check, but a documentation-final rerun exposed remaining solver variance in the same
+  public failure postcondition and therefore failed closed. The superseding candidate moves the parser behind a
+  private success-only result contract and establishes the canonical failure result in the public wrapper. No public
+  contract, wire value, decoded success, failure status, or API changes. The warning-strict maintained proof passes
+  1,103/1,103 checks: 172 by flow analysis and 931 by provers, with zero failed, unproved, justified, warning, or
+  actual `pragma Assume` findings and maximum successful effort 6,522 steps. The public wrapper proves 2/2 checks and
+  the private candidate parser proves 118/118. Retained reports and coordinated host audits are the authority; no
+  green result from either superseded failure-boundary tree is carried forward.
+- Findings rubric: P0 is durable-authority, data-loss, security, or certainty failure; P1 is public-contract,
+  lifecycle, ownership, cancellation, failure-atomicity, or bound-authority failure; P2 is missing coverage,
+  documentation, or maintainability evidence. Review has fixed P1s in null-engine exception cleanup, lifecycle-
+  admission handoff, pre-owner allocation handoff, ambiguity-dominates-local-capacity certainty, definite HEAD-entry
+  phase tracking, different-database normalization, and synchronous exceptional token restoration. The two nested
+  allocation fixes have deterministic fault-injection, exact-receipt, lifecycle, and operation-reuse oracles. Review
+  also removed one P2 redundant nested-driver deallocation. Final re-review finds no actionable P0/P1/P2 finding.
+
 ## Caller-composable cacheless-open candidate
 
 - Parent: installed family-registry snapshot commit `4f64d5a`.

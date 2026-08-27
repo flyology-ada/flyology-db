@@ -7,9 +7,9 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 ## Included behavior
 
 - One fenced writer and no concurrent promotion.
-- One initial family set supplied at `Create`, followed by at most the caller-driven append operations admitted by
-  persisted registry/history capacity. Each append adds exactly one higher stable ID and one exact byte name; rename,
-  drop, reorder, and prior-family mutation remain unavailable.
+- One initial family set supplied through synchronous or caller-composable `Create`, followed by at most the
+  caller-driven append operations admitted by persisted registry/history capacity. Each append adds exactly one
+  higher stable ID and one exact byte name; rename, drop, reorder, and prior-family mutation remain unavailable.
 - Arbitrary byte keys and values within the persisted per-family limits selected by the caller.
 - Explicit persisted `Database_Limits`; the library supplies no hidden key, value, transaction, or live-state limit.
 - Failure-atomic reads of the exact installed registry revision, family count, database limits, and complete
@@ -37,6 +37,10 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 The synchronous profile is the first user-facing entry point. Its client-backed Flush and family append wait on the
 same DB operations and provider-owned Object Storage state machines as their caller-composable forms, so this
 boundary does not create a second transport or certainty implementation.
+The buffer-owned client-backed `Create` overload likewise waits its reusable `Create_Operation`. Manifest and HEAD
+publication remain non-replaying, and an existing or ambiguously published HEAD is resolved through the shared
+cacheless recovery traversal before one complete engine is installed. The storage-neutral synchronous overload
+remains direct and source-compatible.
 The buffer-owned client-backed `Open` overload likewise waits the reusable `Open_Operation`; the established
 storage-neutral synchronous overload remains direct and source-compatible because it accepts no caller-owned scratch
 token. Both consume the same recovery request/validation machine and install only a complete authenticated graph.
@@ -111,6 +115,14 @@ read-only replica use. It validates and installs one complete newer authoritativ
 unchanged. It adds no polling, helper task, retry, lease, registration, retention, promotion, or timeout default, and
 a fenced handle remains fenced. Authenticated provider qualification exercises a deliberately stale checkpoint view
 followed by one exact refresh to the writer's compacted view.
+
+The additive composable `Create` surface moves one exact caller scratch token through root-manifest publication,
+conditional HEAD publication, and any necessary read-only recovery. `Create_Operation`, its operation-last `Create`,
+typed `Finish`, and the buffer-owned synchronous overload share one state machine and one receipt contract. A
+definitely unadmitted HEAD remains safely resumable from `Manifest_Confirmed`; possible admission is never replayed
+and is reconciled by authenticating the complete existing graph. The five-slot worst case derives from the nested
+DB Create/recovery, Object Storage, HTTP, and transport owner stack. No helper task, retry, identity selection,
+object-size bound, timeout default, or second API namespace is added.
 
 The additive composable `Open` surface makes cacheless client recovery usable by owner-driven applications without
 creating a parallel recovery algorithm. `Open_Operation`, its operation-last `Open`, typed `Finish`, and the

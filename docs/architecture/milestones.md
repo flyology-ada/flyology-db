@@ -21,9 +21,10 @@ accepted manifest-v1 encoding through operational HEAD version 2 for provider-ne
 Create requires an explicit root manifest identity, transition identity, database limits, and initial family table;
 Open resolves handles by stable ID or exact name and validates manifest authority before replaying batches. HEAD-v1
 images remain inspection-only and return `Unsupported_Format` operationally. The authenticated client binding now
-exercises create, commit, synchronous and composable checkpoint Flush, composable replacement, and cacheless reopen
-through provider-owned Object Storage operations in `Client.Objects`. Client-bound synchronous Flush is now an
-owner-driven wait over the same DB operation; memory/files retain the backend-neutral synchronous fallback. The
+exercises synchronous and composable create, commit, synchronous and composable checkpoint Flush, composable
+replacement, and cacheless reopen through provider-owned Object Storage operations in `Client.Objects`.
+Client-bound synchronous Create and Flush are owner-driven waits over the same DB operations; memory/files retain
+the backend-neutral synchronous fallbacks. The
 limited operation and caller-owned completion set express scoped lifetime; a separate `.Scoped` package would create
 a second vocabulary for the same provider state machine and is intentionally absent. Remote-provider qualification
 now includes the exact-checkpoint family append through both direct-composable and blocking-wait calls. Broader
@@ -177,8 +178,14 @@ Client-backed cacheless `Open` now reuses that recovery request/consume machine 
 `Open_Operation`, operation-last start, typed `Finish`, and buffer-owned synchronous wait. It admits only a closed
 database, owns one exact caller scratch token through terminal drain, and installs no engine until the complete
 authenticated graph validates. Failure and abandonment restore Closed. The storage-neutral synchronous `Open`
-remains direct and source-compatible; composable Create and mutation-resolution work remain separate Milestone 2
-units.
+remains direct and source-compatible.
+
+Client-backed `Create` now colocates a distinct `Create_Operation`, operation-last initiation, typed `Finish`, and
+buffer-owned synchronous wait directly in `Flyology.DB`. It owns the exact root manifest and HEAD bytes, never
+replays either conditional mutation, and uses the same recovery traversal as Open to distinguish an idempotent
+existing root from a conflicting database after a definite collision or ambiguous HEAD response. A five-slot set is
+derived only from the nested Create/recovery/provider/HTTP/transport owner stack. The storage-neutral synchronous
+Create remains direct and source-compatible; broader mutation-resolution rollout remains separate Milestone 2 work.
 
 The LSM read-equivalence lane now exhausts all two-key/two-value captured views and later mutation maps, validates a
 concrete delete/put execution witness, rejects a replacement that omits one live key, and proves the arbitrary-key/

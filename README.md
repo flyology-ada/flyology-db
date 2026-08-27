@@ -26,7 +26,12 @@ LSM limits, stable column-family handles, and a synchronous owned-byte runtime s
 database limits. Public synchronous `Flush` publishes and reconciles a complete checkpoint; later calls append one
 canonical suffix-delta run for each affected family while retaining every current run oldest-to-newest. Tombstones
 remain explicit, and cacheless recovery merges all named runs before replaying only the latest checkpoint's later log
-suffix. Live activation replaces the coordinator without invalidating family handles or active transactions. An
+suffix. Live activation replaces the coordinator without invalidating family handles or active transactions.
+Client-backed database creation now exposes a provider-centric `Create_Operation`, operation-last `Create`, typed
+`Finish`, and a buffer-owned synchronous wait over the same state machine. It owns exact root-manifest and HEAD
+bytes, never replays either conditional mutation, and authenticates a complete existing graph when a HEAD collision
+or lost response requires reconciliation. The storage-neutral synchronous form remains direct and source-compatible.
+An
 exact-checkpoint `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
 immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. Its additive
 operation-last overload uses the existing caller-owned `Flush_Operation`; the client-backed synchronous form is a
