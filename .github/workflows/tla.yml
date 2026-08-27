@@ -58,7 +58,7 @@ jobs:
             https://github.com/flyology-ada/flyology-object-storage.git \
             .deps/flyology-object-storage
           git -C .deps/flyology-object-storage \
-            checkout --detach 99706cceaef0add2578f3665e48af37cd52bafdc
+            checkout --detach f65afbf28108bb9d81fac6dc15496857dc710796
           test -z "$(git -C .deps/flyology-object-storage status --short)"
       - name: Restore verified TLA toolchain
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
