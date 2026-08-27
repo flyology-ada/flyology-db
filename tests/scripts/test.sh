@@ -72,6 +72,15 @@ client_bucket="flyology-db-client-$$"
   "$client_access_key" \
   "$client_secret_key" \
   "$client_port"
+AWS_ACCESS_KEY_ID="$client_access_key" \
+AWS_SECRET_ACCESS_KEY="$client_secret_key" \
+  "$project_root/showcases/run-object-storage-e2e.sh" \
+    "http://127.0.0.1:$client_port" \
+    "$client_bucket" \
+    "walkthrough" \
+    "us-east-1" \
+    "path" \
+    "10"
 kill -TERM "$client_server_pid"
 wait "$client_server_pid"
 client_server_pid=""

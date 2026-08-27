@@ -21,6 +21,7 @@ fi
 ALR=$("$PROJECT_ROOT/scripts/find-alr.sh")
 "$PROJECT_ROOT/scripts/check-repository.sh"
 (cd "$PROJECT_ROOT/tests" && "$ALR" build)
+"$ALR" exec -- gprbuild -p -P "$PROJECT_ROOT/showcases/object_storage_e2e.gpr"
 
 for SERVER in rustfs seaweedfs minio flyology-memory flyology-files flyology-sqlite
 do

@@ -1,5 +1,29 @@
 # Review record
 
+## Authenticated object-storage walkthrough candidate
+
+- Parent: storage-backed whole-scan migration commit `ac549c0`.
+- Scope: add a public-API-only executable for create, one Snapshot transaction, immutable batch publication, sparse
+  Flush, close, cacheless Open, and exact value recovery through `Bind_Client`. It assumes an existing bucket and a
+  caller-supplied fresh prefix; it does not use test controls, private DB children, or a second storage protocol.
+- Inputs and policy: endpoint, bucket, prefix, region, addressing style, positive timeout, access key, secret key,
+  and optional session token are caller inputs. Binary content type plus omitted owner/payer/checksum options match
+  the qualified limited profile. The fixed one-row persisted limits, one family, and eight structural identities are
+  executable-local fixture geometry, not library defaults, allocation policy, or identity generation.
+- Ownership and certainty: the configured HTTP client, credentials, and bound context outlive both database handles.
+  Every mutation uses the established nonreplaying synchronous DB path and exact receipt semantics. Failure closes
+  any live handle and propagates; the runner never retries, lists, creates/deletes a bucket, or claims object cleanup.
+- Qualification: the dedicated showcase project compiles warning-strict, and the executable passes the local signed
+  memory-server gate plus every maintained RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite matrix lane,
+  three repetitions each. The authoritative deterministic suite, repository gate, shell syntax, diff, and line-width
+  checks are green. The findings sweep found and fixed one P2: the first draft coupled this executable to the files-
+  only showcase project; a dedicated project now preserves independent build scope. Re-review finds no actionable
+  P0/P1/P2 finding. A post-commit roadmap audit found and fixed one further P2: the limited-profile exclusion list
+  still named the now-present authenticated walkthrough; it now accurately excludes bucket creation and cleanup.
+  On the frozen candidate, update-mode and ordinary TLA/TLAPS gates both passed with
+  byte-stable canonical artifacts and 393/393 obligations; GNATprove proved 1,097/1,097 checks (168 flow and 929
+  prover) with zero justified/unproved checks, warnings, or pragma Assume findings. All serial host audits were clean.
+
 ## Storage-backed whole-scan candidate
 
 - Parent: storage-backed paged-scan implementation commit `8b07073`.

@@ -56,5 +56,9 @@ done
 echo "Flyology.DB S3 provider slice: $IMPLEMENTATION bucket=$BUCKET-db"
 "$PROJECT_ROOT/tests/bin/flyology-db-client-probe" \
   "$ENDPOINT" "$BUCKET-db" "$ACCESS_KEY" "$SECRET_KEY"
+AWS_ACCESS_KEY_ID="$ACCESS_KEY" \
+AWS_SECRET_ACCESS_KEY="$SECRET_KEY" \
+  "$PROJECT_ROOT/showcases/bin/flyology_db_object_storage_e2e" \
+    "$ENDPOINT" "$BUCKET-db" "walkthrough" "us-east-1" "path" "10"
 
 echo "Flyology.DB S3 provider slice: $IMPLEMENTATION at $REVISION: OK"

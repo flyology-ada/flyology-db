@@ -14,6 +14,9 @@ The current usable boundary is the deliberately narrow
 [limited end-to-end profile](docs/architecture/limited-profile.md): one writer, one checkpoint-bound append-only
 family change, synchronous transactions, Flush, caller-selected adjacent and complete compaction, exact
 close/local-loss/reopen recovery, and no automatic maintenance or retry policy.
+An additive authenticated walkthrough drives public create, commit, Flush, close, and cacheless reopen against an
+existing caller-owned S3-compatible bucket and fresh prefix. Endpoint, region, addressing style, timeout, and
+credentials are caller inputs; the walkthrough creates no bucket and selects no cleanup or retention policy.
 The current operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v3 roots with explicit
 LSM limits, stable column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/
 database limits. Public synchronous `Flush` publishes and reconciles a complete checkpoint; later calls append one
@@ -147,6 +150,9 @@ The root manifest path-pins it for development while leaving its indexed HTTP de
 ```sh
 alr build
 ./showcases/run-limited-e2e.sh
+AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
+  ./showcases/run-object-storage-e2e.sh \
+    ENDPOINT EXISTING_BUCKET FRESH_PREFIX REGION path TIMEOUT_SECONDS
 ./tests/scripts/test.sh
 ./tests/scripts/test-s3-matrix.sh
 ./scripts/prove.sh

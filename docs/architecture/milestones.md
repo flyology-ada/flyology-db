@@ -47,6 +47,11 @@ process-local state loss, one exact-checkpoint append-only family change, and au
 rename/drop/reconfiguration, automatic compaction policy, replicas, TTL, and automatic maintenance remain outside
 that acceptance claim.
 
+A separate public-API-only authenticated walkthrough now covers create, one committed value, Flush, close, and
+cacheless authoritative reopen in an existing caller-owned S3-compatible bucket. All deployment inputs are explicit,
+and the maintained six-provider matrix runs the same executable. This is reproducible integration evidence, not a
+general provider, production, cleanup, performance, or retention claim.
+
 Milestone 3 now has a formal-first and operational write/write validation boundary. A transaction captures the global
 sequence at Begin and must prove every written key unchanged since that snapshot from retained exact history.
 Transactions older than the checkpoint history boundary reject conservatively because compacted tombstones can erase
