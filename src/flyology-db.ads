@@ -210,16 +210,19 @@ package Flyology.DB is
       Payload_Pool : not null access Flyology.Buffers.Pool;
       Cancellation : access Flyology.Cancellation.Token)
    is new Flyology.Operations.Operation with private;
-   --  Caller-composable authenticated fixed-snapshot scan initialization.
+   --  Caller-composable authenticated fixed-snapshot scan initialization or
+   --  storage-backed page advancement.
    --  Item and Txn are retained borrows through terminal publication; the
    --  caller must not use Txn while the operation is active. Payload_Pool
    --  supplies the sole caller-selected object-read scratch bound. The
-   --  operation reads each run's canonical snapshot-visible entries through
-   --  generation-bound next-entry reads, creates the same owned physical
-   --  cursor used by Next_Scan_Page without retaining whole SST images, and
-   --  introduces no helper task, retry, run cap, page default, prefetch, or
-   --  cache. The cursor still retains all selected source entries, so this is
-   --  not a constant-memory paging claim.
+   --  established Start_Scan form reads each run's canonical
+   --  snapshot-visible entries through generation-bound next-entry reads and
+   --  creates the same owned materialized cursor used by storage-free
+   --  Next_Scan_Page. Start_Storage_Backed_Scan instead retains exact run
+   --  descriptors plus in-memory sources; the composable Next_Scan_Page
+   --  overload fetches at most one authenticated current head per immutable
+   --  run while building a page. Neither form introduces a helper task,
+   --  mutation retry, run cap, page default, prefetch, or cache.
    type Scan_Operation
      (Set          : not null access Flyology.Operations.Completion_Set'Class;
       Item         : not null access Database;
@@ -700,6 +703,71 @@ package Flyology.DB is
        and then not Flyology.Operations.Is_Terminal (Operation),
      Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
+   --  Start or restart one authenticated storage-backed cursor
+   --  initialization. Unlike Start_Scan, this form does not traverse every
+   --  selected immutable run before publication. It retains exact run
+   --  descriptors, committed in-memory sources, transaction-local bytes,
+   --  endpoints, and identity/version authority. Later object reads occur
+   --  only through the composable Next_Scan_Page overload. No result row or
+   --  Serializable predicate is published here.
+   --  @param Family Valid handle selecting persisted family limits and identity
+   --  @param Has_Lower True when Lower is the inclusive endpoint
+   --  @param Lower Inclusive endpoint bytes, ignored when Has_Lower is false
+   --  @param Has_Upper True when Upper is the exclusive endpoint
+   --  @param Upper Exclusive endpoint bytes, ignored when Has_Upper is false
+   --  @param Payload_Buffer Acquired caller scratch token moved into Operation
+   --  @param Timeout Caller-selected duration for initialization
+   --  @param Operation Fresh or consumed operation receiving retained ownership
+   procedure Start_Storage_Backed_Scan
+     (Family         : Column_Family;
+      Has_Lower      : Boolean;
+      Lower          : Byte_Array;
+      Has_Upper      : Boolean;
+      Upper          : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Scan_Operation)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Blocking wait over the same storage-backed initialization state
+   --  machine. The caller selects the sole scratch token and timeout; the
+   --  optional null cancellation token is the established Flyology
+   --  convention and introduces no retry or hidden deadline.
+   --  @param Item Open client-bound database owning the fixed snapshot
+   --  @param Txn Active transaction retained for the duration of the call
+   --  @param Family Valid handle selecting persisted family limits and identity
+   --  @param Has_Lower True when Lower is the inclusive endpoint
+   --  @param Lower Inclusive endpoint bytes, ignored when Has_Lower is false
+   --  @param Has_Upper True when Upper is the exclusive endpoint
+   --  @param Upper Exclusive endpoint bytes, ignored when Has_Upper is false
+   --  @param Payload_Buffer Acquired caller scratch token restored before return
+   --  @param Timeout Caller-selected duration for initialization
+   --  @param Token Optional caller-owned cancellation token
+   --  @param Cursor Existing cursor replaced only on Success
+   --  @param Result Success or exact validation, capacity, storage, or lifecycle outcome
+   procedure Start_Storage_Backed_Scan
+     (Item           : in out Database;
+      Txn            : aliased in out Transaction;
+      Family         : Column_Family;
+      Has_Lower      : Boolean;
+      Lower          : Byte_Array;
+      Has_Upper      : Boolean;
+      Upper          : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Cursor         : in out Scan_Cursor;
+      Result         : out Outcome_Code)
+   with
+     Pre  => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
    --  Consume a terminal authenticated scan initialization. On Success,
    --  Cursor atomically receives the new fixed-snapshot position; otherwise
    --  it is unchanged. Payload_Buffer may be any vacant handle from the same
@@ -711,6 +779,59 @@ package Flyology.DB is
    procedure Finish
      (Operation      : in out Scan_Operation;
       Cursor         : in out Scan_Cursor;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+   with
+     Pre  =>
+       Flyology.Operations.Is_Terminal (Operation)
+       and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool,
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Start or restart one storage-backed page. Cursor is borrowed only for
+   --  validation and exact candidate cloning during this call; the caller
+   --  must not use or finalize it until typed Finish. One absolute deadline
+   --  covers every generation-bound next-entry child. Maximum_Rows and
+   --  Maximum_Bytes are explicit caller backpressure and have no defaults.
+   --  The operation retains at most one authoritative and one candidate head
+   --  per immutable run while active. Mutation replay, prefetch, caching, and
+   --  helper tasks are absent.
+   --  @param Cursor Active storage-backed cursor borrowed through Finish
+   --  @param Maximum_Rows Caller-selected maximum rows for this page
+   --  @param Maximum_Bytes Caller-selected maximum key-plus-value bytes
+   --  @param Payload_Buffer Acquired caller scratch token moved into Operation
+   --  @param Timeout Caller-selected duration for the complete page
+   --  @param Operation Fresh or consumed operation receiving retained ownership
+   procedure Next_Scan_Page
+     (Cursor         : in out Scan_Cursor;
+      Maximum_Rows   : Interfaces.Unsigned_32;
+      Maximum_Bytes  : Interfaces.Unsigned_64;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Scan_Operation)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Consume one terminal storage-backed page. Success atomically replaces
+   --  the exact cursor revision and Rows, and returns the terminal completion
+   --  flag. Failure preserves both. Payload_Buffer may be any vacant handle
+   --  from the original pool and receives the exact moved token.
+   --  @param Operation Terminal storage-backed page operation
+   --  @param Cursor Exact cursor passed to Next_Scan_Page
+   --  @param Rows Existing result replaced only on Success
+   --  @param Done True only when this successful page physically exhausts all sources
+   --  @param Result Success or exact validation, capacity, storage, or lifecycle outcome
+   --  @param Payload_Buffer Vacant same-pool handle receiving the exact moved token
+   procedure Finish
+     (Operation      : in out Scan_Operation;
+      Cursor         : in out Scan_Cursor;
+      Rows           : in out Scan_Result;
+      Done           : out Boolean;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
    with
@@ -817,6 +938,37 @@ package Flyology.DB is
       Rows          : in out Scan_Result;
       Done          : out Boolean;
       Result        : out Outcome_Code);
+
+   --  Blocking wait over the same storage-backed page state machine. All
+   --  budgets and timeout remain caller-selected. The optional null token is
+   --  the established convention for no cancellation source, not a retry or
+   --  deadline policy.
+   --  @param Item Exact open database bound by Cursor
+   --  @param Txn Exact active transaction and own-mutation version bound by Cursor
+   --  @param Cursor Active storage-backed cursor advanced only on Success
+   --  @param Maximum_Rows Caller-selected maximum rows for this page
+   --  @param Maximum_Bytes Caller-selected maximum key-plus-value bytes
+   --  @param Payload_Buffer Acquired caller scratch token restored before return
+   --  @param Timeout Caller-selected duration for the complete page
+   --  @param Token Optional caller-owned cancellation token
+   --  @param Rows Existing result replaced only on Success
+   --  @param Done True only when this successful page physically exhausts all sources
+   --  @param Result Success or exact validation, capacity, storage, or lifecycle outcome
+   procedure Next_Scan_Page
+     (Item           : in out Database;
+      Txn            : aliased in out Transaction;
+      Cursor         : in out Scan_Cursor;
+      Maximum_Rows   : Interfaces.Unsigned_32;
+      Maximum_Bytes  : Interfaces.Unsigned_64;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Rows           : in out Scan_Result;
+      Done           : out Boolean;
+      Result         : out Outcome_Code)
+   with
+     Pre  => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Number of live rows retained by Item, including zero for a fresh or
    --  successfully empty result.
@@ -1573,6 +1725,30 @@ private
    type Physical_Scan_Entry_Array is array (Positive range <>) of Physical_Scan_Entry;
    type Physical_Scan_Entry_Array_Access is access Physical_Scan_Entry_Array;
 
+   --  One storage-backed cursor source retains the exact immutable-run facts
+   --  selected by authenticated manifest recovery and, at most, one current
+   --  authenticated head. Start_Key is the strict lower bound after a
+   --  consumed head. Entries_Read is checked against the persisted run total;
+   --  none of these runtime fields are persisted or select page policy.
+   type Storage_Scan_Run_State is record
+      Run_ID                : Identifier := Zero_Identifier;
+      Lowest_Sequence       : Sequence_Number := 0;
+      Highest_Sequence      : Sequence_Number := 0;
+      Entry_Total           : Interfaces.Unsigned_32 := 0;
+      Logical_Payload_Bytes : Interfaces.Unsigned_64 := 0;
+      Has_Start             : Boolean := False;
+      Start_Key             : Scan_Cursor_Byte_Array_Access := null;
+      Has_Head              : Boolean := False;
+      Head_Key              : Scan_Cursor_Byte_Array_Access := null;
+      Head_Value            : Scan_Cursor_Byte_Array_Access := null;
+      Head_Operation        : Mutation_Kind := Put_Mutation;
+      Head_Sequence         : Sequence_Number := 0;
+      Exhausted             : Boolean := False;
+      Entries_Read          : Interfaces.Unsigned_32 := 0;
+   end record;
+   type Storage_Scan_Run_Array is array (Positive range <>) of Storage_Scan_Run_State;
+   type Storage_Scan_Run_Array_Access is access Storage_Scan_Run_Array;
+
    --  Each source owns one exact contiguous key-ordered entry interval.
    --  Source array order is oldest to newest authority. Zero position is the
    --  runtime exhausted sentinel; it is neither persisted nor product policy.
@@ -1590,6 +1766,11 @@ private
       Active             : Boolean := False;
       Done               : Boolean := False;
       Predicate_Recorded : Boolean := False;
+      Storage_Backed     : Boolean := False;
+      --  Runtime-only publication generation. Zero is the vacant sentinel;
+      --  successful initialization starts at one and every page advances it
+      --  with checked arithmetic. It is neither persisted nor caller policy.
+      Revision           : Interfaces.Unsigned_64 := 0;
       Database_ID        : Database_Identifier := Zero_Database_ID;
       Incarnation        : Engine_Incarnation := No_Incarnation;
       Transaction_ID     : Transaction_Identifier := Zero_Transaction_ID;
@@ -1602,6 +1783,7 @@ private
       Upper              : Scan_Cursor_Byte_Array_Access := null;
       Has_Last           : Boolean := False;
       Last_Key           : Scan_Cursor_Byte_Array_Access := null;
+      Storage_Runs       : Storage_Scan_Run_Array_Access := null;
       Entries            : Physical_Scan_Entry_Array_Access := null;
       Sources            : Physical_Scan_Source_Array_Access := null;
       Maximum_Rows       : Interfaces.Unsigned_32 := 0;
@@ -2185,12 +2367,20 @@ private
       Child            : Lazy_SST_Read_Operation_Access := null;
       Driver_State     : Scan_Driver_State_Access := null;
       Candidate_Cursor : Scan_Cursor;
+      Candidate_Rows   : Scan_Result;
+      --  Runtime-only typed-Finish discriminator and exact cursor borrow for
+      --  page publication. They are cleared by Finish and are never persisted
+      --  or exposed as caller-selected identity policy.
+      Final_Is_Page    : Boolean := False;
+      Borrowed_Cursor  : Scan_Cursor_State_Access := null;
+      Borrowed_Revision : Interfaces.Unsigned_64 := 0;
       Retained_Life    : Database_Lifecycle_Access := null;
       Retained_State   : Engine_State_Access := null;
       --  Vacant-operation sentinel only. Start_Scan replaces it with the
       --  caller-derived monotonic deadline before any child can start.
       Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
       Final_Result     : Outcome_Code := Invalid_State;
+      Final_Done       : Boolean := False;
       Has_Final_Result : Boolean := False;
       Has_Saved_Error  : Boolean := False;
       Saved_Error      : Ada.Exceptions.Exception_Occurrence;

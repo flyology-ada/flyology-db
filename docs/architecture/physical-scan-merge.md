@@ -13,8 +13,9 @@ A cursor does not retain raw coordinator, database, transaction, checkpoint, bat
 Close, replica refresh, checkpoint activation, and compaction may replace and reclaim the engine after a page call
 releases its lifecycle lease. The physical cursor instead owns a complete immutable merge snapshot:
 
-- one copied ordered descriptor/index view for a storage-free checkpoint base,
-  or one compact authenticated snapshot-visible source image per manifest run;
+- one copied ordered descriptor/index view for a storage-free checkpoint base, one compact authenticated
+  snapshot-visible source image per manifest run for the compatibility initializer, or exact immutable-run
+  descriptors plus at most one current authenticated head per run for storage-backed pages;
 - one copied, key-ordered, newest-per-key descriptor/index view for each visible suffix batch;
 - one copied, key-ordered view of the transaction's unique own mutations;
 - one retained reference for every immutable image used by those descriptors; and
@@ -26,10 +27,12 @@ lazy. A source snapshot is fully built before it replaces prior cursor state; al
 or lifecycle failure releases all candidates and preserves the previous cursor. Retained images make the cursor safe
 across engine replacement without keeping a database lifecycle lease or original handle pointer.
 
-This is an owned in-memory physical merge cursor. Authenticated initialization now streams one selected entry at a
-time from each SST and does not retain whole run objects, but the completed cursor still retains every selected source
-entry so later pages remain storage-free. It therefore makes no constant-memory claim independent of the retained
-source descriptors and bytes.
+This is an owned physical merge cursor. The compatibility authenticated initializer streams selected entries before
+cursor publication. The storage-backed initializer retains only exact run descriptors for checkpoint authority; each
+page candidate fetches and retains at most one authenticated head per run while preserving the prior authoritative
+view until typed `Finish`. Checkpoint memory is therefore proportional to selected run count during an active page,
+not to all selected checkpoint entries. Committed suffix and transaction-local sources remain separately bounded by
+persisted database authority, so this is not a whole-database constant-memory claim.
 
 ## Merge rule
 

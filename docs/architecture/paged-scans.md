@@ -3,8 +3,8 @@
 The paged-scan API is an additive bounded alternative to complete `Scan`; it does not replace the established whole
 materialization. Its purpose is to bound each published result while preserving the same canonical half-open range,
 unsigned-byte key order, read-your-writes precedence, fixed transaction snapshot, and Serializable predicate rule.
-It now has both storage-free initialization over already-materialized state and authenticated Object Storage
-initialization, but it does not claim constant-memory source traversal.
+It now has storage-free initialization over already-materialized state, a compatibility authenticated initializer
+that retains selected entries, and a storage-backed initializer whose pages advance immutable runs directly.
 
 ## Public contract candidate
 
@@ -20,33 +20,36 @@ combined key-plus-value byte count, an existing `Scan_Result`, and returns `Done
 has a default. They are caller backpressure for one call, not persisted database limits or a promised page size.
 Persisted database and family limits remain independent upper admission authorities.
 
-### Authenticated initialization
+### Authenticated initialization and storage-backed paging
 
-The additive caller-owned `Scan_Operation` and its blocking overload read the exact immutable run slice retained by
-the current authenticated manifest. One caller-selected `Unique_Buffer` token supplies the sole object-read scratch
-bound. Initiation validates operation ownership, lifecycle, transaction identity, family authority, endpoints, and
-the exact run descriptor extent before moving that token. A busy completion set or initiation exception rolls back
-the slot, lease, allocated state, and token byte/tag/metadata/length exact.
+The compatibility caller-owned `Start_Scan` operation reads the exact immutable run slice retained by the current
+authenticated manifest before publishing its cursor. The additive `Start_Storage_Backed_Scan` instead publishes the
+same exact run descriptors plus the captured committed suffix and transaction-local mutations; it performs no
+checkpoint read during initialization. One caller-selected `Unique_Buffer` token supplies the sole object-read
+scratch bound. Initiation validates operation ownership, lifecycle, transaction identity, family authority,
+endpoints, and every retained run descriptor before moving that token. A busy completion set or initiation exception
+rolls back the slot, lease, allocated state, and token byte/tag/metadata/length exact.
 
-The operation traverses runs sequentially under one absolute monotonic deadline. Each run yields one canonical
-snapshot-visible key/value or tombstone at a time through the generation-bound next-entry protocol. SST-v2 reads its
-header, index, and one selected frame; SST-v1 uses the integrity-required whole-object compatibility fallback. The
-operation compacts those selected entries into one exact owned source image per run and merges them with the captured
-committed suffix and transaction-local mutations through the same physical cursor builder used by storage-free
-initialization. It does not retain decoded whole SST images. There is no helper task, provider retry, prefetch,
-run-count default, or cache. Typed `Finish` is the sole token restoration and cursor-publication authority; it accepts
-any vacant handle from the original pool. Failure, cancellation, timeout, corruption, or allocation rejection
-preserves the caller's prior cursor exactly.
+Each storage-backed page traverses runs serially under one absolute monotonic deadline. A run without a current head
+yields one canonical snapshot-visible key/value or tombstone through the generation-bound next-entry protocol.
+SST-v2 reads its header, index, and one selected frame; SST-v1 uses the integrity-required whole-object compatibility
+fallback. The candidate cursor retains at most one current head per run, merges those heads with its captured suffix
+and transaction-local sources, advances every source matching the lowest key, and then refills only the heads needed
+for the next decision. There is no helper task, provider retry, prefetch, run-count default, or cache. Typed `Finish`
+is the sole token restoration and joint cursor/page publication authority; it accepts any vacant handle from the
+original pool. Failure, cancellation, timeout, corruption, or allocation rejection preserves the caller's prior
+cursor and result exactly.
 
 The buffer-owned whole `Scan` overload is a literal blocking composition of that initialization and one complete
 page request using the cursor's persisted live-row and live-byte bounds. It adds no second storage reader or merge
 algorithm; page materialization retains the same atomic row and Serializable-predicate publication boundary.
 
-This is a deliberately limited end-to-end path. The caller buffer bounds each object transfer, while the completed
-cursor retains every selected snapshot-visible source entry needed by later storage-free pages. It no longer retains
-whole SST objects, but its memory still grows with the selected source-entry set. A storage-backed page operation that
-retains only current run heads, and any resulting constant-memory claim, remain later work; no hidden capacity or
-eviction policy is inferred from this implementation.
+This is a deliberately limited end-to-end path. The caller buffer bounds each object transfer, while a published
+storage-backed cursor retains exact run descriptors, at most one current authenticated head per run, and bounded
+committed-suffix/transaction-local sources. During one in-flight page, failure atomicity permits both authoritative
+and candidate cursor views, so retained checkpoint state is proportional to selected run count rather than to all
+selected entries. This is not a whole-database constant-memory claim: selected run count and retained local/suffix
+state remain bounded by persisted database authority, and no hidden capacity or eviction policy is inferred.
 
 The cursor fixes the transaction's own-write prefix by retaining the arena mutation version observed by
 `Start_Scan`. Every successful `Put` or `Delete` advances that version, including replacement of an existing arena
@@ -107,13 +110,15 @@ Publishing the last visible row is not terminal until all remaining physical ent
 tombstones, have been consumed. The negative probe skips one visible row and must violate safety; the checked
 witness crosses a page boundary while preserving the exact merged prefix. Its arbitrary-domain proof kernel binds
 each visible-prefix position to exact cursor and head projections and proves the derived per-view head bound.
-This formal design does not itself implement or prove the Ada/Object Storage refinement.
+The Ada storage-backed cursor implements this ownership and merge boundary; the finite model and TLAPS kernel do not
+by themselves prove the Ada/Object Storage refinement.
 
 The model dimensions are qualification geometry, not product defaults. The formal lane does not prove endpoint byte
 comparison, transaction mutation-version validation, allocation, source capture, concurrency, progress, the Ada
-implementation, or refinement. The current Ada implementation captures one bounded in-memory physical source
+implementation, or refinement. The storage-free implementation captures one bounded in-memory physical source
 snapshot at `Start_Scan` and advances retained per-source positions without recapturing or globally sorting sources
-per page. The authenticated overload reads exact SST objects sequentially from Object Storage before cursor
-publication, but it does not lazily stream frames during paging or claim memory independent of retained run images.
+per page. The compatibility authenticated overload still reads exact SST entries before cursor publication.
+`Start_Storage_Backed_Scan` instead retains descriptors and advances authenticated run heads during each composable
+page, with atomic typed publication.
 The exact ownership and merge boundary is documented in
 [`physical-scan-merge.md`](physical-scan-merge.md).

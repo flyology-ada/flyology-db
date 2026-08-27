@@ -118,15 +118,15 @@ through terminal publication, moves one exact caller scratch token, records Seri
 after a conclusive external result, and restores the token only through typed `Finish`. It introduces no helper task,
 retry, cache, prefetch, or hidden storage bound.
 
-The storage-free `Start_Scan` remains available for already-materialized state. Its additive `Scan_Operation` and
-buffer-owned synchronous overload authenticate the exact manifest run slice from Object Storage, traverse each run
-one canonical snapshot-visible entry at a time under one absolute deadline, and construct the same owned physical
-cursor used by whole and paged scans. SST-v2 uses header/index/frame ranges; frozen SST-v1 uses its required
-whole-object compatibility fallback. Typed `Finish` alone restores the exact caller token and publishes the candidate
-cursor; every failure leaves the prior cursor unchanged. A buffer-owned whole `Scan` overload waits that same
-operation and requests one complete page from the cursor under persisted live-state limits; it does not add another
-visibility engine. This establishes an end-to-end remote scan path without retaining whole SST objects, but the cursor
-still retains every selected source entry and therefore makes no constant-memory paging claim.
+The storage-free `Start_Scan` remains available for already-materialized state. The additive
+`Start_Storage_Backed_Scan` publishes a cursor containing exact immutable-run descriptors and only transaction-local
+and committed-suffix entries; it does not traverse the checkpoint during initialization. Its composable
+`Next_Scan_Page` overload retains at most one authenticated head per run while advancing SST-v2 through
+generation-bound header/index/frame reads and frozen SST-v1 through its required whole-object compatibility fallback.
+Typed `Finish` alone restores the exact caller token and atomically publishes the candidate cursor and page; every
+failure leaves the prior cursor, result, and predicate authority unchanged. A buffer-owned whole `Scan` overload
+continues to use the earlier complete initializer for compatibility. The new paged path bounds retained checkpoint
+state by selected run count, without adding a helper task, retry, cache, prefetch, or hidden page policy.
 
 ## Durability rule
 

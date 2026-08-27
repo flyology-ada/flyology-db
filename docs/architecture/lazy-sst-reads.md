@@ -45,11 +45,12 @@ the run; complete absence returns no key. SST-v2 authenticates the index and
 only the selected frame. SST-v1 uses the required whole-object fallback. Typed
 Finish returns one owned key/value pair and releases the decoded index/frame;
 the operation retains no whole run after Finish and introduces no page size,
-prefetch, cache, retry, or run-selection policy. The scan parent repeats this
-strictly after each selected key, compacts the selected entries into one exact
-owned source image per run, and then invokes the established physical merge.
-This removes whole-run cursor retention but still retains every selected
-source entry; direct storage-backed page advancement remains separate work.
+prefetch, cache, retry, or run-selection policy. The compatibility scan
+initializer repeats this strictly after each selected key and compacts selected
+entries before invoking the physical merge. The storage-backed initializer
+retains only run descriptors; its page operation uses the same next-entry child
+to maintain at most one authenticated head per run and advances all equal-key
+heads after selecting newest authority.
 
 ## Why SST version 1 cannot stream safely
 

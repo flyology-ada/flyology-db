@@ -108,11 +108,10 @@ cancellation, timeout, Serializable observation, and exact token restoration. Th
 change the provider-neutral storage-free `Get` used by the Files acceptance showcase; direct memory/files lazy reads
 remain a separate execution decision.
 
-Authenticated scans use the same additive pattern. `Scan_Operation` initializes the established physical cursor
-from the exact manifest run slice under one caller scratch token and deadline. It traverses SST-v2 through
-generation-bound header/index/frame reads, uses the required whole-object fallback only for frozen SST-v1, and retains
-one compact image of canonical snapshot-visible entries per run rather than decoded whole SSTs. Its blocking
-`Start_Scan` waits that operation, while the buffer-owned whole `Scan` overload immediately requests one complete
-page from the same cursor under persisted live-state limits. Neither form adds a second visibility engine, retry,
-helper task, page default, run cap, or cache. The cursor still retains every selected source entry, so direct
-storage-backed page advancement and constant-memory claims remain outside the accepted boundary.
+Authenticated scans use the same additive pattern. The compatibility `Start_Scan` operation traverses the exact
+manifest run slice before cursor publication. `Start_Storage_Backed_Scan` instead retains exact run descriptors, and
+its composable `Next_Scan_Page` operation advances at most one authenticated head per run through generation-bound
+SST-v2 header/index/frame reads or the required frozen SST-v1 whole-object fallback. The page owns one caller scratch
+token and deadline; typed `Finish` jointly publishes the candidate cursor and result. Neither path adds a second
+visibility engine, retry, helper task, page default, run cap, or cache. Retained checkpoint state is proportional to
+selected run count during paging; this does not remove persisted run-count or local/suffix-state bounds.

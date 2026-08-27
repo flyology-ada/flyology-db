@@ -1,5 +1,36 @@
 # Review record
 
+## Storage-backed paged-scan implementation candidate
+
+- Parent: storage-backed paged-scan formal-design commit `77c096c`, followed by the exact Object Storage dependency
+  qualification commit `553e8b1`.
+- Scope: add provider-backed scan initialization that retains exact immutable-run descriptors without traversing
+  checkpoint entries, plus composable and blocking page forms that advance authenticated run heads under one caller
+  scratch token and absolute deadline. The existing `Flyology.DB` provider package owns the limited root operation,
+  reusable start, operation state, synchronous wait, and typed `Finish`; no parallel `.Scoped` namespace or
+  compatibility alias is introduced. The storage-free and complete authenticated scan paths remain source-compatible.
+- Ownership and failure boundary: the authoritative cursor retains run descriptors, bounded in-memory sources, and at
+  most one current head per run. Each active page works on a complete clone and may therefore retain one additional
+  candidate head per run until typed `Finish`. The cursor and prior `Scan_Result` publish together only after exact
+  page construction, optional Serializable predicate retention, physical completion classification, and checked
+  cursor-revision advance. Capacity, allocation, cancellation, timeout, corruption, lifecycle, or child-read failure
+  releases the candidate and restores the exact moved token without replay, helper tasks, caching, or prefetch.
+- Findings cycle: P0 denotes data loss, durable-authority, or safety failure; P1 denotes incorrect visibility,
+  continuation, completion, ownership, capacity, or failure semantics; P2 denotes a maintainability, documentation,
+  or qualification weakness. Deterministic testing found and fixed one P1 equal-key advancement defect: clearing the
+  lowest head before comparing later matching sources could dereference the released key. Matching non-lowest sources
+  now advance first and the lowest head advances last. Self-review also fixed P1 validation gaps by rejecting malformed
+  run descriptors at initialization and fail-closing retained run-head, source-position, and byte-extent state before
+  candidate cloning. P2 coverage additions exercise first-row capacity atomicity, clone-allocation rejection,
+  cancellation, exact token restoration, and a two-page checkpoint-plus-transaction-local merge.
+- Verification boundary: root and nested test builds pass. The complete maintained deterministic suite passes
+  repository/provenance checks, local formats/policy/model/log tests, authenticated create/commit/Flush/compaction/
+  refresh/reopen including the new scan oracles, files crash/recovery, the limited end-to-end profile, 32 adapter
+  tests, and pinned TidesDB 4/4. The separately qualified design evidence is TLC 3,341 generated/1,111 distinct/depth
+  20 with expected negative and witness lanes, TLAPS 8/8 and maintained 393/393, and GNATprove 1,097/1,097 on its exact
+  comment-final design tree. Final source-tree TLA byte stability and GNATprove remain required after formatting,
+  documentation, and review freeze; prior formal evidence is not attributed to the changed implementation tree.
+
 ## Storage-backed paged-scan formal candidate
 
 - Parent: authenticated next-entry scan initialization commit `3e425b8`.

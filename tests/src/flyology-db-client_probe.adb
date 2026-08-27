@@ -260,15 +260,18 @@ procedure Flyology.DB.Client_Probe is
      Transaction_Identifier (Numbered_ID (38));
    Replica_Refreshed_Reader_ID  : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (39));
-   --  IDs 40 through 42 are the suffix-backed Get, checkpoint-backed Get, and
-   --  authenticated scan reader fixtures. They are stable test identities,
-   --  not allocation or transaction-ID generation policy.
+   --  IDs 40 through 43 are the suffix-backed Get, checkpoint-backed Get,
+   --  authenticated scan reader, and storage-backed multi-page fixtures. They
+   --  are stable test identities, not allocation or transaction-ID generation
+   --  policy.
    Suffix_Get_Reader_ID         : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (40));
    Checkpoint_Get_Reader_ID     : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (41));
    Scan_Reader_ID               : constant Transaction_Identifier :=
      Transaction_Identifier (Numbered_ID (42));
+   Storage_Page_Reader_ID       : constant Transaction_Identifier :=
+     Transaction_Identifier (Numbered_ID (43));
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag              : constant Interfaces.Unsigned_64 := 16#F105#;
@@ -596,6 +599,11 @@ procedure Flyology.DB.Client_Probe is
       --  Arbitrary nonzero metadata proves exact token restoration through an
       --  arbitrary vacant same-pool handle.
       Scan_Tag       : constant Interfaces.Unsigned_64 := 16#5CA4#;
+      --  This local row sorts after the persisted client-key fixture and
+      --  forces an exact two-page merge. The bytes are test geometry, not a
+      --  product key, page size, or ordering policy.
+      Paged_Key      : constant Byte_Array := Bytes ("local-page-key");
+      Paged_Value    : constant Byte_Array := Bytes ("local-page-value");
 
       procedure Expect_Allocation_Rejection (Point : Internal_Allocation_Fault_Point; Context : String) is
       begin
@@ -752,6 +760,120 @@ procedure Flyology.DB.Client_Probe is
          raise Program_Error with "blocking authenticated scan returned the wrong page";
       end if;
 
+      --  The limited end-to-end storage-backed path publishes only exact run
+      --  descriptors at initialization and performs authenticated next-entry
+      --  reads while advancing each page. The old storage-free page overload
+      --  must reject that cursor rather than silently omitting checkpoint
+      --  rows. A first-row capacity failure preserves both cursor and Rows;
+      --  the subsequent composable page succeeds from the same position and
+      --  restores the exact scratch token.
+      Start_Storage_Backed_Scan
+        (Created,
+         Scan_Txn,
+         Family,
+         False,
+         Bytes (""),
+         False,
+         Bytes (""),
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Cursor,
+         Result);
+      Expect (Result, Success, "storage-backed scan initialization failed");
+      Next_Scan_Page
+        (Created,
+         Scan_Txn,
+         Cursor,
+         1,
+         Limits.Maximum_Live_State_Bytes,
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Invalid_State, "storage-backed cursor entered the storage-free page path");
+      Next_Scan_Page
+        (Created,
+         Scan_Txn,
+         Cursor,
+         0,
+         0,
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Capacity_Exceeded, "storage-backed first-row capacity was not atomic");
+      if Done
+        or else Scan_Row_Count (Rows) /= 1
+        or else not Flyology.Buffers.Has_Buffer (Scan_Buffer)
+        or else Flyology.Buffers.Tag (Scan_Buffer) /= Scan_Tag
+      then
+         raise Program_Error with "failed storage-backed page changed cursor, rows, or token authority";
+      end if;
+      Set_Test_Allocation_Fault (Scan_Cursor_State_Allocation);
+      Next_Scan_Page
+        (Created,
+         Scan_Txn,
+         Cursor,
+         1,
+         Limits.Maximum_Live_State_Bytes,
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Capacity_Exceeded, "storage-backed page clone allocation failure was not typed");
+      if Done
+        or else Scan_Row_Count (Rows) /= 1
+        or else not Flyology.Buffers.Has_Buffer (Scan_Buffer)
+        or else Flyology.Buffers.Tag (Scan_Buffer) /= Scan_Tag
+      then
+         raise Program_Error with "failed storage-backed clone changed cursor, rows, or token authority";
+      end if;
+      Next_Scan_Page
+        (Cursor,
+         1,
+         Limits.Maximum_Live_State_Bytes,
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         Cancelled_Work);
+      Flyology.Operations.Wait_All (Scan_Set);
+      Finish (Cancelled_Work, Cursor, Rows, Done, Result, Restored);
+      Expect (Result, Cancelled, "storage-backed page ignored cancellation");
+      if Done
+        or else Scan_Row_Count (Rows) /= 1
+        or else not Flyology.Buffers.Has_Buffer (Restored)
+        or else Flyology.Buffers.Tag (Restored) /= Scan_Tag
+      then
+         raise Program_Error with "cancelled storage-backed page changed cursor, rows, or token authority";
+      end if;
+      Flyology.Buffers.Move (Restored, Scan_Buffer);
+      Next_Scan_Page
+        (Cursor,
+         1,
+         Limits.Maximum_Live_State_Bytes,
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         Work);
+      Flyology.Operations.Wait_All (Scan_Set);
+      Finish (Work, Cursor, Rows, Done, Result, Restored);
+      Expect (Result, Success, "composable storage-backed page failed");
+      if Scan_Row_Count (Rows) /= 1
+        or else not Done
+        or else not Flyology.Buffers.Has_Buffer (Restored)
+        or else Flyology.Buffers.Tag (Restored) /= Scan_Tag
+      then
+         raise Program_Error with "storage-backed page returned the wrong row or token";
+      end if;
+      Read_Scan_Row (Rows, 1, Item_Key, Item_Value, Result);
+      Expect (Result, Success, "storage-backed page row read failed");
+      if not Same (Item_Key, Key_Data) or else not Same (Item_Value, Third_Value_Data) then
+         raise Program_Error with "storage-backed page returned the wrong fixed-snapshot bytes";
+      end if;
+      Flyology.Buffers.Move (Restored, Scan_Buffer);
+
       --  The whole-result overload waits on that same authenticated cursor
       --  initializer and then requests one complete page under persisted live
       --  limits; it does not rebuild visibility through the local checkpoint.
@@ -805,10 +927,73 @@ procedure Flyology.DB.Client_Probe is
       if not Same (Item_Key, Key_Data) or else not Same (Item_Value, Third_Value_Data) then
          raise Program_Error with "failed whole authenticated scan changed prior row bytes";
       end if;
+
+      Rollback (Scan_Txn, Result);
+      Expect (Result, Success, "authenticated scan reader rollback failed");
+      Begin_Transaction (Created, Storage_Page_Reader_ID, Scan_Txn, Result);
+      Expect (Result, Success, "storage-backed multi-page reader begin failed");
+      Put (Created, Scan_Txn, Family, Paged_Key, Paged_Value, Result);
+      Expect (Result, Success, "storage-backed multi-page local Put failed");
+      Start_Storage_Backed_Scan
+        (Created,
+         Scan_Txn,
+         Family,
+         False,
+         Bytes (""),
+         False,
+         Bytes (""),
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Cursor,
+         Result);
+      Expect (Result, Success, "storage-backed multi-page initialization failed");
+      Next_Scan_Page
+        (Created,
+         Scan_Txn,
+         Cursor,
+         1,
+         Limits.Maximum_Live_State_Bytes,
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Success, "storage-backed first merged page failed");
+      if Done or else Scan_Row_Count (Rows) /= 1 then
+         raise Program_Error with "storage-backed first merged page completed early";
+      end if;
+      Read_Scan_Row (Rows, 1, Item_Key, Item_Value, Result);
+      Expect (Result, Success, "storage-backed first merged row read failed");
+      if not Same (Item_Key, Key_Data) or else not Same (Item_Value, Third_Value_Data) then
+         raise Program_Error with "storage-backed first merged page returned the wrong row";
+      end if;
+      Next_Scan_Page
+        (Created,
+         Scan_Txn,
+         Cursor,
+         1,
+         Limits.Maximum_Live_State_Bytes,
+         Scan_Buffer,
+         Test_Operation_Timeout,
+         null,
+         Rows,
+         Done,
+         Result);
+      Expect (Result, Success, "storage-backed second merged page failed");
+      if not Done or else Scan_Row_Count (Rows) /= 1 then
+         raise Program_Error with "storage-backed second merged page did not complete exactly";
+      end if;
+      Read_Scan_Row (Rows, 1, Item_Key, Item_Value, Result);
+      Expect (Result, Success, "storage-backed second merged row read failed");
+      if not Same (Item_Key, Paged_Key) or else not Same (Item_Value, Paged_Value) then
+         raise Program_Error with "storage-backed second merged page returned the wrong row";
+      end if;
       Flyology.Operations.Release (Work);
       Flyology.Operations.Release (Cancelled_Work);
       Rollback (Scan_Txn, Result);
-      Expect (Result, Success, "authenticated scan reader rollback failed");
+      Expect (Result, Success, "storage-backed multi-page reader rollback failed");
       Flyology.Buffers.Release (Scan_Buffer);
    exception
       when others =>

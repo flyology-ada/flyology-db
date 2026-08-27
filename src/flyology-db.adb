@@ -114,6 +114,8 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Physical_Scan_Entry_Array, Physical_Scan_Entry_Array_Access);
    procedure Free_Physical_Scan_Sources is new
      Ada.Unchecked_Deallocation (Physical_Scan_Source_Array, Physical_Scan_Source_Array_Access);
+   procedure Free_Storage_Scan_Runs is new
+     Ada.Unchecked_Deallocation (Storage_Scan_Run_Array, Storage_Scan_Run_Array_Access);
    procedure Free_Scan_Cursor_State is new
      Ada.Unchecked_Deallocation (Scan_Cursor_State, Scan_Cursor_State_Access);
    procedure Free_L0_Checkpoint_Families is new
@@ -292,6 +294,14 @@ package body Flyology.DB is
          Free_Scan_Cursor_Bytes (State.Lower);
          Free_Scan_Cursor_Bytes (State.Upper);
          Free_Scan_Cursor_Bytes (State.Last_Key);
+         if State.Storage_Runs /= null then
+            for Run of State.Storage_Runs.all loop
+               Free_Scan_Cursor_Bytes (Run.Start_Key);
+               Free_Scan_Cursor_Bytes (Run.Head_Key);
+               Free_Scan_Cursor_Bytes (Run.Head_Value);
+            end loop;
+            Free_Storage_Scan_Runs (State.Storage_Runs);
+         end if;
          Free_Physical_Scan_Entries (State.Entries);
          Free_Physical_Scan_Sources (State.Sources);
          Free_Scan_Cursor_State (State);
@@ -8743,9 +8753,14 @@ package body Flyology.DB is
    procedure Free_Scan_Loaded_Run_Array is new
      Ada.Unchecked_Deallocation (Scan_Loaded_Run_Array, Scan_Loaded_Run_Array_Access);
 
+   type Scan_Driver_Purpose is
+     (Materialized_Scan_Initialization,
+      Storage_Scan_Initialization,
+      Storage_Scan_Page);
    type Scan_Driver_Phase is (Scan_Idle, Scan_Reading_Entry, Scan_Terminal);
 
    type Scan_Driver_State is record
+      Purpose              : Scan_Driver_Purpose := Materialized_Scan_Initialization;
       Database_ID          : Database_Identifier := Zero_Database_ID;
       Incarnation          : Engine_Incarnation := No_Incarnation;
       Transaction_ID       : Transaction_Identifier := Zero_Transaction_ID;
@@ -8760,6 +8775,15 @@ package body Flyology.DB is
       Lower                : Scan_Cursor_Byte_Array_Access := null;
       Has_Upper            : Boolean := False;
       Upper                : Scan_Cursor_Byte_Array_Access := null;
+      Maximum_Rows         : Interfaces.Unsigned_32 := 0;
+      Maximum_Bytes        : Interfaces.Unsigned_64 := 0;
+      Expected_Revision    : Interfaces.Unsigned_64 := 0;
+      Original_Cursor      : Scan_Cursor_State_Access := null;
+      Page_First           : Scan_Loaded_Entry_Access := null;
+      Page_Last            : Scan_Loaded_Entry_Access := null;
+      Page_Count           : Natural := 0;
+      Page_Bytes           : Interfaces.Unsigned_64 := 0;
+      Page_Payload         : Flyology.Bytes.Unbounded_Bytes;
       Phase                : Scan_Driver_Phase := Scan_Idle;
       Precheck_Result      : Outcome_Code := Success;
    end record;
@@ -11571,6 +11595,8 @@ package body Flyology.DB is
       Lower     : Byte_Array;
       Has_Upper : Boolean;
       Upper     : Byte_Array;
+      Retained_Runs : Lazy_SST_Run_Array_Access;
+      Storage_Backed : Boolean;
       Loaded       : Scan_Loaded_Run_Array_Access;
       Pinned_State : Engine_State_Access;
       Cursor    : in out Scan_Cursor;
@@ -11718,7 +11744,7 @@ package body Flyology.DB is
          State.Gate.Scan_Source_Requirements
            (Configuration.ID,
             Txn.Snapshot_At,
-            (if Loaded = null then State.Checkpoint_Base else null),
+            (if Loaded = null and then not Storage_Backed then State.Checkpoint_Base else null),
             Own_Count + External_Count,
             Raw_Count,
             Maximum_Rows,
@@ -11738,7 +11764,7 @@ package body Flyology.DB is
          State.Gate.Copy_Scan_Sources
            (Configuration.ID,
             Txn.Snapshot_At,
-            (if Loaded = null then State.Checkpoint_Base else null),
+            (if Loaded = null and then not Storage_Backed then State.Checkpoint_Base else null),
             Raw,
             Captured,
             Result);
@@ -11812,6 +11838,15 @@ package body Flyology.DB is
                      end if;
                   end;
                end;
+            end loop;
+         elsif Storage_Backed and then Retained_Runs /= null then
+            for Index in Positive range 1 .. Captured loop
+               if Raw (Index).Authority > Natural'Last - Retained_Runs'Length then
+                  Release_Raw;
+                  Result := Capacity_Exceeded;
+                  return;
+               end if;
+               Raw (Index).Authority := Raw (Index).Authority + Retained_Runs'Length;
             end loop;
          end if;
          for Index in Positive range 1 .. Captured loop
@@ -11987,6 +12022,18 @@ package body Flyology.DB is
          return;
       end if;
 
+      if Storage_Backed and then Retained_Runs /= null then
+         for Run of Retained_Runs.all loop
+            if Run.Entry_Total = 0
+              or else Run.Lowest_Sequence = 0
+              or else Run.Highest_Sequence < Run.Lowest_Sequence
+            then
+               Result := Corrupt;
+               return;
+            end if;
+         end loop;
+      end if;
+
       Allocation_Faults.Check (Scan_Cursor_State_Allocation);
       Candidate := new Scan_Cursor_State;
       if Has_Lower then
@@ -11998,6 +12045,8 @@ package body Flyology.DB is
          Candidate.Upper := new Byte_Array'(Upper);
       end if;
       Candidate.Active := True;
+      Candidate.Storage_Backed := Storage_Backed;
+      Candidate.Revision := 1;
       Candidate.Database_ID := Txn.Database_ID;
       Candidate.Incarnation := Txn.Incarnation;
       Candidate.Transaction_ID := Txn.Transaction_ID;
@@ -12006,6 +12055,19 @@ package body Flyology.DB is
       Candidate.Family := Configuration;
       Candidate.Has_Lower := Has_Lower;
       Candidate.Has_Upper := Has_Upper;
+      if Storage_Backed and then Retained_Runs /= null then
+         Allocation_Faults.Check (Scan_Cursor_Source_Allocation);
+         Candidate.Storage_Runs := new Storage_Scan_Run_Array (Retained_Runs'Range);
+         for Index in Retained_Runs'Range loop
+            Candidate.Storage_Runs (Index) :=
+              (Run_ID                => Retained_Runs (Index).Run_ID,
+               Lowest_Sequence       => Retained_Runs (Index).Lowest_Sequence,
+               Highest_Sequence      => Retained_Runs (Index).Highest_Sequence,
+               Entry_Total           => Retained_Runs (Index).Entry_Total,
+               Logical_Payload_Bytes => Retained_Runs (Index).Logical_Payload_Bytes,
+               others                => <>);
+         end loop;
+      end if;
       Build_Physical_Snapshot;
       if Result /= Success then
          Release_Scan_Cursor (Candidate);
@@ -12039,7 +12101,20 @@ package body Flyology.DB is
       Cursor    : in out Scan_Cursor;
       Result    : out Outcome_Code) is
    begin
-      Build_Scan_Cursor (Item, Txn, Family, Has_Lower, Lower, Has_Upper, Upper, null, null, Cursor, Result);
+      Build_Scan_Cursor
+        (Item,
+         Txn,
+         Family,
+         Has_Lower,
+         Lower,
+         Has_Upper,
+         Upper,
+         Retained_Runs => null,
+         Storage_Backed => False,
+         Loaded => null,
+         Pinned_State => null,
+         Cursor => Cursor,
+         Result => Result);
    end Start_Scan;
 
    procedure Materialize_Physical_Scan_Page
@@ -12478,6 +12553,7 @@ package body Flyology.DB is
       if State = null
         or else not State.Active
         or else State.Done
+        or else State.Storage_Backed
         or else (State.Has_Lower and then State.Lower = null)
         or else (State.Has_Upper and then State.Upper = null)
         or else (State.Has_Last and then State.Last_Key = null)
@@ -17186,6 +17262,16 @@ package body Flyology.DB is
    begin
       if Item.Driver_State /= null then
          Free_Lazy_SST_Run_Array (Item.Driver_State.Runs);
+         while Item.Driver_State.Page_First /= null loop
+            declare
+               Current : Scan_Loaded_Entry_Access := Item.Driver_State.Page_First;
+            begin
+               Item.Driver_State.Page_First := Current.Next;
+               Free_Scan_Loaded_Entry (Current);
+            end;
+         end loop;
+         Item.Driver_State.Page_Last := null;
+         Flyology.Bytes.Clear (Item.Driver_State.Page_Payload);
          if Item.Driver_State.Loaded /= null then
             for Run of Item.Driver_State.Loaded.all loop
                while Run.First /= null loop
@@ -17210,6 +17296,97 @@ package body Flyology.DB is
       end if;
    end Release_Scan_State;
 
+   procedure Clone_Scan_Cursor
+     (Source : not null Scan_Cursor_State_Access;
+      Target : in out Scan_Cursor;
+      Result : out Outcome_Code)
+   is
+      Candidate : Scan_Cursor_State_Access := null;
+
+      procedure Copy_Bytes
+        (From : Scan_Cursor_Byte_Array_Access;
+         Into : out Scan_Cursor_Byte_Array_Access)
+      is
+      begin
+         Into := null;
+         if From /= null then
+            Allocation_Faults.Check (Scan_Cursor_Owned_Bytes_Allocation);
+            Into := new Byte_Array'(From.all);
+         end if;
+      end Copy_Bytes;
+   begin
+      if Target.Owner.State /= null then
+         Result := Invalid_State;
+         return;
+      end if;
+      Allocation_Faults.Check (Scan_Cursor_State_Allocation);
+      Candidate := new Scan_Cursor_State;
+      Candidate.Active := Source.Active;
+      Candidate.Done := Source.Done;
+      Candidate.Predicate_Recorded := Source.Predicate_Recorded;
+      Candidate.Storage_Backed := Source.Storage_Backed;
+      Candidate.Revision := Source.Revision;
+      Candidate.Database_ID := Source.Database_ID;
+      Candidate.Incarnation := Source.Incarnation;
+      Candidate.Transaction_ID := Source.Transaction_ID;
+      Candidate.Snapshot_At := Source.Snapshot_At;
+      Candidate.Mutation_Version := Source.Mutation_Version;
+      Candidate.Family := Source.Family;
+      Candidate.Has_Lower := Source.Has_Lower;
+      Candidate.Has_Upper := Source.Has_Upper;
+      Candidate.Has_Last := Source.Has_Last;
+      Candidate.Maximum_Rows := Source.Maximum_Rows;
+      Candidate.Maximum_Bytes := Source.Maximum_Bytes;
+      Copy_Bytes (Source.Lower, Candidate.Lower);
+      Copy_Bytes (Source.Upper, Candidate.Upper);
+      Copy_Bytes (Source.Last_Key, Candidate.Last_Key);
+      if Source.Entries /= null then
+         Allocation_Faults.Check (Scan_Cursor_Entry_Allocation);
+         Candidate.Entries := new Physical_Scan_Entry_Array'(Source.Entries.all);
+      end if;
+      if Source.Sources /= null then
+         Allocation_Faults.Check (Scan_Cursor_Source_Allocation);
+         Candidate.Sources := new Physical_Scan_Source_Array'(Source.Sources.all);
+      end if;
+      if Source.Storage_Runs /= null then
+         Allocation_Faults.Check (Scan_Cursor_Source_Allocation);
+         Candidate.Storage_Runs := new Storage_Scan_Run_Array (Source.Storage_Runs'Range);
+         for Index in Source.Storage_Runs'Range loop
+            declare
+               From : Storage_Scan_Run_State renames Source.Storage_Runs (Index);
+               Into : Storage_Scan_Run_State renames Candidate.Storage_Runs (Index);
+            begin
+               Into :=
+                 (Run_ID                => From.Run_ID,
+                  Lowest_Sequence       => From.Lowest_Sequence,
+                  Highest_Sequence      => From.Highest_Sequence,
+                  Entry_Total           => From.Entry_Total,
+                  Logical_Payload_Bytes => From.Logical_Payload_Bytes,
+                  Has_Start             => From.Has_Start,
+                  Has_Head              => From.Has_Head,
+                  Head_Operation        => From.Head_Operation,
+                  Head_Sequence         => From.Head_Sequence,
+                  Exhausted             => From.Exhausted,
+                  Entries_Read          => From.Entries_Read,
+                  others                => <>);
+               Copy_Bytes (From.Start_Key, Into.Start_Key);
+               Copy_Bytes (From.Head_Key, Into.Head_Key);
+               Copy_Bytes (From.Head_Value, Into.Head_Value);
+            end;
+         end loop;
+      end if;
+      Target.Owner.State := Candidate;
+      Candidate := null;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Release_Scan_Cursor (Candidate);
+         Result := Capacity_Exceeded;
+      when others =>
+         Release_Scan_Cursor (Candidate);
+         raise;
+   end Clone_Scan_Cursor;
+
    procedure Complete_Scan
      (Item   : in out Scan_Operation;
       Result : Outcome_Code;
@@ -17232,6 +17409,7 @@ package body Flyology.DB is
       end if;
       if Final_Result /= Success then
          Release_Scan_Cursor (Item.Candidate_Cursor.Owner.State);
+         Release_Scan_Result (Item.Candidate_Rows.Owner.State);
       end if;
       if Item.Driver_State /= null then
          Item.Driver_State.Phase := Scan_Terminal;
@@ -17278,10 +17456,12 @@ package body Flyology.DB is
             Lower,
             State.Has_Upper,
             Upper,
-            State.Loaded,
-            Item.Retained_State,
-            Item.Candidate_Cursor,
-            Result);
+            Retained_Runs => null,
+            Storage_Backed => False,
+            Loaded => State.Loaded,
+            Pinned_State => Item.Retained_State,
+            Cursor => Item.Candidate_Cursor,
+            Result => Result);
       end Build;
    begin
       if State.Has_Lower and then State.Has_Upper then
@@ -17298,6 +17478,48 @@ package body Flyology.DB is
       when Error : others =>
          Fail_Scan (Item, Error);
    end Build_Authenticated_Scan_Cursor;
+
+   procedure Build_Storage_Backed_Scan_Cursor (Item : in out Scan_Operation) is
+      State  : Scan_Driver_State renames Item.Driver_State.all;
+      Family : constant Column_Family :=
+        (Valid         => True,
+         Database_ID   => State.Database_ID,
+         Incarnation   => State.Incarnation,
+         Configuration => State.Family);
+      Result : Outcome_Code;
+
+      procedure Build (Lower, Upper : Byte_Array) is
+      begin
+         Build_Scan_Cursor
+           (Item.Item.all,
+            Item.Txn.all,
+            Family,
+            State.Has_Lower,
+            Lower,
+            State.Has_Upper,
+            Upper,
+            Retained_Runs => State.Runs,
+            Storage_Backed => True,
+            Loaded => null,
+            Pinned_State => Item.Retained_State,
+            Cursor => Item.Candidate_Cursor,
+            Result => Result);
+      end Build;
+   begin
+      if State.Has_Lower and then State.Has_Upper then
+         Build (State.Lower.all, State.Upper.all);
+      elsif State.Has_Lower then
+         Build (State.Lower.all, [1 .. 0 => 0]);
+      elsif State.Has_Upper then
+         Build ([1 .. 0 => 0], State.Upper.all);
+      else
+         Build ([1 .. 0 => 0], [1 .. 0 => 0]);
+      end if;
+      Complete_Scan (Item, Result);
+   exception
+      when Error : others =>
+         Fail_Scan (Item, Error);
+   end Build_Storage_Backed_Scan_Cursor;
 
    procedure Start_Next_Scan_Entry (Item : in out Scan_Operation) is
       State : Scan_Driver_State renames Item.Driver_State.all;
@@ -17564,10 +17786,587 @@ package body Flyology.DB is
          Fail_Scan (Item, Error);
    end Complete_Scan_Entry;
 
+   procedure Advance_Storage_Scan_Page (Item : in out Scan_Operation);
+
+   procedure Complete_Storage_Scan_Head (Item : in out Scan_Operation) is
+      Cursor      : Scan_Cursor_State renames Item.Candidate_Cursor.Owner.State.all;
+      State       : Scan_Driver_State renames Item.Driver_State.all;
+      Run         : Storage_Scan_Run_State renames Cursor.Storage_Runs (State.Current_Run);
+      Disposition : Lazy_SST_Entry_Disposition;
+      Sequence    : Sequence_Number;
+      Item_Key    : Flyology.Bytes.Unbounded_Bytes;
+      Value       : Flyology.Bytes.Unbounded_Bytes;
+      Result      : Outcome_Code;
+
+      function Before (Left : Scan_Cursor_Byte_Array_Access; Right : Byte_Array) return Boolean is
+         Common : constant Natural := Natural'Min (Left'Length, Right'Length);
+      begin
+         if Common > 0 then
+            for Offset in Natural range 0 .. Common - 1 loop
+               if Left (Left'First + Offset) < Right (Right'First + Offset) then
+                  return True;
+               elsif Left (Left'First + Offset) > Right (Right'First + Offset) then
+                  return False;
+               end if;
+            end loop;
+         end if;
+         return Left'Length < Right'Length;
+      end Before;
+
+      procedure Copy_Bytes
+        (Source : Flyology.Bytes.Unbounded_Bytes;
+         Target : out Scan_Cursor_Byte_Array_Access)
+      is
+         Length : constant Natural := Flyology.Bytes.Length (Source);
+      begin
+         Target := new Byte_Array (1 .. Length);
+         for Index in Positive range 1 .. Length loop
+            Target (Index) := Byte (Flyology.Bytes.Element (Source, Index));
+         end loop;
+      end Copy_Bytes;
+   begin
+      begin
+         Finish_Lazy_SST_Next_Entry
+           (Item.Child.all, Disposition, Sequence, Item_Key, Value, Result, Item.Payload);
+      exception
+         when Error : others =>
+            if Flyology.Operations.Id (Item.Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Child.all)
+            then
+               Flyology.Operations.Release (Item.Child.all);
+            end if;
+            Fail_Scan (Item, Error);
+            return;
+      end;
+      Flyology.Operations.Release (Item.Child.all);
+      if (Result = Success and then Disposition /= Lazy_Value_Found)
+        or else
+          (Result = Not_Found
+           and then Disposition not in Lazy_Tombstone_Found | Lazy_Key_Absent)
+        or else (Result not in Success | Not_Found and then Disposition /= Lazy_Read_Failed)
+      then
+         Complete_Scan (Item, Corrupt);
+         return;
+      elsif Result not in Success | Not_Found then
+         Complete_Scan (Item, Result);
+         return;
+      elsif Disposition = Lazy_Key_Absent then
+         if Flyology.Bytes.Length (Item_Key) /= 0
+           or else Flyology.Bytes.Length (Value) /= 0
+           or else Sequence /= 0
+         then
+            Complete_Scan (Item, Corrupt);
+            return;
+         end if;
+         Run.Exhausted := True;
+      elsif Run.Entries_Read = Run.Entry_Total
+        or else Sequence = 0
+        or else Sequence < Run.Lowest_Sequence
+        or else Sequence > Run.Highest_Sequence
+        or else Sequence > Cursor.Snapshot_At
+        or else Interfaces.Unsigned_64 (Flyology.Bytes.Length (Item_Key)) > Cursor.Family.Max_Key_Bytes
+        or else Interfaces.Unsigned_64 (Flyology.Bytes.Length (Value)) > Cursor.Family.Max_Value_Bytes
+        or else (Disposition = Lazy_Tombstone_Found and then Flyology.Bytes.Length (Value) /= 0)
+      then
+         Complete_Scan (Item, Corrupt);
+         return;
+      else
+         Copy_Bytes (Item_Key, Run.Head_Key);
+         if Run.Has_Start and then not Before (Run.Start_Key, Run.Head_Key.all) then
+            Complete_Scan (Item, Corrupt);
+            return;
+         elsif Cursor.Has_Upper and then not Before (Run.Head_Key, Cursor.Upper.all) then
+            Complete_Scan (Item, Corrupt);
+            return;
+         end if;
+         if Disposition = Lazy_Value_Found then
+            Copy_Bytes (Value, Run.Head_Value);
+            Run.Head_Operation := Put_Mutation;
+         else
+            Run.Head_Operation := Delete_Mutation;
+         end if;
+         Run.Head_Sequence := Sequence;
+         Run.Has_Head := True;
+         Run.Entries_Read := Run.Entries_Read + 1;
+      end if;
+      State.Phase := Scan_Idle;
+      Flyology.Operations.Drivers.Reschedule (Item);
+   exception
+      when Storage_Error =>
+         Complete_Scan (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Scan (Item, Error);
+   end Complete_Storage_Scan_Head;
+
+   procedure Advance_Storage_Scan_Page (Item : in out Scan_Operation) is
+      Cursor : Scan_Cursor_State renames Item.Candidate_Cursor.Owner.State.all;
+      State  : Scan_Driver_State renames Item.Driver_State.all;
+      Storage_Total : constant Natural :=
+        (if Cursor.Storage_Runs = null then 0 else Cursor.Storage_Runs'Length);
+      Lowest_Storage : Natural := 0;
+      Lowest_Memory  : Natural := 0;
+      Winner_Storage : Natural := 0;
+      Winner_Memory  : Natural := 0;
+
+      function Key_Length (Storage_Index, Memory_Index : Natural) return Natural is
+      begin
+         if Storage_Index /= 0 then
+            return Cursor.Storage_Runs (Storage_Index).Head_Key'Length;
+         else
+            return Cursor.Entries (Cursor.Sources (Memory_Index).Position).Key_Length;
+         end if;
+      end Key_Length;
+
+      function Key_Byte
+        (Storage_Index, Memory_Index : Natural;
+         Offset                      : Natural) return Byte
+      is
+      begin
+         if Storage_Index /= 0 then
+            return Cursor.Storage_Runs (Storage_Index).Head_Key
+              (Cursor.Storage_Runs (Storage_Index).Head_Key'First + Offset);
+         end if;
+         declare
+            Value : Physical_Scan_Entry renames
+              Cursor.Entries (Cursor.Sources (Memory_Index).Position);
+         begin
+            if Value.Image.Image /= null then
+               return Byte (Flyology.Bytes.Element (Value.Image.Image.Data, Value.Key_Offset + Offset + 1));
+            else
+               return Byte (Flyology.Bytes.Element (Value.Owned, Value.Key_Offset + Offset + 1));
+            end if;
+         end;
+      end Key_Byte;
+
+      function Same_Key
+        (Left_Storage, Left_Memory, Right_Storage, Right_Memory : Natural) return Boolean
+      is
+         Length : constant Natural := Key_Length (Left_Storage, Left_Memory);
+      begin
+         if Length /= Key_Length (Right_Storage, Right_Memory) then
+            return False;
+         end if;
+         if Length > 0 then
+            for Offset in Natural range 0 .. Length - 1 loop
+               if Key_Byte (Left_Storage, Left_Memory, Offset)
+                 /= Key_Byte (Right_Storage, Right_Memory, Offset)
+               then
+                  return False;
+               end if;
+            end loop;
+         end if;
+         return True;
+      end Same_Key;
+
+      function Key_Less
+        (Left_Storage, Left_Memory, Right_Storage, Right_Memory : Natural) return Boolean
+      is
+         Left_Length  : constant Natural := Key_Length (Left_Storage, Left_Memory);
+         Right_Length : constant Natural := Key_Length (Right_Storage, Right_Memory);
+         Common       : constant Natural := Natural'Min (Left_Length, Right_Length);
+      begin
+         if Common > 0 then
+            for Offset in Natural range 0 .. Common - 1 loop
+               if Key_Byte (Left_Storage, Left_Memory, Offset)
+                 < Key_Byte (Right_Storage, Right_Memory, Offset)
+               then
+                  return True;
+               elsif Key_Byte (Left_Storage, Left_Memory, Offset)
+                 > Key_Byte (Right_Storage, Right_Memory, Offset)
+               then
+                  return False;
+               end if;
+            end loop;
+         end if;
+         return Left_Length < Right_Length;
+      end Key_Less;
+
+      function Authority (Storage_Index, Memory_Index : Natural) return Natural is
+      begin
+         return (if Storage_Index /= 0 then Storage_Index else Storage_Total + Memory_Index);
+      end Authority;
+
+      procedure Select_Lowest is
+      begin
+         if Cursor.Storage_Runs /= null then
+            for Index in Cursor.Storage_Runs'Range loop
+               if Cursor.Storage_Runs (Index).Has_Head
+                 and then
+                   ((Lowest_Storage = 0 and then Lowest_Memory = 0)
+                    or else Key_Less (Index, 0, Lowest_Storage, Lowest_Memory))
+               then
+                  Lowest_Storage := Index;
+                  Lowest_Memory := 0;
+               end if;
+            end loop;
+         end if;
+         if Cursor.Sources /= null then
+            for Index in Cursor.Sources'Range loop
+               if Cursor.Sources (Index).Position /= 0
+                 and then
+                   ((Lowest_Storage = 0 and then Lowest_Memory = 0)
+                    or else Key_Less (0, Index, Lowest_Storage, Lowest_Memory))
+               then
+                  Lowest_Storage := 0;
+                  Lowest_Memory := Index;
+               end if;
+            end loop;
+         end if;
+         Winner_Storage := Lowest_Storage;
+         Winner_Memory := Lowest_Memory;
+         if Lowest_Storage = 0 and then Lowest_Memory = 0 then
+            return;
+         end if;
+         if Cursor.Storage_Runs /= null then
+            for Index in Cursor.Storage_Runs'Range loop
+               if Cursor.Storage_Runs (Index).Has_Head
+                 and then Same_Key (Index, 0, Lowest_Storage, Lowest_Memory)
+                 and then Authority (Index, 0) > Authority (Winner_Storage, Winner_Memory)
+               then
+                  Winner_Storage := Index;
+                  Winner_Memory := 0;
+               end if;
+            end loop;
+         end if;
+         if Cursor.Sources /= null then
+            for Index in Cursor.Sources'Range loop
+               if Cursor.Sources (Index).Position /= 0
+                 and then Same_Key (0, Index, Lowest_Storage, Lowest_Memory)
+                 and then Authority (0, Index) > Authority (Winner_Storage, Winner_Memory)
+               then
+                  Winner_Storage := 0;
+                  Winner_Memory := Index;
+               end if;
+            end loop;
+         end if;
+      end Select_Lowest;
+
+      function Winner_Operation return Mutation_Kind is
+      begin
+         if Winner_Storage /= 0 then
+            return Cursor.Storage_Runs (Winner_Storage).Head_Operation;
+         else
+            return Cursor.Entries (Cursor.Sources (Winner_Memory).Position).Operation;
+         end if;
+      end Winner_Operation;
+
+      function Winner_Value_Length return Natural is
+      begin
+         if Winner_Storage /= 0 then
+            return
+              (if Cursor.Storage_Runs (Winner_Storage).Head_Value = null
+               then 0
+               else Cursor.Storage_Runs (Winner_Storage).Head_Value'Length);
+         else
+            return Cursor.Entries (Cursor.Sources (Winner_Memory).Position).Value_Length;
+         end if;
+      end Winner_Value_Length;
+
+      function Winner_Value_Byte (Offset : Natural) return Ada.Streams.Stream_Element is
+      begin
+         if Winner_Storage /= 0 then
+            return Ada.Streams.Stream_Element
+              (Cursor.Storage_Runs (Winner_Storage).Head_Value
+                 (Cursor.Storage_Runs (Winner_Storage).Head_Value'First + Offset));
+         end if;
+         declare
+            Value : Physical_Scan_Entry renames
+              Cursor.Entries (Cursor.Sources (Winner_Memory).Position);
+         begin
+            if Value.Image.Image /= null then
+               return Flyology.Bytes.Element (Value.Image.Image.Data, Value.Value_Offset + Offset + 1);
+            else
+               return Flyology.Bytes.Element (Value.Owned, Value.Value_Offset + Offset + 1);
+            end if;
+         end;
+      end Winner_Value_Byte;
+
+      procedure Advance_Matching is
+         procedure Advance_Storage (Index : Positive) is
+            Run : Storage_Scan_Run_State renames Cursor.Storage_Runs (Index);
+         begin
+            Free_Scan_Cursor_Bytes (Run.Start_Key);
+            Run.Start_Key := Run.Head_Key;
+            Run.Head_Key := null;
+            Run.Has_Start := True;
+            Free_Scan_Cursor_Bytes (Run.Head_Value);
+            Run.Has_Head := False;
+            Run.Head_Sequence := 0;
+         end Advance_Storage;
+
+         procedure Advance_Memory (Index : Positive) is
+            Source : Physical_Scan_Source renames Cursor.Sources (Index);
+         begin
+            Source.Position := (if Source.Position = Source.Last then 0 else Source.Position + 1);
+            Source.Candidate_Position := Source.Position;
+            Source.Build_Position := Source.Position;
+         end Advance_Memory;
+      begin
+         if Cursor.Storage_Runs /= null then
+            for Index in Cursor.Storage_Runs'Range loop
+               if Index /= Lowest_Storage
+                 and then Cursor.Storage_Runs (Index).Has_Head
+                 and then Same_Key (Index, 0, Lowest_Storage, Lowest_Memory)
+               then
+                  Advance_Storage (Index);
+               end if;
+            end loop;
+         end if;
+         if Cursor.Sources /= null then
+            for Index in Cursor.Sources'Range loop
+               if Index /= Lowest_Memory
+                 and then Cursor.Sources (Index).Position /= 0
+                 and then Same_Key (0, Index, Lowest_Storage, Lowest_Memory)
+               then
+                  Advance_Memory (Index);
+               end if;
+            end loop;
+         end if;
+         if Lowest_Storage /= 0 then
+            Advance_Storage (Positive (Lowest_Storage));
+         else
+            Advance_Memory (Positive (Lowest_Memory));
+         end if;
+      end Advance_Matching;
+
+      procedure Append_Winner is
+         Key_Size     : constant Natural := Key_Length (Winner_Storage, Winner_Memory);
+         Value_Size   : constant Natural := Winner_Value_Length;
+         Prior_Length : constant Natural := Flyology.Bytes.Length (State.Page_Payload);
+         Node         : Scan_Loaded_Entry_Access := null;
+      begin
+         if Key_Size > Natural'Last - Value_Size
+           or else Prior_Length > Natural'Last - (Key_Size + Value_Size)
+         then
+            raise Storage_Error;
+         end if;
+         Flyology.Bytes.Reserve_Capacity (State.Page_Payload, Prior_Length + Key_Size + Value_Size);
+         Allocation_Faults.Check (Scan_Run_Entry_Allocation);
+         Node :=
+           new Scan_Loaded_Entry'
+             (Key_Offset   => Prior_Length,
+              Key_Length   => Key_Size,
+              Value_Offset => Prior_Length + Key_Size,
+              Value_Length => Value_Size,
+              Operation    => Put_Mutation,
+              others       => <>);
+         begin
+            for Offset in Positive range 1 .. Key_Size loop
+               Flyology.Bytes.Append
+                 (State.Page_Payload,
+                  Ada.Streams.Stream_Element
+                    (Key_Byte (Winner_Storage, Winner_Memory, Offset - 1)));
+            end loop;
+            for Offset in Positive range 1 .. Value_Size loop
+               Flyology.Bytes.Append (State.Page_Payload, Winner_Value_Byte (Offset - 1));
+            end loop;
+         exception
+            when others =>
+               Free_Scan_Loaded_Entry (Node);
+               raise;
+         end;
+         if State.Page_Last = null then
+            State.Page_First := Node;
+         else
+            State.Page_Last.Next := Node;
+         end if;
+         State.Page_Last := Node;
+         State.Page_Count := State.Page_Count + 1;
+         State.Page_Bytes := State.Page_Bytes + Interfaces.Unsigned_64 (Key_Size + Value_Size);
+      end Append_Winner;
+
+      procedure Complete_Page (Done : Boolean) is
+         Candidate : Scan_Result_State_Access := null;
+         Result    : Outcome_Code := Success;
+         Empty_Key : constant Byte_Array (1 .. 0) := [];
+      begin
+         if State.Page_Count > 0 then
+            Allocation_Faults.Check (Scan_Result_State_Allocation);
+            Candidate := new Scan_Result_State;
+            Allocation_Faults.Check (Scan_Result_Rows_Allocation);
+            Candidate.Rows := new Scan_Row_Descriptor_Array (1 .. State.Page_Count);
+            Candidate.Count := State.Page_Count;
+            declare
+               Node  : Scan_Loaded_Entry_Access := State.Page_First;
+               Index : Natural := 0;
+            begin
+               while Node /= null loop
+                  Index := Index + 1;
+                  Candidate.Rows (Index) :=
+                    (Key_Offset   => Node.Key_Offset,
+                     Key_Length   => Node.Key_Length,
+                     Value_Offset => Node.Value_Offset,
+                     Value_Length => Node.Value_Length);
+                  Node := Node.Next;
+               end loop;
+               if Index /= State.Page_Count then
+                  Release_Scan_Result (Candidate);
+                  Complete_Scan (Item, Corrupt);
+                  return;
+               end if;
+            end;
+            Flyology.Bytes.Move (Candidate.Payload, State.Page_Payload);
+            Item.Candidate_Rows.Owner.State := Candidate;
+            Candidate := null;
+            Free_Scan_Cursor_Bytes (Cursor.Last_Key);
+            Allocation_Faults.Check (Scan_Cursor_Last_Key_Allocation);
+            Cursor.Last_Key := new Byte_Array (1 .. State.Page_Last.Key_Length);
+            for Offset in Positive range 1 .. State.Page_Last.Key_Length loop
+               Cursor.Last_Key (Offset) :=
+                 Byte (Flyology.Bytes.Element
+                   (Item.Candidate_Rows.Owner.State.Payload,
+                    State.Page_Last.Key_Offset + Offset));
+            end loop;
+            Cursor.Has_Last := True;
+         end if;
+         if Cursor.Revision = Interfaces.Unsigned_64'Last then
+            Complete_Scan (Item, Capacity_Exceeded);
+            return;
+         end if;
+         if Item.Txn.Isolation = Serializable and then not Cursor.Predicate_Recorded then
+            if Cursor.Has_Lower and then Cursor.Has_Upper then
+               Record_Scan_Range
+                 (Item.Txn.all, Cursor.Family.ID, True, Cursor.Lower.all, True, Cursor.Upper.all, Result);
+            elsif Cursor.Has_Lower then
+               Record_Scan_Range
+                 (Item.Txn.all, Cursor.Family.ID, True, Cursor.Lower.all, False, Empty_Key, Result);
+            elsif Cursor.Has_Upper then
+               Record_Scan_Range
+                 (Item.Txn.all, Cursor.Family.ID, False, Empty_Key, True, Cursor.Upper.all, Result);
+            else
+               Record_Scan_Range
+                 (Item.Txn.all, Cursor.Family.ID, False, Empty_Key, False, Empty_Key, Result);
+            end if;
+            if Result /= Success then
+               Complete_Scan (Item, Result);
+               return;
+            end if;
+            Cursor.Predicate_Recorded := True;
+         end if;
+         Cursor.Revision := Cursor.Revision + 1;
+         Cursor.Done := Done;
+         Item.Final_Done := Done;
+         Complete_Scan (Item, Success);
+      exception
+         when Storage_Error =>
+            Release_Scan_Result (Candidate);
+            Complete_Scan (Item, Capacity_Exceeded);
+         when Error : others =>
+            Release_Scan_Result (Candidate);
+            Fail_Scan (Item, Error);
+      end Complete_Page;
+   begin
+      if Item.Cancellation /= null and then Item.Cancellation.Requested then
+         Complete_Scan (Item, Cancelled, Flyology.Operations.Cancelled);
+         return;
+      elsif Item.Deadline <= Ada.Real_Time.Clock then
+         Complete_Scan (Item, Timed_Out);
+         return;
+      end if;
+      if Cursor.Storage_Runs /= null then
+         for Index in Cursor.Storage_Runs'Range loop
+            declare
+               Run : Storage_Scan_Run_State renames Cursor.Storage_Runs (Index);
+            begin
+               if not Run.Exhausted and then not Run.Has_Head then
+                  if Run.Entry_Total = 0
+                    or else Run.Lowest_Sequence = 0
+                    or else Run.Highest_Sequence < Run.Lowest_Sequence
+                  then
+                     Complete_Scan (Item, Corrupt);
+                     return;
+                  elsif Run.Lowest_Sequence > Cursor.Snapshot_At then
+                     Run.Exhausted := True;
+                  else
+                     declare
+                        Empty : constant Byte_Array (1 .. 0) := [];
+                     begin
+                        Read_Lazy_SST_Next_Entry
+                          (Cursor.Database_ID,
+                           Cursor.Family,
+                           Run.Run_ID,
+                           Run.Lowest_Sequence,
+                           Run.Highest_Sequence,
+                           Run.Entry_Total,
+                           Run.Logical_Payload_Bytes,
+                           Cursor.Snapshot_At,
+                           Has_Start       => Run.Has_Start or else Cursor.Has_Lower,
+                           Start_Key       =>
+                             (if Run.Has_Start then Run.Start_Key.all
+                              elsif Cursor.Has_Lower then Cursor.Lower.all
+                              else Empty),
+                           Start_Inclusive => not Run.Has_Start,
+                           Has_Upper       => Cursor.Has_Upper,
+                           Upper_Key       => (if Cursor.Has_Upper then Cursor.Upper.all else Empty),
+                           Payload_Buffer  => Item.Payload,
+                           Timeout         => Remaining_Time (Item.Deadline),
+                           Operation       => Item.Child.all);
+                     end;
+                     State.Current_Run := Index;
+                     State.Phase := Scan_Reading_Entry;
+                     Flyology.Operations.Continue_After (Item, Item.Child.all);
+                     return;
+                  end if;
+               end if;
+            end;
+         end loop;
+      end if;
+      Select_Lowest;
+      if Lowest_Storage = 0 and then Lowest_Memory = 0 then
+         Complete_Page (True);
+         return;
+      end if;
+      if Winner_Operation = Put_Mutation then
+         declare
+            Amount : Interfaces.Unsigned_64 := Interfaces.Unsigned_64
+              (Key_Length (Winner_Storage, Winner_Memory));
+         begin
+            if Interfaces.Unsigned_64 (Winner_Value_Length) > Interfaces.Unsigned_64'Last - Amount then
+               Complete_Scan (Item, Capacity_Exceeded);
+               return;
+            end if;
+            Amount := Amount + Interfaces.Unsigned_64 (Winner_Value_Length);
+            if Interfaces.Unsigned_64 (State.Page_Count) >= Interfaces.Unsigned_64 (State.Maximum_Rows)
+              or else Amount > State.Maximum_Bytes
+              or else State.Page_Bytes > State.Maximum_Bytes - Amount
+            then
+               if State.Page_Count = 0 then
+                  Complete_Scan (Item, Capacity_Exceeded);
+               else
+                  Complete_Page (False);
+               end if;
+               return;
+            end if;
+            Append_Winner;
+         end;
+      end if;
+      Advance_Matching;
+      Flyology.Operations.Drivers.Reschedule (Item);
+   exception
+      when Flyology.Operations.Capacity_Error | Storage_Error =>
+         Complete_Scan (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Scan (Item, Error);
+   end Advance_Storage_Scan_Page;
+
    overriding
    procedure Drive (Item : in out Scan_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       if Event = Flyology.Operations.Start_Operation
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Purpose = Storage_Scan_Initialization
+      then
+         Build_Storage_Backed_Scan_Cursor (Item);
+      elsif (Event = Flyology.Operations.Start_Operation
+             or else (Event = Flyology.Operations.Continue_Operation
+                      and then Item.Driver_State /= null
+                      and then Item.Driver_State.Phase = Scan_Idle))
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Purpose = Storage_Scan_Page
+      then
+         Advance_Storage_Scan_Page (Item);
+      elsif Event = Flyology.Operations.Start_Operation
         or else (Event = Flyology.Operations.Continue_Operation
                  and then Item.Driver_State /= null
                  and then Item.Driver_State.Phase = Scan_Idle)
@@ -17579,7 +18378,11 @@ package body Flyology.DB is
         and then Item.Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Child.all)
       then
-         Complete_Scan_Entry (Item);
+         if Item.Driver_State.Purpose = Storage_Scan_Page then
+            Complete_Storage_Scan_Head (Item);
+         else
+            Complete_Scan_Entry (Item);
+         end if;
       else
          raise Program_Error with "invalid scan driver event";
       end if;
@@ -17600,7 +18403,11 @@ package body Flyology.DB is
         and then Item.Driver_State /= null
         and then Item.Driver_State.Phase = Scan_Reading_Entry
       then
-         Complete_Scan_Entry (Item);
+         if Item.Driver_State.Purpose = Storage_Scan_Page then
+            Complete_Storage_Scan_Head (Item);
+         else
+            Complete_Scan_Entry (Item);
+         end if;
          if Flyology.Operations.Is_Active (Item) then
             Request_Cancellation (Item);
          end if;
@@ -17617,6 +18424,7 @@ package body Flyology.DB is
 
    procedure Prepare_Scan
      (Operation : in out Scan_Operation;
+      Purpose   : Scan_Driver_Purpose;
       Family    : Column_Family;
       Has_Lower : Boolean;
       Lower     : Byte_Array;
@@ -17630,6 +18438,7 @@ package body Flyology.DB is
       Fenced     : Boolean;
       Run_Result : Outcome_Code;
    begin
+      State.Purpose := Purpose;
       Operation.Item.Life.Acquire (Operation.Retained_State, State.Precheck_Result);
       if State.Precheck_Result /= Success then
          return;
@@ -17693,7 +18502,7 @@ package body Flyology.DB is
       elsif Run_Result /= Success then
          State.Precheck_Result := Run_Result;
          return;
-      else
+      elsif Purpose = Materialized_Scan_Initialization then
          Allocation_Faults.Check (Scan_Run_Array_Allocation);
          State.Loaded := new Scan_Loaded_Run_Array'(State.Runs'Range => (others => <>));
          Allocation_Faults.Check (Scan_Child_Operation_Allocation);
@@ -17731,12 +18540,17 @@ package body Flyology.DB is
         or else Operation.Driver_State /= null
         or else Operation.Child /= null
         or else Operation.Retained_Life /= null
+        or else Operation.Borrowed_Cursor /= null
         or else Operation.Candidate_Cursor.Owner.State /= null
+        or else Operation.Candidate_Rows.Owner.State /= null
       then
          raise Program_Error with "scan operation retains unconsumed ownership";
       end if;
       Operation.Deadline := Deadline_After (Timeout);
+      Operation.Final_Is_Page := False;
+      Operation.Borrowed_Revision := 0;
       Operation.Final_Result := Invalid_State;
+      Operation.Final_Done := False;
       Operation.Has_Final_Result := False;
       Operation.Has_Saved_Error := False;
       begin
@@ -17747,7 +18561,14 @@ package body Flyology.DB is
             null;
       end;
       if Operation.Driver_State /= null then
-         Prepare_Scan (Operation, Family, Has_Lower, Lower, Has_Upper, Upper);
+         Prepare_Scan
+           (Operation,
+            Materialized_Scan_Initialization,
+            Family,
+            Has_Lower,
+            Lower,
+            Has_Upper,
+            Upper);
       end if;
       Flyology.Operations.Drivers.Start (Operation);
       Started := True;
@@ -17774,8 +18595,366 @@ package body Flyology.DB is
          Release_Scan_Lease (Operation);
          Release_Scan_State (Operation);
          Release_Scan_Cursor (Operation.Candidate_Cursor.Owner.State);
+         Release_Scan_Result (Operation.Candidate_Rows.Owner.State);
          raise;
    end Start_Scan;
+
+   procedure Start_Storage_Backed_Scan
+     (Family         : Column_Family;
+      Has_Lower      : Boolean;
+      Lower          : Byte_Array;
+      Has_Upper      : Boolean;
+      Upper          : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Scan_Operation)
+   is
+      Started : Boolean := False;
+      Moved   : Boolean := False;
+   begin
+      if Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "storage-backed scan payload belongs to a different pool";
+      elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
+        or else Operation.Driver_State /= null
+        or else Operation.Child /= null
+        or else Operation.Retained_Life /= null
+        or else Operation.Borrowed_Cursor /= null
+        or else Operation.Candidate_Cursor.Owner.State /= null
+        or else Operation.Candidate_Rows.Owner.State /= null
+      then
+         raise Program_Error with "scan operation retains unconsumed ownership";
+      end if;
+      Operation.Deadline := Deadline_After (Timeout);
+      Operation.Final_Is_Page := False;
+      Operation.Borrowed_Revision := 0;
+      Operation.Final_Result := Invalid_State;
+      Operation.Final_Done := False;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+      begin
+         Allocation_Faults.Check (Scan_Operation_State_Allocation);
+         Operation.Driver_State := new Scan_Driver_State;
+      exception
+         when Storage_Error =>
+            null;
+      end;
+      if Operation.Driver_State /= null then
+         Prepare_Scan
+           (Operation,
+            Storage_Scan_Initialization,
+            Family,
+            Has_Lower,
+            Lower,
+            Has_Upper,
+            Upper);
+      end if;
+      Flyology.Operations.Drivers.Start (Operation);
+      Started := True;
+      Flyology.Buffers.Move (Payload_Buffer, Operation.Payload);
+      Moved := True;
+      if Operation.Driver_State = null then
+         Operation.Final_Result := Capacity_Exceeded;
+         Operation.Has_Final_Result := True;
+         Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+      elsif Operation.Driver_State.Precheck_Result /= Success then
+         Complete_Scan (Operation, Operation.Driver_State.Precheck_Result);
+      else
+         Flyology.Operations.Drive
+           (Flyology.Operations.Operation'Class (Operation), Flyology.Operations.Start_Operation);
+      end if;
+   exception
+      when others =>
+         if Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
+            Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+         end if;
+         if Started and then Flyology.Operations.Is_Active (Operation) then
+            Flyology.Operations.Drivers.Rollback_Start (Operation);
+         end if;
+         Release_Scan_Lease (Operation);
+         Release_Scan_State (Operation);
+         Release_Scan_Cursor (Operation.Candidate_Cursor.Owner.State);
+         Release_Scan_Result (Operation.Candidate_Rows.Owner.State);
+         raise;
+   end Start_Storage_Backed_Scan;
+
+   procedure Prepare_Storage_Scan_Page
+     (Operation     : in out Scan_Operation;
+      Cursor        : in out Scan_Cursor;
+      Maximum_Rows  : Interfaces.Unsigned_32;
+      Maximum_Bytes : Interfaces.Unsigned_64)
+   is
+      State      : Scan_Driver_State renames Operation.Driver_State.all;
+      Source     : constant Scan_Cursor_State_Access := Cursor.Owner.State;
+      Head       : Head_Snapshot;
+      Generation : Generation_Value;
+      Uncertain  : Boolean;
+      Fenced     : Boolean;
+      Family     : Column_Family;
+      Current    : Column_Family_Configuration;
+
+      function Run_Well_Formed (Run : Storage_Scan_Run_State) return Boolean is
+      begin
+         if Run.Entry_Total = 0
+           or else Run.Lowest_Sequence = 0
+           or else Run.Highest_Sequence < Run.Lowest_Sequence
+           or else Run.Entries_Read > Run.Entry_Total
+           or else Run.Has_Start /= (Run.Start_Key /= null)
+           or else Run.Has_Head /= (Run.Head_Key /= null)
+           or else (Run.Exhausted and then Run.Has_Head)
+         then
+            return False;
+         elsif Run.Has_Start
+           and then Interfaces.Unsigned_64 (Run.Start_Key'Length) > Source.Family.Max_Key_Bytes
+         then
+            return False;
+         elsif not Run.Has_Head then
+            return Run.Head_Value = null and then Run.Head_Sequence = 0;
+         elsif Run.Entries_Read = 0
+           or else Run.Head_Sequence = 0
+           or else Run.Head_Sequence < Run.Lowest_Sequence
+           or else Run.Head_Sequence > Run.Highest_Sequence
+           or else Run.Head_Sequence > Source.Snapshot_At
+           or else Interfaces.Unsigned_64 (Run.Head_Key'Length) > Source.Family.Max_Key_Bytes
+           or else (Run.Has_Start and then Compare_Bytes (Run.Start_Key.all, Run.Head_Key.all) /= Before)
+         then
+            return False;
+         elsif Run.Head_Operation = Put_Mutation then
+            return
+              Run.Head_Value /= null
+              and then Interfaces.Unsigned_64 (Run.Head_Value'Length) <= Source.Family.Max_Value_Bytes;
+         else
+            return Run.Head_Value = null;
+         end if;
+      end Run_Well_Formed;
+
+      function Entry_Well_Formed (Value : Physical_Scan_Entry) return Boolean is
+         Extent : Natural;
+      begin
+         if Value.Key_Length > Natural'Last - Value.Value_Length
+           or else Interfaces.Unsigned_64 (Value.Key_Length) > Source.Family.Max_Key_Bytes
+           or else Interfaces.Unsigned_64 (Value.Value_Length) > Source.Family.Max_Value_Bytes
+           or else (Value.Operation = Delete_Mutation and then Value.Value_Length /= 0)
+         then
+            return False;
+         end if;
+         Extent := Value.Key_Length + Value.Value_Length;
+         if Value.Image.Image /= null then
+            return
+              Value.Key_Offset <= Flyology.Bytes.Length (Value.Image.Image.Data)
+              and then Value.Key_Length <= Flyology.Bytes.Length (Value.Image.Image.Data) - Value.Key_Offset
+              and then Value.Value_Offset <= Flyology.Bytes.Length (Value.Image.Image.Data)
+              and then
+                Value.Value_Length
+                  <= Flyology.Bytes.Length (Value.Image.Image.Data) - Value.Value_Offset;
+         else
+            return
+              Value.Key_Offset <= Flyology.Bytes.Length (Value.Owned)
+              and then Extent <= Flyology.Bytes.Length (Value.Owned) - Value.Key_Offset
+              and then Value.Value_Offset <= Flyology.Bytes.Length (Value.Owned)
+              and then Value.Value_Length <= Flyology.Bytes.Length (Value.Owned) - Value.Value_Offset;
+         end if;
+      end Entry_Well_Formed;
+
+      function Cursor_Well_Formed return Boolean is
+      begin
+         if Source.Storage_Runs /= null then
+            for Run of Source.Storage_Runs.all loop
+               if not Run_Well_Formed (Run) then
+                  return False;
+               end if;
+            end loop;
+         end if;
+         if Source.Entries = null then
+            return True;
+         end if;
+         for Value of Source.Entries.all loop
+            if not Entry_Well_Formed (Value) then
+               return False;
+            end if;
+         end loop;
+         for Item of Source.Sources.all loop
+            if Item.First > Item.Last
+              or else Item.First < Source.Entries'First
+              or else Item.Last > Source.Entries'Last
+              or else Item.Candidate_Position /= Item.Position
+              or else Item.Build_Position /= Item.Position
+              or else
+                (Item.Position /= 0
+                 and then (Item.Position < Item.First or else Item.Position > Item.Last))
+            then
+               return False;
+            end if;
+         end loop;
+         return True;
+      end Cursor_Well_Formed;
+   begin
+      State.Purpose := Storage_Scan_Page;
+      if Source = null
+        or else not Source.Active
+        or else Source.Done
+        or else not Source.Storage_Backed
+        or else Source.Revision = 0
+        or else Source.Has_Lower /= (Source.Lower /= null)
+        or else Source.Has_Upper /= (Source.Upper /= null)
+        or else Source.Has_Last /= (Source.Last_Key /= null)
+        or else ((Source.Entries = null) /= (Source.Sources = null))
+        or else not Operation.Txn.Active
+        or else Operation.Txn.Owner.Arena = null
+        or else Operation.Txn.Database_ID /= Source.Database_ID
+        or else Operation.Txn.Incarnation /= Source.Incarnation
+        or else Operation.Txn.Transaction_ID /= Source.Transaction_ID
+        or else Operation.Txn.Snapshot_At /= Source.Snapshot_At
+        or else Operation.Txn.Owner.Arena.Mutation_Version /= Source.Mutation_Version
+      then
+         State.Precheck_Result := Invalid_State;
+         return;
+      end if;
+      if not Cursor_Well_Formed then
+         State.Precheck_Result := Corrupt;
+         return;
+      end if;
+      Operation.Item.Life.Acquire (Operation.Retained_State, State.Precheck_Result);
+      if State.Precheck_Result /= Success then
+         return;
+      end if;
+      Operation.Retained_Life := Operation.Item.Life'Unchecked_Access;
+      if Operation.Retained_State.Storage = null
+        or else Operation.Retained_State.Storage.HTTP_Client = null
+        or else Operation.Retained_State.Storage.Client_Identity = null
+      then
+         State.Precheck_Result := Invalid_State;
+         return;
+      end if;
+      Operation.Retained_State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Head.Database_ID /= Source.Database_ID
+        or else Operation.Retained_State.Gate.Current_Incarnation /= Source.Incarnation
+      then
+         State.Precheck_Result := Invalid_State;
+         return;
+      elsif Uncertain then
+         State.Precheck_Result := Outcome_Unknown;
+         return;
+      elsif Fenced then
+         State.Precheck_Result := Stale_Writer;
+         return;
+      end if;
+      Family :=
+        (Valid         => True,
+         Database_ID   => Source.Database_ID,
+         Incarnation   => Source.Incarnation,
+         Configuration => Source.Family);
+      Operation.Retained_State.Gate.Validate_Family (Family, Current, State.Precheck_Result);
+      if State.Precheck_Result /= Success or else Current /= Source.Family then
+         if State.Precheck_Result = Success then
+            State.Precheck_Result := Invalid_State;
+         end if;
+         return;
+      end if;
+      Clone_Scan_Cursor (Source, Operation.Candidate_Cursor, State.Precheck_Result);
+      if State.Precheck_Result /= Success then
+         return;
+      end if;
+      State.Database_ID := Source.Database_ID;
+      State.Incarnation := Source.Incarnation;
+      State.Transaction_ID := Source.Transaction_ID;
+      State.Snapshot_At := Source.Snapshot_At;
+      State.Mutation_Version := Source.Mutation_Version;
+      State.Transaction_Captured := True;
+      State.Maximum_Rows := Interfaces.Unsigned_32'Min (Maximum_Rows, Source.Maximum_Rows);
+      State.Maximum_Bytes := Interfaces.Unsigned_64'Min (Maximum_Bytes, Source.Maximum_Bytes);
+      State.Expected_Revision := Source.Revision;
+      State.Original_Cursor := Source;
+      if Source.Storage_Runs /= null then
+         Allocation_Faults.Check (Scan_Child_Operation_Allocation);
+         Operation.Child :=
+           new Lazy_SST_Read_Operation
+                 (Operation.Set.all'Unchecked_Access,
+                  Operation.Retained_State.Storage,
+                  Operation.Retained_State.Storage.HTTP_Client,
+                  Operation.Payload_Pool.all'Unchecked_Access,
+                  (if Operation.Cancellation = null
+                   then null
+                   else Operation.Cancellation.all'Unchecked_Access));
+      end if;
+   exception
+      when Storage_Error =>
+         State.Precheck_Result := Capacity_Exceeded;
+   end Prepare_Storage_Scan_Page;
+
+   procedure Next_Scan_Page
+     (Cursor         : in out Scan_Cursor;
+      Maximum_Rows   : Interfaces.Unsigned_32;
+      Maximum_Bytes  : Interfaces.Unsigned_64;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Scan_Operation)
+   is
+      Started : Boolean := False;
+      Moved   : Boolean := False;
+   begin
+      if Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "scan page payload belongs to a different pool";
+      elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
+        or else Operation.Driver_State /= null
+        or else Operation.Child /= null
+        or else Operation.Retained_Life /= null
+        or else Operation.Borrowed_Cursor /= null
+        or else Operation.Candidate_Cursor.Owner.State /= null
+        or else Operation.Candidate_Rows.Owner.State /= null
+      then
+         raise Program_Error with "scan operation retains unconsumed ownership";
+      end if;
+      Operation.Deadline := Deadline_After (Timeout);
+      Operation.Final_Is_Page := True;
+      Operation.Borrowed_Cursor := Cursor.Owner.State;
+      Operation.Borrowed_Revision :=
+        (if Cursor.Owner.State = null then 0 else Cursor.Owner.State.Revision);
+      Operation.Final_Result := Invalid_State;
+      Operation.Final_Done := False;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+      begin
+         Allocation_Faults.Check (Scan_Operation_State_Allocation);
+         Operation.Driver_State := new Scan_Driver_State;
+      exception
+         when Storage_Error =>
+            null;
+      end;
+      if Operation.Driver_State /= null then
+         Prepare_Storage_Scan_Page
+           (Operation, Cursor, Maximum_Rows, Maximum_Bytes);
+      end if;
+      Flyology.Operations.Drivers.Start (Operation);
+      Started := True;
+      Flyology.Buffers.Move (Payload_Buffer, Operation.Payload);
+      Moved := True;
+      if Operation.Driver_State = null then
+         Operation.Final_Result := Capacity_Exceeded;
+         Operation.Has_Final_Result := True;
+         Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+      elsif Operation.Driver_State.Precheck_Result /= Success then
+         Complete_Scan (Operation, Operation.Driver_State.Precheck_Result);
+      else
+         Flyology.Operations.Drive
+           (Flyology.Operations.Operation'Class (Operation), Flyology.Operations.Start_Operation);
+      end if;
+   exception
+      when others =>
+         if Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
+            Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+         end if;
+         if Started and then Flyology.Operations.Is_Active (Operation) then
+            Flyology.Operations.Drivers.Rollback_Start (Operation);
+         end if;
+         Release_Scan_Lease (Operation);
+         Release_Scan_State (Operation);
+         Release_Scan_Cursor (Operation.Candidate_Cursor.Owner.State);
+         Release_Scan_Result (Operation.Candidate_Rows.Owner.State);
+         Operation.Borrowed_Cursor := null;
+         Operation.Borrowed_Revision := 0;
+         Operation.Final_Is_Page := False;
+         raise;
+   end Next_Scan_Page;
 
    procedure Finish
      (Operation      : in out Scan_Operation;
@@ -17787,19 +18966,25 @@ package body Flyology.DB is
          raise Program_Error with "scan Finish requires the moved token's pool";
       elsif Flyology.Buffers.Has_Buffer (Payload_Buffer) then
          raise Program_Error with "scan Finish requires a vacant same-pool handle";
+      elsif Operation.Final_Is_Page then
+         raise Program_Error with "scan initialization Finish cannot consume a page operation";
       end if;
       Result := Invalid_State;
       Flyology.Operations.Consume (Operation);
       Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+      Operation.Borrowed_Cursor := null;
+      Operation.Borrowed_Revision := 0;
       Release_Scan_Lease (Operation);
       Release_Scan_State (Operation);
       if Operation.Has_Saved_Error then
          Release_Scan_Cursor (Operation.Candidate_Cursor.Owner.State);
+         Release_Scan_Result (Operation.Candidate_Rows.Owner.State);
          Ada.Exceptions.Raise_Exception
            (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
             Ada.Exceptions.Exception_Message (Operation.Saved_Error));
       elsif not Operation.Has_Final_Result then
          Release_Scan_Cursor (Operation.Candidate_Cursor.Owner.State);
+         Release_Scan_Result (Operation.Candidate_Rows.Owner.State);
          raise Program_Error with "scan operation has no terminal result";
       end if;
       Result := Operation.Final_Result;
@@ -17812,6 +18997,70 @@ package body Flyology.DB is
          end;
       end if;
       Release_Scan_Cursor (Operation.Candidate_Cursor.Owner.State);
+      Release_Scan_Result (Operation.Candidate_Rows.Owner.State);
+   end Finish;
+
+   procedure Finish
+     (Operation      : in out Scan_Operation;
+      Cursor         : in out Scan_Cursor;
+      Rows           : in out Scan_Result;
+      Done           : out Boolean;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+   is
+      Expected : Scan_Cursor_State_Access;
+      Revision : Interfaces.Unsigned_64;
+   begin
+      Done := False;
+      Result := Invalid_State;
+      if Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "scan page Finish requires the moved token's pool";
+      elsif Flyology.Buffers.Has_Buffer (Payload_Buffer) then
+         raise Program_Error with "scan page Finish requires a vacant same-pool handle";
+      elsif not Operation.Final_Is_Page then
+         raise Program_Error with "scan page Finish requires a page operation";
+      end if;
+      Expected := Operation.Borrowed_Cursor;
+      Revision := Operation.Borrowed_Revision;
+      if Cursor.Owner.State /= Expected
+        or else Cursor.Owner.State = null
+        or else Cursor.Owner.State.Revision /= Revision
+      then
+         raise Program_Error with "scan page Finish requires the exact borrowed cursor revision";
+      end if;
+      Flyology.Operations.Consume (Operation);
+      Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+      Operation.Borrowed_Cursor := null;
+      Operation.Borrowed_Revision := 0;
+      Operation.Final_Is_Page := False;
+      Release_Scan_Lease (Operation);
+      Release_Scan_State (Operation);
+      if Operation.Has_Saved_Error then
+         Release_Scan_Cursor (Operation.Candidate_Cursor.Owner.State);
+         Release_Scan_Result (Operation.Candidate_Rows.Owner.State);
+         Ada.Exceptions.Raise_Exception
+           (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
+            Ada.Exceptions.Exception_Message (Operation.Saved_Error));
+      elsif not Operation.Has_Final_Result then
+         Release_Scan_Cursor (Operation.Candidate_Cursor.Owner.State);
+         Release_Scan_Result (Operation.Candidate_Rows.Owner.State);
+         raise Program_Error with "scan page operation has no terminal result";
+      end if;
+      Result := Operation.Final_Result;
+      if Result = Success then
+         declare
+            Prior_Cursor : constant Scan_Cursor_State_Access := Cursor.Owner.State;
+            Prior_Rows   : constant Scan_Result_State_Access := Rows.Owner.State;
+         begin
+            Cursor.Owner.State := Operation.Candidate_Cursor.Owner.State;
+            Operation.Candidate_Cursor.Owner.State := Prior_Cursor;
+            Rows.Owner.State := Operation.Candidate_Rows.Owner.State;
+            Operation.Candidate_Rows.Owner.State := Prior_Rows;
+         end;
+         Done := Operation.Final_Done;
+      end if;
+      Release_Scan_Cursor (Operation.Candidate_Cursor.Owner.State);
+      Release_Scan_Result (Operation.Candidate_Rows.Owner.State);
    end Finish;
 
    procedure Start_Scan
@@ -17842,6 +19091,46 @@ package body Flyology.DB is
       Finish (Operation, Cursor, Result, Payload_Buffer);
       Flyology.Operations.Release (Operation);
    end Start_Scan;
+
+   procedure Start_Storage_Backed_Scan
+     (Item           : in out Database;
+      Txn            : aliased in out Transaction;
+      Family         : Column_Family;
+      Has_Lower      : Boolean;
+      Lower          : Byte_Array;
+      Has_Upper      : Boolean;
+      Upper          : Byte_Array;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Cursor         : in out Scan_Cursor;
+      Result         : out Outcome_Code)
+   is
+      --  Initialization has the same exact owner-stack geometry as the
+      --  established authenticated scan: DB, next-entry reader, provider,
+      --  HTTP, and transport within six caller-owned completion slots.
+      Synchronous_Scan_Set_Capacity : constant := 6;
+      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
+      Operation : Scan_Operation
+        (Set'Access,
+         Item'Unchecked_Access,
+         Txn'Unchecked_Access,
+         Payload_Buffer.Owner,
+         Token);
+   begin
+      Start_Storage_Backed_Scan
+        (Family,
+         Has_Lower,
+         Lower,
+         Has_Upper,
+         Upper,
+         Payload_Buffer,
+         Timeout,
+         Operation);
+      Flyology.Operations.Wait_All (Set);
+      Finish (Operation, Cursor, Result, Payload_Buffer);
+      Flyology.Operations.Release (Operation);
+   end Start_Storage_Backed_Scan;
 
    procedure Scan
      (Item           : in out Database;
@@ -17896,6 +19185,43 @@ package body Flyology.DB is
       end;
    end Scan;
 
+   procedure Next_Scan_Page
+     (Item           : in out Database;
+      Txn            : aliased in out Transaction;
+      Cursor         : in out Scan_Cursor;
+      Maximum_Rows   : Interfaces.Unsigned_32;
+      Maximum_Bytes  : Interfaces.Unsigned_64;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Rows           : in out Scan_Result;
+      Done           : out Boolean;
+      Result         : out Outcome_Code)
+   is
+      --  The DB page parent plus its next-entry reader and the provider,
+      --  HTTP, and transport children require six exact owner slots. This is
+      --  derived synchronous scheduling geometry, not page or queue policy.
+      Synchronous_Page_Set_Capacity : constant := 6;
+      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Page_Set_Capacity);
+      Operation : Scan_Operation
+        (Set'Access,
+         Item'Unchecked_Access,
+         Txn'Unchecked_Access,
+         Payload_Buffer.Owner,
+         Token);
+   begin
+      Next_Scan_Page
+        (Cursor,
+         Maximum_Rows,
+         Maximum_Bytes,
+         Payload_Buffer,
+         Timeout,
+         Operation);
+      Flyology.Operations.Wait_All (Set);
+      Finish (Operation, Cursor, Rows, Done, Result, Payload_Buffer);
+      Flyology.Operations.Release (Operation);
+   end Next_Scan_Page;
+
    overriding
    procedure Finalize (Item : in out Scan_Operation) is
    begin
@@ -17908,6 +19234,7 @@ package body Flyology.DB is
       Release_Scan_Lease (Item);
       Release_Scan_State (Item);
       Release_Scan_Cursor (Item.Candidate_Cursor.Owner.State);
+      Release_Scan_Result (Item.Candidate_Rows.Owner.State);
       Flyology.Buffers.Release (Item.Payload);
    end Finalize;
 
