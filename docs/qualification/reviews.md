@@ -1,5 +1,44 @@
 # Review record
 
+## Installed family-registry snapshot candidate
+
+- Parent: installed configuration-read commit `3411947`.
+- Problem and authority: recovery callers can read the installed family count and inspect a family only after they
+  already know its stable ID or exact name. That leaves the authenticated manifest registry incompletely observable
+  and forces applications to retain a second out-of-band family inventory. The additive overload returns the exact
+  installed database snapshot plus the complete family registry already owned by the live engine; it introduces no
+  rename, drop, reconfiguration, migration, refresh, object-store read, retry, or mutable policy.
+- Public contract: `Read_Configuration (Item, Configuration, Families, Result)` uses caller-owned bounded storage.
+  `Configuration.Family_Count` defines the replaced prefix, whose entries are in stable increasing family-ID order.
+  Insufficient capacity returns `Capacity_Exceeded` with both outputs unchanged; success leaves any excess tail
+  unchanged. Lifecycle, uncertainty, fencing, and unsupported-format outcomes are inherited without exception or
+  alternate execution. No public constant, default, timeout, allocation bound, alias, or child package is added.
+- Ownership and concurrency: one lifecycle lease pins the installed engine incarnation while the protected
+  coordinator supplies its authenticated manifest. A private fixed candidate array derives solely from the existing
+  manifest-format compatibility range and is not a new operational capacity. Every complete family configuration is
+  reconstructed before either caller output is published. The call retains no borrow, task, callback, buffer, or
+  external resource after return and performs no dynamic allocation.
+- Coverage: the focused engine oracle checks canonical increasing-ID order from a permuted creation input, a
+  non-1 caller lower bound, an unchanged excess tail, insufficient-capacity rollback of both outputs, exact
+  pre-close/cacheless-reopen equality, and closed-state preservation. The shared limited workflow checks complete
+  one-family create, two-family append, and cacheless-reopen registries while retaining the database-only and
+  handle-specific configuration checks; the same oracle runs unchanged across every provider lane.
+- Nonformal evidence: warning-strict root and nested builds pass. `./tests/scripts/test.sh` passes the maintained
+  deterministic, authenticated, crash/recovery, 32-case differential, and pinned TidesDB lanes. The exact-tree
+  `./tests/scripts/test-s3-matrix.sh` run passes all 18 RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite
+  lanes. Repository, diff, shell, and 110-column Ada checks are green. GNATdoc leading comments use the established
+  exact tags, but no executable GNATdoc tool or maintained documentation wrapper is present, so no generated-site
+  claim is made.
+- Formal qualification rule: before commit, the literal final tree must pass an outside-sandbox update-mode
+  `check-tla.sh`, remain byte-stable with no generated-artifact delta, pass ordinary `check-tla.sh`, and pass the
+  maintained warning-strict `prove.sh`, strictly serial under the exclusive formal lane with clean pre/intermediate/
+  post audits. Retained runner reports and the coordinator's exact-identity acceptance are authoritative; this prose
+  does not substitute for them and no earlier-tree result qualifies the candidate.
+- Findings rubric: P0 is durable-authority, data-loss, security, or certainty failure; P1 is public-contract,
+  lifecycle, ordering, failure-atomicity, or bound-authority failure; P2 is missing focused coverage, documentation,
+  or maintainability evidence. One P2 was fixed by exercising a non-1 caller lower bound. The repeated final sweep
+  finds no actionable P0/P1/P2 finding.
+
 ## Installed configuration-read candidate
 
 - Parent: shared limited-workflow provider-parity commit `1de24ef`.

@@ -1413,6 +1413,8 @@ package body Flyology.DB.Engine_Tests is
       Batch_Puts, Manifest_Puts, Head_Puts       : Natural;
       Before_Reopen_Configuration                : Database_Configuration_Snapshot;
       After_Reopen_Configuration                 : Database_Configuration_Snapshot;
+      Before_Reopen_Families                     : Column_Family_Configuration_Array (4 .. 5);
+      After_Reopen_Families                      : Column_Family_Configuration_Array (4 .. 5);
       --  API fixture persists two unequal families and tight aggregate limits.
       --  Permuted proves canonical ordering, Different changes one persisted
       --  family value, and Over_* isolate explicit admission/capacity failures;
@@ -1566,6 +1568,57 @@ package body Flyology.DB.Engine_Tests is
          Configuration := Candidate;
       end Read_And_Expect_Database_Configuration;
 
+      procedure Read_And_Expect_Family_Registry
+        (Target        : in out Database;
+         Configuration : out Database_Configuration_Snapshot;
+         Registry      : out Column_Family_Configuration_Array;
+         Context_Text  : String)
+      is
+         Candidate_Configuration : Database_Configuration_Snapshot :=
+           (Registry_Revision => Interfaces.Unsigned_64'Last,
+            Family_Count      => Interfaces.Unsigned_32'Last,
+            Limits            => Default_Limits);
+         Candidate_Registry : Column_Family_Configuration_Array (1 .. 3) :=
+           [Families (1), Families (1), Different_LSM (1)];
+         Inspect : Outcome_Code;
+      begin
+         if Registry'Length /= 2 then
+            raise Program_Error with Context_Text & " registry oracle capacity is invalid";
+         end if;
+         Read_Configuration (Target, Candidate_Configuration, Candidate_Registry, Inspect);
+         if Inspect /= Success
+           or else Candidate_Configuration.Family_Count /= 2
+           or else Candidate_Configuration.Limits /= Limits
+           or else Candidate_Registry (1) /= Families (2)
+           or else Candidate_Registry (2) /= Families (1)
+           or else Candidate_Registry (3) /= Different_LSM (1)
+         then
+            raise Program_Error with Context_Text & " did not expose the exact installed registry";
+         end if;
+         Configuration := Candidate_Configuration;
+         Registry (Registry'First) := Candidate_Registry (1);
+         Registry (Registry'First + 1) := Candidate_Registry (2);
+      end Read_And_Expect_Family_Registry;
+
+      procedure Expect_Registry_Capacity_Failure (Target : in out Database; Context_Text : String) is
+         Preserved_Configuration : constant Database_Configuration_Snapshot :=
+           (Registry_Revision => Interfaces.Unsigned_64'Last,
+            Family_Count      => Interfaces.Unsigned_32'Last,
+            Limits            => Default_Limits);
+         Candidate_Configuration : Database_Configuration_Snapshot := Preserved_Configuration;
+         Preserved_Registry      : constant Column_Family_Configuration_Array := [Different_LSM (1)];
+         Candidate_Registry      : Column_Family_Configuration_Array (1 .. 1) := Preserved_Registry;
+         Inspect                 : Outcome_Code;
+      begin
+         Read_Configuration (Target, Candidate_Configuration, Candidate_Registry, Inspect);
+         if Inspect /= Capacity_Exceeded
+           or else Candidate_Configuration /= Preserved_Configuration
+           or else Candidate_Registry /= Preserved_Registry
+         then
+            raise Program_Error with Context_Text & " registry capacity failure changed caller output";
+         end if;
+      end Expect_Registry_Capacity_Failure;
+
       procedure Expect_Family_Configuration
         (Target       : in out Database;
          Handle       : Column_Family;
@@ -1629,6 +1682,9 @@ package body Flyology.DB.Engine_Tests is
          Result  => Result);
       Expect (Result, Success, "multi-family manifest create failed");
       Read_And_Expect_Database_Configuration (Item, After_Reopen_Configuration, "create activation");
+      Read_And_Expect_Family_Registry
+        (Item, After_Reopen_Configuration, After_Reopen_Families, "create activation");
+      Expect_Registry_Capacity_Failure (Item, "create activation");
       if After_Reopen_Configuration.Registry_Revision /= 1 then
          raise Program_Error with "root configuration snapshot did not expose revision one";
       end if;
@@ -1933,7 +1989,8 @@ package body Flyology.DB.Engine_Tests is
          end;
       end;
 
-      Read_And_Expect_Database_Configuration (Item, Before_Reopen_Configuration, "checkpointed state");
+      Read_And_Expect_Family_Registry
+        (Item, Before_Reopen_Configuration, Before_Reopen_Families, "checkpointed state");
       Stale_Family := Family_By_ID;
       Close (Item, Result);
       Expect (Result, Success, "checkpointed database close failed");
@@ -1967,8 +2024,11 @@ package body Flyology.DB.Engine_Tests is
       end;
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "cacheless checkpoint reopen failed");
-      Read_And_Expect_Database_Configuration (Item, After_Reopen_Configuration, "checkpoint reopen");
-      if After_Reopen_Configuration /= Before_Reopen_Configuration then
+      Read_And_Expect_Family_Registry
+        (Item, After_Reopen_Configuration, After_Reopen_Families, "checkpoint reopen");
+      if After_Reopen_Configuration /= Before_Reopen_Configuration
+        or else After_Reopen_Families /= Before_Reopen_Families
+      then
          raise Program_Error with "cacheless reopen changed persisted configuration authority";
       end if;
       Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "checkpoint reopen");
@@ -2248,11 +2308,17 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "replacement checkpoint database did not close");
       declare
          Preserved : Database_Configuration_Snapshot := After_Reopen_Configuration;
+         Registry  : Column_Family_Configuration_Array (1 .. 2) := After_Reopen_Families;
       begin
          Read_Configuration (Item, Preserved, Result);
          Expect (Result, Invalid_State, "closed database exposed persisted configuration");
          if Preserved /= After_Reopen_Configuration then
             raise Program_Error with "closed configuration read changed its output";
+         end if;
+         Read_Configuration (Item, Preserved, Registry, Result);
+         Expect (Result, Invalid_State, "closed database exposed persisted family registry");
+         if Preserved /= After_Reopen_Configuration or else Registry /= After_Reopen_Families then
+            raise Program_Error with "closed family-registry read changed its outputs";
          end if;
       end;
       Testing.Remove_Manifest (Context, Checkpoint_Manifest_ID, Result);

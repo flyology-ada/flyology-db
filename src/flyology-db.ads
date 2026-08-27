@@ -568,6 +568,22 @@ package Flyology.DB is
       Configuration : in out Database_Configuration_Snapshot;
       Result        : out Outcome_Code);
 
+   --  Atomically replace Configuration and the used prefix of Families with
+   --  one installed registry snapshot. Configuration.Family_Count is the
+   --  exact used-prefix length; entries are in stable increasing family-ID
+   --  order. If Families is shorter than that count, Capacity_Exceeded leaves
+   --  both caller outputs unchanged. Success leaves any excess tail elements
+   --  unchanged. The call performs no storage I/O, refresh, or dynamic allocation.
+   --  @param Item Open database whose complete installed registry is inspected
+   --  @param Configuration Prior database snapshot replaced only on Success
+   --  @param Families Caller-owned capacity whose used prefix is replaced
+   --  @param Result Success, Capacity_Exceeded, or exact lifecycle outcome
+   procedure Read_Configuration
+     (Item          : in out Database;
+      Configuration : in out Database_Configuration_Snapshot;
+      Families      : in out Column_Family_Configuration_Array;
+      Result        : out Outcome_Code);
+
    --  Replace Configuration with the exact installed settings for Family.
    --  Family must belong to Item's current engine incarnation. Failure leaves
    --  the caller's prior Configuration unchanged. The returned value combines

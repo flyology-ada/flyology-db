@@ -50,7 +50,7 @@ that acceptance claim.
 The Files and public-API-only authenticated walkthroughs now use one shared complete limited-profile workflow. Both
 cover singleton and cross-family group commits, deletion, additive Flush, exact adjacent and complete compaction,
 close, process-local owner loss, authoritative reopen, exact reads, scans, sequence, family handles, and the
-installed database/family configuration. The S3 form
+installed database/family configuration plus complete increasing-ID registry. The S3 form
 uses an existing caller-owned bucket and explicit deployment inputs, and the maintained six-provider matrix runs it
 unchanged. This is reproducible integration evidence, not a general provider, production, cleanup, performance, or
 retention claim.

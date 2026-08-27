@@ -11030,6 +11030,63 @@ package body Flyology.DB is
 
    procedure Read_Configuration
      (Item          : in out Database;
+      Configuration : in out Database_Configuration_Snapshot;
+      Families      : in out Column_Family_Configuration_Array;
+      Result        : out Outcome_Code)
+   is
+      Lease              : Lifecycle_Lease;
+      Head               : Head_Snapshot;
+      Generation         : Generation_Value;
+      Uncertain          : Boolean;
+      Fenced             : Boolean;
+      Manifest           : Manifests.Manifest;
+      Identity_Total     : Natural;
+      Candidate_Snapshot : Database_Configuration_Snapshot;
+      --  Persisted manifest compatibility bounds the complete candidate set;
+      --  this is not a new registry capacity or caller-visible default.
+      Candidates : Column_Family_Configuration_Array (Manifests.Family_Slot) := [others => (others => <>)];
+   begin
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+      elsif Fenced then
+         Result := Stale_Writer;
+      elsif not Lease.State.LSM_Authority.Enabled then
+         Result := Unsupported_Format;
+      else
+         Lease.State.Gate.Checkpoint_Metadata (Manifest, Identity_Total, Result);
+         if Result = Success and then Families'Length < Manifest.Family_Total then
+            Result := Capacity_Exceeded;
+         end if;
+         if Result = Success then
+            for Index in Manifests.Family_Slot range 1 .. Manifest.Family_Total loop
+               Complete_Family_Configuration
+                 (From_Manifest_Configuration (Manifest.Families (Index)),
+                  Lease.State.LSM_Authority,
+                  Candidates (Index),
+                  Result);
+               exit when Result /= Success;
+            end loop;
+         end if;
+         if Result = Success then
+            Candidate_Snapshot :=
+              (Registry_Revision => Manifest.Registry_Revision,
+               Family_Count      => Interfaces.Unsigned_32 (Manifest.Family_Total),
+               Limits            => To_Public_Limits (Manifest.Limits, Lease.State.LSM_Authority));
+            for Index in Manifests.Family_Slot range 1 .. Manifest.Family_Total loop
+               Families (Families'First + Index - 1) := Candidates (Index);
+            end loop;
+            Configuration := Candidate_Snapshot;
+         end if;
+      end if;
+   end Read_Configuration;
+
+   procedure Read_Configuration
+     (Item          : in out Database;
       Family        : Column_Family;
       Configuration : in out Column_Family_Configuration;
       Result        : out Outcome_Code)

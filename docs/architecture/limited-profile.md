@@ -13,7 +13,9 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - Arbitrary byte keys and values within the persisted per-family limits selected by the caller.
 - Explicit persisted `Database_Limits`; the library supplies no hidden key, value, transaction, or live-state limit.
 - Failure-atomic reads of the exact installed registry revision, family count, database limits, and complete
-  per-family name/key/value/memtable/L0 settings. These local snapshots perform no storage I/O or policy selection.
+  per-family name/key/value/memtable/L0 settings. A caller-bounded atomic registry read enumerates every installed
+  family in increasing-ID order without out-of-band names or IDs. These local snapshots perform no storage I/O,
+  dynamic allocation, or policy selection.
 - Synchronous Snapshot transactions with point `Get`, ordered bounded `Scan`, `Put`, `Delete`, singleton `Commit`,
   and explicit atomic `Commit_Group`.
 - Explicit synchronous `Flush` into immutable SST and manifest objects, including a later suffix-delta Flush.
@@ -42,12 +44,13 @@ the following sequence using only public Flyology.DB APIs:
 
 1. Receive every database identity, object identity, column-family limit, database limit, timeout, provider endpoint,
    bucket, prefix, and credential choice explicitly from its fixture or caller.
-2. Create a database with one explicit family, read its exact installed database configuration, observe no
-   checkpoint work, and reopen the family by stable ID and exact name.
+2. Create a database with one explicit family, read its exact installed database configuration and complete family
+   registry, observe no checkpoint work, and reopen the family by stable ID and exact name.
 3. Commit exact byte keys and values, require the additive action, then Flush a complete first checkpoint and observe
    no remaining work.
 4. Append one independently bounded higher-ID family with caller-stable manifest and transition identities, then
-   reopen it by stable ID and exact name and read both families' exact installed settings.
+   enumerate the complete two-family registry and reopen it by stable ID and exact name before reading both
+   families' exact installed settings.
 5. Atomically commit a group whose members affect both families, verify one all-or-nothing visible sequence, delete
    one key, verify ordered half-open scanning, require the additive action, and Flush the suffix without changing
    prior run identity; observe no remaining checkpoint work afterward.
@@ -58,7 +61,7 @@ the following sequence using only public Flyology.DB APIs:
 7. Close the database, discard every process-local DB object and buffer, construct a fresh database value, and Open
    it from the same object-store prefix.
 8. Verify the exact surviving bytes, deletion, canonical scan order, highest visible sequence, persisted family
-   handles, and unchanged installed database/family configuration after recovery.
+   handles, and unchanged installed database/family registry and configuration after recovery.
 9. Close cleanly and report every non-success outcome without retrying a mutation or silently weakening certainty.
 
 The public Files showcase and every authenticated provider-matrix lane call the same complete workflow. Each creates

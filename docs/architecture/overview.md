@@ -95,12 +95,15 @@ policy remains a later unit.
 
 `Read_Configuration` exposes the current installed authority without creating a second configuration source. The
 database form returns one failure-atomic snapshot containing the authenticated manifest registry revision, family
-count, and every persisted database-wide limit. The family form validates a handle against the current engine
+count, and every persisted database-wide limit. Its caller-bounded registry overload atomically returns that same
+database snapshot plus every complete family configuration in stable increasing-ID order; the reported family
+count defines the used prefix, an insufficient destination returns `Capacity_Exceeded` without changing either
+output, and success leaves any excess tail unchanged. The family form validates a handle against the current engine
 incarnation and combines its authenticated base record with the adjacent persisted LSM extension, returning the
 exact stable ID, name bytes, key/value ceilings, memtable bounds, and L0-run ceiling. Pure selectors expose a family
 configuration only after the public validity predicate succeeds.
 
-Both forms inspect one lifecycle-pinned engine state and perform no object-store read, refresh, retry, allocation,
+All forms inspect one lifecycle-pinned engine state and perform no object-store read, refresh, retry, dynamic allocation,
 default selection, or migration. Failure preserves the caller's prior output. A stale or cross-database family
 handle returns `Invalid_State`, uncertainty and fencing remain typed, and a legacy engine without complete LSM
 authority returns `Unsupported_Format` rather than fabricating missing values. This is the read-only prerequisite

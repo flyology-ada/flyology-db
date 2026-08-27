@@ -132,6 +132,29 @@ package body Flyology_DB_Limited_Workflow is
         Memtable_Max_Bytes   => 1_024,
         Memtable_Max_Entries => 4,
         Maximum_L0_Runs      => 2);
+   All_Families : constant DB.Column_Family_Configuration_Array :=
+     [Initial_Families (1), Audit_Family];
+
+   function Same_Family_Configuration
+     (Left, Right : DB.Column_Family_Configuration) return Boolean
+   is
+   begin
+      return DB.Is_Valid_Column_Family_Configuration (Left)
+        and then DB.Column_Family_Configuration_ID (Left) =
+          DB.Column_Family_Configuration_ID (Right)
+        and then DB.Column_Family_Configuration_Name (Left) =
+          DB.Column_Family_Configuration_Name (Right)
+        and then DB.Column_Family_Configuration_Max_Key_Bytes (Left) =
+          DB.Column_Family_Configuration_Max_Key_Bytes (Right)
+        and then DB.Column_Family_Configuration_Max_Value_Bytes (Left) =
+          DB.Column_Family_Configuration_Max_Value_Bytes (Right)
+        and then DB.Column_Family_Configuration_Memtable_Max_Bytes (Left) =
+          DB.Column_Family_Configuration_Memtable_Max_Bytes (Right)
+        and then DB.Column_Family_Configuration_Memtable_Max_Entries (Left) =
+          DB.Column_Family_Configuration_Memtable_Max_Entries (Right)
+        and then DB.Column_Family_Configuration_Maximum_L0_Runs (Left) =
+          DB.Column_Family_Configuration_Maximum_L0_Runs (Right);
+   end Same_Family_Configuration;
 
    procedure Expect_Database_Configuration
      (Item     : in out DB.Database;
@@ -163,23 +186,38 @@ package body Flyology_DB_Limited_Workflow is
       DB.Read_Configuration (Item, Family, Configuration, Result);
       Expect (Result, DB.Success, Context & " family configuration read failed");
       Require
-        (DB.Is_Valid_Column_Family_Configuration (Configuration)
-         and then DB.Column_Family_Configuration_ID (Configuration) =
-           DB.Column_Family_Configuration_ID (Expected)
-         and then DB.Column_Family_Configuration_Name (Configuration) =
-           DB.Column_Family_Configuration_Name (Expected)
-         and then DB.Column_Family_Configuration_Max_Key_Bytes (Configuration) =
-           DB.Column_Family_Configuration_Max_Key_Bytes (Expected)
-         and then DB.Column_Family_Configuration_Max_Value_Bytes (Configuration) =
-           DB.Column_Family_Configuration_Max_Value_Bytes (Expected)
-         and then DB.Column_Family_Configuration_Memtable_Max_Bytes (Configuration) =
-           DB.Column_Family_Configuration_Memtable_Max_Bytes (Expected)
-         and then DB.Column_Family_Configuration_Memtable_Max_Entries (Configuration) =
-           DB.Column_Family_Configuration_Memtable_Max_Entries (Expected)
-         and then DB.Column_Family_Configuration_Maximum_L0_Runs (Configuration) =
-           DB.Column_Family_Configuration_Maximum_L0_Runs (Expected),
+        (Same_Family_Configuration (Configuration, Expected),
          Context & " family configuration differs from persisted authority");
    end Expect_Family_Configuration;
+
+   procedure Expect_Family_Registry
+     (Item     : in out DB.Database;
+      Expected : DB.Column_Family_Configuration_Array;
+      Context  : String)
+   is
+      Configuration : DB.Database_Configuration_Snapshot :=
+        (Registry_Revision => 0, Family_Count => 0, Limits => Limits);
+      Candidate : DB.Column_Family_Configuration_Array (1 .. Expected'Length + 1) :=
+        [others => Initial_Families (1)];
+      Result : DB.Outcome_Code;
+   begin
+      DB.Read_Configuration (Item, Configuration, Candidate, Result);
+      Expect (Result, DB.Success, Context & " family registry read failed");
+      Require
+        (Configuration.Registry_Revision /= 0
+         and then Configuration.Family_Count = Interfaces.Unsigned_32 (Expected'Length)
+         and then Configuration.Limits = Limits,
+         Context & " registry snapshot differs from persisted authority");
+      for Index in Expected'Range loop
+         Require
+           (Same_Family_Configuration
+              (Candidate (Index - Expected'First + Candidate'First), Expected (Index)),
+            Context & " registry entry differs from persisted authority");
+      end loop;
+      Require
+        (Same_Family_Configuration (Candidate (Candidate'Last), Initial_Families (1)),
+         Context & " registry read changed the unused caller tail");
+   end Expect_Family_Registry;
 
    --  Stable one-byte-tail identities make every application transaction,
    --  immutable run, manifest, and HEAD transition visibly distinct in this
@@ -231,6 +269,7 @@ package body Flyology_DB_Limited_Workflow is
       DB.Open_Column_Family (Item, Bytes ("audit"), Audit_View, Local_Result);
       Expect (Local_Result, DB.Success, "audit lookup by name failed");
       Expect_Database_Configuration (Item, 2, "recovered");
+      Expect_Family_Registry (Item, All_Families, "recovered");
       Expect_Family_Configuration (Item, Accounts_View, Initial_Families (1), "recovered accounts");
       Expect_Family_Configuration (Item, Audit_View, Audit_Family, "recovered audit");
 
@@ -313,6 +352,7 @@ package body Flyology_DB_Limited_Workflow is
          Result  => Result);
       Expect (Result, DB.Success, "database create failed");
       Expect_Database_Configuration (Created, 1, "created");
+      Expect_Family_Registry (Created, Initial_Families, "created");
       Expect_Checkpoint_Requirement
         (Created, DB.No_L0_Checkpoint_Work, 0, "fresh database checkpoint action");
       DB.Open_Column_Family (Created, 1, Accounts, Result);
@@ -363,6 +403,7 @@ package body Flyology_DB_Limited_Workflow is
       DB.Open_Column_Family (Created, Bytes ("audit"), Audit, Result);
       Expect (Result, DB.Success, "appended audit family open failed");
       Expect_Database_Configuration (Created, 2, "family append");
+      Expect_Family_Registry (Created, All_Families, "family append");
       Expect_Family_Configuration (Created, Accounts, Initial_Families (1), "appended accounts");
       Expect_Family_Configuration (Created, Audit, Audit_Family, "appended audit");
 

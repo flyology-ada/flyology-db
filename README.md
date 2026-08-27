@@ -38,8 +38,10 @@ for both, Flushes and confirms the clean boundary, compacts the exact adjacent r
 persisted L0 ceiling, executes the exact observed two-family complete replacement, discards all local state, and
 recovers both families from object storage alone. An
 additive failure-atomic `Read_Configuration` surface reports the installed registry revision, family count, every
-persisted database limit, and every complete per-family setting from one live engine snapshot. It performs no
-storage read, refresh, migration, default selection, or reconfiguration; stale family handles fail closed. An
+persisted database limit, and every complete per-family setting from one live engine snapshot. A caller-bounded
+overload returns the whole installed family registry in stable increasing-ID order, so recovery does not require
+out-of-band family names or IDs. It performs no storage read, refresh, migration, default selection, or
+reconfiguration; stale family handles fail closed. An
 additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a bounded completion
 set, moving one caller-sized unique-buffer token until typed `Finish`. Client-bound synchronous `Flush` is a literal
 owner-driven wait over that operation; memory/files retain the backend-neutral synchronous publisher. Neither path
