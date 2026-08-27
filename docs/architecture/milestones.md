@@ -39,7 +39,9 @@ caller-supplied persisted limits, publishes immutable manifest bytes before one 
 only through its exact receipt. Fresh-root and suffix-bearing calls return `Invalid_State` before publication rather
 than selecting SST identities. The files-backed public showcase carries the appended family through its first L0
 run and cacheless reopen. The client-backed synchronous overload waits on the same caller-owned `Flush_Operation`
-used by the operation-last composable form. Broader family lifecycle remains pending Milestone 2 work.
+used by the operation-last composable form. Receipt-driven family resolution likewise reuses that operation and
+typed `Finish`: retained immutable bytes may admit only the original pending HEAD, while possible or confirmed HEAD
+admission uses bounded authenticated recovery. Broader family lifecycle remains pending Milestone 2 work.
 
 The immediate integration target is the [limited end-to-end profile](limited-profile.md). It freezes one coherent
 public workflow before broadening policy: fixed initial families, synchronous transactions, explicit sparse Flush,

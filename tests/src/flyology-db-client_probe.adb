@@ -2297,10 +2297,11 @@ begin
       raise Program_Error with "rejected family append did not restore its exact token";
    end if;
 
-   --  Lose the registry HEAD response after possible admission. Typed Finish
-   --  must preserve the exact receipt and token; later resolution performs a
-   --  generation-bound cacheless read without replay or replacement identity.
-   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+   --  Lose the registry manifest response after possible admission. Typed
+   --  Finish must preserve the exact receipt and token; the first resolution
+   --  confirms those exact bytes before admitting the one pending HEAD.
+   Context.Test_Control.Arm (After_Manifest_Put, Unknown_After_Entry, 1);
+   Context.Test_Control.Arm (Before_Get, Definite_Failure, 1);
    Add_Column_Family
      (Appended_Family,
       Family_Manifest_ID,
@@ -2310,18 +2311,66 @@ begin
       Flush_Work);
    Flyology.Operations.Wait_All (Composable_Set);
    Finish (Flush_Work, Family_Info, Result, Restored_Buffer);
-   Expect (Result, Outcome_Unknown, "client-backed family append lost HEAD uncertainty");
+   Expect (Result, Outcome_Unknown, "client-backed family append lost manifest uncertainty");
    if Flyology.Buffers.Has_Buffer (Flush_Buffer)
      or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
      or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
      or else Column_Family_Receipt_Family_ID (Family_Info) /= Appended_Family.ID
      or else Column_Family_Receipt_Manifest_ID (Family_Info) /= Family_Manifest_ID
-     or else Column_Family_Receipt_Transition_ID (Family_Info) /= Family_Transition_ID
+     or else Column_Family_Receipt_Transition_ID (Family_Info) /= Zero_Identifier
    then
       raise Program_Error with "composable family append lost exact token or receipt authority";
    end if;
-   Resolve_Add_Column_Family (Created, Family_Info, Test_Operation_Timeout, Result => Result);
-   Expect (Result, Success, "client-backed family append reconciliation failed");
+   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+   Resolve_Add_Column_Family
+     (Family_Info, Restored_Buffer, Test_Operation_Timeout, Flush_Work);
+   if Flyology.Buffers.Has_Buffer (Restored_Buffer) then
+      raise Program_Error with "manifest resolution did not move its exact token";
+   end if;
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Family_Info, Result, Restored_Buffer);
+   Expect (Result, Outcome_Unknown, "family manifest resolution lost HEAD uncertainty");
+   if not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+     or else Column_Family_Receipt_Transition_ID (Family_Info) /= Family_Transition_ID
+   then
+      raise Program_Error with "manifest resolution did not retain exact HEAD authority";
+   end if;
+   Context.Test_Control.Arm (Before_Local_Activation, Definite_Failure, 1);
+   Resolve_Add_Column_Family
+     (Family_Info, Restored_Buffer, Test_Operation_Timeout, Flush_Work);
+   if Flyology.Buffers.Has_Buffer (Restored_Buffer) then
+      raise Program_Error with "composable family resolution did not move its exact token";
+   end if;
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Family_Info, Result, Restored_Buffer);
+   Expect (Result, Local_Activation_Failed, "family resolution lost confirmed HEAD certainty");
+   if not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "composable family resolution did not restore its exact token";
+   end if;
+   Resolve_Add_Column_Family
+     (Created,
+      Context'Access,
+      Family_Info,
+      Restored_Buffer,
+      Test_Operation_Timeout,
+      Result => Result);
+   Expect (Result, Success, "blocking family resolution did not activate the confirmed HEAD");
+   Resolve_Add_Column_Family
+     (Created,
+      Context'Access,
+      Family_Info,
+      Restored_Buffer,
+      Test_Operation_Timeout,
+      Result => Result);
+   Expect (Result, Invalid_State, "blocking family resolution accepted a terminal receipt");
+   if not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+     or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "blocking family resolution did not restore its exact token";
+   end if;
    Open_Column_Family (Created, Appended_Family.ID, Audit_Family, Result);
    Expect (Result, Success, "client-backed appended family open failed");
 

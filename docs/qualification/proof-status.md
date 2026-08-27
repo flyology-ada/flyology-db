@@ -141,6 +141,14 @@ oracles cover undersized scratch before provider entry, wrong typed Finish witho
 resolution, exact token restoration, blocking/composable equivalence, and three-family cacheless reopen across the
 six-provider matrix.
 
+The caller-composable `Resolve_Add_Column_Family` candidate reuses the established `Flush_Operation`, typed family
+`Finish`, and bounded recovery driver without changing the selected SPARK package boundary. Its comment-final
+acceptance criterion is therefore the current maintained 1,103 selected checks (172 flow and 931 prover), all proved
+with zero unproved or justified checks, warnings, or actual `pragma Assume` findings. Receipt transfer, exact retained
+manifest continuation, checkpoint-admission handoff, provider I/O, and local engine replacement remain executable
+integration boundaries covered by the authenticated deterministic corpus and 18-lane provider matrix; no refinement
+proof is claimed.
+
 The provider-centric Object Storage migration at source
 `3455cde3158fd589480281beac39bea51305bb5e` reruns this maintained gate without changing the selected SPARK
 algorithms or their proof boundary. The exact campaign proves 1,090/1,090 selected checks: 166 by flow analysis and

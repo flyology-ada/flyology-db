@@ -49,6 +49,13 @@ the receipt-selected plan and identities, while possible or confirmed HEAD admis
 checkpoint lifecycle admission into the shared bounded recovery traversal. The client-backed buffer overload waits
 that operation; the storage-neutral resolver remains direct. Neither form replays a mutation or selects a new
 identity.
+Receipt-driven `Resolve_Add_Column_Family` follows the same provider-centric boundary on `Flush_Operation`.
+Immutable uncertainty authenticates the receipt's retained exact manifest bytes before the one permitted pending
+HEAD admission. Possible or confirmed HEAD admission transfers the existing checkpoint lifecycle admission into
+bounded recovery, which installs only a complete graph containing the exact family manifest and configuration.
+Typed `Finish` restores the moved receipt and scratch token; the client-backed blocking overload waits that state
+machine, while the storage-neutral resolver remains direct. No path selects a replacement identity or retries a
+mutation.
 The buffer-owned client-backed `Open` overload likewise waits the reusable `Open_Operation`; the established
 storage-neutral synchronous overload remains direct and source-compatible because it accepts no caller-owned scratch
 token. Both consume the same recovery request/validation machine and install only a complete authenticated graph.

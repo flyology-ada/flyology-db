@@ -278,6 +278,16 @@ prevents the receipt-shaped Flush and family finishes from consuming one another
 allocates one derived scratch token and waits on that exact state machine. Memory and files retain the backend-neutral
 synchronous publisher. No helper task, automatic retry, second deadline, or parallel API package is introduced.
 
+The provider-bound family resolver is colocated on that same `Flush_Operation`. Start moves the self-contained
+receipt and exact caller scratch token after reserving both the operation slot and checkpoint lifecycle admission.
+`Family_Manifest_Unknown` decodes and authenticates the retained exact bytes, then admits only the original pending
+HEAD transition. `Family_Head_Unknown` and `Family_Head_Confirmed` transfer the same admission into shared bounded
+cacheless recovery. Recovery must reach the exact manifest and exact family configuration in a complete validated
+chain before installing the successor; an excluding successor fences the writer, and a failed local install retains
+confirmed durable authority. Typed family `Finish` returns both receipt and token. The buffer-owned client wrapper
+waits this state machine; the storage-neutral resolver remains direct. Neither path replays a mutation, changes an
+identity, creates a helper task, or starts a second deadline.
+
 ## Cacheless recovery
 
 Recovery after total local loss starts from `meta/HEAD`; listing and local state are never authority. It reads and

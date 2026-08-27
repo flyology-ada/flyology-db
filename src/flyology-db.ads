@@ -708,6 +708,52 @@ package Flyology.DB is
       Token   : access Flyology.Cancellation.Token := null;
       Result  : out Outcome_Code);
 
+   --  Start exact receipt-driven family-publication reconciliation in an
+   --  established provider-bound checkpoint operation. Receipt and
+   --  Payload_Buffer move into Operation until typed family Finish. Immutable
+   --  uncertainty confirms the retained exact manifest before the one
+   --  permitted same-identity HEAD admission; HEAD uncertainty performs only
+   --  bounded authenticated recovery. No new identity, helper task, replay,
+   --  retry policy, or second deadline is introduced.
+   --  @param Receipt Original nonterminal family receipt moved until Finish
+   --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Operation Fresh or consumed client-bound checkpoint operation
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Receipt or buffer ownership
+   procedure Resolve_Add_Column_Family
+     (Receipt        : in out Column_Family_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Flush_Operation)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Blocking wait over the same provider-bound family resolver. The exact
+   --  receipt and caller scratch token are restored before return. Backend-
+   --  neutral storage retains the established direct resolver until those
+   --  providers expose caller-driven children.
+   --  @param Item Same open database retained by the original append
+   --  @param Storage Exact storage binding owned by Item
+   --  @param Receipt Original nonterminal family receipt, updated in place
+   --  @param Payload_Buffer Acquired caller scratch token restored before return
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Result Terminal or still-unknown resolution outcome
+   procedure Resolve_Add_Column_Family
+     (Item           : in out Database;
+      Storage        : not null access Storage_Context;
+      Receipt        : in out Column_Family_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Result         : out Outcome_Code)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
    --  Outcome most recently assigned to Receipt.
    --  @param Item Family-registry publication receipt
    --  @return Most recent terminal or nonterminal classification

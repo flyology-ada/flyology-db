@@ -43,7 +43,11 @@ An
 exact-checkpoint `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
 immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. Its additive
 operation-last overload uses the existing caller-owned `Flush_Operation`; the client-backed synchronous form is a
-literal wait over that state machine. It derives all
+literal wait over that state machine. Receipt-driven `Resolve_Add_Column_Family` is now colocated on that same
+operation as well: immutable uncertainty confirms the retained exact manifest before admitting the one pending
+HEAD, while possible or confirmed HEAD admission uses only bounded authenticated recovery. The receipt and exact
+scratch token remain operation-owned until typed `Finish`; the buffer-owned client form waits that same state
+machine, and the storage-neutral resolver remains direct. It derives all
 allocation extents from persisted database and family limits; fresh-root and unflushed-suffix calls reject before
 publication because no caller-owned SST identity may be invented. The shared Files/S3 walkthrough observes additive
 work, checkpoints one root family, confirms the clean boundary, appends a second, writes and observes additive work

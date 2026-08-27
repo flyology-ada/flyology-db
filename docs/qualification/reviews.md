@@ -1,5 +1,39 @@
 # Review record
 
+## Caller-composable column-family resolution candidate
+
+- Parent: accepted caller-composable Flush resolution commit `0309bf3`.
+- Scope and API: add operation-last and buffer-owned synchronous `Resolve_Add_Column_Family` overloads directly in
+  `Flyology.DB`, reusing `Flush_Operation`, `Column_Family_Receipt`, and the existing typed token-restoring family
+  `Finish`. The established storage-neutral resolver remains direct and source-compatible. No operation/result type,
+  compatibility namespace, public constant, default, identity policy, helper task, retry, persisted format, or
+  provider rule is added.
+- Publication and certainty: `Family_Manifest_Unknown` decodes the retained exact manifest, authenticates those same
+  bytes, and then admits only the original pending conditional HEAD. `Family_Head_Unknown` and
+  `Family_Head_Confirmed` perform only shared bounded authenticated recovery. Installation requires a complete
+  reachable graph containing the exact manifest and exact family configuration; an excluding successor fences as
+  `Stale_Writer`, an older observation remains `Outcome_Unknown`, and failed installation retains confirmed durable
+  authority as `Local_Activation_Failed`. No mutation is replayed and no replacement identity is selected.
+- Lifecycle, ownership, and bounds: Start reserves the operation slot and one checkpoint lifecycle admission before
+  moving the self-contained receipt and exact unique-buffer token. Initiating exceptions restore both. Recovery
+  transfers that admission exactly once into one bounded child; typed `Finish`, cancellation, terminal failure, and
+  abandonment drain or release every child and admission. The blocking client wrapper's five-slot completion set is
+  private geometry derived from family resolution, recovery, Object Storage, HTTP, and transport owner-stack depth.
+- Executable evidence: the authenticated client probe loses the immutable-manifest response, verifies receipt and
+  exact-token retention, then uses the reusable operation to confirm those exact bytes and admit the pending HEAD.
+  A lost HEAD response forces read-only recovery; a local-activation fault preserves confirmed authority and exact
+  token restoration; the buffer-owned blocking overload then installs the same graph, and a terminal receipt rejects
+  definitely without losing the token. The maintained deterministic suite and repository gate are green. All 18
+  RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite provider/repetition lanes are green against ignored clean
+  Object Storage `f65afbf…`. Final byte-stable TLA/TLAPS plus warning-strict GNATprove evidence remain required on
+  the frozen tree. GNATformat and GNATdoc are unavailable in the configured toolchain, so no formatter or generated-
+  site claim is made.
+- Findings cycle: API/constants review confirms no new visible policy and derives the private five-slot extent from
+  the exact owner stack. Ownership/certainty review confirms that manifest continuation reuses exact retained bytes,
+  recovery receives the original checkpoint admission, and family typed `Finish` drains nested recovery state.
+  Under the repository rubric (P0 durable-authority/data-loss/security, P1 public contract/lifecycle/ownership/
+  certainty, P2 tests/documentation/maintenance), the current review has no actionable P0/P1/P2 finding.
+
 ## Caller-composable Flush resolution candidate
 
 - Parent: accepted caller-composable Create resolution commit `c0b95f2`.
