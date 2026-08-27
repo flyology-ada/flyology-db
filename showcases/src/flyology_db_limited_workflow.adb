@@ -1,15 +1,20 @@
 with Flyology.Bytes;
+with Interfaces;
 
 package body Flyology_DB_Limited_Workflow is
    package DB renames Flyology.DB;
 
    use type DB.Byte;
+   use type DB.Byte_Array;
    use type DB.Checkpoint_Run_Identity;
    use type DB.Column_Family_ID;
+   use type DB.Database_Limits;
    use type DB.Identifier;
    use type DB.L0_Checkpoint_Action;
    use type DB.Outcome_Code;
    use type DB.Sequence_Number;
+   use type Interfaces.Unsigned_32;
+   use type Interfaces.Unsigned_64;
 
    procedure Require (Condition : Boolean; Message : String) is
    begin
@@ -128,6 +133,54 @@ package body Flyology_DB_Limited_Workflow is
         Memtable_Max_Entries => 4,
         Maximum_L0_Runs      => 2);
 
+   procedure Expect_Database_Configuration
+     (Item     : in out DB.Database;
+      Families : Interfaces.Unsigned_32;
+      Context  : String)
+   is
+      Configuration : DB.Database_Configuration_Snapshot :=
+        (Registry_Revision => 0, Family_Count => 0, Limits => Limits);
+      Result : DB.Outcome_Code;
+   begin
+      DB.Read_Configuration (Item, Configuration, Result);
+      Expect (Result, DB.Success, Context & " database configuration read failed");
+      Require
+        (Configuration.Registry_Revision /= 0
+         and then Configuration.Family_Count = Families
+         and then Configuration.Limits = Limits,
+         Context & " database configuration differs from persisted authority");
+   end Expect_Database_Configuration;
+
+   procedure Expect_Family_Configuration
+     (Item     : in out DB.Database;
+      Family   : DB.Column_Family;
+      Expected : DB.Column_Family_Configuration;
+      Context  : String)
+   is
+      Configuration : DB.Column_Family_Configuration := Expected;
+      Result        : DB.Outcome_Code;
+   begin
+      DB.Read_Configuration (Item, Family, Configuration, Result);
+      Expect (Result, DB.Success, Context & " family configuration read failed");
+      Require
+        (DB.Is_Valid_Column_Family_Configuration (Configuration)
+         and then DB.Column_Family_Configuration_ID (Configuration) =
+           DB.Column_Family_Configuration_ID (Expected)
+         and then DB.Column_Family_Configuration_Name (Configuration) =
+           DB.Column_Family_Configuration_Name (Expected)
+         and then DB.Column_Family_Configuration_Max_Key_Bytes (Configuration) =
+           DB.Column_Family_Configuration_Max_Key_Bytes (Expected)
+         and then DB.Column_Family_Configuration_Max_Value_Bytes (Configuration) =
+           DB.Column_Family_Configuration_Max_Value_Bytes (Expected)
+         and then DB.Column_Family_Configuration_Memtable_Max_Bytes (Configuration) =
+           DB.Column_Family_Configuration_Memtable_Max_Bytes (Expected)
+         and then DB.Column_Family_Configuration_Memtable_Max_Entries (Configuration) =
+           DB.Column_Family_Configuration_Memtable_Max_Entries (Expected)
+         and then DB.Column_Family_Configuration_Maximum_L0_Runs (Configuration) =
+           DB.Column_Family_Configuration_Maximum_L0_Runs (Expected),
+         Context & " family configuration differs from persisted authority");
+   end Expect_Family_Configuration;
+
    --  Stable one-byte-tail identities make every application transaction,
    --  immutable run, manifest, and HEAD transition visibly distinct in this
    --  fresh namespace. They are deterministic fixture identities, not an ID
@@ -177,6 +230,9 @@ package body Flyology_DB_Limited_Workflow is
       Expect (Local_Result, DB.Success, "accounts lookup by ID failed");
       DB.Open_Column_Family (Item, Bytes ("audit"), Audit_View, Local_Result);
       Expect (Local_Result, DB.Success, "audit lookup by name failed");
+      Expect_Database_Configuration (Item, 2, "recovered");
+      Expect_Family_Configuration (Item, Accounts_View, Initial_Families (1), "recovered accounts");
+      Expect_Family_Configuration (Item, Audit_View, Audit_Family, "recovered audit");
 
       DB.Get (Item, Reader, Accounts_View, Bytes ("alice"), Missing_Data, Local_Result);
       Expect (Local_Result, DB.Not_Found, "deleted account became visible");
@@ -256,6 +312,7 @@ package body Flyology_DB_Limited_Workflow is
          Receipt => Create_Info,
          Result  => Result);
       Expect (Result, DB.Success, "database create failed");
+      Expect_Database_Configuration (Created, 1, "created");
       Expect_Checkpoint_Requirement
         (Created, DB.No_L0_Checkpoint_Work, 0, "fresh database checkpoint action");
       DB.Open_Column_Family (Created, 1, Accounts, Result);
@@ -305,6 +362,9 @@ package body Flyology_DB_Limited_Workflow is
          "family append receipt lost its stable identities");
       DB.Open_Column_Family (Created, Bytes ("audit"), Audit, Result);
       Expect (Result, DB.Success, "appended audit family open failed");
+      Expect_Database_Configuration (Created, 2, "family append");
+      Expect_Family_Configuration (Created, Accounts, Initial_Families (1), "appended accounts");
+      Expect_Family_Configuration (Created, Audit, Audit_Family, "appended audit");
 
       DB.Begin_Transaction (Created, Transaction_ID (11), DB.Snapshot, Group (1), Result);
       Expect (Result, DB.Success, "first group member begin failed");

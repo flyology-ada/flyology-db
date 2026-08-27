@@ -13,7 +13,8 @@ This repository is under active development. The current acceptance state and re
 The current usable boundary is the deliberately narrow
 [limited end-to-end profile](docs/architecture/limited-profile.md): one writer, one checkpoint-bound append-only
 family change, synchronous transactions, Flush, caller-selected adjacent and complete compaction, exact
-close/local-loss/reopen recovery, and no automatic maintenance or retry policy.
+close/local-loss/reopen recovery, read-only inspection of the exact installed database and family configuration,
+and no automatic maintenance or retry policy.
 The Files and authenticated S3 walkthroughs drive one shared complete public-API workflow: create, singleton and
 cross-family group commits, deletion, additive Flush, exact adjacent and complete compaction, exact reads and scans,
 close, and cacheless reopen. Their thin provider-specific mains construct fresh provider and DB owners for the seed
@@ -36,6 +37,9 @@ work, checkpoints one root family, confirms the clean boundary, appends a second
 for both, Flushes and confirms the clean boundary, compacts the exact adjacent root-family pair, crosses the
 persisted L0 ceiling, executes the exact observed two-family complete replacement, discards all local state, and
 recovers both families from object storage alone. An
+additive failure-atomic `Read_Configuration` surface reports the installed registry revision, family count, every
+persisted database limit, and every complete per-family setting from one live engine snapshot. It performs no
+storage read, refresh, migration, default selection, or reconfiguration; stale family handles fail closed. An
 additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a bounded completion
 set, moving one caller-sized unique-buffer token until typed `Finish`. Client-bound synchronous `Flush` is a literal
 owner-driven wait over that operation; memory/files retain the backend-neutral synchronous publisher. Neither path

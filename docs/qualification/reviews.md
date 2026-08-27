@@ -1,5 +1,45 @@
 # Review record
 
+## Installed configuration-read candidate
+
+- Parent: shared limited-workflow provider-parity commit `1de24ef`.
+- Scope and authority: add failure-atomic local reads for the exact installed database registry revision, family count,
+  complete persisted `Database_Limits`, and complete per-family ID/name/key/value/memtable/L0 settings. The operation
+  copies already-authenticated engine authority and performs no object-store I/O, refresh, retry, allocation,
+  migration, default selection, or mutable reconfiguration. Milestone 7 remains partial: version transitions,
+  ephemeral settings, TTL, codecs, and compatibility policy are not introduced.
+- API contract: `Database_Configuration_Snapshot` is an owned visible value. `Column_Family_Configuration` remains
+  private and gains one validity predicate plus exact pure selectors; their preconditions reject incomplete values.
+  Both `Read_Configuration` overloads use `in out` outputs so lifecycle, uncertainty, fencing, legacy-format, stale-
+  handle, and cross-database failure preserves the caller's prior value. No constant, default, timeout, capacity,
+  exception, compatibility alias, child package, or alternate execution path is added.
+- Concurrency and format boundary: a lifecycle lease pins one engine incarnation while protected coordinator reads
+  supply the installed manifest and family validation. Database and family values combine only that manifest with
+  its adjacent decoded LSM authority. Manifest-v1/log-only state returns `Unsupported_Format` instead of inventing
+  absent memtable or L0 policy; stale pre-reopen handles return `Invalid_State`.
+- Coverage: the memory/files engine corpus checks two unequal families, every selector, the exact pre-close versus
+  cacheless-reopen database snapshot, stale-handle rejection, closed-database rejection, and output preservation.
+  The shared Files/authenticated S3 workflow checks the one-family root, two-family append, both exact family
+  configurations, and authoritative reopen, so the same assertions run across all maintained providers.
+- Nonformal evidence: root/test/showcase warning-strict builds pass; `./tests/scripts/test.sh` passes the complete
+  deterministic, authenticated, crash/recovery, 32-case differential, and pinned TidesDB lanes; and
+  `./tests/scripts/test-s3-matrix.sh` passes all 18 RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite lanes.
+  Repository, diff, shell, and 110-column checks are green. GNATdoc comments use the established leading style and
+  exact tags, but no executable GNATdoc tool or maintained docs wrapper is present in this checkout, so no generated-
+  site claim is made.
+- Formal evidence: superseding outside-sandbox update-mode and ordinary `check-tla.sh` runs both exit zero with no
+  generated-artifact delta and byte-stable canonical traces. Every maintained TLC, action, negative, witness, and
+  Ada checkpoint-policy replay lane passes; TLAPS proves 393/393 obligations. The maintained warning-strict
+  `prove.sh` run records FSF GNATprove 16.1.0 with an invocation header and proves 1,103/1,103 checks (168 flow and
+  935 prover), with zero justified or unproved checks, warnings, or pragma Assume statements and a maximum of 7,133
+  steps. Pre-, intermediate, and post-run executable-aware host audits are clean. The earlier sandboxed TLA and proof
+  setup exits provide no formal evidence; they were released without retry and superseded by separately granted
+  outside-sandbox campaigns on the unchanged tree.
+- Findings rubric: P0 is durable-authority, data-loss, security, or certainty failure; P1 is public-contract,
+  lifecycle, ownership, format, or failure-atomicity failure; P2 is maintainability, documentation, or test weakness.
+  Review fixed P2 gaps in the first draft by adding field/parameter/return tags, closed-output preservation, and the
+  shared provider oracle. Re-review finds no actionable P0/P1/P2 finding.
+
 ## Shared limited-workflow provider-parity candidate
 
 - Parent: checkpoint-decoder proof-robustness commit `275aa59`.

@@ -2251,6 +2251,44 @@ package body Flyology.DB is
       return Result;
    end To_Engine_LSM_Authority;
 
+   function To_Public_Limits
+     (Item : Manifests.Database_Limits; Authority : Engine_LSM_Authority) return Database_Limits
+   is
+      Result : Database_Limits := To_Public_Limits (Item);
+   begin
+      Result.Maximum_Total_L0_Runs := Authority.Maximum_Total_L0_Runs;
+      Result.Maximum_Checkpoint_Identities := Authority.Maximum_Checkpoint_Identities;
+      Result.Maximum_Point_Reads_Per_Transaction := Authority.Maximum_Point_Reads_Per_Transaction;
+      Result.Maximum_Scan_Ranges_Per_Transaction := Authority.Maximum_Scan_Ranges_Per_Transaction;
+      return Result;
+   end To_Public_Limits;
+
+   procedure Complete_Family_Configuration
+     (Base          : Column_Family_Configuration;
+      Authority     : Engine_LSM_Authority;
+      Configuration : out Column_Family_Configuration;
+      Result        : out Outcome_Code)
+   is
+   begin
+      Configuration := (others => <>);
+      if not Authority.Enabled then
+         Result := Unsupported_Format;
+         return;
+      end if;
+      for Family of Authority.Families loop
+         if Family.ID = Interfaces.Unsigned_32 (Base.ID) then
+            Configuration := Base;
+            Configuration.Memtable_Max_Bytes := Family.State.Memtable_Max_Bytes;
+            Configuration.Memtable_Max_Entries := Family.State.Memtable_Max_Entries;
+            Configuration.Maximum_L0_Runs := Family.State.Maximum_L0_Runs;
+            Result :=
+              (if Is_Valid_Column_Family_Configuration (Configuration) then Success else Corrupt);
+            return;
+         end if;
+      end loop;
+      Result := Corrupt;
+   end Complete_Family_Configuration;
+
    function Same_LSM_Policy (Left, Right : Engine_LSM_Authority) return Boolean is
    begin
       if not Left.Enabled
@@ -9855,6 +9893,48 @@ package body Flyology.DB is
       end;
    end Configure_Column_Family;
 
+   function Is_Valid_Column_Family_Configuration (Item : Column_Family_Configuration) return Boolean
+   is
+     (Manifests.Valid_Configuration (To_Manifest_Configuration (Item))
+      and then Item.Memtable_Max_Bytes /= 0
+      and then Item.Memtable_Max_Entries /= 0
+      and then Item.Maximum_L0_Runs /= 0);
+
+   function Column_Family_Configuration_ID
+     (Item : Column_Family_Configuration) return Column_Family_ID
+   is (Item.ID);
+
+   function Column_Family_Configuration_Name
+     (Item : Column_Family_Configuration) return Byte_Array
+   is
+      Result : Byte_Array (1 .. Item.Name_Length);
+   begin
+      for Index in Result'Range loop
+         Result (Index) := Item.Name (Index);
+      end loop;
+      return Result;
+   end Column_Family_Configuration_Name;
+
+   function Column_Family_Configuration_Max_Key_Bytes
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_64
+   is (Item.Max_Key_Bytes);
+
+   function Column_Family_Configuration_Max_Value_Bytes
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_64
+   is (Item.Max_Value_Bytes);
+
+   function Column_Family_Configuration_Memtable_Max_Bytes
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_64
+   is (Item.Memtable_Max_Bytes);
+
+   function Column_Family_Configuration_Memtable_Max_Entries
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_32
+   is (Item.Memtable_Max_Entries);
+
+   function Column_Family_Configuration_Maximum_L0_Runs
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_32
+   is (Item.Maximum_L0_Runs);
+
    function Configure_Checkpoint_Run
      (Family_ID : Column_Family_ID; Run_ID : Identifier) return Checkpoint_Run_Identity is
    begin
@@ -10910,6 +10990,77 @@ package body Flyology.DB is
          end if;
       end if;
    end Open_Column_Family;
+
+   procedure Read_Configuration
+     (Item          : in out Database;
+      Configuration : in out Database_Configuration_Snapshot;
+      Result        : out Outcome_Code)
+   is
+      Lease          : Lifecycle_Lease;
+      Head           : Head_Snapshot;
+      Generation     : Generation_Value;
+      Uncertain      : Boolean;
+      Fenced         : Boolean;
+      Manifest       : Manifests.Manifest;
+      Identity_Total : Natural;
+      Candidate      : Database_Configuration_Snapshot;
+   begin
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+      elsif Fenced then
+         Result := Stale_Writer;
+      elsif not Lease.State.LSM_Authority.Enabled then
+         Result := Unsupported_Format;
+      else
+         Lease.State.Gate.Checkpoint_Metadata (Manifest, Identity_Total, Result);
+         if Result = Success then
+            Candidate :=
+              (Registry_Revision => Manifest.Registry_Revision,
+               Family_Count      => Interfaces.Unsigned_32 (Manifest.Family_Total),
+               Limits            => To_Public_Limits (Manifest.Limits, Lease.State.LSM_Authority));
+            Configuration := Candidate;
+         end if;
+      end if;
+   end Read_Configuration;
+
+   procedure Read_Configuration
+     (Item          : in out Database;
+      Family        : Column_Family;
+      Configuration : in out Column_Family_Configuration;
+      Result        : out Outcome_Code)
+   is
+      Lease      : Lifecycle_Lease;
+      Head       : Head_Snapshot;
+      Generation : Generation_Value;
+      Uncertain  : Boolean;
+      Fenced     : Boolean;
+      Base       : Column_Family_Configuration;
+      Candidate  : Column_Family_Configuration;
+   begin
+      Acquire (Item, Lease, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+      if Uncertain then
+         Result := Outcome_Unknown;
+      elsif Fenced then
+         Result := Stale_Writer;
+      else
+         Lease.State.Gate.Validate_Family (Family, Base, Result);
+         if Result = Success then
+            Complete_Family_Configuration (Base, Lease.State.LSM_Authority, Candidate, Result);
+            if Result = Success then
+               Configuration := Candidate;
+            end if;
+         end if;
+      end if;
+   end Read_Configuration;
 
    function Same_Owned_Key (Mutation : Owned_Mutation; Item_Key : Byte_Array) return Boolean is
    begin

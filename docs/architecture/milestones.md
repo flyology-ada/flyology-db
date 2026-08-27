@@ -12,7 +12,7 @@ is accepted only when its implementation, tests, proof, documentation, dependenc
 | 4 Memtables/SST | Per-family memtables, validated format, lookup/scan, flush recovery | Additive L0, caller-selected replacement, and authenticated frame-backed whole/paged reads operational; automatic selection and history pruning pending |
 | 5 Caching | Bounded metadata/RAM/disk caches, coalescing, corruption and complete-loss tests | Exact-generation/coalescing safety boundary proved; operational caches and capacity policy pending |
 | 6 Compaction/retention | Conservative compaction, snapshot retention, atomic manifests, orphan GC | Public caller-selected complete, exact-two-run, and exact-three-run replacement operational and deletion safety proved; automatic/collector policy pending |
-| 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Pending |
+| 7 Configuration | Persisted immutable/versioned/ephemeral family settings, TTL and codec gates | Exact installed database/family snapshots operational; mutation, ephemeral settings, TTL, and codecs pending |
 | 8 Replicas/fencing | Monotonic refresh, catch-up, stale-writer rejection, explicit promotion | Public sync and owner-driven composable refresh operational; replica registration/promotion policy pending |
 | 9 Qualification | Full oracle/fault/performance matrices, proof and supported-platform evidence | Pending |
 
@@ -49,7 +49,8 @@ that acceptance claim.
 
 The Files and public-API-only authenticated walkthroughs now use one shared complete limited-profile workflow. Both
 cover singleton and cross-family group commits, deletion, additive Flush, exact adjacent and complete compaction,
-close, process-local owner loss, authoritative reopen, exact reads, scans, sequence, and family handles. The S3 form
+close, process-local owner loss, authoritative reopen, exact reads, scans, sequence, family handles, and the
+installed database/family configuration. The S3 form
 uses an existing caller-owned bucket and explicit deployment inputs, and the maintained six-provider matrix runs it
 unchanged. This is reproducible integration evidence, not a general provider, production, cleanup, performance, or
 retention claim.

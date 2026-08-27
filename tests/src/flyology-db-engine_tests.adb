@@ -1411,6 +1411,8 @@ package body Flyology.DB.Engine_Tests is
       Live_Sequence                              : Sequence_Number;
       Expected_Live_Sequence                     : Sequence_Number;
       Batch_Puts, Manifest_Puts, Head_Puts       : Natural;
+      Before_Reopen_Configuration                : Database_Configuration_Snapshot;
+      After_Reopen_Configuration                 : Database_Configuration_Snapshot;
       --  API fixture persists two unequal families and tight aggregate limits.
       --  Permuted proves canonical ordering, Different changes one persisted
       --  family value, and Over_* isolate explicit admission/capacity failures;
@@ -1545,6 +1547,55 @@ package body Flyology.DB.Engine_Tests is
             raise Program_Error with Context_Text & " lost the exact live-entry sequence";
          end if;
       end Expect_Live_Entry_Sequence;
+
+      procedure Read_And_Expect_Database_Configuration
+        (Target       : in out Database;
+         Configuration : out Database_Configuration_Snapshot;
+         Context_Text : String)
+      is
+         Candidate : Database_Configuration_Snapshot :=
+           (Registry_Revision => Interfaces.Unsigned_64'Last,
+            Family_Count      => Interfaces.Unsigned_32'Last,
+            Limits            => Default_Limits);
+         Inspect : Outcome_Code;
+      begin
+         Read_Configuration (Target, Candidate, Inspect);
+         if Inspect /= Success or else Candidate.Family_Count /= 2 or else Candidate.Limits /= Limits then
+            raise Program_Error with Context_Text & " did not expose exact database configuration";
+         end if;
+         Configuration := Candidate;
+      end Read_And_Expect_Database_Configuration;
+
+      procedure Expect_Family_Configuration
+        (Target       : in out Database;
+         Handle       : Column_Family;
+         Expected     : Column_Family_Configuration;
+         Context_Text : String)
+      is
+         Candidate : Column_Family_Configuration := Families (1);
+         Inspect   : Outcome_Code;
+      begin
+         Read_Configuration (Target, Handle, Candidate, Inspect);
+         if Inspect /= Success
+           or else not Is_Valid_Column_Family_Configuration (Candidate)
+           or else Column_Family_Configuration_ID (Candidate)
+                   /= Column_Family_Configuration_ID (Expected)
+           or else Column_Family_Configuration_Name (Candidate)
+                   /= Column_Family_Configuration_Name (Expected)
+           or else Column_Family_Configuration_Max_Key_Bytes (Candidate)
+                   /= Column_Family_Configuration_Max_Key_Bytes (Expected)
+           or else Column_Family_Configuration_Max_Value_Bytes (Candidate)
+                   /= Column_Family_Configuration_Max_Value_Bytes (Expected)
+           or else Column_Family_Configuration_Memtable_Max_Bytes (Candidate)
+                   /= Column_Family_Configuration_Memtable_Max_Bytes (Expected)
+           or else Column_Family_Configuration_Memtable_Max_Entries (Candidate)
+                   /= Column_Family_Configuration_Memtable_Max_Entries (Expected)
+           or else Column_Family_Configuration_Maximum_L0_Runs (Candidate)
+                   /= Column_Family_Configuration_Maximum_L0_Runs (Expected)
+         then
+            raise Program_Error with Context_Text & " did not expose exact family configuration";
+         end if;
+      end Expect_Family_Configuration;
    begin
       declare
          Raised : Boolean := False;
@@ -1577,6 +1628,10 @@ package body Flyology.DB.Engine_Tests is
          Receipt => Create_Info,
          Result  => Result);
       Expect (Result, Success, "multi-family manifest create failed");
+      Read_And_Expect_Database_Configuration (Item, After_Reopen_Configuration, "create activation");
+      if After_Reopen_Configuration.Registry_Revision /= 1 then
+         raise Program_Error with "root configuration snapshot did not expose revision one";
+      end if;
       Expect_Live_LSM_Authority (Item, 0, "create activation");
       declare
          Scratch  : Natural;
@@ -1677,6 +1732,8 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "family ID lookup failed");
       Open_Column_Family (Item, 7, Family_Seven, Result);
       Expect (Result, Success, "second family ID lookup failed");
+      Expect_Family_Configuration (Item, Family_By_ID, Families (2), "family ID lookup");
+      Expect_Family_Configuration (Item, Family_Seven, Families (1), "second family ID lookup");
       Open_Column_Family (Item, [16#C3#, 16#A9#], Family_By_Name, Result);
       Expect (Result, Success, "exact UTF-8 family name lookup failed");
       Open_Column_Family (Item, [16#C3#, 16#A8#], Stale_Family, Result);
@@ -1876,6 +1933,7 @@ package body Flyology.DB.Engine_Tests is
          end;
       end;
 
+      Read_And_Expect_Database_Configuration (Item, Before_Reopen_Configuration, "checkpointed state");
       Stale_Family := Family_By_ID;
       Close (Item, Result);
       Expect (Result, Success, "checkpointed database close failed");
@@ -1909,6 +1967,10 @@ package body Flyology.DB.Engine_Tests is
       end;
       Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
       Expect (Result, Success, "cacheless checkpoint reopen failed");
+      Read_And_Expect_Database_Configuration (Item, After_Reopen_Configuration, "checkpoint reopen");
+      if After_Reopen_Configuration /= Before_Reopen_Configuration then
+         raise Program_Error with "cacheless reopen changed persisted configuration authority";
+      end if;
       Expect_Live_LSM_Authority (Item, Expected_Live_Sequence, "checkpoint reopen");
       Expect_Live_Entry_Sequence (Item, "checkpoint reopen");
       Begin_Transaction (Item, TX_ID (203), Txn, Result);
@@ -1917,6 +1979,19 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "checkpoint reopen family lookup failed");
       Open_Column_Family (Item, 7, Family_Seven, Result);
       Expect (Result, Success, "checkpoint reopen second-family lookup failed");
+      Expect_Family_Configuration
+        (Item, Family_By_ID, Families (2), "checkpoint reopen family lookup");
+      Expect_Family_Configuration
+        (Item, Family_Seven, Families (1), "checkpoint reopen second-family lookup");
+      declare
+         Preserved : Column_Family_Configuration := Families (1);
+      begin
+         Read_Configuration (Item, Stale_Family, Preserved, Result);
+         Expect (Result, Invalid_State, "stale handle exposed current family configuration");
+         if Preserved /= Families (1) then
+            raise Program_Error with "failed family configuration read changed its output";
+         end if;
+      end;
 
       Begin_Transaction (Item, Snapshot_Reader_ID, Snapshot_Reader, Result);
       Expect (Result, Success, "checkpoint-base snapshot reader begin failed");
@@ -2171,6 +2246,15 @@ package body Flyology.DB.Engine_Tests is
       Close (Other, Result);
       Close (Item, Result);
       Expect (Result, Success, "replacement checkpoint database did not close");
+      declare
+         Preserved : Database_Configuration_Snapshot := After_Reopen_Configuration;
+      begin
+         Read_Configuration (Item, Preserved, Result);
+         Expect (Result, Invalid_State, "closed database exposed persisted configuration");
+         if Preserved /= After_Reopen_Configuration then
+            raise Program_Error with "closed configuration read changed its output";
+         end if;
+      end;
       Testing.Remove_Manifest (Context, Checkpoint_Manifest_ID, Result);
       Expect (Result, Success, "replacement predecessor manifest removal failed");
       Open (Retry, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);

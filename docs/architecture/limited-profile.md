@@ -12,6 +12,8 @@ performance, replica, automatic-maintenance, or general-provider qualification.
   drop, reorder, and prior-family mutation remain unavailable.
 - Arbitrary byte keys and values within the persisted per-family limits selected by the caller.
 - Explicit persisted `Database_Limits`; the library supplies no hidden key, value, transaction, or live-state limit.
+- Failure-atomic reads of the exact installed registry revision, family count, database limits, and complete
+  per-family name/key/value/memtable/L0 settings. These local snapshots perform no storage I/O or policy selection.
 - Synchronous Snapshot transactions with point `Get`, ordered bounded `Scan`, `Put`, `Delete`, singleton `Commit`,
   and explicit atomic `Commit_Group`.
 - Explicit synchronous `Flush` into immutable SST and manifest objects, including a later suffix-delta Flush.
@@ -40,11 +42,12 @@ the following sequence using only public Flyology.DB APIs:
 
 1. Receive every database identity, object identity, column-family limit, database limit, timeout, provider endpoint,
    bucket, prefix, and credential choice explicitly from its fixture or caller.
-2. Create a database with one explicit family, observe no checkpoint work, and reopen it by stable ID and exact name.
+2. Create a database with one explicit family, read its exact installed database configuration, observe no
+   checkpoint work, and reopen the family by stable ID and exact name.
 3. Commit exact byte keys and values, require the additive action, then Flush a complete first checkpoint and observe
    no remaining work.
 4. Append one independently bounded higher-ID family with caller-stable manifest and transition identities, then
-   reopen it by stable ID and exact name.
+   reopen it by stable ID and exact name and read both families' exact installed settings.
 5. Atomically commit a group whose members affect both families, verify one all-or-nothing visible sequence, delete
    one key, verify ordered half-open scanning, require the additive action, and Flush the suffix without changing
    prior run identity; observe no remaining checkpoint work afterward.
@@ -54,8 +57,8 @@ the following sequence using only public Flyology.DB APIs:
    caller-supplied identities; observe no remaining checkpoint work.
 7. Close the database, discard every process-local DB object and buffer, construct a fresh database value, and Open
    it from the same object-store prefix.
-8. Verify the exact surviving bytes, deletion, canonical scan order, highest visible sequence, and persisted family
-   handles after recovery.
+8. Verify the exact surviving bytes, deletion, canonical scan order, highest visible sequence, persisted family
+   handles, and unchanged installed database/family configuration after recovery.
 9. Close cleanly and report every non-success outcome without retrying a mutation or silently weakening certainty.
 
 The public Files showcase and every authenticated provider-matrix lane call the same complete workflow. Each creates
@@ -78,6 +81,10 @@ policy-neutral: the caller supplies every output and publication identity, and t
 Public exact two- and three-run compaction is likewise caller-selected and retains all history; fixed arity does not
 authorize an automatic selector, fanout, pruning, or deletion. The replica spine remains qualification work until
 separate public-policy decisions admit it.
+
+The read-only configuration surface does not authorize a mutable configuration protocol. It returns only the exact
+authority already installed in the current engine incarnation and supplies no defaults, migration, version upgrade,
+ephemeral overrides, TTL, codec choice, or reconfiguration semantics.
 
 Expansion starts only after the acceptance scenario, deterministic suite, provider matrix, repository gate, TLA+ and
 TLAPS models, selected SPARK proof, API documentation, and findings cycle are green on one exact source/dependency

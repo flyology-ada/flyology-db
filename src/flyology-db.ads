@@ -77,6 +77,19 @@ package Flyology.DB is
       Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32;
    end record;
 
+   --  One failure-atomic read of the exact installed persisted database
+   --  configuration. Registry_Revision and Family_Count come from the same
+   --  authenticated manifest as Limits; this record adds no defaults or
+   --  mutable policy.
+   --  @field Registry_Revision Exact installed registry revision
+   --  @field Family_Count Exact installed family total
+   --  @field Limits Complete installed database-wide limits
+   type Database_Configuration_Snapshot is record
+      Registry_Revision : Interfaces.Unsigned_64;
+      Family_Count      : Interfaces.Unsigned_32;
+      Limits            : Database_Limits;
+   end record;
+
    type Column_Family_Configuration is private;
    type Column_Family_Configuration_Array is array (Positive range <>) of Column_Family_Configuration;
    type Column_Family is private;
@@ -96,6 +109,61 @@ package Flyology.DB is
       Memtable_Max_Bytes   : Interfaces.Unsigned_64;
       Memtable_Max_Entries : Interfaces.Unsigned_32;
       Maximum_L0_Runs      : Interfaces.Unsigned_32) return Column_Family_Configuration;
+
+   --  Whether Item carries one complete constructible or persisted family
+   --  configuration. This predicate selects no fallback values.
+   --  @param Item Family configuration to validate
+   --  @return True only when every base and LSM field is valid
+   function Is_Valid_Column_Family_Configuration (Item : Column_Family_Configuration) return Boolean;
+
+   --  Stable persisted numeric family identity.
+   --  @param Item Valid complete family configuration
+   --  @return Exact persisted family ID
+   function Column_Family_Configuration_ID
+     (Item : Column_Family_Configuration) return Column_Family_ID
+     with Pre => Is_Valid_Column_Family_Configuration (Item);
+
+   --  Exact persisted UTF-8 family-name bytes, without normalization.
+   --  @param Item Valid complete family configuration
+   --  @return Exact persisted family-name bytes
+   function Column_Family_Configuration_Name
+     (Item : Column_Family_Configuration) return Byte_Array
+     with Pre => Is_Valid_Column_Family_Configuration (Item);
+
+   --  Exact persisted maximum key extent.
+   --  @param Item Valid complete family configuration
+   --  @return Exact maximum key bytes
+   function Column_Family_Configuration_Max_Key_Bytes
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_64
+     with Pre => Is_Valid_Column_Family_Configuration (Item);
+
+   --  Exact persisted maximum value extent.
+   --  @param Item Valid complete family configuration
+   --  @return Exact maximum value bytes
+   function Column_Family_Configuration_Max_Value_Bytes
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_64
+     with Pre => Is_Valid_Column_Family_Configuration (Item);
+
+   --  Exact persisted logical memtable byte authority.
+   --  @param Item Valid complete family configuration
+   --  @return Exact memtable byte ceiling
+   function Column_Family_Configuration_Memtable_Max_Bytes
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_64
+     with Pre => Is_Valid_Column_Family_Configuration (Item);
+
+   --  Exact persisted memtable-entry authority.
+   --  @param Item Valid complete family configuration
+   --  @return Exact memtable entry ceiling
+   function Column_Family_Configuration_Memtable_Max_Entries
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_32
+     with Pre => Is_Valid_Column_Family_Configuration (Item);
+
+   --  Exact persisted per-family L0-run authority.
+   --  @param Item Valid complete family configuration
+   --  @return Exact per-family L0-run ceiling
+   function Column_Family_Configuration_Maximum_L0_Runs
+     (Item : Column_Family_Configuration) return Interfaces.Unsigned_32
+     with Pre => Is_Valid_Column_Family_Configuration (Item);
 
    --  Bind one configured family to the immutable run identity selected by a
    --  checkpoint operation. Run_ID must be nonzero. Flush and complete
@@ -487,6 +555,33 @@ package Flyology.DB is
    --  Open one stable family handle by its exact persisted UTF-8 name bytes.
    procedure Open_Column_Family
      (Item : in out Database; Name : Byte_Array; Family : out Column_Family; Result : out Outcome_Code);
+
+   --  Replace Configuration with the exact installed manifest revision,
+   --  family count, and persisted database-wide limits. Failure leaves the
+   --  caller's prior Configuration unchanged. This is a local authoritative
+   --  snapshot: it performs no storage I/O, refresh, migration, or retry.
+   --  @param Item Open database whose installed manifest is inspected
+   --  @param Configuration Prior value replaced only on Success
+   --  @param Result Success or the exact lifecycle/certainty outcome
+   procedure Read_Configuration
+     (Item          : in out Database;
+      Configuration : in out Database_Configuration_Snapshot;
+      Result        : out Outcome_Code);
+
+   --  Replace Configuration with the exact installed settings for Family.
+   --  Family must belong to Item's current engine incarnation. Failure leaves
+   --  the caller's prior Configuration unchanged. The returned value combines
+   --  the authenticated base family record and its persisted LSM extension
+   --  from one installed engine snapshot.
+   --  @param Item Open database whose installed family authority is inspected
+   --  @param Family Current family handle to validate
+   --  @param Configuration Prior value replaced only on Success
+   --  @param Result Success or the exact validation/lifecycle outcome
+   procedure Read_Configuration
+     (Item          : in out Database;
+      Family        : Column_Family;
+      Configuration : in out Column_Family_Configuration;
+      Result        : out Outcome_Code);
 
    --  Read the newest buffered mutation first, then the newest committed value
    --  at the transaction's fixed Begin snapshot, into owned bytes. Conflict

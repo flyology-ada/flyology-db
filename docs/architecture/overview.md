@@ -91,6 +91,22 @@ and same-generation whole-object sequence before the same publisher runs; blocki
 operation. Backend-neutral memory/files reads remain blocking without helper tasks. Automatic trigger/fanout/level
 policy remains a later unit.
 
+## Configuration authority
+
+`Read_Configuration` exposes the current installed authority without creating a second configuration source. The
+database form returns one failure-atomic snapshot containing the authenticated manifest registry revision, family
+count, and every persisted database-wide limit. The family form validates a handle against the current engine
+incarnation and combines its authenticated base record with the adjacent persisted LSM extension, returning the
+exact stable ID, name bytes, key/value ceilings, memtable bounds, and L0-run ceiling. Pure selectors expose a family
+configuration only after the public validity predicate succeeds.
+
+Both forms inspect one lifecycle-pinned engine state and perform no object-store read, refresh, retry, allocation,
+default selection, or migration. Failure preserves the caller's prior output. A stale or cross-database family
+handle returns `Invalid_State`, uncertainty and fencing remain typed, and a legacy engine without complete LSM
+authority returns `Unsupported_Format` rather than fabricating missing values. This is the read-only prerequisite
+for Milestone 7; mutable version transitions, ephemeral settings, TTL, codecs, and compatibility policy remain
+separate decisions.
+
 The formal immutable-cache boundary keys verified entries and coalesced in-flight reads by exact object generation.
 A read captures its generation before consulting local state, only waiters for that same generation join a fetch,
 and corrupt entries are discarded as misses. Complete local loss may discard valid/corrupt entries and in-flight
