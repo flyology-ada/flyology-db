@@ -559,6 +559,8 @@ is
          Family_Wire    : Interfaces.Unsigned_32;
          Identity_Wire  : Interfaces.Unsigned_32;
       begin
+         --  Keep the failure result stable through every decoding loop so the
+         --  public failure postcondition has a local, bounded proof boundary.
          Value := Empty_Checkpoint_Manifest;
          if Image'Last < Image'First
            or else Image'Last - Image'First < Checkpoint_Manifest_Header_Length + Object_Trailer_Length - 1
@@ -671,6 +673,7 @@ is
          for Family_Index in Manifests.Family_Slot range 1 .. Candidate.Base.Family_Total loop
             pragma Loop_Invariant (Cursor >= Checkpoint_Manifest_Header_Length);
             pragma Loop_Invariant (Cursor <= Payload_End);
+            pragma Loop_Invariant (Value = Empty_Checkpoint_Manifest);
             declare
                Base      : Manifests.Column_Family_Configuration;
                State     : Family_LSM_State;
@@ -724,6 +727,7 @@ is
                for Run_Index in Run_Slot range 1 .. State.Run_Total loop
                   pragma Loop_Invariant (Cursor >= Checkpoint_Manifest_Header_Length);
                   pragma Loop_Invariant (Cursor <= Payload_End);
+                  pragma Loop_Invariant (Value = Empty_Checkpoint_Manifest);
                   if Cursor > Payload_End or else Run_Descriptor_Length > Payload_End - Cursor then
                      Status := Invalid_Run;
                      return;
@@ -748,6 +752,7 @@ is
          for Index in Identity_Slot range 1 .. Candidate.Identity_Total loop
             pragma Loop_Invariant (Cursor >= Checkpoint_Manifest_Header_Length);
             pragma Loop_Invariant (Cursor <= Payload_End);
+            pragma Loop_Invariant (Value = Empty_Checkpoint_Manifest);
             if Cursor > Payload_End or else Head_Policy.Identifier_Length > Payload_End - Cursor then
                Status := Invalid_Identity;
                return;
