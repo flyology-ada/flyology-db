@@ -14,9 +14,12 @@ The current usable boundary is the deliberately narrow
 [limited end-to-end profile](docs/architecture/limited-profile.md): one writer, one checkpoint-bound append-only
 family change, synchronous transactions, Flush, caller-selected adjacent and complete compaction, exact
 close/local-loss/reopen recovery, and no automatic maintenance or retry policy.
-An additive authenticated walkthrough drives public create, commit, Flush, close, and cacheless reopen against an
-existing caller-owned S3-compatible bucket and fresh prefix. Endpoint, region, addressing style, timeout, and
-credentials are caller inputs; the walkthrough creates no bucket and selects no cleanup or retention policy.
+The Files and authenticated S3 walkthroughs drive one shared complete public-API workflow: create, singleton and
+cross-family group commits, deletion, additive Flush, exact adjacent and complete compaction, exact reads and scans,
+close, and cacheless reopen. Their thin provider-specific mains construct fresh provider and DB owners for the seed
+and reopen phases. The authenticated form uses an existing caller-owned S3-compatible bucket and fresh prefix;
+endpoint, region, addressing style, timeout, and credentials are caller inputs, and it creates no bucket or cleanup
+or retention policy.
 The current operational slice covers provider-neutral memory/files backends, HEAD-v2, manifest-v3 roots with explicit
 LSM limits, stable column-family handles, and a synchronous owned-byte runtime sized from persisted per-family/
 database limits. Public synchronous `Flush` publishes and reconciles a complete checkpoint; later calls append one
@@ -28,11 +31,11 @@ immutable manifest and conditional HEAD, and retains exact same-identity reconci
 operation-last overload uses the existing caller-owned `Flush_Operation`; the client-backed synchronous form is a
 literal wait over that state machine. It derives all
 allocation extents from persisted database and family limits; fresh-root and unflushed-suffix calls reject before
-publication because no caller-owned SST identity may be invented. The public files showcase observes additive work,
-checkpoints one root family, confirms the clean boundary, appends a second, writes and observes additive work for
-both, Flushes and confirms the clean boundary, compacts the exact adjacent root-family pair, crosses the persisted
-L0 ceiling, executes the exact observed two-family complete replacement, discards all local state, and recovers
-both families from object storage alone. An
+publication because no caller-owned SST identity may be invented. The shared Files/S3 walkthrough observes additive
+work, checkpoints one root family, confirms the clean boundary, appends a second, writes and observes additive work
+for both, Flushes and confirms the clean boundary, compacts the exact adjacent root-family pair, crosses the
+persisted L0 ceiling, executes the exact observed two-family complete replacement, discards all local state, and
+recovers both families from object storage alone. An
 additive caller-owned `Flush_Operation` drives that same checkpoint protocol directly through a bounded completion
 set, moving one caller-sized unique-buffer token until typed `Finish`. Client-bound synchronous `Flush` is a literal
 owner-driven wait over that operation; memory/files retain the backend-neutral synchronous publisher. Neither path

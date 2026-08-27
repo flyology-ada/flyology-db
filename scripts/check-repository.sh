@@ -12,7 +12,12 @@ test -f docs/qualification/dependency-provenance.md
 test -f docs/architecture/limited-profile.md
 test -f showcases/limited_e2e.gpr
 test -f showcases/src/flyology_db_limited_e2e.adb
+test -f showcases/src/flyology_db_limited_workflow.ads
+test -f showcases/src/flyology_db_limited_workflow.adb
 test -x showcases/run-limited-e2e.sh
+test -f showcases/object_storage_e2e.gpr
+test -f showcases/src/flyology_db_object_storage_e2e.adb
+test -x showcases/run-object-storage-e2e.sh
 test -f oracles/contract/workload.schema.json
 test -x oracles/contract/validate_workload.py
 test -f oracles/contract/canonical-state.md
@@ -103,6 +108,8 @@ grep -q '^name = "flyology_db"$' alire.toml
 grep -q '^gnat = ">=13 & <=16[.]1[.]0"$' alire.toml
 grep -q '^package Flyology.DB is$' src/flyology-db.ads
 grep -q 'Flyology.DB limited end-to-end profile: OK' showcases/src/flyology_db_limited_e2e.adb
+grep -q 'Flyology.DB authenticated full limited workflow passed' \
+  showcases/src/flyology_db_object_storage_e2e.adb
 grep -q 'flyology_object_storage = { path=' alire.toml
 grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' alire.toml
 grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' tests/alire.toml

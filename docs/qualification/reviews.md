@@ -1,5 +1,40 @@
 # Review record
 
+## Shared limited-workflow provider-parity candidate
+
+- Parent: checkpoint-decoder proof-robustness commit `275aa59`.
+- Problem and architecture: the power-loss-durable Files executable carried the complete limited-profile oracle,
+  while the authenticated executable independently duplicated helpers and stopped after one row and one Flush. That
+  made provider qualification easier to drift from the user-facing acceptance claim. One showcase-internal package
+  now owns the complete public-API workflow; thin Files and authenticated S3 mains own only provider construction,
+  binding, deployment inputs, and the separate seed/reopen lifetimes. No new `Flyology.DB` API or compatibility
+  wrapper is introduced.
+- Semantics and ownership: both mains now create fresh provider and `Storage_Context` owners for the seed and reopen
+  phases. Only the Files root or caller-owned S3 bucket/prefix authority crosses that boundary. Both execute the same
+  singleton and cross-family group commits, deletion, additive Flushes, exact adjacent and complete compaction,
+  close, cacheless Open, byte/deletion/scan/sequence/family verification, and failure-without-mutation-retry path.
+  The authenticated CLI, credential inputs, addressing controls, and no-bucket-management policy are unchanged.
+- Constants and surface: all database/family limits, identities, row bytes, and expected outcomes moved unchanged
+  from the qualified Files fixture into the internal workflow. Files retains its established durable-store ceiling
+  and timeout; S3 retains its established four-lease client geometry and caller timeout. None is a library default or
+  newly visible constant. The provider-specific executables remain the only mains and the shared package is linked
+  only into their showcase projects.
+- Subtraction review: the two prior mains totaled 763 lines. The shared workflow plus both thin mains and its small
+  specification total 703 lines, while replacing the smaller parallel S3 scenario with the complete oracle. More
+  importantly, byte conversion, outcome checking, fixture identities, mutation sequence, compaction checks, and
+  reopen verification now have one owner. No alias, adapter layer, flag, alternate workflow, or obsolete helper is
+  retained.
+- Nonformal evidence: both showcase projects pass forced clean builds without a new-source warning; the standalone
+  power-loss-durable Files run passes; `./tests/scripts/test.sh` passes the local engine, authenticated full workflow,
+  crash/recovery corpus, 32 comparative cases, and pinned TidesDB 4/4; and `./tests/scripts/test-s3-matrix.sh` passes
+  all 18 RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite lanes. Repository inventory, shell syntax, diff,
+  and Ada line-width checks are green.
+- Findings rubric: P0 is data loss, security, or certainty failure; P1 is public-contract, ownership, lifecycle,
+  recovery, or provider-parity failure; P2 is maintainability, documentation, or test weakness. The first review
+  fixed P2 findings for an unconsumed failed-Get output, reused transaction objects that obscured lifecycle, stale
+  one-row documentation, and missing shared/object-showcase repository inventory. Re-review finds no actionable
+  P0/P1/P2 finding.
+
 ## Authenticated object-storage walkthrough candidate
 
 - Parent: storage-backed whole-scan migration commit `ac549c0`.

@@ -47,10 +47,12 @@ process-local state loss, one exact-checkpoint append-only family change, and au
 rename/drop/reconfiguration, automatic compaction policy, replicas, TTL, and automatic maintenance remain outside
 that acceptance claim.
 
-A separate public-API-only authenticated walkthrough now covers create, one committed value, Flush, close, and
-cacheless authoritative reopen in an existing caller-owned S3-compatible bucket. All deployment inputs are explicit,
-and the maintained six-provider matrix runs the same executable. This is reproducible integration evidence, not a
-general provider, production, cleanup, performance, or retention claim.
+The Files and public-API-only authenticated walkthroughs now use one shared complete limited-profile workflow. Both
+cover singleton and cross-family group commits, deletion, additive Flush, exact adjacent and complete compaction,
+close, process-local owner loss, authoritative reopen, exact reads, scans, sequence, and family handles. The S3 form
+uses an existing caller-owned bucket and explicit deployment inputs, and the maintained six-provider matrix runs it
+unchanged. This is reproducible integration evidence, not a general provider, production, cleanup, performance, or
+retention claim.
 
 Milestone 3 now has a formal-first and operational write/write validation boundary. A transaction captures the global
 sequence at Begin and must prove every written key unchanged since that snapshot from retained exact history.

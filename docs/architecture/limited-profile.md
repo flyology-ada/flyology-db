@@ -20,14 +20,14 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - An owned `L0_Checkpoint_Requirement` observation that carries the exact changed or nonempty family IDs from that
   same view in stable registry order, without retaining the database or reserving publication authority.
 - Exact caller-selected two- or three-consecutive-run `Compact`, retaining every version/tombstone and all
-  surrounding runs. The maintained Files acceptance scenario selects the two-run form, then crosses the persisted
+  surrounding runs. The maintained shared acceptance workflow selects the two-run form, then crosses the persisted
   L0 ceiling and executes the exact complete-view replacement selected by `Observe_L0_Checkpoint_Requirement`.
 - Synchronous and caller-composable `Add_Column_Family` at an exact checkpoint boundary, with exact
   manifest/transition identities and same-receipt resolution of immutable or HEAD uncertainty.
 - `Outcome_Unknown` receipts resolved only through the original identity; no application transaction or mutation is
   automatically replayed.
 - `Close`, complete loss of process-local DB state, and `Open` recovery solely from authoritative object storage.
-- A provider-neutral power-loss-durable files run of the complete database-level oracle.
+- Provider-neutral power-loss-durable Files and authenticated S3 runs of one shared complete database-level oracle.
 
 The synchronous profile is the first user-facing entry point. Its client-backed Flush and family append wait on the
 same DB operations and provider-owned Object Storage state machines as their caller-composable forms, so this
@@ -35,7 +35,8 @@ boundary does not create a second transport or certainty implementation.
 
 ## Acceptance scenario
 
-One maintained executable must perform the following sequence using only public Flyology.DB APIs:
+One shared showcase-internal workflow, reached through both maintained provider-specific executables, must perform
+the following sequence using only public Flyology.DB APIs:
 
 1. Receive every database identity, object identity, column-family limit, database limit, timeout, provider endpoint,
    bucket, prefix, and credential choice explicitly from its fixture or caller.
@@ -57,13 +58,14 @@ One maintained executable must perform the following sequence using only public 
    handles after recovery.
 9. Close cleanly and report every non-success outcome without retrying a mutation or silently weakening certainty.
 
-The authenticated provider matrix directly exercises checkpoint-bound family append, lost-HEAD-response
-reconciliation through the original receipt, cross-family commit and Flush, compaction, close, and cacheless reopen
-against RustFS, SeaweedFS, MinIO, and Flyology memory, files, and SQLite. The public Files showcase remains the exact
-complete-local-loss acceptance workflow and directly drives both additive and complete checkpoint requirements
-before reopen. The matrix is a provider qualification of the same family-registry and recovery spine, not a claim
-that its transport harness is the showcase executable unchanged. S3, HTTP, signing, retry, and endpoint policy
-remain outside Flyology.DB.
+The public Files showcase and every authenticated provider-matrix lane call the same complete workflow. Each creates
+the database, appends a family, performs cross-family commit and Flush, compacts the exact adjacent pair, performs
+the observed complete replacement, closes, discards every provider/adapter/DB owner, reopens through a fresh scope,
+and verifies identical bytes, deletion, scan order, sequence, and family handles. The provider shells differ only
+where authority genuinely differs: Files creates its temporary bucket, while S3 requires an existing caller-owned
+bucket plus endpoint, credentials, region, addressing style, and fresh prefix. RustFS, SeaweedFS, MinIO, and
+Flyology memory, files, and SQLite therefore qualify the database-level acceptance oracle itself. S3, HTTP, signing,
+retry, and endpoint policy remain outside Flyology.DB.
 
 ## Explicit exclusions
 
@@ -81,11 +83,11 @@ Expansion starts only after the acceptance scenario, deterministic suite, provid
 TLAPS models, selected SPARK proof, API documentation, and findings cycle are green on one exact source/dependency
 tree.
 
-The additive authenticated walkthrough reuses this profile's public create, transaction, Flush, close, and Open
-calls against an existing S3-compatible bucket. The caller supplies a fresh prefix, endpoint, signing region,
-addressing style, positive timeout, and credentials. The executable neither creates nor lists the bucket, retries a
-mutation, generates an application identity, or chooses cleanup/retention policy. Its fixed one-row limits and
-identities are isolated showcase geometry and are not database defaults.
+The authenticated walkthrough reuses this profile's exact shared workflow against an existing S3-compatible bucket.
+The caller supplies a fresh prefix, endpoint, signing region, addressing style, positive timeout, and credentials.
+The executable neither creates nor lists the bucket, retries a mutation, generates an application identity, nor
+chooses cleanup/retention policy. All persisted limits, row bytes, and identities remain isolated deterministic
+showcase geometry and are not database defaults.
 
 ## First additive expansion
 
