@@ -1498,6 +1498,81 @@ check_trace \
 grep -q 'All 13 obligations proved.' \
   "$temporary_root/tlaps-authenticated-scan-initialization.log"
 
+#  Three ordered runs, four keys, three live values, and page budgets zero
+#  through two are finite qualification geometry. They are not run, key,
+#  value, page, request, retry, cache, prefetch, or allocation limits.
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 \
+  -metadir "$temporary_root/tlc-storage-backed-paged-scan-states" \
+  -config StorageBackedPagedScan.cfg StorageBackedPagedScan \
+  >"$temporary_root/tlc-storage-backed-paged-scan.log" 2>&1
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+! grep -q '^Warning:' "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -q \
+  '3341 states generated, 1111 distinct states found, 0 states left on queue.' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -q 'The depth of the complete state graph search is 20.' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -Eq '^<BeginPage .*: 63:2220$' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -Eq '^<FetchHead .*: 189:250$' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -Eq '^<SelectValue .*: 31:31$' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -Eq '^<SelectTombstone .*: 44:44$' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -Eq '^<PublishPage .*: 92:104$' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -Eq '^<CompleteEmpty .*: 24:24$' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -Eq '^<RejectCapacity .*: 13:13$' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -Eq '^<RejectRead .*: 327:327$' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+grep -Eq '^<RejectAllocation .*: 327:327$' \
+  "$temporary_root/tlc-storage-backed-paged-scan.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-storage-backed-paged-scan-skip-probe-states" \
+  -config StorageBackedPagedScanSkipProbe.cfg StorageBackedPagedScanSkipProbe \
+  >"$temporary_root/tlc-storage-backed-paged-scan-skip-probe.log" 2>&1
+storage_backed_paged_scan_skip_probe_status=$?
+set -e
+test "$storage_backed_paged_scan_skip_probe_status" -eq 12
+grep -q 'Invariant Safety is violated.' \
+  "$temporary_root/tlc-storage-backed-paged-scan-skip-probe.log"
+! grep -q '^Warning:' \
+  "$temporary_root/tlc-storage-backed-paged-scan-skip-probe.log"
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-storage-backed-paged-scan-witness-states" \
+  -config StorageBackedPagedScanWitness.cfg \
+  -dumpTrace json "$temporary_root/storage-backed-paged-scan-witness.json" \
+  StorageBackedPagedScanWitness \
+  >"$temporary_root/tlc-storage-backed-paged-scan-witness.log" 2>&1
+storage_backed_paged_scan_witness_status=$?
+set -e
+test "$storage_backed_paged_scan_witness_status" -eq 12
+grep -q 'Invariant WitnessPending is violated.' \
+  "$temporary_root/tlc-storage-backed-paged-scan-witness.log"
+! grep -q '^Warning:' \
+  "$temporary_root/tlc-storage-backed-paged-scan-witness.log"
+check_trace \
+  "$temporary_root/storage-backed-paged-scan-witness.json" \
+  StorageBackedPagedScanWitness
+
+"$tlapm" --cache-dir "$temporary_root/tlapm-storage-backed-paged-scan-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/StorageBackedPagedScanSafetyProof.tla" \
+  >"$temporary_root/tlaps-storage-backed-paged-scan.log" 2>&1
+grep -q 'All 8 obligations proved.' \
+  "$temporary_root/tlaps-storage-backed-paged-scan.log"
+
 #  Three ordered runs, two keys, and four values are finite qualification
 #  geometry for newest-visible fixed-snapshot selection. They are not a run
 #  ceiling, key/value limit, request count, retry policy, or public default.
@@ -1628,6 +1703,10 @@ printf '%s\n' "  Authenticated scan initialization TLC 24 distinct states, depth
 printf '%s\n' "  Authenticated scan initialization TLAPS 13/13 obligations"
 printf '%s\n' "  Exact accumulated-source publication trace canonical"
 printf '%s\n' "  Negative skipped-entry initialization probe detected"
+printf '%s\n' "  Storage-backed paged scan TLC 1111 distinct states, depth 20"
+printf '%s\n' "  Storage-backed paged scan TLAPS 8/8 obligations"
+printf '%s\n' "  One-head-per-run page continuation trace canonical"
+printf '%s\n' "  Negative skipped-visible-row probe detected"
 printf '%s\n' "  Lazy checkpoint selector TLC 37 distinct states, depth 6"
 printf '%s\n' "  Lazy checkpoint selector TLAPS 13/13 obligations"
 printf '%s\n' "  Generation-bound allocation/replacement trace canonical"

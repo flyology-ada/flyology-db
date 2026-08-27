@@ -48,6 +48,14 @@ test -f formal/tla/AuthenticatedScanInitializationWitness.tla
 test -f formal/tla/AuthenticatedScanInitializationWitness.cfg
 test -f formal/tla/AuthenticatedScanInitializationSafetyProof.tla
 test -f formal/tla/traces/AuthenticatedScanInitializationWitness.trace.json
+test -f formal/tla/StorageBackedPagedScan.tla
+test -f formal/tla/StorageBackedPagedScan.cfg
+test -f formal/tla/StorageBackedPagedScanSkipProbe.tla
+test -f formal/tla/StorageBackedPagedScanSkipProbe.cfg
+test -f formal/tla/StorageBackedPagedScanWitness.tla
+test -f formal/tla/StorageBackedPagedScanWitness.cfg
+test -f formal/tla/StorageBackedPagedScanSafetyProof.tla
+test -f formal/tla/traces/StorageBackedPagedScanWitness.trace.json
 test -x oracles/adapters/tidesdb/adapter.py
 test -x oracles/adapters/tidesdb/run_workload.py
 test -x oracles/adapters/tidesdb/scripts/build.sh
@@ -101,10 +109,11 @@ grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' tests/alire.toml
 ! grep -Eq '^flyology_tla = \{ (path|url)=' alire.toml
 ! grep -Eq '^flyology_tla = \{ (path|url)=' tests/alire.toml
 # The canonical trace/2 inventory is the established 36-artifact harness plus
-# the LazySSTNextEntry historical-tombstone and AuthenticatedScanInitialization
-# accumulated-source witnesses. Thirty-eight is therefore a derived
+# the LazySSTNextEntry historical-tombstone, AuthenticatedScanInitialization
+# accumulated-source, and StorageBackedPagedScan continuation witnesses.
+# Thirty-nine is therefore a derived
 # fail-closed repository-shape oracle, not a trace, state, or product limit.
-test "$(find formal/tla/traces -type f -name '*.trace.json' | wc -l | tr -d ' ')" -eq 38
+test "$(find formal/tla/traces -type f -name '*.trace.json' | wc -l | tr -d ' ')" -eq 39
 for trace in formal/tla/traces/*.trace.json
 do
   grep -q '"format":"flyology[.]tla[.]trace/2"' "$trace"

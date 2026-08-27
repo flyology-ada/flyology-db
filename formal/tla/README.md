@@ -334,6 +334,30 @@ Neither artifact proves SST authentication, parsing, the physical merge,
 provider behavior, allocation implementation, progress, Ada execution,
 refinement, or constant-memory paging.
 
+`StorageBackedPagedScan.tla` composes authenticated next-entry reads directly
+with page publication. Each authoritative or active candidate cursor view
+retains at most one current head per run, resolves newest-source precedence,
+suppresses tombstones, preserves authoritative heads between calls, and
+publishes only a maximal visible prefix within the caller-selected row budget.
+Failure-atomic exploration retains the prior authoritative view while the
+candidate advances, so the model proves storage proportional to run count, not
+a single total head per run during an active call. Terminal completion additionally requires physical
+exhaustion of every run, so emitting the last visible row does not skip a later
+masking tombstone. Read, allocation, and first-row capacity rejection preserve
+the authoritative cursor, heads, prior page, and Serializable predicate
+authority. The skipped-visible-row probe must violate `Safety`; the canonical
+witness publishes `1C,2B` and then `3B` while suppressing key 4.
+
+`StorageBackedPagedScanSafetyProof.tla` proves eight obligations for exact
+prefix publication, cursor/head projection, the one-head-per-run bound,
+physical completion, and rejection atomicity over arbitrary frozen row,
+cursor, and head domains. Its `PageFor`, `CursorFor`, and `HeadsFor` functions
+are explicit contracts supplied by the concrete selector. Neither artifact
+proves SST parsing/authentication, byte-budget arithmetic, provider behavior,
+allocation, progress, Ada execution, or refinement. The finite run, key,
+value, and page-budget dimensions are qualification geometry, not product
+limits or defaults.
+
 `LazyCheckpointRead.tla` composes the one-run result across one exact
 oldest-to-newest run slice at a fixed snapshot. TLC exhausts 37 distinct states
 at depth 6 with nonzero coverage for future-run skipping, authenticated
@@ -516,5 +540,7 @@ The range-normalization lane adds 3,419 states at depth 4, one canonical bridge/
 negative probe, and 19 of 19 strict TLAPS obligations. The paged-scan lane adds 341 states at depth 6, one canonical
 fixed-view/backpressure trace, skipped-key and nonmaximal-page negative probes, full semantic-action coverage, and
 24 of 24 strict TLAPS obligations.
+The storage-backed paged-scan lane adds 1,111 distinct states at depth 20, one canonical two-page continuation
+trace, one required skipped-visible-row negative probe, exact action coverage, and 8 of 8 strict TLAPS obligations.
 The lazy-SST-read lane adds 16 states at depth 6, one canonical allocation/replacement trace, stale-generation and
 frame-swap negative probes, full semantic-action coverage, and 41 of 41 strict TLAPS obligations.

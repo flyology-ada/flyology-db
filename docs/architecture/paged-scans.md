@@ -97,6 +97,18 @@ probes skip the first visible key and publish a strict prefix when a larger page
 executable witness reconstructs one frozen view after concurrent replacement, resurrection, and deletion.
 `PagedScanSafetyProof.tla` proves the abstract prefix, completion, and failure-atomicity kernel.
 
+`formal/tla/StorageBackedPagedScan.tla` is the design gate for replacing the retained selected-entry set with
+direct page advancement over immutable runs. Each authoritative or active candidate cursor view retains at most
+one authenticated current head per run, resolves newest-source precedence, suppresses tombstones, and preserves
+exact per-run positions and authoritative heads between pages. Failure-atomic exploration may retain the prior
+authoritative view while a candidate advances, so this proves storage proportional to selected run count rather
+than a single total head per run during an active call.
+Publishing the last visible row is not terminal until all remaining physical entries, including masking
+tombstones, have been consumed. The negative probe skips one visible row and must violate safety; the checked
+witness crosses a page boundary while preserving the exact merged prefix. Its arbitrary-domain proof kernel binds
+each visible-prefix position to exact cursor and head projections and proves the derived per-view head bound.
+This formal design does not itself implement or prove the Ada/Object Storage refinement.
+
 The model dimensions are qualification geometry, not product defaults. The formal lane does not prove endpoint byte
 comparison, transaction mutation-version validation, allocation, source capture, concurrency, progress, the Ada
 implementation, or refinement. The current Ada implementation captures one bounded in-memory physical source

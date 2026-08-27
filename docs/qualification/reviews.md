@@ -1,5 +1,43 @@
 # Review record
 
+## Storage-backed paged-scan formal candidate
+
+- Parent: authenticated next-entry scan initialization commit `3e425b8`.
+- Scope: freeze the intended storage-backed continuation algorithm before changing the public Ada scan operation.
+  Each authoritative or active candidate cursor view retains one authenticated current head per selected immutable
+  run, resolves equal keys by newest-run precedence, suppresses tombstones, publishes maximal visible prefixes under
+  explicit page budgets, and preserves exact per-run positions and authoritative heads between page calls. Active
+  failure-atomic exploration may retain both prior and candidate views, so the formal claim is storage proportional
+  to selected run count, not a single total head per run during the call. Read, allocation, and first-row
+  capacity rejection leave the authoritative cursor, prior page, emitted prefix, and predicate authority unchanged.
+  No Ada API, default, capacity, retry, task, cache, prefetch, or allocation policy is introduced by this unit.
+- Formal boundary: the concrete three-run model checks page-boundary continuation, physical exhaustion after the
+  final visible row, newest-source selection, tombstone masking, and rejection atomicity. Its negative probe skips
+  one visible row and must violate `Safety`; its witness publishes two pages while suppressing the final masked key.
+  The arbitrary-domain kernel proves exact prefix/cursor/head projection, a derived per-view head bound, physical
+  completion, and failure atomicity in eight obligations. Neither lane proves SST parsing or authentication,
+  byte-budget arithmetic, provider behavior, allocation, progress, Ada execution, or refinement.
+- Findings cycle: P0 denotes data loss, durable-authority, or safety failure; P1 denotes an incorrect selection,
+  continuation, completion, ownership, capacity, or failure property; P2 denotes a maintainability, documentation,
+  or qualification weakness. Diagnostic review fixed one P2 setup omission by importing the standard `FiniteSets`
+  module that owns `Cardinality`. TLC then exposed and the model fixed one P1 invariant defect: terminal completion
+  had been equated with emitting every visible row, even though an older masking tombstone could remain physically
+  unread. `DoneExact` now additionally requires exhaustion of every run; no transition or safety claim was
+  weakened. Main TLC exhausts 1,111 distinct states at depth 20 with every reviewed action count matched, the
+  negative probe fails exactly on `Safety`, the two-page witness fails exactly on `WitnessPending`, and an
+  outside-sandbox strict-SMT diagnostic proves 8/8 kernel obligations. The maintained update-mode wrapper passes
+  every lane and generates a validated 17-step trace/2 witness; the repository-shape gate accepts the derived
+  39-artifact inventory. A repeated wording sweep fixes one P2 overclaim by distinguishing the separately bounded
+  authoritative and active candidate cursor views from a stronger single-total-head claim. The complete nonformal
+  deterministic suite passes repository integrity, client-backed create/commit/Flush/compaction/refresh/reopen,
+  files crash/recovery, the limited end-to-end profile, 32 adapter tests, and pinned TidesDB 4/4. The final
+  update-mode and ordinary maintained TLA runners both exit zero with byte-stable artifacts, every maintained
+  model/action/negative/witness lane green, and 393/393 total TLAPS obligations proved. The maintained GNATprove
+  runner proves 1,097/1,097 checks (168 flow and 929 prover), with zero justified or unproved checks, zero warnings
+  and pragma Assume statements in every analyzed unit, and a maximum of 6,890 proof steps. Pre-, intermediate,
+  and post-run executable-aware host audits are clean. This evidence qualifies the formal design and its maintained
+  gates; it does not expand the stated boundary to Ada execution or refinement.
+
 ## Authenticated next-entry scan initialization candidate
 
 - Parent: lazy SST next-visible-entry commit `4dad73f`.
