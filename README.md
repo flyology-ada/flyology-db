@@ -35,6 +35,10 @@ confirmed immutable authority can admit its exact pending HEAD once, while possi
 through reads. Both the receipt and exact scratch token remain operation-owned until typed `Finish`; the client-
 backed synchronous overload is a wait over that operation, while the storage-neutral synchronous form remains direct
 and source-compatible.
+Receipt-driven `Resolve_Flush` likewise reuses `Flush_Operation`, its operation-last initiation, and typed `Finish`.
+It reconstructs only the original immutable plan or transfers the same checkpoint admission into bounded read-only
+recovery; the buffer-owned client adapter waits that state machine, while memory/files retain the established direct
+resolver. No mutation is replayed and no new publication identity is selected.
 An
 exact-checkpoint `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
 immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. Its additive

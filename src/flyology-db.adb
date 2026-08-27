@@ -2137,6 +2137,7 @@ package body Flyology.DB is
       Reading_Create_Manifest,
       Putting_Head,
       Reading_Create_Reconciliation,
+      Reading_Flush_Reconciliation,
       Flush_Terminal);
 
    --  Private constructor authority only. These positions are never persisted
@@ -2197,6 +2198,9 @@ package body Flyology.DB is
       --  vocabulary, but authenticates the retained immutable manifest before
       --  either one permitted HEAD admission or read-only reconciliation.
       Resolving_Create    : Boolean := False;
+      --  Ordinary resolution reconstructs only the receipt-selected plan or
+      --  transfers its checkpoint admission to bounded read-only recovery.
+      Resolving_Flush     : Boolean := False;
       --  Fresh-state additive mode is only a vacant initializer. Every Start
       --  assigns its explicit private constructor-selected algorithm before
       --  the driver can run.
@@ -8681,7 +8685,8 @@ package body Flyology.DB is
    type Recovery_Driver_Mode is
      (Refresh_Existing_Database,
       Open_Closed_Database,
-      Reconcile_Create_Publication);
+      Reconcile_Create_Publication,
+      Reconcile_Flush_Publication);
 
    type Refresh_Driver_State is record
       Mode                  : Recovery_Driver_Mode := Refresh_Existing_Database;
@@ -8691,6 +8696,7 @@ package body Flyology.DB is
       Current_Generation    : Generation_Value;
       Expected_Root         : Manifests.Manifest := Manifests.Empty_Manifest;
       Expected_LSM          : Engine_LSM_Authority := No_LSM_Authority;
+      Expected_Flush        : Flush_Receipt;
       Observed_Head_Is_Legacy : Boolean := False;
       Traversal             : Recovery_Traversal;
       Request               : Recovery_Request;
@@ -8700,6 +8706,7 @@ package body Flyology.DB is
       Precheck_Result       : Outcome_Code := Success;
       Resolve_Admitted      : Boolean := False;
       Open_Admitted         : Boolean := False;
+      Checkpoint_Admitted   : Boolean := False;
    end record;
 
    procedure Free_Refresh_Driver_State is new
@@ -13526,6 +13533,9 @@ package body Flyology.DB is
          elsif Item.Driver_State.Open_Admitted then
             Item.Driver_State.Open_Admitted := False;
             Item.Item.Life.Abort_Open;
+         elsif Item.Driver_State.Checkpoint_Admitted then
+            Item.Driver_State.Checkpoint_Admitted := False;
+            Item.Item.Life.Cancel_Checkpoint;
          end if;
          Release_Recovery (Item.Driver_State.Traversal);
          Free_Refresh_Driver_State (Item.Driver_State);
@@ -13545,6 +13555,9 @@ package body Flyology.DB is
          elsif Item.Driver_State.Open_Admitted then
             Item.Driver_State.Open_Admitted := False;
             Item.Item.Life.Abort_Open;
+         elsif Item.Driver_State.Checkpoint_Admitted then
+            Item.Driver_State.Checkpoint_Admitted := False;
+            Item.Item.Life.Cancel_Checkpoint;
          end if;
          Release_Recovery (Item.Driver_State.Traversal);
          Item.Driver_State.Phase := Refresh_Terminal;
@@ -13704,6 +13717,7 @@ package body Flyology.DB is
       New_State           : Engine_State_Access := null;
       Installed           : Boolean := False;
       Stamp               : Engine_Incarnation;
+      Fault               : Storage_Fault_Mode;
       Result              : Outcome_Code;
    begin
       Finish_Recovery
@@ -13728,6 +13742,67 @@ package body Flyology.DB is
                and then Result not in Corrupt | Unsupported_Format | Capacity_Exceeded
              then Outcome_Unknown
              else Result));
+         return;
+      elsif State.Mode = Reconcile_Flush_Publication then
+         if Checkpoint.Manifest /= null
+           and then To_Identifier (Checkpoint.Manifest.Base.Manifest_ID) =
+             State.Expected_Flush.Manifest_ID
+           and then Checkpoint.Manifest.Replay_Boundary =
+             Interfaces.Unsigned_64 (State.Expected_Flush.Replay_Boundary)
+           and then
+             (Observed_Head = State.Expected_Flush.Attempted_Head
+              or else
+                (Observed_Head.Transition_Number >
+                   State.Expected_Flush.Attempted_Head.Transition_Number
+                 and then Observed_Head.Latest_Manifest = State.Expected_Flush.Manifest_ID))
+         then
+            Stamp := State.Expected_Flush.Incarnation;
+            Consume_Fault (Item.Storage.all, Before_Local_Activation, Fault);
+            if Fault = No_Fault then
+               Allocate_Engine
+                 (Item.Item.Life'Unchecked_Access,
+                  Item.Storage,
+                  Observed_Head,
+                  Observed_Generation,
+                  Manifest,
+                  LSM_Authority,
+                  Checkpoint,
+                  Stamp,
+                  History,
+                  History_Count,
+                  New_State,
+                  Result);
+            else
+               Release_History (History, History_Count);
+               Release_Checkpoint_Plan (Checkpoint);
+               Result := Local_Activation_Failed;
+            end if;
+            if Result = Success then
+               Item.Item.Life.Finish_Checkpoint (New_State, Observed_Head.Highest);
+               Installed := True;
+               State.Checkpoint_Admitted := False;
+               Stop_Replaced_Engine (State.Engine);
+               State.Engine := null;
+               Complete_Composable_Refresh (Item, Success);
+            else
+               Complete_Composable_Refresh (Item, Local_Activation_Failed);
+            end if;
+         elsif Observed_Head = State.Expected_Flush.Attempted_Head then
+            Release_History (History, History_Count);
+            Release_Checkpoint_Plan (Checkpoint);
+            Complete_Composable_Refresh (Item, Corrupt);
+         elsif Observed_Head.Transition_Number >=
+           State.Expected_Flush.Attempted_Head.Transition_Number
+         then
+            Release_History (History, History_Count);
+            Release_Checkpoint_Plan (Checkpoint);
+            State.Engine.Gate.Fence;
+            Complete_Composable_Refresh (Item, Stale_Writer);
+         else
+            Release_History (History, History_Count);
+            Release_Checkpoint_Plan (Checkpoint);
+            Complete_Composable_Refresh (Item, Outcome_Unknown);
+         end if;
          return;
       elsif State.Mode in Open_Closed_Database | Reconcile_Create_Publication
         and then Observed_Head.Database_ID /= State.Database_ID
@@ -14178,7 +14253,9 @@ package body Flyology.DB is
       Uncertain : Boolean;
       Fenced    : Boolean;
    begin
-      if State.Mode in Open_Closed_Database | Reconcile_Create_Publication then
+      if State.Mode in
+        Open_Closed_Database | Reconcile_Create_Publication | Reconcile_Flush_Publication
+      then
          Start_Recovery (State.Traversal, State.Database_ID, Zero_Identifier);
          Advance_Composable_Refresh (Item);
       else
@@ -14252,7 +14329,8 @@ package body Flyology.DB is
    begin
       if Event = Flyology.Operations.Start_Operation
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Mode in Open_Closed_Database | Reconcile_Create_Publication
+        and then Item.Driver_State.Mode in
+          Open_Closed_Database | Reconcile_Create_Publication | Reconcile_Flush_Publication
       then
          Prepare_Composable_Refresh (Item);
       elsif Event in Flyology.Operations.Start_Operation | Flyology.Operations.Source_Ready then
@@ -14353,14 +14431,19 @@ package body Flyology.DB is
       Database_ID    : Database_Identifier;
       Expected_Root  : Manifests.Manifest := Manifests.Empty_Manifest;
       Expected_LSM   : Engine_LSM_Authority := No_LSM_Authority;
+      Expected_Flush : Flush_Receipt := (others => <>);
+      Checkpoint_Engine : Engine_State_Access := null;
       Open_Already_Admitted : Boolean := False;
-      Open_Admission_Consumed : out Boolean)
+      Open_Admission_Consumed : out Boolean;
+      Checkpoint_Already_Admitted : Boolean := False;
+      Checkpoint_Admission_Consumed : out Boolean)
    is
       Result  : Outcome_Code;
       Moved   : Boolean := False;
       Started : Boolean := False;
    begin
       Open_Admission_Consumed := False;
+      Checkpoint_Admission_Consumed := False;
       if Operation.Storage.HTTP_Client /= Operation.HTTP
         or else Operation.Storage.Client_Identity = null
       then
@@ -14398,6 +14481,8 @@ package body Flyology.DB is
          Operation.Driver_State.Database_ID := Database_ID;
          Operation.Driver_State.Expected_Root := Expected_Root;
          Operation.Driver_State.Expected_LSM := Expected_LSM;
+         Operation.Driver_State.Expected_Flush := Expected_Flush;
+         Operation.Driver_State.Engine := Checkpoint_Engine;
          begin
             --  These access values borrow only operation discriminant owners
             --  and its inline scratch handle. The public contract keeps them
@@ -14451,6 +14536,17 @@ package body Flyology.DB is
                   Operation.Driver_State.Precheck_Result := Result;
                end if;
             end if;
+         elsif Mode = Reconcile_Flush_Publication then
+            if Is_Zero (Database_ID)
+              or else not Checkpoint_Already_Admitted
+              or else Checkpoint_Engine = null
+              or else Checkpoint_Engine.Storage /= Operation.Storage
+            then
+               Operation.Driver_State.Precheck_Result := Invalid_State;
+            else
+               Operation.Driver_State.Checkpoint_Admitted := True;
+               Checkpoint_Admission_Consumed := True;
+            end if;
          else
             Operation.Item.Life.Begin_Composable_Resolve
               (Operation.Driver_State.Engine, Result);
@@ -14503,6 +14599,13 @@ package body Flyology.DB is
             Operation.Driver_State.Open_Admitted := False;
             Open_Admission_Consumed := False;
          end if;
+         if Checkpoint_Already_Admitted
+           and then Operation.Driver_State /= null
+           and then Operation.Driver_State.Checkpoint_Admitted
+         then
+            Operation.Driver_State.Checkpoint_Admitted := False;
+            Checkpoint_Admission_Consumed := False;
+         end if;
          Release_Refresh_Driver (Operation);
          if Operation.Read_Child /= null then
             Free_Whole_Get_Operation (Operation.Read_Child);
@@ -14525,6 +14628,7 @@ package body Flyology.DB is
       Operation      : in out Refresh_Operation)
    is
       Open_Admission_Consumed : Boolean;
+      Checkpoint_Admission_Consumed : Boolean;
    begin
       Start_Composable_Recovery
         (Payload_Buffer,
@@ -14532,7 +14636,8 @@ package body Flyology.DB is
          Operation,
          Refresh_Existing_Database,
          Zero_Database_ID,
-         Open_Admission_Consumed => Open_Admission_Consumed);
+         Open_Admission_Consumed       => Open_Admission_Consumed,
+         Checkpoint_Admission_Consumed => Checkpoint_Admission_Consumed);
    end Refresh_Replica;
 
    procedure Open
@@ -14542,6 +14647,7 @@ package body Flyology.DB is
       Operation      : in out Open_Operation)
    is
       Open_Admission_Consumed : Boolean;
+      Checkpoint_Admission_Consumed : Boolean;
    begin
       Start_Composable_Recovery
         (Payload_Buffer,
@@ -14549,7 +14655,8 @@ package body Flyology.DB is
          Refresh_Operation (Operation),
          Open_Closed_Database,
          Database_ID,
-         Open_Admission_Consumed => Open_Admission_Consumed);
+         Open_Admission_Consumed       => Open_Admission_Consumed,
+         Checkpoint_Admission_Consumed => Checkpoint_Admission_Consumed);
    end Open;
 
    procedure Finish
@@ -15071,6 +15178,7 @@ package body Flyology.DB is
    procedure Start_Immutable_Read (Item : in out Flush_Operation);
    procedure Start_Create_Manifest_Confirmation (Item : in out Flush_Operation);
    procedure Start_Create_Reconciliation (Item : in out Flush_Operation);
+   procedure Start_Flush_Reconciliation (Item : in out Flush_Operation);
 
    procedure Start_Current_Put (Item : in out Flush_Operation) is
       State : Flush_Driver_State renames Item.Driver_State.all;
@@ -15561,6 +15669,7 @@ package body Flyology.DB is
    procedure Start_Create_Reconciliation (Item : in out Flush_Operation) is
       State                   : Flush_Driver_State renames Item.Driver_State.all;
       Open_Admission_Consumed : Boolean;
+      Checkpoint_Admission_Consumed : Boolean;
    begin
       if not State.Create_Open_Admitted then
          raise Program_Error with "Create reconciliation lost its lifecycle admission";
@@ -15585,8 +15694,9 @@ package body Flyology.DB is
          Item.Final_Create_Receipt.Database_ID,
          State.Plan.Manifest.Base,
          To_Engine_LSM_Authority (State.Plan.Manifest.all),
-         Open_Already_Admitted   => True,
-         Open_Admission_Consumed => Open_Admission_Consumed);
+         Open_Already_Admitted         => True,
+         Open_Admission_Consumed       => Open_Admission_Consumed,
+         Checkpoint_Admission_Consumed => Checkpoint_Admission_Consumed);
       if Open_Admission_Consumed then
          State.Create_Open_Admitted := False;
       end if;
@@ -15643,6 +15753,83 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Outcome_Unknown);
       end if;
    end Complete_Create_Reconciliation;
+
+   procedure Start_Flush_Reconciliation (Item : in out Flush_Operation) is
+      State                         : Flush_Driver_State renames Item.Driver_State.all;
+      Open_Admission_Consumed       : Boolean;
+      Checkpoint_Admission_Consumed : Boolean;
+   begin
+      if not State.Checkpoint_Admitted then
+         raise Program_Error with "Flush reconciliation lost its lifecycle admission";
+      end if;
+      if Item.Recovery_Child = null then
+         Item.Recovery_Child :=
+           new Refresh_Operation
+             (Item.Set.all'Unchecked_Access,
+              Item.Item.all'Unchecked_Access,
+              Item.Storage.all'Unchecked_Access,
+              Item.HTTP.all'Unchecked_Access,
+              Item.Payload_Pool.all'Unchecked_Access,
+              (if Item.Cancellation = null
+               then null
+               else Item.Cancellation.all'Unchecked_Access));
+      end if;
+      Start_Composable_Recovery
+        (Payload_Buffer                 => Item.Payload,
+         Timeout                        => Remaining_Time (Item.Deadline),
+         Operation                      => Item.Recovery_Child.all,
+         Mode                           => Reconcile_Flush_Publication,
+         Database_ID                    => Item.Final_Receipt.Database_ID,
+         Expected_Flush                 => Item.Final_Receipt,
+         Checkpoint_Engine              => State.Engine,
+         Open_Admission_Consumed        => Open_Admission_Consumed,
+         Checkpoint_Already_Admitted    => True,
+         Checkpoint_Admission_Consumed  => Checkpoint_Admission_Consumed);
+      if Checkpoint_Admission_Consumed then
+         State.Checkpoint_Admitted := False;
+      end if;
+      State.Phase := Reading_Flush_Reconciliation;
+      Flyology.Operations.Continue_After (Item, Item.Recovery_Child.all);
+   exception
+      when Storage_Error =>
+         Complete_Composable_Flush (Item, Capacity_Exceeded);
+      when Error : others =>
+         Fail_Composable_Flush (Item, Error);
+   end Start_Flush_Reconciliation;
+
+   procedure Complete_Flush_Reconciliation (Item : in out Flush_Operation) is
+      Result : Outcome_Code := Outcome_Unknown;
+   begin
+      begin
+         Finish (Item.Recovery_Child.all, Result, Item.Payload);
+         Flyology.Operations.Release (Item.Recovery_Child.all);
+      exception
+         when others =>
+            if Item.Recovery_Child /= null
+              and then Flyology.Operations.Id (Item.Recovery_Child.all) /= 0
+              and then not Flyology.Operations.Is_Active (Item.Recovery_Child.all)
+              and then not Flyology.Operations.Is_Terminal (Item.Recovery_Child.all)
+            then
+               Flyology.Operations.Release (Item.Recovery_Child.all);
+            end if;
+            Result := Outcome_Unknown;
+      end;
+      if Item.Recovery_Child /= null then
+         Free_Refresh_Operation (Item.Recovery_Child);
+      end if;
+      case Result is
+         when Success =>
+            Item.Driver_State.Engine := null;
+            Item.Final_Receipt.Phase := Flush_Resolved;
+         when Stale_Writer =>
+            Item.Final_Receipt.Phase := Flush_Resolved;
+         when Local_Activation_Failed =>
+            Item.Final_Receipt.Phase := Flush_Head_Confirmed;
+         when others =>
+            null;
+      end case;
+      Complete_Composable_Flush (Item, Result);
+   end Complete_Flush_Reconciliation;
 
    procedure Complete_Head_Put
      (Item    : in out Flush_Operation;
@@ -20142,6 +20329,8 @@ package body Flyology.DB is
    end Finalize;
 
    procedure Start_Next_Selected_Head (Item : in out Flush_Operation);
+   function Plan_Matches_Receipt
+     (Plan : Checkpoint_Plan; Head : Head_Snapshot; Receipt : Flush_Receipt) return Boolean;
 
    procedure Complete_Selected_Plan (Item : in out Flush_Operation) is
       State        : Flush_Driver_State renames Item.Driver_State.all;
@@ -20180,17 +20369,28 @@ package body Flyology.DB is
       State.Runs (1) :=
         (Family_ID => Column_Family_ID (State.Plan.Manifest.Base.Families (Family_Index).ID),
          Run_ID    => State.Output_Run_ID);
-      Initialize_Flush_Receipt
-        (State.Engine,
-         State.Plan,
-         State.Runs (1 .. 1),
-         State.Manifest_ID,
-         State.Transition_ID,
-         Item.Final_Receipt,
-         Result,
-         Merge_Older_Run_ID => State.Older_Run_ID,
-         Merge_Middle_Run_ID => State.Middle_Run_ID,
-         Merge_Newer_Run_ID => State.Newer_Run_ID);
+      if State.Resolving_Flush then
+         if Item.Final_Receipt.Run_Total /= 1
+           or else Item.Final_Receipt.Runs (1).Family_ID /= State.Runs (1).Family_ID
+           or else Item.Final_Receipt.Runs (1).Run_ID /= State.Runs (1).Run_ID
+           or else not Plan_Matches_Receipt
+             (State.Plan, State.Selected_Head, Item.Final_Receipt)
+         then
+            Result := Invalid_State;
+         end if;
+      else
+         Initialize_Flush_Receipt
+           (State.Engine,
+            State.Plan,
+            State.Runs (1 .. 1),
+            State.Manifest_ID,
+            State.Transition_ID,
+            Item.Final_Receipt,
+            Result,
+            Merge_Older_Run_ID => State.Older_Run_ID,
+            Merge_Middle_Run_ID => State.Middle_Run_ID,
+            Merge_Newer_Run_ID => State.Newer_Run_ID);
+      end if;
       if Result = Success then
          Prepare_Flush_Images (Item, State, Result);
       end if;
@@ -20603,6 +20803,31 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Timed_Out);
          return;
       end if;
+      if State.Resolving_Flush then
+         declare
+            Head       : Head_Snapshot;
+            Generation : Generation_Value;
+            Uncertain  : Boolean;
+            Fenced     : Boolean;
+         begin
+            State.Engine.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+            if Uncertain then
+               Complete_Composable_Flush (Item, Outcome_Unknown);
+               return;
+            elsif Item.Final_Receipt.Incarnation /= State.Engine.Gate.Current_Incarnation
+              or else not Fenced
+              or else Head /= Item.Final_Receipt.Expected_Head
+              or else Generation /= Item.Final_Receipt.Expected_Generation
+            then
+               Complete_Composable_Flush (Item, Invalid_State);
+               return;
+            end if;
+         end;
+      end if;
+      if State.Resolving_Flush and then Item.Final_Receipt.Phase /= Objects_Unknown then
+         Start_Flush_Reconciliation (Item);
+         return;
+      end if;
       if State.Mode in Adjacent_Merge_Plan | Three_Run_Merge_Plan then
          Prepare_Selected_Merge_Source
            (State.Engine,
@@ -20615,7 +20840,8 @@ package body Flyology.DB is
             State.Selected_Base,
             State.Selected_Head,
             State.Selected_Source,
-            Result);
+            Result,
+            Allow_Fenced => State.Resolving_Flush);
          if Result /= Success then
             Complete_Composable_Flush (Item, Result);
             return;
@@ -20675,7 +20901,8 @@ package body Flyology.DB is
             State.Transition_ID,
             State.Plan,
             Result,
-            Replace_Current_Runs => State.Mode = Complete_Replacement_Plan);
+            Replace_Current_Runs => State.Mode = Complete_Replacement_Plan,
+            Allow_Fenced         => State.Resolving_Flush);
       end if;
       if Result /= Success then
          Complete_Composable_Flush (Item, Result);
@@ -20692,6 +20919,12 @@ package body Flyology.DB is
             State.Plan,
             Item.Final_Family_Receipt,
             Result);
+      elsif State.Resolving_Flush then
+         if not Plan_Matches_Receipt
+           (State.Plan, Item.Final_Receipt.Expected_Head, Item.Final_Receipt)
+         then
+            Result := Invalid_State;
+         end if;
       else
          Initialize_Flush_Receipt
            (State.Engine,
@@ -20850,6 +21083,13 @@ package body Flyology.DB is
         and then Flyology.Operations.Is_Terminal (Item.Recovery_Child.all)
       then
          Complete_Create_Reconciliation (Item);
+      elsif Event = Flyology.Operations.Dependency_Changed
+        and then Item.Driver_State /= null
+        and then Item.Driver_State.Phase = Reading_Flush_Reconciliation
+        and then Item.Recovery_Child /= null
+        and then Flyology.Operations.Is_Terminal (Item.Recovery_Child.all)
+      then
+         Complete_Flush_Reconciliation (Item);
       else
          raise Program_Error with "invalid composable Flush driver event";
       end if;
@@ -20876,9 +21116,14 @@ package body Flyology.DB is
       elsif Item.Recovery_Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Recovery_Child.all)
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Phase = Reading_Create_Reconciliation
+        and then Item.Driver_State.Phase in
+          Reading_Create_Reconciliation | Reading_Flush_Reconciliation
       then
-         Complete_Create_Reconciliation (Item);
+         if Item.Driver_State.Phase = Reading_Create_Reconciliation then
+            Complete_Create_Reconciliation (Item);
+         else
+            Complete_Flush_Reconciliation (Item);
+         end if;
          if Flyology.Operations.Is_Active (Item) then
             Request_Cancellation (Item);
          end if;
@@ -21443,6 +21688,239 @@ package body Flyology.DB is
          raise;
    end Start_Composable_Create_Resolution;
 
+   function Valid_Flush_Resolution_Receipt
+     (Receipt : Flush_Receipt; Storage : Storage_Context) return Boolean
+   is
+   begin
+      return Receipt.Phase in Objects_Unknown | Flush_Head_Unknown | Flush_Head_Confirmed
+        and then Receipt.Run_Total > 0
+        and then Receipt.Database_ID /= Zero_Database_ID
+        and then not Is_Zero (Receipt.Manifest_ID)
+        and then not Is_Zero (Receipt.Attempted_Head.Transition_ID)
+        and then Storage_Bound (Storage)
+        and then OS.Valid_Object_Key (Manifest_Key (Storage, Receipt.Manifest_ID))
+        and then OS.Valid_Object_Key (Full_Key (Storage, Head_Key_Suffix))
+        and then
+          (if Receipt.Merges_Adjacent_Runs
+           then
+             not Receipt.Replaces_Current_Runs
+             and then Receipt.Run_Total = 1
+             and then not Is_Zero (Receipt.Older_Run_ID)
+             and then not Is_Zero (Receipt.Newer_Run_ID)
+             and then Receipt.Older_Run_ID /= Receipt.Newer_Run_ID
+             and then
+               (if Receipt.Merges_Three_Runs
+                then
+                  not Is_Zero (Receipt.Middle_Run_ID)
+                  and then Receipt.Middle_Run_ID /= Receipt.Older_Run_ID
+                  and then Receipt.Middle_Run_ID /= Receipt.Newer_Run_ID
+                else Is_Zero (Receipt.Middle_Run_ID))
+           else
+             not Receipt.Merges_Three_Runs
+             and then Is_Zero (Receipt.Older_Run_ID)
+             and then Is_Zero (Receipt.Middle_Run_ID)
+             and then Is_Zero (Receipt.Newer_Run_ID));
+   end Valid_Flush_Resolution_Receipt;
+
+   procedure Start_Composable_Flush_Resolution
+     (Receipt        : in out Flush_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Flush_Operation)
+   is
+      Result        : Outcome_Code;
+      Buffer_Moved  : Boolean := False;
+      Receipt_Moved : Boolean := False;
+      Started       : Boolean := False;
+   begin
+      if Operation.Storage.HTTP_Client /= Operation.HTTP
+        or else Operation.Storage.Client_Identity = null
+      then
+         raise Program_Error with "Flush resolution operation does not match client-bound storage";
+      elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "Flush resolution payload belongs to a different pool";
+      elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
+        or else Operation.Driver_State /= null
+        or else Operation.Read_Child /= null
+        or else Operation.Range_Child /= null
+        or else Operation.Head_Child /= null
+        or else Operation.Recovery_Child /= null
+      then
+         raise Program_Error with "Flush resolution operation retains unconsumed ownership";
+      end if;
+
+      Operation.Deadline := Deadline_After (Timeout);
+      Operation.HTTP_Deadline :=
+        (if Operation.Deadline = Ada.Real_Time.Time_Last
+         then Flyology.HTTP.Client.No_Deadline
+         else Flyology.HTTP.Client.Deadline_After (Remaining_Time (Operation.Deadline)));
+      Operation.Final_Receipt := Receipt;
+      Operation.Final_Family_Receipt := (others => <>);
+      Operation.Final_Create_Receipt := (others => <>);
+      Operation.Final_Is_Family_Append := False;
+      Operation.Final_Is_Create := False;
+      Operation.Final_Result := Invalid_State;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+
+      begin
+         Operation.Driver_State := new Flush_Driver_State;
+      exception
+         when Storage_Error =>
+            null;
+      end;
+      if Operation.Driver_State /= null then
+         declare
+            State : Flush_Driver_State renames Operation.Driver_State.all;
+         begin
+            State.Resolving_Flush := True;
+            State.Manifest_ID := Receipt.Manifest_ID;
+            State.Transition_ID := Receipt.Attempted_Head.Transition_ID;
+            State.Run_Total := Receipt.Run_Total;
+            State.Runs := Receipt.Runs;
+            State.Older_Run_ID := Receipt.Older_Run_ID;
+            State.Middle_Run_ID := Receipt.Middle_Run_ID;
+            State.Newer_Run_ID := Receipt.Newer_Run_ID;
+            State.Output_Run_ID :=
+              (if Receipt.Run_Total = 0 then Zero_Identifier else Receipt.Runs (1).Run_ID);
+            State.Mode :=
+              (if Receipt.Merges_Three_Runs
+               then Three_Run_Merge_Plan
+               elsif Receipt.Merges_Adjacent_Runs
+               then Adjacent_Merge_Plan
+               elsif Receipt.Replaces_Current_Runs
+               then Complete_Replacement_Plan
+               else Additive_Plan);
+            if not Valid_Flush_Resolution_Receipt (Receipt, Operation.Storage.all) then
+               State.Precheck_Result := Invalid_State;
+            end if;
+         end;
+      end if;
+
+      Flyology.Operations.Drivers.Start (Operation);
+      Started := True;
+      Receipt := (others => <>);
+      Receipt_Moved := True;
+      if Operation.Driver_State /= null
+        and then Operation.Driver_State.Precheck_Result = Success
+      then
+         Operation.Item.Life.Begin_Composable_Checkpoint (Operation.Driver_State.Engine, Result);
+         if Result = Success and then Operation.Driver_State.Engine.Storage /= Operation.Storage then
+            Operation.Item.Life.Cancel_Checkpoint;
+            raise Program_Error with "Flush resolution storage does not own the open database";
+         elsif Result = Success then
+            Operation.Driver_State.Checkpoint_Admitted := True;
+         else
+            Operation.Driver_State.Precheck_Result := Result;
+         end if;
+      end if;
+      Flyology.Buffers.Move (Payload_Buffer, Operation.Payload);
+      Buffer_Moved := True;
+      if Operation.Driver_State = null then
+         Operation.Final_Result := Capacity_Exceeded;
+         Operation.Final_Receipt.Current_Outcome := Capacity_Exceeded;
+         Operation.Has_Final_Result := True;
+         Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+      elsif Operation.Driver_State.Precheck_Result /= Success then
+         Complete_Composable_Flush (Operation, Operation.Driver_State.Precheck_Result);
+      else
+         Flyology.Operations.Drive
+           (Flyology.Operations.Operation'Class (Operation), Flyology.Operations.Start_Operation);
+      end if;
+   exception
+      when others =>
+         if Buffer_Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
+            Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+         end if;
+         if Operation.Driver_State /= null and then Operation.Driver_State.Checkpoint_Admitted then
+            Operation.Driver_State.Checkpoint_Admitted := False;
+            Operation.Item.Life.Cancel_Checkpoint;
+         end if;
+         Release_Flush_State (Operation.Driver_State);
+         if Receipt_Moved then
+            Receipt := Operation.Final_Receipt;
+         end if;
+         if Started and then Flyology.Operations.Is_Active (Operation) then
+            Flyology.Operations.Drivers.Rollback_Start (Operation);
+         end if;
+         raise;
+   end Start_Composable_Flush_Resolution;
+
+   procedure Resolve_Flush
+     (Receipt        : in out Flush_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Flush_Operation) is
+   begin
+      Start_Composable_Flush_Resolution (Receipt, Payload_Buffer, Timeout, Operation);
+   end Resolve_Flush;
+
+   procedure Resolve_Flush
+     (Item           : in out Database;
+      Storage        : not null access Storage_Context;
+      Receipt        : in out Flush_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Result         : out Outcome_Code)
+   is
+      --  Five is the exact worst-case owner stack: Resolve_Flush, recovery,
+      --  Object Storage, HTTP, and transport. It is private derived geometry,
+      --  not a DB queue, buffer, timeout, or provider policy.
+      Synchronous_Set_Capacity : constant := 5;
+   begin
+      if Storage.HTTP_Client = null then
+         Resolve_Flush (Item, Receipt, Timeout, Token, Result);
+         return;
+      elsif Storage.Client_Identity = null then
+         Result := Invalid_State;
+         Receipt.Current_Outcome := Result;
+         return;
+      end if;
+      declare
+         Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+         Operation : Flush_Operation
+           (Set'Access,
+            Item'Unchecked_Access,
+            Storage,
+            Storage.HTTP_Client,
+            Payload_Buffer.Owner,
+            Token);
+         Started : Boolean := False;
+      begin
+         Resolve_Flush (Receipt, Payload_Buffer, Timeout, Operation);
+         Started := True;
+         Flyology.Operations.Wait_All (Set);
+         Finish (Operation, Receipt, Result, Payload_Buffer);
+         Flyology.Operations.Release (Operation);
+      exception
+         when others =>
+            if Started then
+               if Flyology.Operations.Is_Active (Operation) then
+                  Flyology.Operations.Cancel (Operation);
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               if Flyology.Operations.Is_Terminal (Operation)
+                 and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+               then
+                  begin
+                     Finish (Operation, Receipt, Result, Payload_Buffer);
+                  exception
+                     when others =>
+                        null;
+                  end;
+               end if;
+               begin
+                  Flyology.Operations.Release (Operation);
+               exception
+                  when others =>
+                     null;
+               end;
+            end if;
+            raise;
+      end;
+   end Resolve_Flush;
+
    procedure Resolve_Create
      (Receipt        : in out Create_Receipt;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
@@ -21872,6 +22350,10 @@ package body Flyology.DB is
       end if;
       if Operation.Head_Child /= null then
          Free_Head_Operation (Operation.Head_Child);
+      end if;
+      if Operation.Recovery_Child /= null then
+         Release_Refresh_Driver (Operation.Recovery_Child.all);
+         Free_Refresh_Operation (Operation.Recovery_Child);
       end if;
       if Operation.Has_Saved_Error then
          Ada.Exceptions.Raise_Exception

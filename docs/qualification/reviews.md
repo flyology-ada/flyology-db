@@ -1,5 +1,44 @@
 # Review record
 
+## Caller-composable Flush resolution candidate
+
+- Parent: accepted caller-composable Create resolution commit `c0b95f2`.
+- Scope and API: add operation-last and buffer-owned synchronous `Resolve_Flush` overloads directly in
+  `Flyology.DB`, reusing `Flush_Operation`, `Flush_Receipt`, and the existing typed token-restoring `Finish`. The
+  provider package therefore owns normal publication, reusable initiation, receipt resolution, operation state, and
+  completion rather than creating a `.Scoped` or resolution-only API tree. The established storage-neutral resolver
+  remains direct and source-compatible. No operation/result type, public constant, timeout/default, identity policy,
+  helper task, retry, persisted format, or provider rule is added.
+- Publication and certainty: `Objects_Unknown` reconstructs only the receipt-selected additive, complete-view, or
+  exact adjacent/three-run plan. Every rebuilt image and attempted transition must match the original receipt before
+  same-identity immutable reconciliation continues. `Flush_Head_Unknown` and `Flush_Head_Confirmed` perform only the
+  shared bounded authenticated recovery traversal. Exact attempted publication installs the recovered checkpoint;
+  a conclusive successor fences as `Stale_Writer`, an unchanged predecessor remains `Outcome_Unknown`, and failed
+  local installation preserves `Flush_Head_Confirmed` plus `Local_Activation_Failed`. No application work or
+  mutation is replayed under another identity.
+- Lifecycle, ownership, and bounds: Start reserves the caller's operation slot and one checkpoint lifecycle
+  admission before moving the self-contained receipt and exact unique-buffer token. Initiation exceptions restore
+  both. HEAD recovery transfers that admission exactly once into one bounded child and every terminal, cancellation,
+  exceptional, typed-Finish, and abandonment path drains or releases it. The five-slot synchronous set is private
+  geometry derived from the worst-case DB Resolve_Flush/recovery, Object Storage, HTTP, and transport owner stack;
+  normal publication remains the established four-slot prefix.
+- Executable evidence: the authenticated client probe first forces immutable-output uncertainty, proves a busy
+  completion set rejects before moving receipt or token authority, then resolves the exact plan through the reusable
+  operation. A forced local-activation failure preserves confirmed durable authority and exact token restoration;
+  the buffer-owned blocking overload then completes read-only activation, while a terminal receipt rejects
+  definitely. The maintained deterministic suite, repository gate, and all 18 RustFS, SeaweedFS, MinIO, and Flyology
+  memory/files/SQLite provider/repetition lanes are green against ignored clean Object Storage `f65afbf…`.
+  GNATformat and GNATdoc are unavailable in the configured toolchain, so no formatter or generated-site claim is
+  made. Final acceptance additionally requires byte-stable maintained TLA/TLAPS and warning-strict GNATprove on the
+  frozen tree, with no unproved, justified, warning, or actual `pragma Assume` finding.
+- Findings cycle: the API/constants review confirmed that the overloads add no visible policy and that the five-slot
+  extent is derived owner-stack geometry, not a queue limit. The ownership review found and fixed two P1s before
+  qualification: composable recovery initially skipped the established local-activation fault boundary, and typed
+  Flush `Finish` did not drain a recovery child left by an exceptional nested start. A test-only P1 then exposed an
+  unconsumed timer in the new busy-set oracle; the corrected oracle consumes terminal cancellation before release.
+  Under the repository rubric (P0 durable-authority/data-loss/security, P1 public contract/lifecycle/ownership/
+  certainty, P2 tests/documentation/maintenance), the current re-review finds no actionable P0/P1/P2 finding.
+
 ## Caller-composable create resolution
 
 - Parent: accepted provider-centric Create commit `95ae641`.

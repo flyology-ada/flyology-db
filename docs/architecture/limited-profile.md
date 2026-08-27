@@ -44,6 +44,11 @@ remains direct and source-compatible. Receipt-driven `Resolve_Create` uses that 
 `Finish`: Start moves the self-contained receipt and scratch token, authenticates the retained immutable bytes
 against the provider, admits the exact HEAD only from the definite `Manifest_Confirmed` phase, and performs only
 read-based recovery from `Head_Publication_Unknown`. The buffer-owned synchronous form waits that same state machine.
+Receipt-driven `Resolve_Flush` reuses `Flush_Operation` and its typed `Finish`: immutable uncertainty rebuilds only
+the receipt-selected plan and identities, while possible or confirmed HEAD admission transfers the existing
+checkpoint lifecycle admission into the shared bounded recovery traversal. The client-backed buffer overload waits
+that operation; the storage-neutral resolver remains direct. Neither form replays a mutation or selects a new
+identity.
 The buffer-owned client-backed `Open` overload likewise waits the reusable `Open_Operation`; the established
 storage-neutral synchronous overload remains direct and source-compatible because it accepts no caller-owned scratch
 token. Both consume the same recovery request/validation machine and install only a complete authenticated graph.

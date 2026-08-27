@@ -256,9 +256,11 @@ package Flyology.DB is
    --  Cancellation must outlive terminal Finish or scope-abandonment drain.
    --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
    --  caller-selected scratch capacity; the DB introduces no body-size
-   --  default or ceiling. The current owner stack needs four reusable set
-   --  slots while a conditional Put, reconciliation Get, or selected-run read
-   --  is active: DB, Object Storage, HTTP exchange, and transport.
+   --  default or ceiling. The worst-case owner stack needs five reusable set
+   --  slots while receipt resolution owns the bounded recovery child: DB
+   --  Flush, DB recovery, Object Storage, HTTP exchange, and transport. Normal
+   --  publication and selected-run reads use at most the shorter four-slot
+   --  prefix.
    type Flush_Operation
      (Set          : not null access Flyology.Operations.Completion_Set'Class;
       Item         : not null access Database;
@@ -1679,6 +1681,52 @@ package Flyology.DB is
       Timeout : Duration;
       Token   : access Flyology.Cancellation.Token := null;
       Result  : out Outcome_Code);
+
+   --  Start exact receipt-driven Flush reconciliation in an established
+   --  provider-bound operation. Receipt and Payload_Buffer move into
+   --  Operation and remain owned there until typed Finish. Objects_Unknown
+   --  reconstructs and authenticates the original immutable bytes before
+   --  continuing their same-identity publication; HEAD uncertainty performs
+   --  read-only recovery and local activation. No identity, application work,
+   --  helper task, retry policy, or second deadline is introduced.
+   --  @param Receipt Original nonterminal Flush receipt moved until Finish
+   --  @param Payload_Buffer Acquired caller-owned scratch token moved until Finish
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Operation Fresh or consumed client-bound Flush operation
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match Receipt or buffer ownership
+   procedure Resolve_Flush
+     (Receipt        : in out Flush_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Flush_Operation)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Blocking wait over the same provider-bound Resolve_Flush state machine.
+   --  The exact receipt and caller scratch token are restored before return.
+   --  Backend-neutral storage retains the established direct resolver until
+   --  those providers expose caller-driven children.
+   --  @param Item Same open database retained by the original Flush
+   --  @param Storage Exact storage binding owned by Item
+   --  @param Receipt Original nonterminal Flush receipt, updated in place
+   --  @param Payload_Buffer Acquired caller scratch token restored before return
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Result Terminal or still-unknown resolution outcome
+   procedure Resolve_Flush
+     (Item           : in out Database;
+      Storage        : not null access Storage_Context;
+      Receipt        : in out Flush_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Result         : out Outcome_Code)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Outcome most recently assigned to Receipt.
    --  @param Item Flush receipt to inspect

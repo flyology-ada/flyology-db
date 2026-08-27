@@ -152,6 +152,13 @@ If that local allocation or installation fails, `Local_Activation_Failed` preser
 `Resolve_Flush` can activate the same checkpoint from cacheless recovery. Normal success leaves the database open and
 usable; it does not require close/reopen.
 
+The client-backed resolver is provider-centrically colocated with the ordinary checkpoint vocabulary. Its
+operation-last overload reuses `Flush_Operation`, moves the self-contained receipt and exact caller scratch token,
+and returns both only through the existing typed `Finish`. Immutable uncertainty reconstructs only the original
+plan; HEAD uncertainty transfers the already-held checkpoint admission to the shared recovery child. The blocking
+buffer overload is a wait over this same state machine. The storage-neutral resolver remains direct, and neither
+path creates a helper task, hidden retry, second deadline, or new identity.
+
 Later transaction commits preserve the published manifest ID. The checkpoint does not change the visible state: it
 only replaces the authoritative representation of the committed prefix. No run or manifest is visible before the
 successful HEAD transition, and unreachable complete objects remain orphans.

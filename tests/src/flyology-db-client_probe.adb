@@ -2506,9 +2506,12 @@ begin
    end if;
 
    --  The public blocking Compact is a literal wait over Start_Compaction.
-   --  Losing its HEAD response remains unknown until Resolve_Flush observes
-   --  the exact final replacement; neither call retries or changes identity.
-   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+   --  Losing one output response and its immediate confirmation read leaves
+   --  immutable publication unknown. Owner-driven Resolve_Flush must rebuild
+   --  the exact final replacement; neither call retries application work or
+   --  changes identity.
+   Context.Test_Control.Arm (After_Run_Put, Unknown_After_Entry, 1);
+   Context.Test_Control.Arm (Before_Get, Definite_Failure, 1);
    Compact
      (Created,
       Final_Compaction_Runs,
@@ -2518,7 +2521,7 @@ begin
       Token   => null,
       Receipt => Flush_Info,
       Result  => Result);
-   Expect (Result, Outcome_Unknown, "blocking compaction lost HEAD uncertainty");
+   Expect (Result, Outcome_Unknown, "blocking compaction lost immutable certainty");
    if not Flush_Info.Replaces_Current_Runs
      or else Flush_Receipt_Run_Total (Flush_Info) /= Final_Compaction_Runs'Length
      or else Flush_Receipt_Manifest_ID (Flush_Info) /= Final_Manifest_ID
@@ -2526,8 +2529,85 @@ begin
    then
       raise Program_Error with "blocking compaction receipt lost exact authority";
    end if;
-   Resolve_Flush (Created, Flush_Info, Test_Operation_Timeout, Result => Result);
-   Expect (Result, Success, "blocking compaction exact resolution failed");
+
+   --  A busy caller completion set rejects resolution before moving either
+   --  the receipt or token. The same exact authority is then reusable on the
+   --  normal owner stack; no lifecycle mode or publication identity changed.
+   declare
+      Rollback_Set  : aliased Flyology.Operations.Completion_Set (1);
+      Rollback_Work : Flush_Operation
+        (Rollback_Set'Access,
+         Created'Access,
+         Context'Access,
+         Client'Access,
+         Flush_Pool'Access,
+         null);
+      Busy     : Timers.Timer_Operation := Timers.Sleep_For (Rollback_Set'Access, Test_Operation_Timeout);
+      Rejected : Boolean := False;
+   begin
+      begin
+         Resolve_Flush (Flush_Info, Flush_Buffer, Test_Operation_Timeout, Rollback_Work);
+      exception
+         when Flyology.Operations.Capacity_Error =>
+            Rejected := True;
+      end;
+      if not Rejected
+        or else not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+        or else Flush_Receipt_Manifest_ID (Flush_Info) /= Final_Manifest_ID
+        or else Flush_Receipt_Transition_ID (Flush_Info) /= Final_Transition_ID
+      then
+         raise Program_Error with "busy Resolve_Flush did not roll back exact ownership";
+      end if;
+      Flyology.Operations.Cancel (Busy);
+      Flyology.Operations.Wait_All (Rollback_Set);
+      begin
+         Timers.Finish (Busy);
+      exception
+         when Flyology.Operations.Operation_Cancelled =>
+            null;
+      end;
+      Flyology.Operations.Release (Busy);
+   end;
+   Context.Test_Control.Arm (Before_Local_Activation, Definite_Failure, 1);
+   Resolve_Flush (Flush_Info, Flush_Buffer, Test_Operation_Timeout, Flush_Work);
+   if Flyology.Buffers.Has_Buffer (Flush_Buffer) then
+      raise Program_Error with "composable Resolve_Flush did not move its exact token";
+   end if;
+   Flyology.Operations.Wait_All (Composable_Set);
+   Finish (Flush_Work, Flush_Info, Result, Flush_Buffer);
+   Expect (Result, Local_Activation_Failed, "composable resolution lost confirmed HEAD certainty");
+   if not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "composable Resolve_Flush did not restore its exact token";
+   end if;
+
+   --  The buffer-owned blocking adapter waits the same state machine and
+   --  completes local activation from the confirmed receipt without another
+   --  mutation. A later terminal receipt is rejected without changing its
+   --  exact token or inventing another publication identity.
+   Resolve_Flush
+     (Created,
+      Context'Access,
+      Flush_Info,
+      Flush_Buffer,
+      Test_Operation_Timeout,
+      Result => Result);
+   Expect (Result, Success, "blocking Resolve_Flush did not activate the confirmed HEAD");
+   Resolve_Flush
+     (Created,
+      Context'Access,
+      Flush_Info,
+      Flush_Buffer,
+      Test_Operation_Timeout,
+      Result => Result);
+   Expect (Result, Invalid_State, "blocking Resolve_Flush accepted a terminal receipt");
+   if not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "blocking Resolve_Flush did not restore its exact token";
+   end if;
 
    declare
       Replica_Family : Column_Family;
