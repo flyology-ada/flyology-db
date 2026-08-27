@@ -8690,6 +8690,7 @@ package body Flyology.DB is
      (Refresh_Existing_Database,
       Open_Closed_Database,
       Reconcile_Create_Publication,
+      Reconcile_Commit_Publication,
       Reconcile_Family_Publication,
       Reconcile_Flush_Publication);
 
@@ -8701,6 +8702,7 @@ package body Flyology.DB is
       Current_Generation    : Generation_Value;
       Expected_Root         : Manifests.Manifest := Manifests.Empty_Manifest;
       Expected_LSM          : Engine_LSM_Authority := No_LSM_Authority;
+      Expected_Commit       : Commit_Receipt;
       Expected_Family       : Column_Family_Receipt;
       Expected_Flush        : Flush_Receipt;
       Observed_Head_Is_Legacy : Boolean := False;
@@ -13227,7 +13229,6 @@ package body Flyology.DB is
       Manifest      : Manifests.Manifest;
       LSM_Authority : Engine_LSM_Authority;
       Checkpoint    : Checkpoint_Plan;
-      Stamp         : Engine_Incarnation;
       Resolution    : Receipt_Resolution;
       Guard         : Resolve_Guard;
       pragma Unreferenced (Guard);
@@ -13270,12 +13271,6 @@ package body Flyology.DB is
          Result := Read_Result;
          return;
       elsif Resolution = Receipt_Committed then
-         Incarnation_Source.Allocate (Stamp, Result);
-         if Result /= Success then
-            Release_History (History, History_Count);
-            Release_Checkpoint_Plan (Checkpoint);
-            return;
-         end if;
          Allocate_Engine
            (Item.Life'Unchecked_Access,
             Storage,
@@ -13284,7 +13279,7 @@ package body Flyology.DB is
             Manifest,
             LSM_Authority,
             Checkpoint,
-            Stamp,
+            State.Gate.Current_Incarnation,
             History,
             History_Count,
             New_State,
@@ -13715,6 +13710,22 @@ package body Flyology.DB is
       LSM_Authority : Engine_LSM_Authority;
       Expected      : Column_Family_Configuration) return Boolean;
 
+   function Valid_Commit_Resolution_Receipt
+     (Receipt : Commit_Receipt; Storage : Storage_Context) return Boolean
+   is
+   begin
+      return Receipt.Phase = Head_Publication_Unknown
+        and then Receipt.Retained_Image.Image /= null
+        and then Receipt.Expected_Head.Database_ID /= Zero_Database_ID
+        and then Receipt.Attempted_Head.Database_ID = Receipt.Expected_Head.Database_ID
+        and then not Is_Zero (Receipt.Batch_ID)
+        and then Receipt.Attempted_Head.Latest_Batch = Receipt.Batch_ID
+        and then not Is_Zero (Receipt.Attempted_Head.Transition_ID)
+        and then Storage_Bound (Storage)
+        and then OS.Valid_Object_Key (Batch_Key (Storage, Receipt.Batch_ID))
+        and then OS.Valid_Object_Key (Full_Key (Storage, Head_Key_Suffix));
+   end Valid_Commit_Resolution_Receipt;
+
    procedure Complete_Refresh_Install (Item : in out Refresh_Operation) is
       State               : Refresh_Driver_State renames Item.Driver_State.all;
       Observed_Head       : Head_Snapshot;
@@ -13758,6 +13769,76 @@ package body Flyology.DB is
                 then Local_Activation_Failed
                 else Outcome_Unknown)
              else Result));
+         return;
+      elsif State.Mode = Reconcile_Commit_Publication then
+         declare
+            Found : Boolean := False;
+            Exact : Boolean := False;
+         begin
+            for Index in Positive range 1 .. History_Count loop
+               if History (Index).Batch_ID = State.Expected_Commit.Batch_ID then
+                  Found := True;
+                  Exact :=
+                    State.Expected_Commit.Retained_Image.Image /= null
+                    and then History (Index).Image /= null
+                    and then
+                      Exact_Bytes
+                        (State.Expected_Commit.Retained_Image.Image, History (Index).Image.Data);
+                  exit;
+               end if;
+            end loop;
+            if Found and then not Exact then
+               Release_History (History, History_Count);
+               Release_Checkpoint_Plan (Checkpoint);
+               Complete_Composable_Refresh (Item, Corrupt);
+            elsif Found then
+               Allocate_Engine
+                 (Item.Item.Life'Unchecked_Access,
+                  Item.Storage,
+                  Observed_Head,
+                  Observed_Generation,
+                  Manifest,
+                  LSM_Authority,
+                  Checkpoint,
+                  State.Engine.Gate.Current_Incarnation,
+                  History,
+                  History_Count,
+                  New_State,
+                  Result);
+               if Result = Success then
+                  Stop_Replaced_Engine (State.Engine);
+                  Item.Item.Life.Finish_Resolve (New_State, Observed_Head.Highest);
+                  Installed := True;
+                  State.Resolve_Admitted := False;
+                  Release_Retained_Image (Item.Final_Commit_Receipt);
+                  Item.Final_Commit_Receipt.Current_Outcome := Success;
+                  Item.Final_Commit_Receipt.Phase := Resolved;
+                  Complete_Composable_Refresh (Item, Success);
+               else
+                  Complete_Composable_Refresh (Item, Result);
+               end if;
+            elsif Same_Head (Observed_Head, State.Expected_Commit.Attempted_Head) then
+               Release_History (History, History_Count);
+               Release_Checkpoint_Plan (Checkpoint);
+               Complete_Composable_Refresh (Item, Corrupt);
+            elsif Observed_Head.Transition_Number >=
+              State.Expected_Commit.Attempted_Head.Transition_Number
+            then
+               Release_History (History, History_Count);
+               Release_Checkpoint_Plan (Checkpoint);
+               State.Engine.Gate.Fence;
+               Item.Item.Life.Cancel_Resolve;
+               State.Resolve_Admitted := False;
+               Release_Retained_Image (Item.Final_Commit_Receipt);
+               Item.Final_Commit_Receipt.Current_Outcome := Stale_Writer;
+               Item.Final_Commit_Receipt.Phase := Resolved;
+               Complete_Composable_Refresh (Item, Stale_Writer);
+            else
+               Release_History (History, History_Count);
+               Release_Checkpoint_Plan (Checkpoint);
+               Complete_Composable_Refresh (Item, Outcome_Unknown);
+            end if;
+         end;
          return;
       elsif State.Mode = Reconcile_Family_Publication then
          if Observed_Head.Transition_Number <
@@ -14344,6 +14425,19 @@ package body Flyology.DB is
              then State.Expected_Family.Manifest_ID
              else Zero_Identifier));
          Advance_Composable_Refresh (Item);
+      elsif State.Mode = Reconcile_Commit_Publication then
+         State.Engine.Gate.Snapshot
+           (State.Current_Head, State.Current_Generation, Uncertain, Fenced);
+         if State.Current_Head.Database_ID /= State.Expected_Commit.Expected_Head.Database_ID then
+            Complete_Composable_Refresh (Item, Invalid_State);
+         else
+            --  Commit reconciliation is precisely the operation permitted to
+            --  inspect an uncertain or fenced local writer. Only authenticated
+            --  provider history can make its retained receipt conclusive.
+            Start_Recovery
+              (State.Traversal, State.Expected_Commit.Expected_Head.Database_ID, Zero_Identifier);
+            Advance_Composable_Refresh (Item);
+         end if;
       else
          State.Engine.Gate.Snapshot
            (State.Current_Head, State.Current_Generation, Uncertain, Fenced);
@@ -14520,6 +14614,7 @@ package body Flyology.DB is
       Database_ID    : Database_Identifier;
       Expected_Root  : Manifests.Manifest := Manifests.Empty_Manifest;
       Expected_LSM   : Engine_LSM_Authority := No_LSM_Authority;
+      Expected_Commit : Commit_Receipt := (others => <>);
       Expected_Family : Column_Family_Receipt := (others => <>);
       Expected_Flush : Flush_Receipt := (others => <>);
       Checkpoint_Engine : Engine_State_Access := null;
@@ -14557,6 +14652,8 @@ package body Flyology.DB is
       Operation.Final_Result := Invalid_State;
       Operation.Has_Final_Result := False;
       Operation.Has_Saved_Error := False;
+      Operation.Final_Commit_Receipt := Expected_Commit;
+      Operation.Final_Is_Commit_Resolution := Mode = Reconcile_Commit_Publication;
       begin
          --  One lazily allocated owner record carries the persisted-limit-
          --  derived traversal and partial graph. It introduces no DB ceiling.
@@ -14571,9 +14668,15 @@ package body Flyology.DB is
          Operation.Driver_State.Database_ID := Database_ID;
          Operation.Driver_State.Expected_Root := Expected_Root;
          Operation.Driver_State.Expected_LSM := Expected_LSM;
+         Operation.Driver_State.Expected_Commit := Expected_Commit;
          Operation.Driver_State.Expected_Family := Expected_Family;
          Operation.Driver_State.Expected_Flush := Expected_Flush;
          Operation.Driver_State.Engine := Checkpoint_Engine;
+         if Mode = Reconcile_Commit_Publication
+           and then not Valid_Commit_Resolution_Receipt (Expected_Commit, Operation.Storage.all)
+         then
+            Operation.Driver_State.Precheck_Result := Invalid_State;
+         end if;
          begin
             --  These access values borrow only operation discriminant owners
             --  and its inline scratch handle. The public contract keeps them
@@ -14710,6 +14813,9 @@ package body Flyology.DB is
          if Started and then Flyology.Operations.Is_Active (Operation) then
             Flyology.Operations.Drivers.Rollback_Start (Operation);
          end if;
+         Release_Retained_Image (Operation.Final_Commit_Receipt);
+         Operation.Final_Commit_Receipt := (others => <>);
+         Operation.Final_Is_Commit_Resolution := False;
          raise;
    end Start_Composable_Recovery;
 
@@ -14730,6 +14836,92 @@ package body Flyology.DB is
          Open_Admission_Consumed       => Open_Admission_Consumed,
          Checkpoint_Admission_Consumed => Checkpoint_Admission_Consumed);
    end Refresh_Replica;
+
+   procedure Resolve
+     (Receipt        : in out Commit_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Refresh_Operation)
+   is
+      Open_Admission_Consumed       : Boolean;
+      Checkpoint_Admission_Consumed : Boolean;
+   begin
+      Start_Composable_Recovery
+        (Payload_Buffer                 => Payload_Buffer,
+         Timeout                        => Timeout,
+         Operation                      => Operation,
+         Mode                           => Reconcile_Commit_Publication,
+         Database_ID                    => Receipt.Expected_Head.Database_ID,
+         Expected_Commit                => Receipt,
+         Open_Admission_Consumed        => Open_Admission_Consumed,
+         Checkpoint_Admission_Consumed  => Checkpoint_Admission_Consumed);
+      Receipt := (others => <>);
+   end Resolve;
+
+   procedure Resolve
+     (Item           : in out Database;
+      Storage        : not null access Storage_Context;
+      Receipt        : in out Commit_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Result         : out Outcome_Code)
+   is
+      --  Four is the exact owner stack already documented by
+      --  Refresh_Operation: DB recovery, Object Storage, HTTP, and transport.
+      --  It is derived private geometry, not a queue or provider limit.
+      Synchronous_Set_Capacity : constant := 4;
+   begin
+      if Storage.HTTP_Client = null then
+         Resolve (Item, Receipt, Timeout, Token, Result);
+         return;
+      elsif Storage.Client_Identity = null then
+         Result := Invalid_State;
+         return;
+      end if;
+      declare
+         Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+         Operation : Refresh_Operation
+           (Set'Access,
+            Item'Unchecked_Access,
+            Storage,
+            Storage.HTTP_Client,
+            Payload_Buffer.Owner,
+            Token);
+         Started : Boolean := False;
+      begin
+         Resolve (Receipt, Payload_Buffer, Timeout, Operation);
+         Started := True;
+         Flyology.Operations.Wait_All (Set);
+         Finish (Operation, Receipt, Result, Payload_Buffer);
+         Flyology.Operations.Release (Operation);
+      exception
+         when others =>
+            if Started then
+               if Flyology.Operations.Is_Active (Operation) then
+                  Flyology.Operations.Cancel (Operation);
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               if Flyology.Operations.Is_Terminal (Operation)
+                 and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+               then
+                  begin
+                     Finish (Operation, Receipt, Result, Payload_Buffer);
+                  exception
+                     when others =>
+                        null;
+                  end;
+               end if;
+               begin
+                  Flyology.Operations.Release (Operation);
+               exception
+                  when others =>
+                     null;
+               end;
+            end if;
+            raise;
+      end;
+   end Resolve;
 
    procedure Open
      (Database_ID    : Database_Identifier;
@@ -14758,6 +14950,8 @@ package body Flyology.DB is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "recovery Finish requires the original buffer pool";
+      elsif Operation.Final_Is_Commit_Resolution then
+         raise Program_Error with "commit reconciliation requires its Commit_Receipt Finish";
       end if;
       Flyology.Operations.Consume (Operation);
       Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
@@ -14777,6 +14971,44 @@ package body Flyology.DB is
             Ada.Exceptions.Exception_Message (Operation.Saved_Error));
       elsif not Operation.Has_Final_Result then
          raise Program_Error with "composable recovery has no terminal result";
+      end if;
+      Result := Operation.Final_Result;
+   end Finish;
+
+   procedure Finish
+     (Operation      : in out Refresh_Operation;
+      Receipt        : out Commit_Receipt;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+   is
+   begin
+      if Payload_Buffer.Owner /= Operation.Payload_Pool then
+         raise Program_Error with "commit reconciliation Finish requires the original buffer pool";
+      elsif not Operation.Final_Is_Commit_Resolution then
+         raise Program_Error with "Commit_Receipt Finish requires commit reconciliation";
+      end if;
+      Flyology.Operations.Consume (Operation);
+      Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
+      Release_Refresh_Driver (Operation);
+      if Operation.Read_Child /= null then
+         Free_Whole_Get_Operation (Operation.Read_Child);
+      end if;
+      if Operation.Range_Child /= null then
+         Free_Range_Get_Operation (Operation.Range_Child);
+      end if;
+      if Operation.Head_Child /= null then
+         Free_Head_Operation (Operation.Head_Child);
+      end if;
+      Receipt := Operation.Final_Commit_Receipt;
+      Release_Retained_Image (Operation.Final_Commit_Receipt);
+      Operation.Final_Commit_Receipt := (others => <>);
+      Operation.Final_Is_Commit_Resolution := False;
+      if Operation.Has_Saved_Error then
+         Ada.Exceptions.Raise_Exception
+           (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
+            Ada.Exceptions.Exception_Message (Operation.Saved_Error));
+      elsif not Operation.Has_Final_Result then
+         raise Program_Error with "composable commit reconciliation has no terminal result";
       end if;
       Result := Operation.Final_Result;
    end Finish;
@@ -14807,6 +15039,7 @@ package body Flyology.DB is
       if Item.Head_Child /= null then
          Free_Head_Operation (Item.Head_Child);
       end if;
+      Release_Retained_Image (Item.Final_Commit_Receipt);
       Flyology.Buffers.Release (Item.Payload);
    end Finalize;
 

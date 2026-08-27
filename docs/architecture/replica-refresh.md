@@ -63,6 +63,37 @@ additive surface consistent with the provider-centric Flyology convention; addin
 source-compatible and does not justify delaying the owner-driven engine. The older `Start_Flush` spelling remains
 source-compatible and does not require a second naming convention for new operations.
 
+## Commit-receipt reconciliation reuse
+
+Client-backed reconciliation of an ambiguous `Commit_Receipt` is another use of the same exclusive recovery
+provider, not a second operation tree. `Refresh_Operation` therefore also owns these colocated overloads:
+
+```ada
+procedure Resolve
+  (Receipt        : in out Commit_Receipt;
+   Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+   Timeout        : Duration;
+   Operation      : in out Refresh_Operation);
+
+procedure Finish
+  (Operation      : in out Refresh_Operation;
+   Receipt        : out Commit_Receipt;
+   Result         : out Outcome_Code;
+   Payload_Buffer : in out Flyology.Buffers.Unique_Buffer);
+```
+
+Start moves both the self-contained receipt and the exact scratch token. The ordinary refresh `Finish` rejects this
+terminal kind without consuming it; only the receipt-returning typed `Finish` restores both owners. The blocking
+client overload creates a private four-slot completion set derived from the DB recovery, Object Storage, HTTP, and
+transport owner stack and waits the same state machine. This is runtime geometry, not a public queue limit.
+
+Reconciliation drains the uncertain writer, reads one complete authenticated graph, and accepts publication only
+when its immutable history contains the receipt's exact batch identity and exact retained bytes. The exact attempted
+HEAD without that batch is corruption. A successor at or beyond the attempted transition that excludes it fences
+the writer; an older observation remains `Outcome_Unknown`. Successful replacement reuses the live engine
+incarnation so existing family handles remain valid. No path uploads a batch or HEAD, replays application work,
+selects a new identity, or creates a helper task or second deadline.
+
 ## Shared recovery reader
 
 Blocking and composable refresh use one internal request/consume machine rather than two recovery algorithms. Its

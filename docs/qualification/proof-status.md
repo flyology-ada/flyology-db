@@ -28,6 +28,14 @@ carrying their green evidence forward.
 Object Storage I/O, lifecycle scheduling, publication certainty, dynamic allocation, and refinement of the Create
 driver to the maintained models remain executable integration boundaries rather than new SPARK claims.
 
+The caller-composable commit-receipt resolver reuses the runtime `Refresh_Operation` and complete authenticated
+recovery traversal without changing a selected SPARK unit or maintained TLA+ action system. Receipt/token transfer,
+exclusive lifecycle drain, exact immutable-history comparison, incarnation-preserving engine replacement, provider
+I/O, and typed `Finish` remain executable integration boundaries. The complete maintained TLA/TLC/TLAPS campaign is
+byte-stable at 393/393 obligations, and the warning-strict selected-unit GNATprove campaign proves 1,103/1,103 checks
+(172 flow and 931 prover), with zero unproved, justified, warning, or actual `pragma Assume` findings. Neither gate
+establishes an Ada-to-TLA refinement proof of this runtime state machine.
+
 The additive public storage-backed `Get` composes already-qualified transaction selection and the mixed-version
 checkpoint selector without changing a selected SPARK unit or either TLA+ action system. The runtime operation,
 database/transaction borrow lifetime, copied descriptor ownership, completion scheduling, and exact buffer movement

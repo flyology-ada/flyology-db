@@ -13,6 +13,13 @@ confirm publication. A stale expected generation loses the conditional replaceme
 another writer epoch stops. If the replacement response is lost, a generation-bound head read reconciles the exact
 transition identity; continuing unavailability remains unknown.
 
+For a client-bound ambiguous singleton commit, that reconciliation is also available as an owner-driven
+`Refresh_Operation`. It moves the exact `Commit_Receipt` and caller scratch token until typed `Finish`, drains the
+uncertain local engine, and validates one complete graph containing the retained exact batch bytes. Successful
+installation preserves the live incarnation and existing family handles. The blocking client overload waits that
+operation; the storage-neutral resolver remains direct. Neither form republishes, retries the application
+transaction, or invents an identity.
+
 ## Initial state model
 
 - One active writer epoch and one global commit sequence.

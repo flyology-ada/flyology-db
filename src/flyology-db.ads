@@ -269,7 +269,8 @@ package Flyology.DB is
       Payload_Pool : not null access Flyology.Buffers.Pool;
       Cancellation : access Flyology.Cancellation.Token) is
      new Flyology.Operations.Operation with private;
-   --  Caller-composable monotonic replica refresh. The discriminants are
+   --  Caller-composable monotonic replica refresh and commit-receipt
+   --  reconciliation. The discriminants are
    --  retained borrows and must outlive terminal Finish or abandonment drain.
    --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
    --  caller-selected recovery scratch capacity; the DB introduces no body
@@ -1432,6 +1433,68 @@ package Flyology.DB is
       Token   : access Flyology.Cancellation.Token := null;
       Result  : out Outcome_Code);
 
+   --  Start exact commit-receipt reconciliation in an established recovery
+   --  operation. Receipt and Payload_Buffer move into Operation until the
+   --  receipt-returning typed Finish. The operation drains admitted local
+   --  work, validates one complete authoritative recovery graph, and matches
+   --  the retained exact batch bytes or a conclusive successor transition.
+   --  It never republishes the batch or HEAD and introduces no retry, helper
+   --  task, replacement identity, or second deadline.
+   --  @param Receipt Original unresolved commit receipt moved until Finish
+   --  @param Payload_Buffer Acquired caller-owned recovery scratch token
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Operation Fresh or consumed client-bound recovery operation
+   --  @exception Capacity_Error Completion set has no reusable parent slot
+   --  @exception Program_Error Operation owners do not match receipt storage
+   procedure Resolve
+     (Receipt        : in out Commit_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Operation      : in out Refresh_Operation)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation),
+       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Consume one terminal owner-driven commit resolution, restore the exact
+   --  receipt and scratch token, and return the same typed result as the
+   --  synchronous resolver. Payload_Buffer may be any vacant same-pool handle.
+   --  @param Operation Terminal commit-reconciliation operation
+   --  @param Receipt Destination receiving the exact moved receipt
+   --  @param Result Conclusive committed/rejected or still-unknown outcome
+   --  @param Payload_Buffer Vacant same-pool destination for the exact token
+   procedure Finish
+     (Operation      : in out Refresh_Operation;
+      Receipt        : out Commit_Receipt;
+      Result         : out Outcome_Code;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
+     with Pre => Flyology.Operations.Is_Terminal (Operation)
+       and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
+       and then Payload_Buffer.Owner = Operation.Payload_Pool,
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
+   --  Blocking wait over the same client-bound commit resolver. The exact
+   --  receipt and caller scratch token are restored before return. A
+   --  storage-neutral binding retains the established direct resolver.
+   --  @param Item Open database retained by the original commit
+   --  @param Storage Exact client-bound storage owned by Item
+   --  @param Receipt Original unresolved receipt, updated in place
+   --  @param Payload_Buffer Acquired caller scratch token restored before return
+   --  @param Timeout Whole-resolution monotonic timeout budget
+   --  @param Token Optional cooperative cancellation token
+   --  @param Result Conclusive committed/rejected or still-unknown outcome
+   procedure Resolve
+     (Item           : in out Database;
+      Storage        : not null access Storage_Context;
+      Receipt        : in out Commit_Receipt;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Token          : access Flyology.Cancellation.Token := null;
+      Result         : out Outcome_Code)
+     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+
    --  Outcome most recently assigned to Receipt.
    function Receipt_Outcome (Item : Commit_Receipt) return Outcome_Code;
 
@@ -2473,6 +2536,10 @@ private
       --  caller-derived monotonic deadline before the operation can be active.
       Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
       HTTP_Deadline    : Flyology.HTTP.Client.Monotonic_Deadline;
+      Final_Commit_Receipt : Commit_Receipt;
+      --  Runtime-only typed-Finish discriminator. It prevents an ordinary
+      --  replica-refresh Finish from consuming a moved commit receipt.
+      Final_Is_Commit_Resolution : Boolean := False;
       Final_Result     : Outcome_Code := Invalid_State;
       Has_Final_Result : Boolean := False;
       Has_Saved_Error  : Boolean := False;

@@ -18,6 +18,13 @@ The published dependency is materialized through the local development clone. Be
 update that clean clone by fast-forward from its local origin, verify it is clean, and replace this record with the
 exact commit used. Do not update it during a running test, proof, or benchmark campaign.
 
+An additive automation successor was published during this DB campaign at Object Storage source
+`76e39f44835ed325a58d0e3d5fc416bb188a249f` and Flyology index
+`8b626e55c9028b6a99f3f7cf21244509177c7c6d`. Its handoff reports no change to the DB-consumed conditional Put,
+whole/range Get, Head, operation-last, typed-Finish, certainty, ownership, or no-replay contracts. The current exact
+DB evidence remains attached to the frozen `f65afbf...` clone above; the successor is not silently substituted during
+this campaign and requires a later explicit dependency fast-forward plus maintained rerun before DB claims it.
+
 Flyology.DB names `Flyology.Cancellation` and the native task model directly, so its root manifest declares
 `flyology` directly instead of relying on transitive visibility. This campaign resolves indexed Flyology 0.1.1 plus
 the exact unpinned indexed Flyology.HTTP/QUIC revisions above. The root constraint

@@ -21,8 +21,9 @@ accepted manifest-v1 encoding through operational HEAD version 2 for provider-ne
 Create requires an explicit root manifest identity, transition identity, database limits, and initial family table;
 Open resolves handles by stable ID or exact name and validates manifest authority before replaying batches. HEAD-v1
 images remain inspection-only and return `Unsupported_Format` operationally. The authenticated client binding now
-exercises synchronous and composable create, commit, synchronous and composable checkpoint Flush, composable
-replacement, and cacheless reopen through provider-owned Object Storage operations in `Client.Objects`.
+exercises synchronous and composable create, commit, owner-driven ambiguous-commit reconciliation, synchronous and
+composable checkpoint Flush, composable replacement, and cacheless reopen through provider-owned Object Storage
+operations in `Client.Objects`.
 Client-bound synchronous Create and Flush are owner-driven waits over the same DB operations; memory/files retain
 the backend-neutral synchronous fallbacks. The
 limited operation and caller-owned completion set express scoped lifetime; a separate `.Scoped` package would create
@@ -42,6 +43,13 @@ run and cacheless reopen. The client-backed synchronous overload waits on the sa
 used by the operation-last composable form. Receipt-driven family resolution likewise reuses that operation and
 typed `Finish`: retained immutable bytes may admit only the original pending HEAD, while possible or confirmed HEAD
 admission uses bounded authenticated recovery. Broader family lifecycle remains pending Milestone 2 work.
+
+Ambiguous singleton commit publication now uses the existing `Refresh_Operation` for client-backed reconciliation.
+The operation moves the exact receipt and caller scratch token, drains the uncertain engine, and installs only a
+complete authenticated graph containing the retained exact batch bytes. A conclusive excluding successor fences the
+writer; an older observation remains unknown. The blocking client overload waits that state machine, while the
+storage-neutral resolver remains direct. No batch/HEAD mutation, transaction replay, replacement identity, helper
+task, polling, or new public bound is introduced.
 
 The immediate integration target is the [limited end-to-end profile](limited-profile.md). It freezes one coherent
 public workflow before broadening policy: fixed initial families, synchronous transactions, explicit sparse Flush,

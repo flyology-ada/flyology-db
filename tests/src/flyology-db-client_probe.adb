@@ -1972,8 +1972,125 @@ begin
    Expect (Result, Success, "client-backed family open failed");
    Put (Created, Txn, Family, Key_Data, Value_Data, Result);
    Expect (Result, Success, "client-backed put failed");
+   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
-   Expect (Result, Success, "client-backed commit failed");
+   Expect (Result, Outcome_Unknown, "client-backed commit uncertainty was weakened");
+   declare
+      Resolve_Work         : Refresh_Operation
+        (Composable_Set'Access,
+         Created'Access,
+         Context'Access,
+         Client'Access,
+         Flush_Pool'Access,
+         null);
+      Batch_Puts_Before    : Natural;
+      Manifest_Puts_Before : Natural;
+      Head_Puts_Before     : Natural;
+      Batch_Puts_After     : Natural;
+      Manifest_Puts_After  : Natural;
+      Head_Puts_After      : Natural;
+      Wrong_Finish_Raised  : Boolean := False;
+      Stop                 : aliased Flyology.Cancellation.Token;
+      Cancel_Work          : Refresh_Operation
+        (Composable_Set'Access,
+         Created'Access,
+         Context'Access,
+         Client'Access,
+         Flush_Pool'Access,
+         Stop'Access);
+   begin
+      Context.Test_Control.Publication_Counts
+        (Batch_Puts_Before, Manifest_Puts_Before, Head_Puts_Before);
+
+      Set_Test_Allocation_Fault (Recovery_Driver_State_Allocation);
+      Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Resolve_Work, Commit_Info, Result, Restored_Buffer);
+      Flyology.Operations.Release (Resolve_Work);
+      Expect (Result, Capacity_Exceeded, "commit resolution allocation failure was weakened");
+      if Receipt_Batch_ID (Commit_Info) = Zero_Identifier
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "commit resolution allocation failure lost caller ownership";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+      Stop.Request;
+      Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Cancel_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Cancel_Work, Commit_Info, Result, Restored_Buffer);
+      Flyology.Operations.Release (Cancel_Work);
+      Expect (Result, Cancelled, "pre-requested commit resolution cancellation was lost");
+      if Receipt_Batch_ID (Commit_Info) = Zero_Identifier
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "cancelled commit resolution lost caller ownership";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+      Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
+      if Receipt_Batch_ID (Commit_Info) /= Zero_Identifier
+        or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
+      then
+         raise Program_Error with "composable commit resolution retained caller ownership";
+      end if;
+      Flyology.Operations.Wait_All (Composable_Set);
+      begin
+         Finish (Resolve_Work, Result, Restored_Buffer);
+      exception
+         when Program_Error =>
+            Wrong_Finish_Raised := True;
+      end;
+      if not Wrong_Finish_Raised
+        or else Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else not Flyology.Operations.Is_Terminal (Resolve_Work)
+      then
+         raise Program_Error with "commit resolution accepted the untyped refresh Finish";
+      end if;
+      Finish (Resolve_Work, Commit_Info, Result, Restored_Buffer);
+      Flyology.Operations.Release (Resolve_Work);
+      Expect (Result, Success, "client-backed composable commit resolution failed");
+      if Receipt_Batch_ID (Commit_Info) = Zero_Identifier
+        or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "composable commit resolution lost receipt or exact token";
+      end if;
+      Context.Test_Control.Publication_Counts
+        (Batch_Puts_After, Manifest_Puts_After, Head_Puts_After);
+      if Batch_Puts_After /= Batch_Puts_Before
+        or else Manifest_Puts_After /= Manifest_Puts_Before
+        or else Head_Puts_After /= Head_Puts_Before
+      then
+         raise Program_Error with "composable commit resolution replayed provider mutation";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+      --  A conclusive receipt still moves through the same reusable owner but
+      --  returns Invalid_State without provider I/O or substituting its token.
+      Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Resolve_Work, Commit_Info, Result, Restored_Buffer);
+      Flyology.Operations.Release (Resolve_Work);
+      Expect (Result, Invalid_State, "conclusive commit receipt restarted reconciliation");
+      if not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "invalid commit resolution lost its exact token";
+      end if;
+      Context.Test_Control.Publication_Counts
+        (Batch_Puts_After, Manifest_Puts_After, Head_Puts_After);
+      if Batch_Puts_After /= Batch_Puts_Before
+        or else Manifest_Puts_After /= Manifest_Puts_Before
+        or else Head_Puts_After /= Head_Puts_Before
+      then
+         raise Program_Error with "invalid commit resolution touched the provider";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+   end;
    First_Sequence := Receipt_Sequence (Commit_Info);
    --  Before the first checkpoint, the public state machine resolves the
    --  committed suffix without starting Object Storage I/O.
@@ -2444,8 +2561,22 @@ begin
    Expect (Result, Success, "later client-backed tombstone fixture put failed");
    Put (Created, Txn, Audit_Family, Audit_Key_Data, Audit_Value_Data, Result);
    Expect (Result, Success, "appended-family remote put failed");
+   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
    Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
-   Expect (Result, Success, "later client-backed commit failed");
+   Expect (Result, Outcome_Unknown, "later client-backed commit uncertainty was weakened");
+   Resolve
+     (Created,
+      Context'Access,
+      Commit_Info,
+      Flush_Buffer,
+      Test_Operation_Timeout,
+      Result => Result);
+   Expect (Result, Success, "buffer-owned commit resolution failed");
+   if not Flyology.Buffers.Has_Buffer (Flush_Buffer)
+     or else Flyology.Buffers.Tag (Flush_Buffer) /= Flush_Token_Tag
+   then
+      raise Program_Error with "buffer-owned commit resolution lost its exact token";
+   end if;
    Later_Sequence := Receipt_Sequence (Commit_Info);
    Observe_L0_Checkpoint_Requirement (Created, Requirement, Result);
    Expect (Result, Success, "later client-backed checkpoint query failed");

@@ -29,7 +29,8 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - Synchronous and caller-composable `Add_Column_Family` at an exact checkpoint boundary, with exact
   manifest/transition identities and same-receipt resolution of immutable or HEAD uncertainty.
 - `Outcome_Unknown` receipts resolved only through the original identity; no application transaction or mutation is
-  automatically replayed.
+  automatically replayed. Client-bound commit receipts may move with one caller scratch token through an
+  owner-driven `Refresh_Operation`; storage-neutral reconciliation remains direct.
 - `Close`, complete loss of process-local DB state, and synchronous or caller-composable `Open` recovery solely from
   authoritative object storage.
 - Provider-neutral power-loss-durable Files and authenticated S3 runs of one shared complete database-level oracle.
@@ -49,6 +50,12 @@ the receipt-selected plan and identities, while possible or confirmed HEAD admis
 checkpoint lifecycle admission into the shared bounded recovery traversal. The client-backed buffer overload waits
 that operation; the storage-neutral resolver remains direct. Neither form replays a mutation or selects a new
 identity.
+Ambiguous `Commit_Receipt` resolution reuses `Refresh_Operation` because it is the same exclusive, quiescing,
+authenticated recovery machine rather than another publication provider. Operation-last `Resolve` owns the receipt
+and exact scratch token until its receipt-returning typed `Finish`; the client-backed blocking overload waits that
+operation. A complete graph commits only the retained exact batch bytes, while a conclusive excluding successor
+fences the writer. Successful installation reuses the live incarnation so existing family handles remain valid.
+Neither form uploads, retries the application transaction, selects a replacement identity, or creates a helper task.
 Receipt-driven `Resolve_Add_Column_Family` follows the same provider-centric boundary on `Flush_Operation`.
 Immutable uncertainty authenticates the receipt's retained exact manifest bytes before the one permitted pending
 HEAD admission. Possible or confirmed HEAD admission transfers the existing checkpoint lifecycle admission into

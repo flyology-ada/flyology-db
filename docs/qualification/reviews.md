@@ -1,5 +1,45 @@
 # Review record
 
+## Caller-composable commit-receipt resolution candidate
+
+- Parent: accepted caller-composable family-publication resolution commit `e9267ad`.
+- Scope and API: add operation-last and client-bound blocking `Resolve` overloads directly in `Flyology.DB`, reusing
+  `Refresh_Operation`, `Commit_Receipt`, and a receipt-returning typed `Finish`. The established storage-neutral
+  resolver remains direct and source-compatible. No operation/result type, namespace, compatibility alias, public
+  constant/default, retry, helper task, replacement identity, persisted format, or provider rule is added.
+- Authority and certainty: the operation drains the uncertain engine and executes only the established bounded
+  authenticated recovery traversal. Publication is confirmed only when the recovered history contains the retained
+  exact batch identity and exact bytes. The attempted HEAD without that batch is `Corrupt`; a conclusive excluding
+  successor fences as `Stale_Writer`; an older observation remains `Outcome_Unknown`. No batch or HEAD mutation is
+  replayed and no application transaction is retried.
+- Lifecycle, ownership, and bounds: Start reserves one operation slot and resolution lifecycle admission before
+  moving the self-contained receipt and exact caller token. The ordinary refresh `Finish` rejects the typed terminal
+  without consumption; the receipt-returning `Finish` restores both owners into caller destinations. Cancellation,
+  deadline, allocation, unexpected exception, and abandonment drain every provider child and release admission.
+  The blocking adapter's four-slot set is private geometry derived from DB recovery, Object Storage, HTTP, and
+  transport owner-stack depth.
+- Current executable evidence: warning-strict root and nested test builds pass. The maintained deterministic suite
+  passes repository checks, local formats/policy/model tests, authenticated client and limited-profile workflows,
+  files crash/recovery, 32/32 differential tests, and 4/4 pinned TidesDB upstream tests. The authenticated client
+  probe forces a lost commit-HEAD response, proves receipt/token restoration across driver-allocation failure and
+  pre-requested cancellation, then proves caller ownership movement, wrong-Finish rejection without consumption,
+  exact token restoration, reusable terminal rejection without provider I/O, and zero mutation-count change during
+  read-only reconciliation. A later ambiguous commit exercises the blocking wait. The maintained
+  provider matrix is green for RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite, three repetitions each,
+  with the same ambiguous-commit probe and authenticated limited workflow in every lane against exact Object Storage
+  `f65afbf...`. GNATformat and GNATdoc are unavailable in the configured toolchain, so no formatter or generated-site
+  claim is made. Update-mode and ordinary maintained TLA/TLAPS runs are byte-stable at 393/393 obligations, including
+  all retained positive, negative, witness, Ada-conformance, and deliberate-divergence lanes. Warning-strict
+  GNATprove FSF 16.1.0 proves 1,103/1,103 checks (172 flow and 931 prover), with zero unproved, justified, warning, or
+  actual `pragma Assume` findings and a maximum of 6,522 steps. Pre-, intermediate-, and post-run resource and
+  executable-aware formal audits are clean.
+- Findings cycle: API/constants review confirms that no visible policy was added. Ownership review found and fixed
+  one P1: recovered commit activation initially allocated a new engine incarnation, invalidating already-open family
+  handles after successful reconciliation. Both direct and composable resolvers now retain the live incarnation, and
+  the existing public Get oracle proves the handle remains valid. Under the repository rubric (P0 durable authority,
+  data loss, or security; P1 public contract, lifecycle, ownership, or certainty; P2 coverage, docs, or
+  maintainability), the post-gate sweep finds no remaining actionable P0/P1/P2 issue.
+
 ## Caller-composable column-family resolution candidate
 
 - Parent: accepted caller-composable Flush resolution commit `0309bf3`.

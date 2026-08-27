@@ -39,6 +39,13 @@ Receipt-driven `Resolve_Flush` likewise reuses `Flush_Operation`, its operation-
 It reconstructs only the original immutable plan or transfers the same checkpoint admission into bounded read-only
 recovery; the buffer-owned client adapter waits that state machine, while memory/files retain the established direct
 resolver. No mutation is replayed and no new publication identity is selected.
+Ambiguous `Commit_Receipt` reconciliation now composes through the existing `Refresh_Operation`. Operation-last
+`Resolve` moves the self-contained receipt and one exact caller scratch token until its receipt-returning typed
+`Finish`; the client-backed blocking overload is a literal owner-driven wait. It drains the uncertain writer,
+authenticates one complete recovery graph, and accepts only the retained exact batch bytes or a conclusive successor
+transition. Successful replacement preserves the live engine incarnation, so existing family handles remain valid.
+The storage-neutral resolver remains direct, and neither path republishes a batch or HEAD, retries application work,
+or selects a replacement identity.
 An
 exact-checkpoint `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
 immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. Its additive
