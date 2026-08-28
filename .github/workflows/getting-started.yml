@@ -60,6 +60,7 @@ jobs:
           example_log="$RUNNER_TEMP/flyology-db-files-getting-started.log"
           test ! -e "$example_root"
           bash examples/run-files-getting-started.sh "$example_root" | tee "$example_log"
+          grep -Fqx 'Flyology.DB Files retained-checkpoint live-suffix family reopen: OK' "$example_log"
           grep -Fq 'Flyology.DB Files getting started passed' "$example_log"
           test -d "$example_root"
           repository_status=$(git status --short --untracked-files=all)

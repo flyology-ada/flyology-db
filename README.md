@@ -11,12 +11,13 @@ transaction.
 This repository is under active development. The current acceptance state and remaining work are recorded in
 [the milestone plan](docs/architecture/milestones.md). No production qualification or performance claim is made.
 
-## Quick start: write and reopen one durable key
+## Quick start: checkpoint, extend, and reopen durable data
 
-The smallest runnable example uses the local Files object-storage backend. It creates one database and
-column family, commits one key, Flushes it, closes every owner, reconstructs the provider and database,
-and reads the value back. The final argument must be an absolute path that does not yet exist; the example
-retains it for inspection.
+The smallest runnable example uses the local Files object-storage backend. It checkpoints one key, commits a
+later live suffix, closes and reconstructs every owner, appends a second family over that retained checkpoint,
+writes the new family, Flushes both changed families, and closes and reconstructs again to verify the registry
+and all three values. The final argument must be an absolute path that does not yet exist; the example retains
+it for inspection.
 
 ```sh
 git clone https://github.com/flyology-ada/flyology-db.git
@@ -26,9 +27,9 @@ alr build
 bash examples/run-files-getting-started.sh "$PWD/flyology-db-example-data"
 ```
 
-The example prints `Flyology.DB Files getting started passed` on success. Its small deterministic identities
-are safe only because the runner requires a fresh, single-use directory; applications must allocate and
-persist their own never-reused identities. See the
+The example prints `Flyology.DB Files retained-checkpoint live-suffix family reopen: OK` before the runner's
+success line. Its small deterministic identities are safe only because the runner requires a fresh, single-use
+directory; applications must allocate and persist their own never-reused identities. See the
 [getting-started guide](docs/guides/getting-started.md) for prerequisites, explicit limits, typed outcomes,
 receipt reconciliation, and retained-data ownership.
 
