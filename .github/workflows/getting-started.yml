@@ -23,6 +23,7 @@ jobs:
         timeout-minutes: 5
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          path: source
           fetch-depth: 0
           persist-credentials: false
       - name: Install Alire
@@ -44,12 +45,15 @@ jobs:
             --before=community
       - name: Materialize the qualified Object Storage dependency
         timeout-minutes: 10
+        working-directory: source
         run: bash scripts/materialize-development-dependencies.sh
       - name: Build Flyology.DB
         timeout-minutes: 20
+        working-directory: source
         run: alr build
       - name: Build and run the retained Files example
         timeout-minutes: 10
+        working-directory: source
         shell: bash
         run: |
           example_root="$RUNNER_TEMP/flyology-db-files-getting-started"
