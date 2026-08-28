@@ -73,8 +73,8 @@ keys. The manifest and runs are immutable; provider generations remain opaque va
 
 ## Publication state machine
 
-Both public Flush forms and the exact-checkpoint family-append forms serialize against the existing bounded native
-Ada coordinator. The additive
+Both public Flush forms and the checkpoint-carried, suffix-preserving family-append forms serialize against the
+existing bounded native Ada coordinator. The additive
 `Flush_Operation` is an owner-stack state machine driven by the caller's completion set. Client-bound synchronous
 `Flush` creates its temporary set and buffer pool lazily, atomically promotes its existing lifecycle lease into that
 same operation, and waits as the owner. Memory/files retain the backend-neutral synchronous publisher until those
@@ -249,12 +249,11 @@ than the existing last ID; its byte name must be unique. Every key/value, memtab
 configuration, while database-wide family, history, run, and identity capacity comes from the authenticated current
 manifest. No default, generated ID, rename, drop, reorder, or prior-family mutation is selected.
 
-The operation requires an exact durable checkpoint and no admitted commit suffix after it. This is a correctness
-boundary rather than an automatic-Flush policy: the successor copies the retained checkpoint's replay boundary,
-run descriptors, identity ledger, LSM limits, and every prior family record byte for byte. A fresh root has no
-retained checkpoint plan, while an unflushed suffix contains identities not represented by that plan. Both reject as
-`Invalid_State` before allocation or object publication; callers may explicitly Flush first with their own complete
-family-to-run identity map.
+The operation requires an exact durable checkpoint carrier. The successor copies that checkpoint's replay boundary,
+run descriptors, identity ledger, LSM limits, and every prior family record byte for byte. A later committed suffix
+remains outside that unchanged checkpoint partition: it is admitted only when the authenticated HEAD and batch chain
+anchor every suffix batch strictly after the replay boundary. A fresh root has no retained checkpoint plan and still
+rejects as `Invalid_State` before allocation or publication; the operation does not select an automatic Flush.
 
 Planning lazily allocates exactly one successor checkpoint with `prior family count + 1`, the prior run count, and
 the prior identity count. Checked arithmetic and structural validation precede effects. Allocation failure is
@@ -270,9 +269,13 @@ conclusive successor chain that excludes it fences the stale writer. No result a
 automatic mutation retry.
 
 After confirmed publication, activation replaces the local engine through the existing checkpoint lifecycle while
-preserving the process-session incarnation. A failed local allocation/install is `Local_Activation_Failed`, retains
-durable-success authority, and can be completed by `Resolve_Add_Column_Family`. Terminal success exposes the family
-through the existing `Open_Column_Family` calls. The additive operation-last form reuses `Flush_Operation`, its
+preserving the process-session incarnation. The client/composable path installs its prepared view directly at the
+exact checkpoint boundary. With a later suffix it transfers the same lifecycle admission into cacheless
+authenticated recovery, which rebuilds the successor checkpoint and replays the anchored suffix before installation.
+The storage-neutral synchronous path retains authenticated recovery activation at either boundary. A failed local
+allocation/install or post-HEAD recovery is `Local_Activation_Failed`, retains durable-success authority, and can be
+completed by `Resolve_Add_Column_Family`. Terminal success exposes the family through the existing
+`Open_Column_Family` calls. The additive operation-last form reuses `Flush_Operation`, its
 caller-owned completion set, moved scratch token, and typed token-restoring `Finish`; a runtime result discriminator
 prevents the receipt-shaped Flush and family finishes from consuming one another. The client-backed synchronous form
 allocates one derived scratch token and waits on that exact state machine. Memory and files retain the backend-neutral
@@ -332,6 +335,16 @@ prepare/confirm/publish cycles over arbitrary state and identity sets. Strict TL
 confirmed-before-HEAD ordering, exact checkpoint/suffix partitioning after every replacement, exact recovery, and
 disposable local state. Manifest-chain arithmetic, concrete bytes, sorting, provider reconciliation, persisted
 capacity arithmetic, and a refinement relation to Ada remain outside this kernel.
+
+`LiveSuffixRegistryPublication.tla` isolates family append over a retained checkpoint plus a nonempty live suffix.
+The pinned finite lane generates 26 states, finds 18 distinct states with an empty queue at depth 9, and covers 16
+ordered actions: the first 15 once and `RecoverActivation` twice. It checks exact checkpoint/suffix identity
+partitioning, read-only same-receipt manifest resolution, immediate fencing after confirmed HEAD, cancellation and
+local activation failure, complete recovery, and rival rejection. Five negative probes must respectively violate
+`CapturedPartitionIsExact`, `ConfirmedHeadImpliesFenced`, `ManifestResolutionDoesNotReplay`,
+`ResolutionDoesNotReplay`, and `RivalCannotResolveCommitted`; canonical recovery and cancellation witnesses fix both
+terminal routes. `LiveSuffixRegistryPublicationSafetyProof.tla` proves 25/25 strict obligations. This finite geometry
+and its unbounded kernel prove neither provider behavior nor a refinement from the Ada implementation.
 
 ## Frozen L0 compaction boundary
 

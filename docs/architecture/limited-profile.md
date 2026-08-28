@@ -26,8 +26,8 @@ performance, replica, automatic-maintenance, or general-provider qualification.
 - Exact caller-selected two- or three-consecutive-run `Compact`, retaining every version/tombstone and all
   surrounding runs. The maintained shared acceptance workflow selects the two-run form, then crosses the persisted
   L0 ceiling and executes the exact complete-view replacement selected by `Observe_L0_Checkpoint_Requirement`.
-- Synchronous and caller-composable `Add_Column_Family` at an exact checkpoint boundary, with exact
-  manifest/transition identities and same-receipt resolution of immutable or HEAD uncertainty.
+- Synchronous and caller-composable `Add_Column_Family` over an exact retained checkpoint and any authenticated
+  later commit suffix, with exact manifest/transition identities and same-receipt resolution of uncertainty.
 - `Outcome_Unknown` receipts resolved only through the original identity; no application transaction or mutation is
   automatically replayed. Client-bound commit receipts may move with one caller scratch token through an
   owner-driven `Refresh_Operation`; storage-neutral reconciliation remains direct.
@@ -84,11 +84,11 @@ the following sequence using only public Flyology.DB APIs:
    bucket, prefix, and credential choice explicitly from its fixture or caller.
 2. Create a database with one explicit family, read its exact installed database configuration and complete family
    registry, observe no checkpoint work, and reopen the family by stable ID and exact name.
-3. Commit exact byte keys and values, require the additive action, then Flush a complete first checkpoint and observe
-   no remaining work.
-4. Append one independently bounded higher-ID family with caller-stable manifest and transition identities, then
-   enumerate the complete two-family registry and reopen it by stable ID and exact name before reading both
-   families' exact installed settings.
+3. Commit exact byte keys and values, require the additive action, then Flush a complete first checkpoint and
+   observe no remaining work. Commit one later root-family suffix without another Flush.
+4. Append one independently bounded higher-ID family with caller-stable manifest and transition identities,
+   require the pre-append suffix value to remain visible, then enumerate the complete two-family registry and
+   reopen it by stable ID and exact name before reading both families' exact installed settings.
 5. Atomically commit a group whose members affect both families, verify one all-or-nothing visible sequence, delete
    one key, verify ordered half-open scanning, require the additive action, and Flush the suffix without changing
    prior run identity; observe no remaining checkpoint work afterward.
@@ -113,7 +113,7 @@ retry, and endpoint policy remain outside Flyology.DB.
 
 ## Explicit exclusions
 
-This profile does not include family rename/drop/reconfiguration, appending across an unflushed commit suffix,
+This profile does not include family rename/drop/reconfiguration, a family append without a retained checkpoint,
 writer promotion, TTL, codecs, automatic execution or identity generation, garbage-collection policy, bucket
 creation or cleanup,
 background polling, transparent retry, retained borrowed request bodies, performance claims, or stable-format

@@ -33,7 +33,7 @@ persist their own never-reused identities. See the
 receipt reconciliation, and retained-data ownership.
 
 The current usable boundary is the deliberately narrow
-[limited end-to-end profile](docs/architecture/limited-profile.md): one writer, one checkpoint-bound append-only
+[limited end-to-end profile](docs/architecture/limited-profile.md): one writer, one checkpoint-carried append-only
 family change, synchronous transactions, Flush, caller-selected adjacent and complete compaction, exact
 close/local-loss/reopen recovery, read-only inspection of the exact installed database and family configuration,
 and no automatic maintenance or retry policy.
@@ -82,8 +82,8 @@ authenticates one complete recovery graph, and accepts only the retained exact b
 transition. Successful replacement preserves the live engine incarnation, so existing family handles remain valid.
 The storage-neutral resolver remains direct, and neither path republishes a batch or HEAD, retries application work,
 or selects a replacement identity.
-An
-exact-checkpoint `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
+A
+checkpoint-carried `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
 immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. Its additive
 operation-last overload uses the existing caller-owned `Flush_Operation`; the client-backed synchronous form is a
 literal wait over that state machine. Receipt-driven `Resolve_Add_Column_Family` is now colocated on that same
@@ -91,12 +91,14 @@ operation as well: immutable uncertainty confirms the retained exact manifest be
 HEAD, while possible or confirmed HEAD admission uses only bounded authenticated recovery. The receipt and exact
 scratch token remain operation-owned until typed `Finish`; the buffer-owned client form waits that same state
 machine, and the storage-neutral resolver remains direct. It derives all
-allocation extents from persisted database and family limits; fresh-root and unflushed-suffix calls reject before
-publication because no caller-owned SST identity may be invented. The shared Files/S3 walkthrough observes additive
-work, checkpoints one root family, confirms the clean boundary, appends a second, writes and observes additive work
-for both, Flushes and confirms the clean boundary, compacts the exact adjacent root-family pair, crosses the
-persisted L0 ceiling, executes the exact observed two-family complete replacement, discards all local state, and
-recovers both families from object storage alone. An
+allocation extents from persisted database and family limits. A retained checkpoint may carry a later authenticated
+commit suffix unchanged across the registry successor; fresh-root calls still reject because no checkpoint carrier
+exists. The client/composable path activates directly only at the exact checkpoint boundary and uses cacheless
+recovery for a suffix; the storage-neutral synchronous path retains authenticated recovery activation at either
+boundary. The shared Files/S3 walkthrough checkpoints one root family, commits a later suffix, appends a second
+family without another Flush, verifies the suffix and new registry, writes and observes additive work for both,
+Flushes, compacts the exact adjacent root-family pair, crosses the persisted L0 ceiling, executes the exact observed
+two-family complete replacement, discards all local state, and recovers both families from object storage alone. An
 additive failure-atomic `Read_Configuration` surface reports the installed registry revision, family count, every
 persisted database limit, and every complete per-family setting from one live engine snapshot. A caller-bounded
 overload returns the whole installed family registry in stable increasing-ID order, so recovery does not require
@@ -240,7 +242,7 @@ AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
 
 The separate S3 matrix requires Docker and runs the authenticated DB probe three times against pinned RustFS,
 SeaweedFS, MinIO, and Flyology memory, files, and SQLite servers. It reuses Object Storage's maintained provider
-lifecycle scripts while DB owns the database-level create, checkpoint-bound family append, exact lost-response
+lifecycle scripts while DB owns the database-level create, suffix-preserving family append, exact lost-response
 resolution, cross-family commit and Flush, compaction, and cacheless-reopen oracle. The repetition count is
 qualification geometry and can be changed for focused diagnostics with
 `FLYOLOGY_DB_S3_MATRIX_REPEATS`; it is not a database retry or compatibility policy.
@@ -249,9 +251,14 @@ The exact Object Storage commit used by the current campaign is recorded in
 [dependency-provenance.md](docs/qualification/dependency-provenance.md).
 
 The TLA+ gate exhausts the maintained bounded state machines, checks their unbounded safety kernels with TLAPS,
-regenerates canonical `flyology.tla.trace` artifacts through the indexed `flyology_tla` harness, and replays all
-four L0 checkpoint-policy outcomes against the Ada implementation. Run `./scripts/setup-tla.sh` once to install the
-exact indexed harness CLI and its verified toolchain in ignored `.deps` prefixes.
+regenerates canonical `flyology.tla.trace` artifacts through the indexed `flyology_tla` harness, and replays all four
+L0 checkpoint-policy outcomes against the Ada implementation. The focused live-suffix registry lane checks the exact
+checkpoint/suffix partition, read-only same-receipt manifest and HEAD resolution without provider replay, immediate
+post-HEAD fencing, cancellation or local activation failure, exact recovery, and rival rejection. Update mode and
+ordinary mode preserve 41 canonical traces byte-for-byte, including authenticated normalized recovery and
+cancellation witnesses. Those two witnesses are TLA-only traces, not new Ada L0 replay or refinement evidence. Run
+`./scripts/setup-tla.sh` once to install the exact indexed harness CLI and its verified toolchain in ignored `.deps`
+prefixes.
 
 ## Agent setup
 

@@ -75,11 +75,13 @@ The checkpoint protocol is specified separately in
 and caller-composable Flush with self-contained certainty receipts, exact same-identity reconciliation, live
 coordinator replacement, additive multi-run L0 publication, and cacheless all-run recovery are operational.
 Synchronous and caller-composable `Add_Column_Family` carry one higher-ID caller configuration across an exact
-checkpoint, confirm its
-immutable manifest before conditional HEAD, and activates or reconciles through a self-contained receipt. It rejects
-fresh-root and post-checkpoint-suffix state before publication rather than inventing immutable run identities. The
-client-backed synchronous form waits on the same `Flush_Operation` state machine as the operation-last composable
-form.
+retained checkpoint and any authenticated later commit suffix. They confirm the immutable manifest before
+conditional HEAD and activate or reconcile through a self-contained receipt. Fresh-root state still rejects before
+publication. The client/composable path installs its prepared view directly at an exact checkpoint and uses
+cacheless recovery for a suffix; the storage-neutral synchronous path retains recovery activation at either
+boundary. Recovery rebuilds the successor checkpoint and replays its anchored batches without inventing immutable
+run identities. The client-backed synchronous form waits on the same `Flush_Operation` state machine as the
+operation-last composable form.
 Public `Start_Compaction` and blocking `Compact` expose the complete-replacement planner/publisher through the same
 `Flush_Operation`, typed `Finish`, receipt, and exact-identity resolution as additive Flush. The caller supplies the
 complete family/output identity map and successor manifest/transition identities. The operation selects no automatic

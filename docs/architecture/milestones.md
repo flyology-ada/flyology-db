@@ -28,19 +28,22 @@ Client-bound synchronous Create and Flush are owner-driven waits over the same D
 Commit_Group use their coordinator-backed operations for every provider, while memory/files retain the
 backend-neutral synchronous Create and Flush fallbacks. The limited operation and caller-owned completion set
 express scoped lifetime; a separate `.Scoped` package would create a second vocabulary for the same provider state
-machine and is intentionally absent. Remote-provider qualification
-now includes the exact-checkpoint family append through both direct-composable and blocking-wait calls. Broader
+machine and is intentionally absent. Remote-provider qualification now includes checkpoint-carried,
+suffix-preserving family append through both direct-composable and blocking-wait calls. Broader
 Milestone 2 acceptance remains pending. The pooled TLA+ and manifest-publication models remain abstract assurance
 lanes rather than a claimed refinement proof.
 
 The persisted transition and cacheless-recovery prerequisite admits a manifest-v3 checkpoint carrier that
 either preserves the exact registry or appends exactly one higher-ID family while leaving every prior record fixed.
-The public synchronous `Add_Column_Family` operation now uses that carrier at an exact durable checkpoint with no
-later commit suffix. It copies all prior runs and reserved identities, derives the new family allocation from its
-caller-supplied persisted limits, publishes immutable manifest bytes before one conditional HEAD, and reconciles
-only through its exact receipt. Fresh-root and suffix-bearing calls return `Invalid_State` before publication rather
-than selecting SST identities. The files-backed public showcase carries the appended family through its first L0
-run and cacheless reopen. The client-backed synchronous overload waits on the same caller-owned `Flush_Operation`
+The public synchronous `Add_Column_Family` operation now uses that carrier at an exact durable checkpoint while
+preserving any authenticated later commit suffix. It copies all prior runs and checkpoint identities, derives the
+new family allocation from caller-supplied persisted limits, publishes immutable manifest bytes before one
+conditional HEAD, and reconciles only through its exact receipt. Fresh-root calls return `Invalid_State` before
+publication. The client/composable path activates directly at an exact checkpoint and uses cacheless recovery for a
+suffix; the storage-neutral synchronous path retains recovery activation at either boundary. Recovery rebuilds the
+successor checkpoint and replays the anchored suffix without inventing SST identities. The files-backed
+public showcase carries both the pre-append suffix and appended family through Flush and cacheless reopen. The
+client-backed synchronous overload waits on the same caller-owned `Flush_Operation`
 used by the operation-last composable form. Receipt-driven family resolution likewise reuses that operation and
 typed `Finish`: retained immutable bytes may admit only the original pending HEAD, while possible or confirmed HEAD
 admission uses bounded authenticated recovery. Broader family lifecycle remains pending Milestone 2 work.
@@ -55,7 +58,8 @@ task, polling, or new public bound is introduced.
 The immediate integration target is the [limited end-to-end profile](limited-profile.md). It freezes one coherent
 public workflow before broadening policy: fixed initial families, synchronous transactions, explicit sparse Flush,
 caller-selected adjacent compaction, an observed exact complete replacement at persisted L0 capacity, complete
-process-local state loss, one exact-checkpoint append-only family change, and authoritative reopen. Family
+process-local state loss, one checkpoint-carried append-only family change that preserves an authenticated suffix,
+and authoritative reopen. Family
 rename/drop/reconfiguration, automatic compaction policy, replicas, TTL, and automatic maintenance remain outside
 that acceptance claim.
 

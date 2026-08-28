@@ -9,7 +9,10 @@ project Flyology_Db_Proof is
    for Source_Dirs use (".", "../src");
    for Source_Files use
      ("flyology-db-lsm_format_proof.ads",
+      "flyology-db-identity_partition_proof.ads",
       "flyology-db.ads",
+      "flyology-db-identity_partition_policy.ads",
+      "flyology-db-identity_partition_policy.adb",
       "flyology-db-checkpoint_policy.ads",
       "flyology-db-checkpoint_policy.adb",
       "flyology-db-head_policy.ads",

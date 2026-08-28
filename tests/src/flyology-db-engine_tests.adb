@@ -7,6 +7,7 @@ with Flyology.Cancellation;
 with Flyology.Bytes;
 with Flyology.DB.Batch_Format_Tests;
 with Flyology.DB.Formats;
+with Flyology.DB.Identity_Partition_Policy;
 with Flyology.DB.LSM_Formats;
 with Flyology.DB.LSM_Runtime_Formats;
 with Flyology.DB.Object_Storage;
@@ -45,6 +46,16 @@ package body Flyology.DB.Engine_Tests is
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
    use type OS.Status;
+
+   type Partition_Identity_Array is array (Positive range <>) of Interfaces.Unsigned_64;
+   type Partition_Batch_Index_Array is array (Positive range <>) of Natural;
+
+   package Identity_Partitions is new
+     Flyology.DB.Identity_Partition_Policy
+       (Identity          => Interfaces.Unsigned_64,
+        Zero              => 0,
+        Identity_Array    => Partition_Identity_Array,
+        Batch_Index_Array => Partition_Batch_Index_Array);
 
    --  Test-only object namespace and reference-corpus byte dimensions. The
    --  latter deliberately mirror the bounded batch reference codec; they do
@@ -146,6 +157,80 @@ package body Flyology.DB.Engine_Tests is
       end if;
    end Expect;
 
+   procedure Test_Identity_Partition_Policy is
+      Reserved   : constant Partition_Identity_Array := [1, 2, 3, 4, 5, 6];
+      Checkpoint : constant Partition_Identity_Array := [1, 2];
+      Batches    : constant Partition_Identity_Array := [3, 4];
+      Members    : constant Partition_Identity_Array := [3, 5, 6];
+      Mapping    : constant Partition_Batch_Index_Array := [1, 2, 2];
+
+      procedure Expect_Partition
+        (Expected         : Boolean;
+         Reserved_Value   : Partition_Identity_Array;
+         Checkpoint_Value : Partition_Identity_Array;
+         Batch_Value      : Partition_Identity_Array;
+         Member_Value     : Partition_Identity_Array;
+         Mapping_Value    : Partition_Batch_Index_Array;
+         Context          : String) is
+      begin
+         if Identity_Partitions.Valid_Partition
+              (Reserved_Value, Checkpoint_Value, Batch_Value, Member_Value, Mapping_Value)
+           /= Expected
+         then
+            raise Program_Error with Context;
+         end if;
+      end Expect_Partition;
+   begin
+      Expect_Partition
+        (True, Reserved, Checkpoint, Batches, Members, Mapping, "valid identity partition was rejected");
+      Expect_Partition
+        (False, Reserved, [1, 1], Batches, Members, Mapping, "duplicate checkpoint identity was accepted");
+      Expect_Partition
+        (False, Reserved, [1], Batches, Members, Mapping, "missing checkpoint identity was accepted");
+      Expect_Partition
+        (False, Reserved, Checkpoint, Batches, [5, 5, 6], Mapping, "malformed singleton alias was accepted");
+      Expect_Partition
+        (False,
+         Reserved,
+         Checkpoint,
+         [3, 5],
+         [3, 5, 6],
+         Mapping,
+         "group batch/member identity collision was accepted");
+      Expect_Partition
+        (False,
+         [1, 2, 3, 4, 5],
+         Checkpoint,
+         Batches,
+         Members,
+         Mapping,
+         "suffix identity outside the reserved ledger was accepted");
+      Expect_Partition
+        (False,
+         [1, 2, 3, 4, 5, 5],
+         Checkpoint,
+         Batches,
+         Members,
+         Mapping,
+         "duplicate reserved identity was accepted");
+      Expect_Partition
+        (False,
+         [0, 2, 3, 4, 5, 6],
+         Checkpoint,
+         Batches,
+         Members,
+         Mapping,
+         "zero reserved identity was accepted");
+      Expect_Partition
+        (False,
+         Reserved,
+         Checkpoint,
+         Batches,
+         Members,
+         [1, 2, 3],
+         "member mapped outside the batch summary was accepted");
+   end Test_Identity_Partition_Policy;
+
    type Ownership_Snapshot is record
       Images_Allocated : Interfaces.Unsigned_64;
       Images_Released  : Interfaces.Unsigned_64;
@@ -204,21 +289,21 @@ package body Flyology.DB.Engine_Tests is
    --  point reads and four scan ranges are the maintained serializable corpus
    --  geometry, not library defaults.
    Default_Limits : constant Database_Limits :=
-     (Maximum_Column_Families           => 8,
-      Maximum_Manifest_History          => 64,
-      Maximum_Batch_History             => 64,
-      Maximum_Transactions_Per_Batch    => 8,
-      Maximum_Mutations_Per_Transaction => 64,
-      Maximum_Mutations_Per_Batch       => 64,
-      Maximum_Live_Entries              => 256,
-      Maximum_Transaction_Payload_Bytes => 4_096,
-      Maximum_Batch_Payload_Bytes       => 16_384,
-      Maximum_Live_State_Bytes          => 81_920,
+     (Maximum_Column_Families             => 8,
+      Maximum_Manifest_History            => 64,
+      Maximum_Batch_History               => 64,
+      Maximum_Transactions_Per_Batch      => 8,
+      Maximum_Mutations_Per_Transaction   => 64,
+      Maximum_Mutations_Per_Batch         => 64,
+      Maximum_Live_Entries                => 256,
+      Maximum_Transaction_Payload_Bytes   => 4_096,
+      Maximum_Batch_Payload_Bytes         => 16_384,
+      Maximum_Live_State_Bytes            => 81_920,
       --  One potential L0 run per family and the exact current reservation
       --  capacity (64 histories * (8 transaction IDs + one group ID)). These
       --  are persisted corpus choices, not library defaults.
-      Maximum_Total_L0_Runs             => 8,
-      Maximum_Checkpoint_Identities     => 576,
+      Maximum_Total_L0_Runs               => 8,
+      Maximum_Checkpoint_Identities       => 576,
       Maximum_Point_Reads_Per_Transaction => 8,
       Maximum_Scan_Ranges_Per_Transaction => 4);
 
@@ -403,15 +488,7 @@ package body Flyology.DB.Engine_Tests is
       Open_Column_Family (Item, Family, Handle, Result);
       if Result = Success then
          Root_DB.Start_Scan
-           (Item,
-            Txn,
-            Handle,
-            Has_Lower,
-            Key_Data (Lower),
-            Has_Upper,
-            Key_Data (Upper),
-            Cursor,
-            Result);
+           (Item, Txn, Handle, Has_Lower, Key_Data (Lower), Has_Upper, Key_Data (Upper), Cursor, Result);
       end if;
    end Start_Scan;
 
@@ -425,8 +502,7 @@ package body Flyology.DB.Engine_Tests is
       Done          : out Boolean;
       Result        : out Outcome_Code) is
    begin
-      Root_DB.Next_Scan_Page
-        (Item, Txn, Cursor, Maximum_Rows, Maximum_Bytes, Rows, Done, Result);
+      Root_DB.Next_Scan_Page (Item, Txn, Cursor, Maximum_Rows, Maximum_Bytes, Rows, Done, Result);
    end Next_Scan_Page;
 
    procedure Expect_Scan_Row
@@ -684,18 +760,18 @@ package body Flyology.DB.Engine_Tests is
       --  reserved for the sole family; 24 identities derive from 8 histories *
       --  (2 transaction IDs + one group ID).
       Limits       : constant Database_Limits :=
-        (Maximum_Column_Families           => 1,
-         Maximum_Manifest_History          => 4,
-         Maximum_Batch_History             => 8,
-         Maximum_Transactions_Per_Batch    => 2,
-         Maximum_Mutations_Per_Transaction => 4,
-         Maximum_Mutations_Per_Batch       => 8,
-         Maximum_Live_Entries              => 8,
-         Maximum_Transaction_Payload_Bytes => 1_100_000,
-         Maximum_Batch_Payload_Bytes       => 2_200_000,
-         Maximum_Live_State_Bytes          => 4_400_000,
-         Maximum_Total_L0_Runs             => 1,
-         Maximum_Checkpoint_Identities     => 24,
+        (Maximum_Column_Families             => 1,
+         Maximum_Manifest_History            => 4,
+         Maximum_Batch_History               => 8,
+         Maximum_Transactions_Per_Batch      => 2,
+         Maximum_Mutations_Per_Transaction   => 4,
+         Maximum_Mutations_Per_Batch         => 8,
+         Maximum_Live_Entries                => 8,
+         Maximum_Transaction_Payload_Bytes   => 1_100_000,
+         Maximum_Batch_Payload_Bytes         => 2_200_000,
+         Maximum_Live_State_Bytes            => 4_400_000,
+         Maximum_Total_L0_Runs               => 1,
+         Maximum_Checkpoint_Identities       => 24,
          --  Maintained serializable test geometry; persisted explicitly and
          --  independent of the large family byte bounds above.
          Maximum_Point_Reads_Per_Transaction => 8,
@@ -796,18 +872,18 @@ package body Flyology.DB.Engine_Tests is
       --  12 histories * (8 transaction IDs + one group ID). These are exact
       --  stress-corpus reservations, not runtime defaults.
       Limits          : constant Database_Limits :=
-        (Maximum_Column_Families           => 2,
-         Maximum_Manifest_History          => 4,
-         Maximum_Batch_History             => 12,
-         Maximum_Transactions_Per_Batch    => 8,
-         Maximum_Mutations_Per_Transaction => 8,
-         Maximum_Mutations_Per_Batch       => 16,
-         Maximum_Live_Entries              => 2,
-         Maximum_Transaction_Payload_Bytes => Entry_Bytes,
-         Maximum_Batch_Payload_Bytes       => Exact_Two_Bytes,
-         Maximum_Live_State_Bytes          => Exact_Two_Bytes,
-         Maximum_Total_L0_Runs             => 2,
-         Maximum_Checkpoint_Identities     => 108,
+        (Maximum_Column_Families             => 2,
+         Maximum_Manifest_History            => 4,
+         Maximum_Batch_History               => 12,
+         Maximum_Transactions_Per_Batch      => 8,
+         Maximum_Mutations_Per_Transaction   => 8,
+         Maximum_Mutations_Per_Batch         => 16,
+         Maximum_Live_Entries                => 2,
+         Maximum_Transaction_Payload_Bytes   => Entry_Bytes,
+         Maximum_Batch_Payload_Bytes         => Exact_Two_Bytes,
+         Maximum_Live_State_Bytes            => Exact_Two_Bytes,
+         Maximum_Total_L0_Runs               => 2,
+         Maximum_Checkpoint_Identities       => 108,
          --  Maintained serializable stress-fixture counts, not defaults.
          Maximum_Point_Reads_Per_Transaction => 8,
          Maximum_Scan_Ranges_Per_Transaction => 4);
@@ -1058,18 +1134,18 @@ package body Flyology.DB.Engine_Tests is
       --  L0 run covers the sole family; 6 identities derive from 2 histories *
       --  (2 transaction IDs + one group ID).
       Limits       : constant Database_Limits :=
-        (Maximum_Column_Families           => 1,
-         Maximum_Manifest_History          => 2,
-         Maximum_Batch_History             => 2,
-         Maximum_Transactions_Per_Batch    => 2,
-         Maximum_Mutations_Per_Transaction => 257,
-         Maximum_Mutations_Per_Batch       => 257,
-         Maximum_Live_Entries              => 257,
-         Maximum_Transaction_Payload_Bytes => 514,
-         Maximum_Batch_Payload_Bytes       => 514,
-         Maximum_Live_State_Bytes          => 514,
-         Maximum_Total_L0_Runs             => 1,
-         Maximum_Checkpoint_Identities     => 6,
+        (Maximum_Column_Families             => 1,
+         Maximum_Manifest_History            => 2,
+         Maximum_Batch_History               => 2,
+         Maximum_Transactions_Per_Batch      => 2,
+         Maximum_Mutations_Per_Transaction   => 257,
+         Maximum_Mutations_Per_Batch         => 257,
+         Maximum_Live_Entries                => 257,
+         Maximum_Transaction_Payload_Bytes   => 514,
+         Maximum_Batch_Payload_Bytes         => 514,
+         Maximum_Live_State_Bytes            => 514,
+         Maximum_Total_L0_Runs               => 1,
+         Maximum_Checkpoint_Identities       => 6,
          --  Maintained serializable descriptor-fixture counts, not defaults.
          Maximum_Point_Reads_Per_Transaction => 8,
          Maximum_Scan_Ranges_Per_Transaction => 4);
@@ -1426,18 +1502,18 @@ package body Flyology.DB.Engine_Tests is
       --  48-byte memtable derives from three entries * (8 key + 8 value bytes)
       --  for the ordering corpus.
       Limits                                     : constant Database_Limits :=
-        (Maximum_Column_Families           => 2,
-         Maximum_Manifest_History          => 4,
-         Maximum_Batch_History             => 8,
-         Maximum_Transactions_Per_Batch    => 2,
-         Maximum_Mutations_Per_Transaction => 4,
-         Maximum_Mutations_Per_Batch       => 4,
-         Maximum_Live_Entries              => 4,
-         Maximum_Transaction_Payload_Bytes => 16,
-         Maximum_Batch_Payload_Bytes       => 32,
-         Maximum_Live_State_Bytes          => 24,
-         Maximum_Total_L0_Runs             => 4,
-         Maximum_Checkpoint_Identities     => 24,
+        (Maximum_Column_Families             => 2,
+         Maximum_Manifest_History            => 4,
+         Maximum_Batch_History               => 8,
+         Maximum_Transactions_Per_Batch      => 2,
+         Maximum_Mutations_Per_Transaction   => 4,
+         Maximum_Mutations_Per_Batch         => 4,
+         Maximum_Live_Entries                => 4,
+         Maximum_Transaction_Payload_Bytes   => 16,
+         Maximum_Batch_Payload_Bytes         => 32,
+         Maximum_Live_State_Bytes            => 24,
+         Maximum_Total_L0_Runs               => 4,
+         Maximum_Checkpoint_Identities       => 24,
          --  Maintained serializable API-fixture counts, not defaults.
          Maximum_Point_Reads_Per_Transaction => 8,
          Maximum_Scan_Ranges_Per_Transaction => 4);
@@ -1511,10 +1587,10 @@ package body Flyology.DB.Engine_Tests is
       procedure Expect_Live_LSM_Authority
         (Target : in out Database; Expected_Replay : Sequence_Number; Context_Text : String)
       is
-         Replay, Memtable_Bytes                                    : Interfaces.Unsigned_64;
-         Total_Runs, Identity_Total, Point_Reads, Scan_Ranges      : Interfaces.Unsigned_32;
-         Memtable_Entries, Family_Runs                             : Interfaces.Unsigned_32;
-         Inspect                                                   : Outcome_Code;
+         Replay, Memtable_Bytes                               : Interfaces.Unsigned_64;
+         Total_Runs, Identity_Total, Point_Reads, Scan_Ranges : Interfaces.Unsigned_32;
+         Memtable_Entries, Family_Runs                        : Interfaces.Unsigned_32;
+         Inspect                                              : Outcome_Code;
       begin
          Testing.Live_LSM_Limits
            (Target,
@@ -1552,15 +1628,13 @@ package body Flyology.DB.Engine_Tests is
       end Expect_Live_Entry_Sequence;
 
       procedure Read_And_Expect_Database_Configuration
-        (Target       : in out Database;
-         Configuration : out Database_Configuration_Snapshot;
-         Context_Text : String)
+        (Target : in out Database; Configuration : out Database_Configuration_Snapshot; Context_Text : String)
       is
          Candidate : Database_Configuration_Snapshot :=
            (Registry_Revision => Interfaces.Unsigned_64'Last,
             Family_Count      => Interfaces.Unsigned_32'Last,
             Limits            => Default_Limits);
-         Inspect : Outcome_Code;
+         Inspect   : Outcome_Code;
       begin
          Read_Configuration (Target, Candidate, Inspect);
          if Inspect /= Success or else Candidate.Family_Count /= 2 or else Candidate.Limits /= Limits then
@@ -1579,9 +1653,9 @@ package body Flyology.DB.Engine_Tests is
            (Registry_Revision => Interfaces.Unsigned_64'Last,
             Family_Count      => Interfaces.Unsigned_32'Last,
             Limits            => Default_Limits);
-         Candidate_Registry : Column_Family_Configuration_Array (1 .. 3) :=
+         Candidate_Registry      : Column_Family_Configuration_Array (1 .. 3) :=
            [Families (1), Families (1), Different_LSM (1)];
-         Inspect : Outcome_Code;
+         Inspect                 : Outcome_Code;
       begin
          if Registry'Length /= 2 then
             raise Program_Error with Context_Text & " registry oracle capacity is invalid";
@@ -1632,10 +1706,8 @@ package body Flyology.DB.Engine_Tests is
          Read_Configuration (Target, Handle, Candidate, Inspect);
          if Inspect /= Success
            or else not Is_Valid_Column_Family_Configuration (Candidate)
-           or else Column_Family_Configuration_ID (Candidate)
-                   /= Column_Family_Configuration_ID (Expected)
-           or else Column_Family_Configuration_Name (Candidate)
-                   /= Column_Family_Configuration_Name (Expected)
+           or else Column_Family_Configuration_ID (Candidate) /= Column_Family_Configuration_ID (Expected)
+           or else Column_Family_Configuration_Name (Candidate) /= Column_Family_Configuration_Name (Expected)
            or else Column_Family_Configuration_Max_Key_Bytes (Candidate)
                    /= Column_Family_Configuration_Max_Key_Bytes (Expected)
            or else Column_Family_Configuration_Max_Value_Bytes (Candidate)
@@ -1715,9 +1787,9 @@ package body Flyology.DB.Engine_Tests is
       declare
          --  Family 2's fixture authority is exactly one maximum 2+3-byte
          --  memtable entry and two accumulated L0 runs for this corpus.
-         Total_Runs, Identity_Total, Point_Reads, Scan_Ranges      : Interfaces.Unsigned_32;
-         Memtable_Entries, Family_Runs                             : Interfaces.Unsigned_32;
-         Memtable_Bytes                                            : Interfaces.Unsigned_64;
+         Total_Runs, Identity_Total, Point_Reads, Scan_Ranges : Interfaces.Unsigned_32;
+         Memtable_Entries, Family_Runs                        : Interfaces.Unsigned_32;
+         Memtable_Bytes                                       : Interfaces.Unsigned_64;
       begin
          Testing.Root_LSM_Limits
            (Context,
@@ -2040,8 +2112,7 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "checkpoint reopen family lookup failed");
       Open_Column_Family (Item, 7, Family_Seven, Result);
       Expect (Result, Success, "checkpoint reopen second-family lookup failed");
-      Expect_Family_Configuration
-        (Item, Family_By_ID, Families (2), "checkpoint reopen family lookup");
+      Expect_Family_Configuration (Item, Family_By_ID, Families (2), "checkpoint reopen family lookup");
       Expect_Family_Configuration
         (Item, Family_Seven, Families (1), "checkpoint reopen second-family lookup");
       declare
@@ -2079,11 +2150,11 @@ package body Flyology.DB.Engine_Tests is
       Begin_Transaction (Item, Second_Snapshot_Reader_ID, Snapshot_Reader, Result);
       Expect (Result, Success, "replacement-checkpoint snapshot reader begin failed");
       declare
-         Flush_Info                                                   : Flush_Receipt;
+         Flush_Info                                                  : Flush_Receipt;
          Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
          After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
          Planned_Runs, Planned_Identities                            : Natural;
-         Planned_Replay                                               : Sequence_Number;
+         Planned_Replay                                              : Sequence_Number;
       begin
          Testing.Build_First_Checkpoint
            (Item,
@@ -2101,8 +2172,7 @@ package body Flyology.DB.Engine_Tests is
          then
             raise Program_Error with "successive checkpoint did not retain both L0 generations";
          end if;
-         Testing.Publication_Counts
-           (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+         Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
          Flush
            (Item,
             Second_Checkpoint_Run_Map,
@@ -2122,8 +2192,7 @@ package body Flyology.DB.Engine_Tests is
          then
             raise Program_Error with "second Flush receipt lost exact operation authority";
          end if;
-         Testing.Publication_Counts
-           (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+         Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
          if After_Batches /= Before_Batches
            or else After_Runs /= Before_Runs + 2
            or else After_Manifests /= Before_Manifests + 1
@@ -2151,7 +2220,7 @@ package body Flyology.DB.Engine_Tests is
          --  These are every allocation class used specifically while a
          --  replacement plan builds exact references, SSTs, and its manifest.
          --  The set is test coverage geometry, not a resource ceiling.
-         Compaction_Allocation_Points :
+         Compaction_Allocation_Points                                  :
            constant array (Positive range 1 .. 3) of Testing.Allocation_Fault_Point :=
              [Testing.Checkpoint_References, Testing.Checkpoint_SST, Testing.Checkpoint_Manifest];
 
@@ -2186,8 +2255,7 @@ package body Flyology.DB.Engine_Tests is
             end if;
          end Inspect_Family;
       begin
-         Testing.Publication_Counts
-           (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+         Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
          for Point of Compaction_Allocation_Points loop
             Testing.Fail_Next_Allocation (Point);
             Testing.Build_Compaction_Checkpoint
@@ -2219,8 +2287,7 @@ package body Flyology.DB.Engine_Tests is
             Family_Entries,
             Result);
          Expect (Result, Invalid_State, "compaction reused a current immutable run identity");
-         Testing.Publication_Counts
-           (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+         Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
          if After_Batches /= Before_Batches
            or else After_Runs /= Before_Runs
            or else After_Manifests /= Before_Manifests
@@ -2247,8 +2314,7 @@ package body Flyology.DB.Engine_Tests is
          then
             raise Program_Error with "compaction receipt lost exact replacement authority";
          end if;
-         Testing.Publication_Counts
-           (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+         Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
          if After_Batches /= Before_Batches
            or else After_Runs /= Before_Runs + 2
            or else After_Manifests /= Before_Manifests + 1
@@ -2478,17 +2544,13 @@ package body Flyology.DB.Engine_Tests is
       --  sizing recommendations. Identity_Base selects one disjoint fixture
       --  namespace; 100-wide offsets separate uncertainty cases, while each
       --  case's documented call arguments remain caller-owned identities.
-      Limits : constant Database_Limits :=
-        (Default_Limits with delta
-           Maximum_Column_Families => 2,
-           Maximum_Manifest_History => 4,
-           Maximum_Total_L0_Runs => 2);
+      Limits           : constant Database_Limits :=
+        (Default_Limits
+         with delta Maximum_Column_Families => 2, Maximum_Manifest_History => 4, Maximum_Total_L0_Runs => 2);
       Initial_Families : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family
-           (1, [Byte (Character'Pos ('a'))], 8, 8, 16, 2, 2)];
-      Appended_Family : constant Column_Family_Configuration :=
-        Configure_Column_Family
-          (3, [Byte (Character'Pos ('b'))], 4, 6, 20, 2, 1);
+        [Configure_Column_Family (1, [Byte (Character'Pos ('a'))], 8, 8, 16, 2, 2)];
+      Appended_Family  : constant Column_Family_Configuration :=
+        Configure_Column_Family (3, [Byte (Character'Pos ('b'))], 4, 6, 20, 2, 1);
 
       procedure Prepare_Checkpoint
         (Context : aliased in out Storage_Context;
@@ -2554,38 +2616,34 @@ package body Flyology.DB.Engine_Tests is
       end Expect_Family_Available;
    begin
       declare
-         Context                                  : aliased Storage_Context;
-         Item, Reopened                           : Database;
-         Txn                                      : Transaction;
-         Commit_Info                              : Commit_Receipt;
-         Flush_Info                               : Flush_Receipt;
-         Append_Info, Rejected_Info               : Column_Family_Receipt;
-         Result                                   : Outcome_Code;
-         Data                                     : Value;
+         Context                                        : aliased Storage_Context;
+         Item, Reopened                                 : Database;
+         Txn                                            : Transaction;
+         Commit_Info                                    : Commit_Receipt;
+         Flush_Info                                     : Flush_Receipt;
+         Append_Info, Rejected_Info                     : Column_Family_Receipt;
+         Result                                         : Outcome_Code;
+         Data                                           : Value;
          Before_Batches, Before_Manifests, Before_Heads : Natural;
-         After_Batches, After_Manifests, After_Heads     : Natural;
-         Duplicate_ID : constant Column_Family_Configuration :=
-           Configure_Column_Family
-             (1, [Byte (Character'Pos ('c'))], 4, 6, 20, 2, 1);
-         Duplicate_Name : constant Column_Family_Configuration :=
-           Configure_Column_Family
-             (2, [Byte (Character'Pos ('a'))], 4, 6, 20, 2, 1);
-         Capacity_Candidate : constant Column_Family_Configuration :=
-           Configure_Column_Family
-             (4, [Byte (Character'Pos ('c'))], 4, 6, 20, 2, 1);
+         After_Batches, After_Manifests, After_Heads    : Natural;
+         Duplicate_ID                                   : constant Column_Family_Configuration :=
+           Configure_Column_Family (1, [Byte (Character'Pos ('c'))], 4, 6, 20, 2, 1);
+         Duplicate_Name                                 : constant Column_Family_Configuration :=
+           Configure_Column_Family (2, [Byte (Character'Pos ('a'))], 4, 6, 20, 2, 1);
+         Capacity_Candidate                             : constant Column_Family_Configuration :=
+           Configure_Column_Family (4, [Byte (Character'Pos ('c'))], 4, 6, 20, 2, 1);
          --  Flush requires one caller-owned run identity per registered family.
          --  Family 1 has no suffix and therefore publishes no object under its
          --  supplied identity; family 3 publishes its first immutable L0 run.
          --  The following two IDs name the checkpoint and HEAD update.
-         Appended_Runs : constant Checkpoint_Run_Identity_Array :=
+         Appended_Runs                                  : constant Checkpoint_Run_Identity_Array :=
            [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 16)),
             Configure_Checkpoint_Run (3, Numbered_ID (Identity_Base + 17))];
       begin
          Prepare_Checkpoint (Context, Item, "complete", 0, Result);
          Expect (Result, Success, "column-family append setup failed");
 
-         Testing.Publication_Counts
-           (Context, Before_Batches, Before_Manifests, Before_Heads);
+         Testing.Publication_Counts (Context, Before_Batches, Before_Manifests, Before_Heads);
          Add_Column_Family
            (Item,
             Duplicate_ID,
@@ -2629,14 +2687,12 @@ package body Flyology.DB.Engine_Tests is
          if Column_Family_Receipt_Outcome (Append_Info) /= Success
            or else Column_Family_Receipt_Family_ID (Append_Info) /= Appended_Family.ID
            or else Column_Family_Receipt_Manifest_ID (Append_Info)
-                     /= Manifest_ID_For (Numbered_ID (Identity_Base + 10))
-           or else Column_Family_Receipt_Transition_ID (Append_Info)
-                     /= Numbered_ID (Identity_Base + 11)
+                   /= Manifest_ID_For (Numbered_ID (Identity_Base + 10))
+           or else Column_Family_Receipt_Transition_ID (Append_Info) /= Numbered_ID (Identity_Base + 11)
          then
             raise Program_Error with "successful family receipt lost exact authority";
          end if;
-         Expect_Family_Available
-           (Item, Appended_Family.ID, [Byte (Character'Pos ('b'))], "appended family");
+         Expect_Family_Available (Item, Appended_Family.ID, [Byte (Character'Pos ('b'))], "appended family");
 
          Add_Column_Family
            (Item,
@@ -2655,13 +2711,7 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, "appended-family transaction begin failed");
          Put (Item, Txn, Appended_Family.ID, To_Key ([1, 2, 3, 4, 5]), To_Value ([1]), Result);
          Expect (Result, Capacity_Exceeded, "appended family key limit plus one was admitted");
-         Put
-           (Item,
-            Txn,
-            Appended_Family.ID,
-            To_Key ([2]),
-            To_Value ([1, 2, 3, 4, 5, 6, 7]),
-            Result);
+         Put (Item, Txn, Appended_Family.ID, To_Key ([2]), To_Value ([1, 2, 3, 4, 5, 6, 7]), Result);
          Expect (Result, Capacity_Exceeded, "appended family value limit plus one was admitted");
          Put (Item, Txn, Appended_Family.ID, To_Key ([2]), To_Value ([22, 23]), Result);
          Expect (Result, Success, "appended-family mutation failed");
@@ -2742,25 +2792,40 @@ package body Flyology.DB.Engine_Tests is
       end;
 
       declare
-         Context                                  : aliased Storage_Context;
-         Item                                     : Database;
-         Txn                                      : Transaction;
-         Commit_Info                              : Commit_Receipt;
-         Append_Info                              : Column_Family_Receipt;
-         Result                                   : Outcome_Code;
+         Context                                        : aliased Storage_Context;
+         Item, Reopened                                 : Database;
+         Txn                                            : Transaction;
+         Commit_Info                                    : Commit_Receipt;
+         Append_Info                                    : Column_Family_Receipt;
+         Result                                         : Outcome_Code;
+         Data                                           : Value;
          Before_Batches, Before_Manifests, Before_Heads : Natural;
-         After_Batches, After_Manifests, After_Heads     : Natural;
+         After_Batches, After_Manifests, After_Heads    : Natural;
       begin
          Prepare_Checkpoint (Context, Item, "unflushed-suffix", 500, Result);
          Expect (Result, Success, "unflushed-suffix append setup failed");
-         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 506), Txn, Result);
-         Expect (Result, Success, "unflushed-suffix transaction begin failed");
-         Put (Item, Txn, 1, To_Key ([2]), To_Value ([12]), Result);
-         Expect (Result, Success, "unflushed-suffix mutation failed");
-         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
-         Expect (Result, Success, "unflushed-suffix commit failed");
-         Testing.Publication_Counts
-           (Context, Before_Batches, Before_Manifests, Before_Heads);
+         declare
+            Suffix_Group    : Transaction_Array (1 .. 2);
+            Suffix_Receipts : Commit_Receipt_Array (Suffix_Group'Range);
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 506), Suffix_Group (1), Result);
+            Expect (Result, Success, "unflushed group member one begin failed");
+            Put (Item, Suffix_Group (1), 1, To_Key ([2]), To_Value ([12]), Result);
+            Expect (Result, Success, "unflushed group member one mutation failed");
+            Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 507), Suffix_Group (2), Result);
+            Expect (Result, Success, "unflushed group member two begin failed");
+            Put (Item, Suffix_Group (2), 1, To_Key ([3]), To_Value ([13]), Result);
+            Expect (Result, Success, "unflushed group member two mutation failed");
+            Commit_Group
+              (Item,
+               Numbered_ID (Identity_Base + 508),
+               Suffix_Group,
+               Test_Operation_Timeout,
+               Receipts => Suffix_Receipts,
+               Result   => Result);
+            Expect (Result, Success, "unflushed group suffix commit failed");
+         end;
+         Testing.Publication_Counts (Context, Before_Batches, Before_Manifests, Before_Heads);
          Add_Column_Family
            (Item,
             Appended_Family,
@@ -2769,31 +2834,99 @@ package body Flyology.DB.Engine_Tests is
             Test_Operation_Timeout,
             Receipt => Append_Info,
             Result  => Result);
-         Expect (Result, Invalid_State, "unflushed commit suffix was omitted by family append");
+         Expect (Result, Success, "live-suffix family append failed");
+         if Column_Family_Receipt_Outcome (Append_Info) /= Success
+           or else Column_Family_Receipt_Family_ID (Append_Info) /= Appended_Family.ID
+           or else Column_Family_Receipt_Manifest_ID (Append_Info)
+                   /= Manifest_ID_For (Numbered_ID (Identity_Base + 510))
+           or else Column_Family_Receipt_Transition_ID (Append_Info) /= Numbered_ID (Identity_Base + 511)
+         then
+            raise Program_Error with "live-suffix append lost exact receipt authority";
+         end if;
          Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
          if After_Batches /= Before_Batches
-           or else After_Manifests /= Before_Manifests
-           or else After_Heads /= Before_Heads
-           or else Column_Family_Receipt_Transition_ID (Append_Info) /= Zero_Identifier
+           or else After_Manifests /= Before_Manifests + 1
+           or else After_Heads /= Before_Heads + 1
          then
-            raise Program_Error with "unflushed-suffix rejection published partial state";
+            raise Program_Error with "live-suffix append replayed a batch or changed publication geometry";
          end if;
+         Expect_Family_Available
+           (Item, Appended_Family.ID, [Byte (Character'Pos ('b'))], "live-suffix appended family");
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 509), Txn, Result);
+         Expect (Result, Success, "live-suffix new-family writer begin failed");
+         Put (Item, Txn, Appended_Family.ID, To_Key ([2]), To_Value ([22, 23]), Result);
+         Expect (Result, Success, "live-suffix new-family mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "live-suffix new-family commit failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 513), Txn, Result);
+         Expect (Result, Success, "live-suffix reader begin failed");
+         Get (Item, Txn, 1, To_Key ([1]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([11]) then
+            raise Program_Error with "live-suffix append changed checkpoint-backed data";
+         end if;
+         Get (Item, Txn, 1, To_Key ([2]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([12]) then
+            raise Program_Error with "live-suffix append did not preserve the committed suffix";
+         end if;
+         Get (Item, Txn, 1, To_Key ([3]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([13]) then
+            raise Program_Error with "live-suffix append split the committed group suffix";
+         end if;
+         Get (Item, Txn, Appended_Family.ID, To_Key ([2]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([22, 23]) then
+            raise Program_Error with "live-suffix appended family did not become writable";
+         end if;
+         Rollback (Txn, Result);
          Close (Item, Result);
-         Expect (Result, Success, "unflushed-suffix append rejection did not close");
+         Expect (Result, Success, "live-suffix appended database did not close");
+
+         Open
+           (Reopened,
+            Context'Access,
+            Database_Identifier (Numbered_ID (Identity_Base + 500)),
+            Test_Operation_Timeout,
+            Result => Result);
+         Expect (Result, Success, "live-suffix appended database did not reopen cachelessly");
+         Expect_Family_Available
+           (Reopened, Appended_Family.ID, [Byte (Character'Pos ('b'))], "reopened live-suffix family");
+         Begin_Transaction (Reopened, Numbered_TX_ID (Identity_Base + 514), Txn, Result);
+         Expect (Result, Success, "reopened live-suffix reader begin failed");
+         Get (Reopened, Txn, 1, To_Key ([2]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([12]) then
+            raise Program_Error with "cacheless reopen lost the preserved live suffix";
+         end if;
+         Get (Reopened, Txn, 1, To_Key ([3]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([13]) then
+            raise Program_Error with "cacheless reopen split the preserved group suffix";
+         end if;
+         Get (Reopened, Txn, Appended_Family.ID, To_Key ([2]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([22, 23]) then
+            raise Program_Error with "cacheless reopen lost appended-family data";
+         end if;
+         Rollback (Txn, Result);
+
+         --  The append carries the existing suffix ledger forward unchanged.
+         --  Reusing either a member transaction identity or the distinct group
+         --  batch identity must remain conclusively rejected after recovery.
+         Begin_Transaction (Reopened, Numbered_TX_ID (Identity_Base + 506), Txn, Result);
+         Expect (Result, Conflict, "live-suffix append permitted member identity reuse");
+         Begin_Transaction (Reopened, Numbered_TX_ID (Identity_Base + 508), Txn, Result);
+         Expect (Result, Conflict, "live-suffix append permitted group batch identity reuse");
+         Close (Reopened, Result);
+         Expect (Result, Success, "reopened live-suffix database did not close");
       end;
 
       declare
-         Context                                  : aliased Storage_Context;
-         Item                                     : Database;
-         Receipt                                  : Column_Family_Receipt;
-         Result                                   : Outcome_Code;
+         Context                                        : aliased Storage_Context;
+         Item                                           : Database;
+         Receipt                                        : Column_Family_Receipt;
+         Result                                         : Outcome_Code;
          Before_Batches, Before_Manifests, Before_Heads : Natural;
-         After_Batches, After_Manifests, After_Heads     : Natural;
+         After_Batches, After_Manifests, After_Heads    : Natural;
       begin
          Prepare_Checkpoint (Context, Item, "allocation-fault", 600, Result);
          Expect (Result, Success, "allocation-fault append setup failed");
-         Testing.Publication_Counts
-           (Context, Before_Batches, Before_Manifests, Before_Heads);
+         Testing.Publication_Counts (Context, Before_Batches, Before_Manifests, Before_Heads);
          Testing.Fail_Next_Allocation (Testing.Checkpoint_Manifest);
          Add_Column_Family
            (Item,
@@ -2880,13 +3013,135 @@ package body Flyology.DB.Engine_Tests is
       end;
 
       declare
-         Context : aliased Storage_Context;
-         Item    : Database;
-         Receipt : Column_Family_Receipt;
-         Result  : Outcome_Code;
+         Context                                        : aliased Storage_Context;
+         Item                                           : Database;
+         Txn                                            : Transaction;
+         Commit_Info                                    : Commit_Receipt;
+         Receipt                                        : Column_Family_Receipt;
+         Result                                         : Outcome_Code;
+         Data                                           : Value;
+         Before_Batches, Before_Manifests, Before_Heads : Natural;
+         After_Batches, After_Manifests, After_Heads    : Natural;
+      begin
+         Prepare_Checkpoint (Context, Item, "suffix-manifest-unknown", 700, Result);
+         Expect (Result, Success, "suffix manifest-unknown append setup failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 706), Txn, Result);
+         Expect (Result, Success, "suffix manifest-unknown transaction begin failed");
+         Put (Item, Txn, 1, To_Key ([3]), To_Value ([13]), Result);
+         Expect (Result, Success, "suffix manifest-unknown mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "suffix manifest-unknown commit failed");
+         Testing.Publication_Counts (Context, Before_Batches, Before_Manifests, Before_Heads);
+         Testing.Arm (Context, After_Manifest_Put, Unknown_After_Entry);
+         Testing.Arm (Context, Before_Immutable_Reconciliation, Definite_Failure);
+         Add_Column_Family
+           (Item,
+            Appended_Family,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 710)),
+            Numbered_ID (Identity_Base + 711),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Outcome_Unknown, "suffix manifest loss was falsely classified");
+         if Column_Family_Receipt_Transition_ID (Receipt) /= Zero_Identifier then
+            raise Program_Error with "suffix manifest ambiguity exposed a HEAD transition identity";
+         end if;
+         Resolve_Add_Column_Family (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "suffix manifest continuation failed");
+         Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Manifests /= Before_Manifests + 1
+           or else After_Heads /= Before_Heads + 1
+         then
+            raise Program_Error with "suffix manifest resolution replayed provider publication";
+         end if;
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 707), Txn, Result);
+         Expect (Result, Success, "suffix manifest-resolved reader begin failed");
+         Get (Item, Txn, 1, To_Key ([3]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([13]) then
+            raise Program_Error with "suffix manifest resolution lost the committed suffix";
+         end if;
+         Rollback (Txn, Result);
+         Expect_Family_Available
+           (Item, Appended_Family.ID, [Byte (Character'Pos ('b'))], "suffix manifest-resolved family");
+         Close (Item, Result);
+         Expect (Result, Success, "suffix manifest-resolved append did not close");
+      end;
+
+      declare
+         Context                                        : aliased Storage_Context;
+         Item                                           : Database;
+         Txn                                            : Transaction;
+         Commit_Info                                    : Commit_Receipt;
+         Receipt                                        : Column_Family_Receipt;
+         Result                                         : Outcome_Code;
+         Data                                           : Value;
+         Before_Batches, Before_Manifests, Before_Heads : Natural;
+         After_Batches, After_Manifests, After_Heads    : Natural;
+      begin
+         Prepare_Checkpoint (Context, Item, "suffix-head-unknown", 800, Result);
+         Expect (Result, Success, "suffix HEAD-unknown append setup failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 806), Txn, Result);
+         Expect (Result, Success, "suffix HEAD-unknown transaction begin failed");
+         Put (Item, Txn, 1, To_Key ([3]), To_Value ([13]), Result);
+         Expect (Result, Success, "suffix HEAD-unknown mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "suffix HEAD-unknown commit failed");
+         Testing.Publication_Counts (Context, Before_Batches, Before_Manifests, Before_Heads);
+         Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+         Add_Column_Family
+           (Item,
+            Appended_Family,
+            Manifest_ID_For (Numbered_ID (Identity_Base + 810)),
+            Numbered_ID (Identity_Base + 811),
+            Test_Operation_Timeout,
+            Receipt => Receipt,
+            Result  => Result);
+         Expect (Result, Outcome_Unknown, "suffix HEAD loss was falsely classified");
+         if Column_Family_Receipt_Transition_ID (Receipt) /= Numbered_ID (Identity_Base + 811) then
+            raise Program_Error with "suffix HEAD ambiguity lost its exact transition identity";
+         end if;
+         Testing.Arm (Context, Before_Manifest_Get, Definite_Failure);
+         Resolve_Add_Column_Family (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Outcome_Unknown, "suffix HEAD reconciliation lost ambiguity");
+         Resolve_Add_Column_Family (Item, Receipt, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "suffix HEAD reconciliation failed");
+         Testing.Publication_Counts (Context, After_Batches, After_Manifests, After_Heads);
+         if After_Batches /= Before_Batches
+           or else After_Manifests /= Before_Manifests + 1
+           or else After_Heads /= Before_Heads + 1
+         then
+            raise Program_Error with "suffix HEAD resolution replayed provider publication";
+         end if;
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 807), Txn, Result);
+         Expect (Result, Success, "suffix HEAD-resolved reader begin failed");
+         Get (Item, Txn, 1, To_Key ([3]), Data, Result);
+         if Result /= Success or else Data /= To_Value ([13]) then
+            raise Program_Error with "suffix HEAD resolution lost the committed suffix";
+         end if;
+         Rollback (Txn, Result);
+         Expect_Family_Available
+           (Item, Appended_Family.ID, [Byte (Character'Pos ('b'))], "suffix HEAD-resolved family");
+         Close (Item, Result);
+         Expect (Result, Success, "suffix HEAD-resolved append did not close");
+      end;
+
+      declare
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Txn         : Transaction;
+         Commit_Info : Commit_Receipt;
+         Receipt     : Column_Family_Receipt;
+         Result      : Outcome_Code;
       begin
          Prepare_Checkpoint (Context, Item, "activation-fault", 300, Result);
          Expect (Result, Success, "activation-fault append setup failed");
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 306), Txn, Result);
+         Expect (Result, Success, "activation-fault suffix begin failed");
+         Put (Item, Txn, 1, To_Key ([3]), To_Value ([13]), Result);
+         Expect (Result, Success, "activation-fault suffix mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "activation-fault suffix commit failed");
          Testing.Arm (Context, Before_Local_Activation, Definite_Failure);
          Add_Column_Family
            (Item,
@@ -2897,6 +3152,8 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Receipt,
             Result  => Result);
          Expect (Result, Local_Activation_Failed, "durable family append lost activation certainty");
+         Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + 307), Txn, Result);
+         Expect (Result, Stale_Writer, "failed suffix activation left the old writer unfenced");
          Resolve_Add_Column_Family (Item, Receipt, Test_Operation_Timeout, Result => Result);
          Expect (Result, Success, "confirmed family append could not recover local activation");
          Expect_Family_Available
@@ -3045,38 +3302,40 @@ package body Flyology.DB.Engine_Tests is
       end;
 
       declare
-         Context                                                    : aliased Storage_Context;
-         Item                                                       : Database;
-         Txn                                                        : Transaction;
-         Receipt                                                    : Commit_Receipt;
-         Flush_Info                                                 : Flush_Receipt;
-         Create_Info                                                : Create_Receipt;
-         Result                                                     : Outcome_Code;
+         Context                                                     : aliased Storage_Context;
+         Item                                                        : Database;
+         Txn                                                         : Transaction;
+         Receipt                                                     : Commit_Receipt;
+         Flush_Info                                                  : Flush_Receipt;
+         Create_Info                                                 : Create_Receipt;
+         Result                                                      : Outcome_Code;
          Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
          After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
          --  Two persisted manifest slots admit the root and first checkpoint
          --  but no second successor. This is a test of persisted authority,
          --  not a product default or newly selected capacity.
-         Limits                                                     : constant Database_Limits :=
+         Limits                                                      : constant Database_Limits :=
            (Default_Limits with delta Maximum_Manifest_History => 2);
-         First_Runs : constant Checkpoint_Run_Identity_Array :=
-           [Configure_Checkpoint_Run (1, Numbered_ID (Successive_Capacity_Base + 10)),
-            Configure_Checkpoint_Run (2, Numbered_ID (Successive_Capacity_Base + 11)),
-            Configure_Checkpoint_Run (3, Numbered_ID (Successive_Capacity_Base + 12)),
-            Configure_Checkpoint_Run (4, Numbered_ID (Successive_Capacity_Base + 13)),
-            Configure_Checkpoint_Run (5, Numbered_ID (Successive_Capacity_Base + 14)),
-            Configure_Checkpoint_Run (6, Numbered_ID (Successive_Capacity_Base + 15)),
-            Configure_Checkpoint_Run (7, Numbered_ID (Successive_Capacity_Base + 16)),
-            Configure_Checkpoint_Run (8, Numbered_ID (Successive_Capacity_Base + 17))];
-         Second_Runs : constant Checkpoint_Run_Identity_Array :=
-           [Configure_Checkpoint_Run (1, Numbered_ID (Successive_Capacity_Base + 30)),
-            Configure_Checkpoint_Run (2, Numbered_ID (Successive_Capacity_Base + 31)),
-            Configure_Checkpoint_Run (3, Numbered_ID (Successive_Capacity_Base + 32)),
-            Configure_Checkpoint_Run (4, Numbered_ID (Successive_Capacity_Base + 33)),
-            Configure_Checkpoint_Run (5, Numbered_ID (Successive_Capacity_Base + 34)),
-            Configure_Checkpoint_Run (6, Numbered_ID (Successive_Capacity_Base + 35)),
-            Configure_Checkpoint_Run (7, Numbered_ID (Successive_Capacity_Base + 36)),
-            Configure_Checkpoint_Run (8, Numbered_ID (Successive_Capacity_Base + 37))];
+         First_Runs                                                  :
+           constant Checkpoint_Run_Identity_Array :=
+             [Configure_Checkpoint_Run (1, Numbered_ID (Successive_Capacity_Base + 10)),
+              Configure_Checkpoint_Run (2, Numbered_ID (Successive_Capacity_Base + 11)),
+              Configure_Checkpoint_Run (3, Numbered_ID (Successive_Capacity_Base + 12)),
+              Configure_Checkpoint_Run (4, Numbered_ID (Successive_Capacity_Base + 13)),
+              Configure_Checkpoint_Run (5, Numbered_ID (Successive_Capacity_Base + 14)),
+              Configure_Checkpoint_Run (6, Numbered_ID (Successive_Capacity_Base + 15)),
+              Configure_Checkpoint_Run (7, Numbered_ID (Successive_Capacity_Base + 16)),
+              Configure_Checkpoint_Run (8, Numbered_ID (Successive_Capacity_Base + 17))];
+         Second_Runs                                                 :
+           constant Checkpoint_Run_Identity_Array :=
+             [Configure_Checkpoint_Run (1, Numbered_ID (Successive_Capacity_Base + 30)),
+              Configure_Checkpoint_Run (2, Numbered_ID (Successive_Capacity_Base + 31)),
+              Configure_Checkpoint_Run (3, Numbered_ID (Successive_Capacity_Base + 32)),
+              Configure_Checkpoint_Run (4, Numbered_ID (Successive_Capacity_Base + 33)),
+              Configure_Checkpoint_Run (5, Numbered_ID (Successive_Capacity_Base + 34)),
+              Configure_Checkpoint_Run (6, Numbered_ID (Successive_Capacity_Base + 35)),
+              Configure_Checkpoint_Run (7, Numbered_ID (Successive_Capacity_Base + 36)),
+              Configure_Checkpoint_Run (8, Numbered_ID (Successive_Capacity_Base + 37))];
       begin
          Bind_Context (Context, Backend, "successive-checkpoint-manifest-capacity");
          Create
@@ -3112,8 +3371,7 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, "two-slot suffix mutation failed");
          Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
          Expect (Result, Success, "two-slot suffix commit failed");
-         Testing.Publication_Counts
-           (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+         Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
          Flush
            (Item,
             Second_Runs,
@@ -3123,8 +3381,7 @@ package body Flyology.DB.Engine_Tests is
             Receipt => Flush_Info,
             Result  => Result);
          Expect (Result, Capacity_Exceeded, "full manifest history admitted a second checkpoint");
-         Testing.Publication_Counts
-           (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+         Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
          if After_Batches /= Before_Batches
            or else After_Runs /= Before_Runs
            or else After_Manifests /= Before_Manifests
@@ -3199,22 +3456,18 @@ package body Flyology.DB.Engine_Tests is
       Global_Limit_Base : constant Natural := 25_200;
       Impossible_Base   : constant Natural := 25_300;
       Family_Limits     : constant Database_Limits :=
-        (Default_Limits with delta
-           Maximum_Column_Families => 1,
-           Maximum_Manifest_History => 4,
-           Maximum_Total_L0_Runs => 2);
+        (Default_Limits
+         with delta Maximum_Column_Families => 1, Maximum_Manifest_History => 4, Maximum_Total_L0_Runs => 2);
       Global_Limits     : constant Database_Limits :=
-        (Default_Limits with delta
-           Maximum_Column_Families => 2,
-           Maximum_Manifest_History => 4,
-           Maximum_Total_L0_Runs => 3);
+        (Default_Limits
+         with delta Maximum_Column_Families => 2, Maximum_Manifest_History => 4, Maximum_Total_L0_Runs => 3);
       --  One run for the one-family case forces its second delta to the family
       --  ceiling while aggregate authority still has room. Two runs per
       --  family with an aggregate ceiling of three admits the first pair but
       --  rejects the second pair only at the database-wide bound.
-      Family_Bounded : constant Column_Family_Configuration_Array :=
+      Family_Bounded    : constant Column_Family_Configuration_Array :=
         [Configure_Column_Family (1, [Byte (Character'Pos ('p'))], 8, 8, 16, 1, 1)];
-      Global_Bounded : constant Column_Family_Configuration_Array :=
+      Global_Bounded    : constant Column_Family_Configuration_Array :=
         [Configure_Column_Family (1, [Byte (Character'Pos ('p'))], 8, 8, 16, 1, 2),
          Configure_Column_Family (2, [Byte (Character'Pos ('q'))], 8, 8, 16, 1, 2)];
 
@@ -3231,11 +3484,9 @@ package body Flyology.DB.Engine_Tests is
          --  database-wide one-run ceiling even after complete replacement.
          --  This deliberately inconsistent workload/limit fixture proves a
          --  definite capacity result; it is not a recommended configuration.
-         Limits : constant Database_Limits :=
-           (Default_Limits with delta
-              Maximum_Column_Families => 2,
-              Maximum_Total_L0_Runs => 1);
-         Families : constant Column_Family_Configuration_Array :=
+         Limits      : constant Database_Limits :=
+           (Default_Limits with delta Maximum_Column_Families => 2, Maximum_Total_L0_Runs => 1);
+         Families    : constant Column_Family_Configuration_Array :=
            [Configure_Column_Family (1, [Byte (Character'Pos ('r'))], 8, 8, 16, 1, 2),
             Configure_Column_Family (2, [Byte (Character'Pos ('s'))], 8, 8, 16, 1, 2)];
       begin
@@ -3280,23 +3531,22 @@ package body Flyology.DB.Engine_Tests is
          Families      : Column_Family_Configuration_Array;
          Context_Text  : String)
       is
-         Context                                                    : aliased Storage_Context;
-         Item                                                       : Database;
-         Txn                                                        : Transaction;
-         Commit_Info                                                : Commit_Receipt;
-         Create_Info                                                : Create_Receipt;
-         Flush_Info                                                 : Flush_Receipt;
-         Result                                                     : Outcome_Code;
-         Action                                                     : L0_Checkpoint_Action;
-         Requirement                                                : L0_Checkpoint_Requirement;
-         First_Runs, Second_Runs                                    :
+         Context                                                     : aliased Storage_Context;
+         Item                                                        : Database;
+         Txn                                                         : Transaction;
+         Commit_Info                                                 : Commit_Receipt;
+         Create_Info                                                 : Create_Receipt;
+         Flush_Info                                                  : Flush_Receipt;
+         Result                                                      : Outcome_Code;
+         Action                                                      : L0_Checkpoint_Action;
+         Requirement                                                 : L0_Checkpoint_Requirement;
+         First_Runs, Second_Runs                                     :
            Checkpoint_Run_Identity_Array (1 .. Families'Length);
          Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
          After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
 
          procedure Expect_Requirement
-           (Expected_Action : L0_Checkpoint_Action; Expected_Total : Natural; Stage : String)
-         is
+           (Expected_Action : L0_Checkpoint_Action; Expected_Total : Natural; Stage : String) is
          begin
             Observe_L0_Checkpoint_Requirement (Item, Requirement, Result);
             Expect (Result, Success, Context_Text & " " & Stage & " owned checkpoint query failed");
@@ -3346,11 +3596,9 @@ package body Flyology.DB.Engine_Tests is
             Put (Item, Txn, Column_Family_ID (Index), To_Key ([1]), To_Value ([2]), Result);
             Expect (Result, Success, Context_Text & " first mutation failed");
             First_Runs (Index) :=
-              Configure_Checkpoint_Run
-                (Column_Family_ID (Index), Numbered_ID (Identity_Base + 9 + Index));
+              Configure_Checkpoint_Run (Column_Family_ID (Index), Numbered_ID (Identity_Base + 9 + Index));
             Second_Runs (Index) :=
-              Configure_Checkpoint_Run
-                (Column_Family_ID (Index), Numbered_ID (Identity_Base + 19 + Index));
+              Configure_Checkpoint_Run (Column_Family_ID (Index), Numbered_ID (Identity_Base + 19 + Index));
          end loop;
          Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
          Expect (Result, Success, Context_Text & " first commit failed");
@@ -3366,8 +3614,8 @@ package body Flyology.DB.Engine_Tests is
          end if;
          for Index in Positive range 1 .. Families'Length loop
             if Checkpoint_Requirement_Family (Requirement, Index) /= Column_Family_ID (Index) then
-               raise Program_Error with
-                 Context_Text & " allocation failure changed prior checkpoint families";
+               raise Program_Error
+                 with Context_Text & " allocation failure changed prior checkpoint families";
             end if;
          end loop;
          Required_L0_Checkpoint_Action (Item, Action, Result);
@@ -3404,8 +3652,7 @@ package body Flyology.DB.Engine_Tests is
          if Action /= Complete_Compaction_Required then
             raise Program_Error with Context_Text & " full L0 geometry did not require complete compaction";
          end if;
-         Testing.Publication_Counts
-           (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+         Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
          Flush
            (Item,
             Second_Runs,
@@ -3421,8 +3668,7 @@ package body Flyology.DB.Engine_Tests is
          if Action /= Complete_Compaction_Required then
             raise Program_Error with Context_Text & " rejected Flush changed the required compaction";
          end if;
-         Testing.Publication_Counts
-           (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+         Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
          if After_Batches /= Before_Batches
            or else After_Runs /= Before_Runs
            or else After_Manifests /= Before_Manifests
@@ -3435,32 +3681,24 @@ package body Flyology.DB.Engine_Tests is
       end Run_Case;
    begin
       Run_Case
-        ("l0-family-capacity",
-         Family_Limit_Base,
-         Family_Limits,
-         Family_Bounded,
-         "per-family L0 capacity");
+        ("l0-family-capacity", Family_Limit_Base, Family_Limits, Family_Bounded, "per-family L0 capacity");
       Run_Case
-        ("l0-global-capacity",
-         Global_Limit_Base,
-         Global_Limits,
-         Global_Bounded,
-         "database-wide L0 capacity");
+        ("l0-global-capacity", Global_Limit_Base, Global_Limits, Global_Bounded, "database-wide L0 capacity");
       Run_Impossible_Case;
    end Test_L0_Accumulation_Capacity;
 
    procedure Test_Adjacent_L0_Merge
      (Backend : not null access Backends.Backend'Class; Prefix : String; Identity_Base : Natural)
    is
-      Context      : aliased Storage_Context;
-      Item         : Database;
-      Txn          : Transaction;
-      Older_Txn    : Transaction;
-      Commit_Info  : Commit_Receipt;
-      Create_Info  : Create_Receipt;
-      Flush_Info   : Flush_Receipt;
-      Result       : Outcome_Code;
-      Data         : Value;
+      Context                                                     : aliased Storage_Context;
+      Item                                                        : Database;
+      Txn                                                         : Transaction;
+      Older_Txn                                                   : Transaction;
+      Commit_Info                                                 : Commit_Receipt;
+      Create_Info                                                 : Create_Receipt;
+      Flush_Info                                                  : Flush_Receipt;
+      Result                                                      : Outcome_Code;
+      Data                                                        : Value;
       Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
       After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
       --  The caller supplies one disjoint 100-ID test namespace. +1 names the
@@ -3471,39 +3709,42 @@ package body Flyology.DB.Engine_Tests is
       --  +43..+47 name rejected selection/alias probes; +60..+62 name the
       --  suffix-preserving successor, and +63..+65 its allocation-failure
       --  attempt. +51/+52/+70 are suffix/snapshot/read transaction identities.
-      Database_ID : constant Database_Identifier :=
+      Database_ID                                                 : constant Database_Identifier :=
         Database_Identifier (Numbered_ID (Identity_Base));
-      First_Run   : constant Identifier := Numbered_ID (Identity_Base + 10);
-      Second_Run  : constant Identifier := Numbered_ID (Identity_Base + 20);
-      Third_Run   : constant Identifier := Numbered_ID (Identity_Base + 30);
-      Merged_Run  : constant Identifier := Numbered_ID (Identity_Base + 40);
+      First_Run                                                   : constant Identifier :=
+        Numbered_ID (Identity_Base + 10);
+      Second_Run                                                  : constant Identifier :=
+        Numbered_ID (Identity_Base + 20);
+      Third_Run                                                   : constant Identifier :=
+        Numbered_ID (Identity_Base + 30);
+      Merged_Run                                                  : constant Identifier :=
+        Numbered_ID (Identity_Base + 40);
       --  Root plus three Flush successors plus the merge successor consumes
       --  five revisions; the sixth slot admits the follow-up adjacent merge
       --  while its post-checkpoint suffix remains separate replay authority.
       --  Three L0 slots admit the witnessed pre-merge geometry. These are
       --  persisted fixture limits, not defaults.
-      Limits : constant Database_Limits :=
-        (Default_Limits with delta
-           Maximum_Column_Families => 1,
-           Maximum_Manifest_History => 6,
-           Maximum_Total_L0_Runs => 3);
-      Families : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family (1, [Byte (Character'Pos ('m'))], 8, 8, 16, 1, 3)];
-      First_Runs : constant Checkpoint_Run_Identity_Array :=
+      Limits                                                      : constant Database_Limits :=
+        (Default_Limits
+         with delta Maximum_Column_Families => 1, Maximum_Manifest_History => 6, Maximum_Total_L0_Runs => 3);
+      Families                                                    :
+        constant Column_Family_Configuration_Array :=
+          [Configure_Column_Family (1, [Byte (Character'Pos ('m'))], 8, 8, 16, 1, 3)];
+      First_Runs                                                  : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (1, First_Run)];
-      Second_Runs : constant Checkpoint_Run_Identity_Array :=
+      Second_Runs                                                 : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (1, Second_Run)];
-      Third_Runs : constant Checkpoint_Run_Identity_Array :=
+      Third_Runs                                                  : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (1, Third_Run)];
       --  Two distinct one-byte keys and three one-byte values make retained
       --  third-run data distinguishable from the merged first/two-run value.
-      First_Key    : constant Key := To_Key ([1]);
-      Retained_Key : constant Key := To_Key ([2]);
-      Suffix_Key   : constant Key := To_Key ([3]);
-      First_Value  : constant Value := To_Value ([11]);
-      Second_Value : constant Value := To_Value ([22]);
-      Third_Value  : constant Value := To_Value ([33]);
-      Suffix_Value : constant Value := To_Value ([44]);
+      First_Key                                                   : constant Key := To_Key ([1]);
+      Retained_Key                                                : constant Key := To_Key ([2]);
+      Suffix_Key                                                  : constant Key := To_Key ([3]);
+      First_Value                                                 : constant Value := To_Value ([11]);
+      Second_Value                                                : constant Value := To_Value ([22]);
+      Third_Value                                                 : constant Value := To_Value ([33]);
+      Suffix_Value                                                : constant Value := To_Value ([44]);
 
       procedure Commit_And_Flush
         (Transaction_Number : Natural;
@@ -3511,8 +3752,7 @@ package body Flyology.DB.Engine_Tests is
          Item_Value         : Value;
          Runs               : Checkpoint_Run_Identity_Array;
          Manifest_Number    : Natural;
-         Transition_Number  : Natural)
-      is
+         Transition_Number  : Natural) is
       begin
          Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + Transaction_Number), Txn, Result);
          Expect (Result, Success, "adjacent-merge transaction begin failed");
@@ -3548,8 +3788,7 @@ package body Flyology.DB.Engine_Tests is
       Commit_And_Flush (3, First_Key, Second_Value, Second_Runs, 21, 22);
       Commit_And_Flush (4, Retained_Key, Third_Value, Third_Runs, 31, 32);
 
-      Testing.Publication_Counts
-        (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+      Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
       Testing.Publish_Adjacent_Merge
         (Item,
          First_Run,
@@ -3570,8 +3809,7 @@ package body Flyology.DB.Engine_Tests is
          Flush_Info,
          Result);
       Expect (Result, Invalid_State, "non-adjacent L0 selection reached publication");
-      Testing.Publication_Counts
-        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
       if After_Batches /= Before_Batches
         or else After_Runs /= Before_Runs
         or else After_Manifests /= Before_Manifests
@@ -3600,8 +3838,7 @@ package body Flyology.DB.Engine_Tests is
       then
          raise Program_Error with "adjacent L0 merge receipt lost exact output authority";
       end if;
-      Testing.Publication_Counts
-        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
       if After_Batches /= Before_Batches
         or else After_Runs /= Before_Runs + 2
         or else After_Manifests /= Before_Manifests + 1
@@ -3618,8 +3855,7 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "post-merge suffix Put failed");
       Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
       Expect (Result, Success, "post-merge suffix commit failed");
-      Testing.Publication_Counts
-        (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+      Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
       Testing.Fail_Next_Allocation (Testing.Recovery_History);
       Testing.Publish_Adjacent_Merge
         (Item,
@@ -3631,8 +3867,7 @@ package body Flyology.DB.Engine_Tests is
          Flush_Info,
          Result);
       Expect (Result, Capacity_Exceeded, "suffix-history allocation failure reached publication");
-      Testing.Publication_Counts
-        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
       if After_Batches /= Before_Batches
         or else After_Runs /= Before_Runs
         or else After_Manifests /= Before_Manifests
@@ -3650,8 +3885,7 @@ package body Flyology.DB.Engine_Tests is
          Flush_Info,
          Result);
       Expect (Result, Success, "partial merge rejected a retained log suffix");
-      Testing.Publication_Counts
-        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
       if After_Batches /= Before_Batches
         or else After_Runs /= Before_Runs + 1
         or else After_Manifests /= Before_Manifests + 1
@@ -3663,8 +3897,7 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Conflict, "partial merge forgot a retained transaction identity");
       Put (Item, Older_Txn, 1, Suffix_Key, First_Value, Result);
       Expect (Result, Success, "pre-suffix snapshot write failed");
-      Commit
-        (Item, Older_Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+      Commit (Item, Older_Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
       Expect (Result, Conflict, "partial merge forgot retained write-conflict history");
 
       Close (Item, Result);
@@ -3702,53 +3935,56 @@ package body Flyology.DB.Engine_Tests is
    procedure Test_Three_Run_L0_Merge
      (Backend : not null access Backends.Backend'Class; Prefix : String; Identity_Base : Natural)
    is
-      Context      : aliased Storage_Context;
-      Item         : Database;
-      Txn          : Transaction;
-      Reader       : Transaction;
-      Commit_Info  : Commit_Receipt;
-      Create_Info  : Create_Receipt;
-      Flush_Info   : Flush_Receipt;
-      Result       : Outcome_Code;
-      Data         : Value;
+      Context                                                     : aliased Storage_Context;
+      Item                                                        : Database;
+      Txn                                                         : Transaction;
+      Reader                                                      : Transaction;
+      Commit_Info                                                 : Commit_Receipt;
+      Create_Info                                                 : Create_Receipt;
+      Flush_Info                                                  : Flush_Receipt;
+      Result                                                      : Outcome_Code;
+      Data                                                        : Value;
       Before_Batches, Before_Runs, Before_Manifests, Before_Heads : Natural;
       After_Batches, After_Runs, After_Manifests, After_Heads     : Natural;
       --  One disjoint 100-ID test namespace assigns +10/+20/+30 to
       --  chronological inputs, +40..+42 to the output/manifest/transition,
       --  and +43..+45 to a rejected reordered attempt. These are fixture
       --  identities, not production naming or compaction policy.
-      Database_ID : constant Database_Identifier :=
+      Database_ID                                                 : constant Database_Identifier :=
         Database_Identifier (Numbered_ID (Identity_Base));
-      First_Run   : constant Identifier := Numbered_ID (Identity_Base + 10);
-      Middle_Run  : constant Identifier := Numbered_ID (Identity_Base + 20);
-      Last_Run    : constant Identifier := Numbered_ID (Identity_Base + 30);
-      Merged_Run  : constant Identifier := Numbered_ID (Identity_Base + 40);
+      First_Run                                                   : constant Identifier :=
+        Numbered_ID (Identity_Base + 10);
+      Middle_Run                                                  : constant Identifier :=
+        Numbered_ID (Identity_Base + 20);
+      Last_Run                                                    : constant Identifier :=
+        Numbered_ID (Identity_Base + 30);
+      Merged_Run                                                  : constant Identifier :=
+        Numbered_ID (Identity_Base + 40);
       --  Root, three additive manifests, and one three-run successor consume
       --  five revisions. Three L0 slots are exact witness geometry, not a
       --  persisted default, trigger, or automatic fanout.
-      Limits : constant Database_Limits :=
-        (Default_Limits with delta
-           Maximum_Column_Families => 1,
-           Maximum_Manifest_History => 5,
-           Maximum_Total_L0_Runs => 3);
-      Families : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family (1, [Byte (Character'Pos ('t'))], 8, 8, 16, 1, 3)];
-      First_Runs : constant Checkpoint_Run_Identity_Array :=
+      Limits                                                      : constant Database_Limits :=
+        (Default_Limits
+         with delta Maximum_Column_Families => 1, Maximum_Manifest_History => 5, Maximum_Total_L0_Runs => 3);
+      Families                                                    :
+        constant Column_Family_Configuration_Array :=
+          [Configure_Column_Family (1, [Byte (Character'Pos ('t'))], 8, 8, 16, 1, 3)];
+      First_Runs                                                  : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (1, First_Run)];
-      Middle_Runs : constant Checkpoint_Run_Identity_Array :=
+      Middle_Runs                                                 : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (1, Middle_Run)];
-      Last_Runs : constant Checkpoint_Run_Identity_Array :=
+      Last_Runs                                                   : constant Checkpoint_Run_Identity_Array :=
         [Configure_Checkpoint_Run (1, Last_Run)];
       --  The middle run deletes First_Key and the last run touches only
       --  Last_Key. That makes middle-tombstone retention observable after all
       --  three source objects and local state are removed. Suffix_Key proves
       --  exact later-log replay authority survives the same publication.
-      First_Key    : constant Key := To_Key ([1]);
-      Last_Key     : constant Key := To_Key ([2]);
-      Suffix_Key   : constant Key := To_Key ([3]);
-      First_Value  : constant Value := To_Value ([11]);
-      Last_Value   : constant Value := To_Value ([33]);
-      Suffix_Value : constant Value := To_Value ([44]);
+      First_Key                                                   : constant Key := To_Key ([1]);
+      Last_Key                                                    : constant Key := To_Key ([2]);
+      Suffix_Key                                                  : constant Key := To_Key ([3]);
+      First_Value                                                 : constant Value := To_Value ([11]);
+      Last_Value                                                  : constant Value := To_Value ([33]);
+      Suffix_Value                                                : constant Value := To_Value ([44]);
 
       procedure Commit_And_Flush
         (Transaction_Number : Natural;
@@ -3757,8 +3993,7 @@ package body Flyology.DB.Engine_Tests is
          Item_Value         : Value;
          Runs               : Checkpoint_Run_Identity_Array;
          Manifest_Number    : Natural;
-         Transition_Number  : Natural)
-      is
+         Transition_Number  : Natural) is
       begin
          Begin_Transaction (Item, Numbered_TX_ID (Identity_Base + Transaction_Number), Txn, Result);
          Expect (Result, Success, "three-run transaction begin failed");
@@ -3805,8 +4040,7 @@ package body Flyology.DB.Engine_Tests is
       Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
       Expect (Result, Success, "three-run suffix commit failed");
 
-      Testing.Publication_Counts
-        (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+      Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
       Testing.Publish_Three_Run_Merge
         (Item,
          First_Run,
@@ -3818,8 +4052,7 @@ package body Flyology.DB.Engine_Tests is
          Flush_Info,
          Result);
       Expect (Result, Invalid_State, "reordered three-run selection reached publication");
-      Testing.Publication_Counts
-        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
       if After_Batches /= Before_Batches
         or else After_Runs /= Before_Runs
         or else After_Manifests /= Before_Manifests
@@ -3849,8 +4082,7 @@ package body Flyology.DB.Engine_Tests is
       then
          raise Program_Error with "three-run receipt lost exact output authority";
       end if;
-      Testing.Publication_Counts
-        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
       if After_Batches /= Before_Batches
         or else After_Runs /= Before_Runs + 2
         or else After_Manifests /= Before_Manifests + 1
@@ -3890,15 +4122,15 @@ package body Flyology.DB.Engine_Tests is
    procedure Test_Empty_L0_Compaction
      (Backend : not null access Backends.Backend'Class; Prefix : String; Identity_Base : Natural)
    is
-      Context     : aliased Storage_Context;
-      Item        : Database;
-      Txn         : Transaction;
-      Commit_Info : Commit_Receipt;
-      Create_Info : Create_Receipt;
-      Flush_Info  : Flush_Receipt;
-      Requirement : L0_Checkpoint_Requirement;
-      Data        : Value;
-      Result      : Outcome_Code;
+      Context                                                       : aliased Storage_Context;
+      Item                                                          : Database;
+      Txn                                                           : Transaction;
+      Commit_Info                                                   : Commit_Receipt;
+      Create_Info                                                   : Create_Receipt;
+      Flush_Info                                                    : Flush_Receipt;
+      Requirement                                                   : L0_Checkpoint_Requirement;
+      Data                                                          : Value;
+      Result                                                        : Outcome_Code;
       Planned_Runs, Planned_Identities, Family_Runs, Family_Entries : Natural;
       Planned_Replay                                                : Sequence_Number;
       Planned_Run_ID                                                : Identifier;
@@ -3911,39 +4143,42 @@ package body Flyology.DB.Engine_Tests is
       --  empty replacement map, +31/+32 are its manifest/transition,
       --  and +40..+43 establish the later delta. This is deterministic corpus
       --  identity geometry, not database identity policy.
-      Database_ID : constant Database_Identifier :=
+      Database_ID                                                   : constant Database_Identifier :=
         Database_Identifier (Numbered_ID (Identity_Base));
-      First_Run   : constant Identifier := Numbered_ID (Identity_Base + 10);
-      Second_Run  : constant Identifier := Numbered_ID (Identity_Base + 20);
+      First_Run                                                     : constant Identifier :=
+        Numbered_ID (Identity_Base + 10);
+      Second_Run                                                    : constant Identifier :=
+        Numbered_ID (Identity_Base + 20);
       --  One family, two current L0 slots, and one maximum-sized entry are the
       --  minimum persisted geometry for the Put-then-tombstone replacement
       --  witness. The database-wide run ceiling matches that family authority;
       --  all other limits retain the shared engine corpus policy.
-      Limits : constant Database_Limits :=
-        (Default_Limits with delta
-           Maximum_Column_Families => 1,
-           Maximum_Total_L0_Runs => 2);
-      Families : constant Column_Family_Configuration_Array :=
-        [Configure_Column_Family (1, [Byte (Character'Pos ('e'))], 8, 8, 16, 1, 2)];
-      First_Runs : constant Checkpoint_Run_Identity_Array :=
-        [Configure_Checkpoint_Run (1, First_Run)];
-      Second_Runs : constant Checkpoint_Run_Identity_Array :=
-        [Configure_Checkpoint_Run (1, Second_Run)];
+      Limits                                                        : constant Database_Limits :=
+        (Default_Limits with delta Maximum_Column_Families => 1, Maximum_Total_L0_Runs => 2);
+      Families                                                      :
+        constant Column_Family_Configuration_Array :=
+          [Configure_Column_Family (1, [Byte (Character'Pos ('e'))], 8, 8, 16, 1, 2)];
+      First_Runs                                                    :
+        constant Checkpoint_Run_Identity_Array := [Configure_Checkpoint_Run (1, First_Run)];
+      Second_Runs                                                   :
+        constant Checkpoint_Run_Identity_Array := [Configure_Checkpoint_Run (1, Second_Run)];
       --  The complete view has no live family, so exact sparse-map authority
       --  supplies no output identity. This null range is protocol shape, not a
       --  family-count or capacity default.
-      Empty_Replacement : constant Checkpoint_Run_Identity_Array (1 .. 0) := [];
-      Later_Runs : constant Checkpoint_Run_Identity_Array :=
-        [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 40))];
+      Empty_Replacement                                             :
+        constant Checkpoint_Run_Identity_Array (1 .. 0) := [];
+      Later_Runs                                                    :
+        constant Checkpoint_Run_Identity_Array :=
+          [Configure_Checkpoint_Run (1, Numbered_ID (Identity_Base + 40))];
       --  Three successful commits establish both the replay boundary and exact
       --  identity ledger represented by the empty successor manifest.
-      Expected_Replay_Boundary : constant Sequence_Number := 3;
-      Expected_Identity_Total  : constant Natural := 3;
+      Expected_Replay_Boundary                                      : constant Sequence_Number := 3;
+      Expected_Identity_Total                                       : constant Natural := 3;
       --  These one-byte payloads distinguish the retired live value from the
       --  post-empty-compaction delta; they are read witnesses, not DB policy.
-      Item_Key    : constant Key := To_Key ([1]);
-      First_Value : constant Value := To_Value ([2]);
-      Later_Value : constant Value := To_Value ([3]);
+      Item_Key                                                      : constant Key := To_Key ([1]);
+      First_Value                                                   : constant Value := To_Value ([2]);
+      Later_Value                                                   : constant Value := To_Value ([3]);
    begin
       Bind_Context (Context, Backend, Prefix);
       Create
@@ -4029,8 +4264,7 @@ package body Flyology.DB.Engine_Tests is
          raise Program_Error with "all-tombstoned compaction plan was not the canonical empty replacement";
       end if;
 
-      Testing.Publication_Counts
-        (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
+      Testing.Publication_Counts (Context, Before_Batches, Before_Runs, Before_Manifests, Before_Heads);
       Testing.Publish_Compaction
         (Item,
          Empty_Replacement,
@@ -4045,8 +4279,7 @@ package body Flyology.DB.Engine_Tests is
       then
          raise Program_Error with "empty replacement receipt lost its reconciliation input";
       end if;
-      Testing.Publication_Counts
-        (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
       if After_Batches /= Before_Batches
         or else After_Runs /= Before_Runs
         or else After_Manifests /= Before_Manifests + 1
@@ -4146,8 +4379,8 @@ package body Flyology.DB.Engine_Tests is
          Runs          : out Checkpoint_Run_Identity_Array;
          Result        : out Outcome_Code)
       is
-         Txn     : Transaction;
-         Receipt : Commit_Receipt;
+         Txn         : Transaction;
+         Receipt     : Commit_Receipt;
          Create_Info : Create_Receipt;
       begin
          Bind_Context (Context, Backend, Prefix & "-" & Suffix);
@@ -5633,11 +5866,10 @@ package body Flyology.DB.Engine_Tests is
       end Wait_For_Commit_Handoff;
 
       procedure Arena_Statistics
-        (Allocated : out Interfaces.Unsigned_64;
-         Released  : out Interfaces.Unsigned_64)
+        (Allocated : out Interfaces.Unsigned_64; Released : out Interfaces.Unsigned_64)
       is
-         Images_Allocated : Interfaces.Unsigned_64;
-         Images_Released  : Interfaces.Unsigned_64;
+         Images_Allocated  : Interfaces.Unsigned_64;
+         Images_Released   : Interfaces.Unsigned_64;
          Transaction_Bytes : Interfaces.Unsigned_64;
          Source_Bytes      : Interfaces.Unsigned_64;
          Sink_Bytes        : Interfaces.Unsigned_64;
@@ -5780,8 +6012,7 @@ package body Flyology.DB.Engine_Tests is
          Flyology.Operations.Wait_All (Set);
          Finish (Publish_Work, Receipt, Result);
          Expect (Result, Success, "admitted composable commit cancellation replaced its outcome");
-         if Receipt_Transaction_ID (Receipt) /= TX_ID (181)
-           or else Receipt_Batch_ID (Receipt) /= ID (181)
+         if Receipt_Transaction_ID (Receipt) /= TX_ID (181) or else Receipt_Batch_ID (Receipt) /= ID (181)
          then
             raise Program_Error with "composable commit lost its exact admitted identity";
          end if;
@@ -5796,8 +6027,7 @@ package body Flyology.DB.Engine_Tests is
          Flyology.Operations.Wait_All (Set);
          Finish (Publish_Work, Receipt, Result);
          Expect (Result, Success, "consumed composable commit did not restart");
-         if Receipt_Transaction_ID (Receipt) /= TX_ID (182)
-           or else Receipt_Batch_ID (Receipt) /= ID (182)
+         if Receipt_Transaction_ID (Receipt) /= TX_ID (182) or else Receipt_Batch_ID (Receipt) /= ID (182)
          then
             raise Program_Error with "restarted composable commit lost its exact admitted identity";
          end if;
@@ -5816,8 +6046,7 @@ package body Flyology.DB.Engine_Tests is
             Flyology.Operations.Release (Root_Work);
          end;
          Expect (Result, Success, "limited-root composable commit failed");
-         if Receipt_Transaction_ID (Receipt) /= TX_ID (189)
-           or else Receipt_Batch_ID (Receipt) /= ID (189)
+         if Receipt_Transaction_ID (Receipt) /= TX_ID (189) or else Receipt_Batch_ID (Receipt) /= ID (189)
          then
             raise Program_Error with "limited-root composable commit lost its exact admitted identity";
          end if;
@@ -5914,8 +6143,8 @@ package body Flyology.DB.Engine_Tests is
                Begin_Transaction (Item, TX_ID (186), Local_Txn, Local_Result);
                Put (Item, Local_Txn, 1, To_Key ([186]), Item_Value, Local_Result);
                Commit (Local_Txn, Test_Operation_Timeout, Work);
-               --  Work intentionally leaves scope active. Its finalizer owns
-               --  the terminal wait and exact coordinator cleanup.
+            --  Work intentionally leaves scope active. Its finalizer owns
+            --  the terminal wait and exact coordinator cleanup.
             end;
             accept Finish (Call_Result : out Outcome_Code) do
                Call_Result := Local_Result;
@@ -5965,9 +6194,7 @@ package body Flyology.DB.Engine_Tests is
          end Abort_Trigger;
 
          procedure Verify_Aborted_Publication
-           (Key_Byte        : Byte;
-            Verification_ID : Transaction_Identifier;
-            Label           : String)
+           (Key_Byte : Byte; Verification_ID : Transaction_Identifier; Label : String)
          is
             Observed : Value;
          begin
@@ -6128,28 +6355,21 @@ package body Flyology.DB.Engine_Tests is
       --  every transaction; cancellation after admission drains the exact
       --  group and retains member order and receipt identity.
       declare
-         Set            : aliased Flyology.Operations.Completion_Set (1);
-         Stop           : aliased Flyology.Cancellation.Token;
-         Cancelled_Work : Commit_Group_Operation (Set'Access, Item'Access, Stop'Access, 2);
+         Set             : aliased Flyology.Operations.Completion_Set (1);
+         Stop            : aliased Flyology.Cancellation.Token;
+         Cancelled_Work  : Commit_Group_Operation (Set'Access, Item'Access, Stop'Access, 2);
          Allocation_Work : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
-         Publish_Work   : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
-         Rejected_Work  : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
-         Transactions   : Transaction_Array (1 .. 2);
-         Rejected       : Transaction_Array (1 .. 2);
-         Receipts       : Commit_Receipt_Array (1 .. 2);
+         Publish_Work    : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
+         Rejected_Work   : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
+         Transactions    : Transaction_Array (1 .. 2);
+         Rejected        : Transaction_Array (1 .. 2);
+         Receipts        : Commit_Receipt_Array (1 .. 2);
 
-         procedure Prepare
-           (Members : in out Transaction_Array;
-            First   : Byte;
-            Label   : String)
-         is
+         procedure Prepare (Members : in out Transaction_Array; First : Byte; Label : String) is
          begin
             for Offset in Natural range 0 .. Members'Length - 1 loop
                Begin_Transaction
-                 (Item,
-                  TX_ID (First + Byte (Offset)),
-                  Members (Members'First + Offset),
-                  Result);
+                 (Item, TX_ID (First + Byte (Offset)), Members (Members'First + Offset), Result);
                Expect (Result, Success, Label & " begin failed");
                Put
                  (Item,
@@ -6258,13 +6478,7 @@ package body Flyology.DB.Engine_Tests is
          Prepare (Transactions, 232, "limited-root composable group");
          declare
             Root_Work : Commit_Group_Operation'Class :=
-              Commit_Group
-                (Set'Access,
-                 Item'Access,
-                 ID (245),
-                 Transactions,
-                 Test_Operation_Timeout,
-                 null);
+              Commit_Group (Set'Access, Item'Access, ID (245), Transactions, Test_Operation_Timeout, null);
          begin
             Flyology.Operations.Wait_All (Set);
             Finish (Root_Work, Receipts, Result);
@@ -6298,8 +6512,7 @@ package body Flyology.DB.Engine_Tests is
                Work : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
             begin
                for Offset in Natural range 0 .. Members'Length - 1 loop
-                  Begin_Transaction
-                    (Item, TX_ID (234 + Byte (Offset)), Members (Offset + 1), Local_Result);
+                  Begin_Transaction (Item, TX_ID (234 + Byte (Offset)), Members (Offset + 1), Local_Result);
                   Put
                     (Item,
                      Members (Offset + 1),
@@ -6309,8 +6522,8 @@ package body Flyology.DB.Engine_Tests is
                      Local_Result);
                end loop;
                Commit_Group (ID (246), Members, Test_Operation_Timeout, Work);
-               --  Work intentionally leaves scope active. Finalization owns
-               --  the full-group drain and exact coordinator cleanup.
+            --  Work intentionally leaves scope active. Finalization owns
+            --  the full-group drain and exact coordinator cleanup.
             end;
             accept Finish (Call_Result : out Outcome_Code) do
                Call_Result := Local_Result;
@@ -6388,10 +6601,7 @@ package body Flyology.DB.Engine_Tests is
                      begin
                         for Offset in Natural range 0 .. Members'Length - 1 loop
                            Begin_Transaction
-                             (Item,
-                              TX_ID (First_Member + Byte (Offset)),
-                              Members (Offset + 1),
-                              Local_Result);
+                             (Item, TX_ID (First_Member + Byte (Offset)), Members (Offset + 1), Local_Result);
                            Put
                              (Item,
                               Members (Offset + 1),
@@ -6400,8 +6610,7 @@ package body Flyology.DB.Engine_Tests is
                               Item_Value,
                               Local_Result);
                         end loop;
-                        Commit_Group
-                          (ID (Batch), Members, Test_Operation_Timeout, Work);
+                        Commit_Group (ID (Batch), Members, Test_Operation_Timeout, Work);
                         Flyology.Operations.Wait_All (Set);
                         Finish (Work, Local_Receipts, Local_Result);
                         Flyology.Operations.Release (Work);
@@ -7276,26 +7485,25 @@ package body Flyology.DB.Engine_Tests is
    procedure Test_Public_Replica_Refresh
      (Backend : not null access Backends.Backend'Class; Prefix : String; Tag : Byte)
    is
-      Context     : aliased Storage_Context;
-      Writer      : Database;
-      Replica     : Database;
-      Txn         : Transaction;
-      Reader      : Transaction;
-      Receipt     : Commit_Receipt;
-      Result      : Outcome_Code;
-      Data        : Value;
-      Database_ID : constant Database_Identifier := DB_ID (Tag);
+      Context      : aliased Storage_Context;
+      Writer       : Database;
+      Replica      : Database;
+      Txn          : Transaction;
+      Reader       : Transaction;
+      Receipt      : Commit_Receipt;
+      Result       : Outcome_Code;
+      Data         : Value;
+      Database_ID  : constant Database_Identifier := DB_ID (Tag);
       --  Two distinct keys/values and four following identities separate root,
       --  first/second publication, and stale-writer roles in this public
       --  refresh witness. They are fixture geometry, not database policy.
-      First_Key   : constant Key := To_Key ([Tag]);
-      Second_Key  : constant Key := To_Key ([Tag + 1]);
-      First_Value : constant Value := To_Value ([1]);
+      First_Key    : constant Key := To_Key ([Tag]);
+      Second_Key   : constant Key := To_Key ([Tag + 1]);
+      First_Value  : constant Value := To_Value ([1]);
       Second_Value : constant Value := To_Value ([2]);
 
       procedure Expect_Read
-        (Item : in out Database; Identity : Byte; Item_Key : Key; Expected : Value; Context : String)
-      is
+        (Item : in out Database; Identity : Byte; Item_Key : Key; Expected : Value; Context : String) is
       begin
          Begin_Transaction (Item, TX_ID (Identity), Reader, Result);
          Expect (Result, Success, Context & " begin failed");
@@ -7308,8 +7516,7 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, Context & " rollback failed");
       end Expect_Read;
 
-      procedure Expect_Missing
-        (Item : in out Database; Identity : Byte; Item_Key : Key; Context : String) is
+      procedure Expect_Missing (Item : in out Database; Identity : Byte; Item_Key : Key; Context : String) is
       begin
          Begin_Transaction (Item, TX_ID (Identity), Reader, Result);
          Expect (Result, Success, Context & " begin failed");
@@ -7545,19 +7752,19 @@ package body Flyology.DB.Engine_Tests is
    end Test_Resolve_Lifecycle;
 
    procedure Test_Snapshot_Write_Validation (Backend : not null access Backends.Backend'Class) is
-      Context       : aliased Storage_Context;
-      Item          : aliased Database;
-      First         : aliased Transaction;
-      Second        : aliased Transaction;
-      Reader        : aliased Transaction;
+      Context                   : aliased Storage_Context;
+      Item                      : aliased Database;
+      First                     : aliased Transaction;
+      Second                    : aliased Transaction;
+      Reader                    : aliased Transaction;
       --  Two members are the minimum atomic group needed to prove that one
       --  externally conflicted member rejects the whole group. This is test
       --  geometry, not a product group-capacity default.
-      Group         : Transaction_Array (1 .. 2);
-      Receipt       : Commit_Receipt;
-      Group_Receipts : Commit_Receipt_Array (Group'Range);
-      Result        : Outcome_Code;
-      Data          : Value;
+      Group                     : Transaction_Array (1 .. 2);
+      Receipt                   : Commit_Receipt;
+      Group_Receipts            : Commit_Receipt_Array (Group'Range);
+      Result                    : Outcome_Code;
+      Data                      : Value;
       Before_Batch, Before_Head : Natural;
       After_Batch, After_Head   : Natural;
       --  These byte-distinct keys isolate same-key, tombstone, queued-race,
@@ -7565,12 +7772,12 @@ package body Flyology.DB.Engine_Tests is
       --  witnesses only and establish no application key policy. IDs 160..179
       --  and payload bytes 1..13 uniquely label these deterministic operations;
       --  family 1 is the persisted root-family fixture, not a new default.
-      Same_Key      : constant Key := To_Key ([16#A0#]);
-      Delete_Key    : constant Key := To_Key ([16#A1#]);
-      Queued_Key    : constant Key := To_Key ([16#A2#]);
-      Disjoint_Key  : constant Key := To_Key ([16#A3#]);
-      Future_Key    : constant Key := To_Key ([16#A4#]);
-      Empty_History_Key : constant Key := To_Key ([]);
+      Same_Key                  : constant Key := To_Key ([16#A0#]);
+      Delete_Key                : constant Key := To_Key ([16#A1#]);
+      Queued_Key                : constant Key := To_Key ([16#A2#]);
+      Disjoint_Key              : constant Key := To_Key ([16#A3#]);
+      Future_Key                : constant Key := To_Key ([16#A4#]);
+      Empty_History_Key         : constant Key := To_Key ([]);
    begin
       Bind_Context (Context, Backend, "snapshot-write-validation");
       Create_DB (Item, Context'Access, DB_ID (160), ID (161), Result);
@@ -7704,11 +7911,7 @@ package body Flyology.DB.Engine_Tests is
             Local_Result  : Outcome_Code;
          begin
             Commit
-              (Item,
-               Target.all,
-               Test_Operation_Timeout,
-               Receipt => Local_Receipt,
-               Result  => Local_Result);
+              (Item, Target.all, Test_Operation_Timeout, Receipt => Local_Receipt, Result => Local_Result);
             accept Finish (Call_Result : out Outcome_Code) do
                Call_Result := Local_Result;
             end Finish;
@@ -7719,8 +7922,8 @@ package body Flyology.DB.Engine_Tests is
                end Finish;
          end Commit_Call;
 
-         First_Call  : Commit_Call (First'Access);
-         Second_Call : Commit_Call (Second'Access);
+         First_Call                  : Commit_Call (First'Access);
+         Second_Call                 : Commit_Call (Second'Access);
          First_Result, Second_Result : Outcome_Code;
          --  Zero is neutral observation state; the required depth of two is
          --  derived from the two Commit_Call tasks above, not queue policy.
@@ -7748,8 +7951,7 @@ package body Flyology.DB.Engine_Tests is
          elsif not ((First_Result = Success and then Second_Result = Conflict)
                     or else (First_Result = Conflict and then Second_Result = Success))
          then
-            raise Program_Error with
-              "queued same-key snapshot commits were not one success/one conflict";
+            raise Program_Error with "queued same-key snapshot commits were not one success/one conflict";
          end if;
       end;
       Rollback (First, Result);
@@ -8120,8 +8322,7 @@ package body Flyology.DB.Engine_Tests is
          Lower     : Key;
          Has_Upper : Boolean;
          Upper     : Key;
-         Tag       : Byte)
-      is
+         Tag       : Byte) is
       begin
          Begin_Transaction (Item, Numbered_TX_ID (Identity), Serializable, Target, Result);
          Expect (Result, Success, "range reader begin failed");
@@ -8132,8 +8333,7 @@ package body Flyology.DB.Engine_Tests is
       end Prepare_Reader;
 
       procedure Commit_External_Write
-        (Identity : Natural; Family_ID : Column_Family_ID; Item_Key : Key; Tag : Byte)
-      is
+        (Identity : Natural; Family_ID : Column_Family_ID; Item_Key : Key; Tag : Byte) is
       begin
          Begin_Transaction (Item, Numbered_TX_ID (Identity), Writer, Result);
          Expect (Result, Success, "range writer begin failed");
@@ -8195,8 +8395,7 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Invalid_State, "reversed range was admitted");
       Root_DB.Observe_Range (Item, Reader, Family, False, Oversized, False, Oversized, Result);
       Expect (Result, Success, "absent oversized endpoints were inspected");
-      Root_DB.Observe_Range
-        (Item, Reader, Family, False, Key_Data (Key_A), False, Key_Data (Key_D), Result);
+      Root_DB.Observe_Range (Item, Reader, Family, False, Key_Data (Key_A), False, Key_Data (Key_D), Result);
       Expect (Result, Success, "ignored endpoint bytes changed whole-range identity");
       Observe_Range (Item, Reader, 1, True, Key_B, True, Key_D, Result);
       Expect (Result, Success, "contained range consumed normalized capacity");
@@ -8415,42 +8614,43 @@ package body Flyology.DB.Engine_Tests is
    end Test_Serializable_Range_Validation;
 
    procedure Test_Bounded_Scan (Backend : not null access Backends.Backend'Class; Prefix : String) is
-      Context        : aliased Storage_Context;
-      Item           : aliased Database;
-      Reader         : aliased Transaction;
-      Writer         : aliased Transaction;
-      Rows           : Scan_Result;
-      Cursor         : Scan_Cursor;
-      Receipt        : Commit_Receipt;
-      Create_Info    : Create_Receipt;
-      Result         : Outcome_Code;
-      Family         : Column_Family;
-      Actual_Key     : Flyology.Bytes.Unbounded_Bytes;
-      Actual_Data    : Flyology.Bytes.Unbounded_Bytes;
-      Done           : Boolean;
+      Context               : aliased Storage_Context;
+      Item                  : aliased Database;
+      Reader                : aliased Transaction;
+      Writer                : aliased Transaction;
+      Rows                  : Scan_Result;
+      Cursor                : Scan_Cursor;
+      Receipt               : Commit_Receipt;
+      Create_Info           : Create_Receipt;
+      Result                : Outcome_Code;
+      Family                : Column_Family;
+      Actual_Key            : Flyology.Bytes.Unbounded_Bytes;
+      Actual_Data           : Flyology.Bytes.Unbounded_Bytes;
+      Done                  : Boolean;
       --  Identity namespace 62_000..62_033 and one-byte value tags isolate
       --  this deterministic scan campaign. They are witnesses only, not
       --  persisted format tags or application identity/value policy.
-      Database_ID    : constant Database_Identifier := Database_Identifier (Numbered_ID (62_000));
-      Transition_ID  : constant Identifier := Numbered_ID (62_001);
+      Database_ID           : constant Database_Identifier := Database_Identifier (Numbered_ID (62_000));
+      Transition_ID         : constant Identifier := Numbered_ID (62_001);
       --  Empty, prefix-related, ordinary, and high-bit keys establish the
       --  unsigned-byte canonical order and half-open interval geometry. Their
       --  spellings establish no application key policy.
-      Empty_Key      : constant Key := To_Key ([]);
-      Key_A          : constant Key := To_Key ([16#10#]);
-      Key_B          : constant Key := To_Key ([16#20#]);
-      Key_B_Extended : constant Key := To_Key ([16#20#, 16#00#]);
-      Key_C          : constant Key := To_Key ([16#30#]);
-      Key_D          : constant Key := To_Key ([16#40#]);
-      Marker         : constant Key := To_Key ([16#E0#]);
-      High_Key       : constant Key := To_Key ([16#FF#]);
+      Empty_Key             : constant Key := To_Key ([]);
+      Key_A                 : constant Key := To_Key ([16#10#]);
+      Key_B                 : constant Key := To_Key ([16#20#]);
+      Key_B_Extended        : constant Key := To_Key ([16#20#, 16#00#]);
+      Key_C                 : constant Key := To_Key ([16#30#]);
+      Key_D                 : constant Key := To_Key ([16#40#]);
+      Marker                : constant Key := To_Key ([16#E0#]);
+      High_Key              : constant Key := To_Key ([16#FF#]);
       --  One byte beyond family one's persisted 64-byte key authority proves
       --  present-endpoint rejection; this is derived from the reference corpus.
-      Oversized      : constant Byte_Array (1 .. Reference_Maximum_Key_Bytes + 1) := [others => 16#55#];
+      Oversized             : constant Byte_Array (1 .. Reference_Maximum_Key_Bytes + 1) :=
+        [others => 16#55#];
       --  These eight test-only failure positions cover the shared cursor/page
       --  path used by whole Scan before atomic result replacement. They add
       --  no runtime allocation or scan policy.
-      Scan_Faults    : constant array (Positive range 1 .. 8) of Internal_Allocation_Fault_Point :=
+      Scan_Faults           : constant array (Positive range 1 .. 8) of Internal_Allocation_Fault_Point :=
         [Scan_Cursor_State_Allocation,
          Scan_Source_Allocation,
          Scan_Cursor_Entry_Allocation,
@@ -8462,15 +8662,12 @@ package body Flyology.DB.Engine_Tests is
       --  These three test-only positions cover the transient capture and both
       --  exact retained merge arrays built by Start_Scan. They add no product
       --  capacity or allocation policy.
-      Cursor_Capture_Faults : constant array (Positive range 1 .. 3) of
-        Internal_Allocation_Fault_Point :=
-          [Scan_Source_Allocation,
-           Scan_Cursor_Entry_Allocation,
-           Scan_Cursor_Source_Allocation];
+      Cursor_Capture_Faults : constant array (Positive range 1 .. 3) of Internal_Allocation_Fault_Point :=
+        [Scan_Source_Allocation, Scan_Cursor_Entry_Allocation, Scan_Cursor_Source_Allocation];
       --  Eight entries cover the complete scan corpus through the later suffix;
       --  2,560 bytes derives from 8 * family one's persisted (64 + 256) maximum
       --  entry extent. These are checkpoint-fixture authorities, not defaults.
-      Scan_Families : constant Column_Family_Configuration_Array :=
+      Scan_Families         : constant Column_Family_Configuration_Array :=
         [Configure_Column_Family (1, [16#61#], 64, 256, 2_560, 8, 1),
          Default_Families (2),
          Default_Families (3),
@@ -8773,7 +8970,7 @@ package body Flyology.DB.Engine_Tests is
          --  One stable run identity per persisted fixture family is required
          --  by Flush. IDs 62_020..62_027 and manifest/transition 62_030/31
          --  extend this scan campaign's witness namespace only.
-         Runs : constant Checkpoint_Run_Identity_Array :=
+         Runs       : constant Checkpoint_Run_Identity_Array :=
            [Configure_Checkpoint_Run (1, Numbered_ID (62_020)),
             Configure_Checkpoint_Run (2, Numbered_ID (62_021)),
             Configure_Checkpoint_Run (3, Numbered_ID (62_022)),
@@ -9200,6 +9397,7 @@ package body Flyology.DB.Engine_Tests is
       After_Source_Bytes       : Interfaces.Unsigned_64;
       After_Sink_Bytes         : Interfaces.Unsigned_64;
    begin
+      Test_Identity_Partition_Policy;
       Test_Runtime_Codec;
       Testing.Image_Statistics
         (Before_Images_Allocated,

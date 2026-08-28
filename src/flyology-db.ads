@@ -58,18 +58,18 @@ package Flyology.DB is
    --  Persisted database-wide admission limits. Every field is explicit; the
    --  runtime applies no implicit defaults when creating a database.
    type Database_Limits is record
-      Maximum_Column_Families           : Interfaces.Unsigned_32;
-      Maximum_Manifest_History          : Interfaces.Unsigned_32;
-      Maximum_Batch_History             : Interfaces.Unsigned_32;
-      Maximum_Transactions_Per_Batch    : Interfaces.Unsigned_32;
-      Maximum_Mutations_Per_Transaction : Interfaces.Unsigned_32;
-      Maximum_Mutations_Per_Batch       : Interfaces.Unsigned_32;
-      Maximum_Live_Entries              : Interfaces.Unsigned_32;
-      Maximum_Transaction_Payload_Bytes : Interfaces.Unsigned_64;
-      Maximum_Batch_Payload_Bytes       : Interfaces.Unsigned_64;
-      Maximum_Live_State_Bytes          : Interfaces.Unsigned_64;
-      Maximum_Total_L0_Runs             : Interfaces.Unsigned_32;
-      Maximum_Checkpoint_Identities     : Interfaces.Unsigned_32;
+      Maximum_Column_Families             : Interfaces.Unsigned_32;
+      Maximum_Manifest_History            : Interfaces.Unsigned_32;
+      Maximum_Batch_History               : Interfaces.Unsigned_32;
+      Maximum_Transactions_Per_Batch      : Interfaces.Unsigned_32;
+      Maximum_Mutations_Per_Transaction   : Interfaces.Unsigned_32;
+      Maximum_Mutations_Per_Batch         : Interfaces.Unsigned_32;
+      Maximum_Live_Entries                : Interfaces.Unsigned_32;
+      Maximum_Transaction_Payload_Bytes   : Interfaces.Unsigned_64;
+      Maximum_Batch_Payload_Bytes         : Interfaces.Unsigned_64;
+      Maximum_Live_State_Bytes            : Interfaces.Unsigned_64;
+      Maximum_Total_L0_Runs               : Interfaces.Unsigned_32;
+      Maximum_Checkpoint_Identities       : Interfaces.Unsigned_32;
       --  Persisted serializable-observation count authority. Exact point keys
       --  and range endpoints remain bounded by their selected family; these
       --  database-wide counts add backpressure without a library default.
@@ -119,51 +119,49 @@ package Flyology.DB is
    --  Stable persisted numeric family identity.
    --  @param Item Valid complete family configuration
    --  @return Exact persisted family ID
-   function Column_Family_Configuration_ID
-     (Item : Column_Family_Configuration) return Column_Family_ID
-     with Pre => Is_Valid_Column_Family_Configuration (Item);
+   function Column_Family_Configuration_ID (Item : Column_Family_Configuration) return Column_Family_ID
+   with Pre => Is_Valid_Column_Family_Configuration (Item);
 
    --  Exact persisted UTF-8 family-name bytes, without normalization.
    --  @param Item Valid complete family configuration
    --  @return Exact persisted family-name bytes
-   function Column_Family_Configuration_Name
-     (Item : Column_Family_Configuration) return Byte_Array
-     with Pre => Is_Valid_Column_Family_Configuration (Item);
+   function Column_Family_Configuration_Name (Item : Column_Family_Configuration) return Byte_Array
+   with Pre => Is_Valid_Column_Family_Configuration (Item);
 
    --  Exact persisted maximum key extent.
    --  @param Item Valid complete family configuration
    --  @return Exact maximum key bytes
    function Column_Family_Configuration_Max_Key_Bytes
      (Item : Column_Family_Configuration) return Interfaces.Unsigned_64
-     with Pre => Is_Valid_Column_Family_Configuration (Item);
+   with Pre => Is_Valid_Column_Family_Configuration (Item);
 
    --  Exact persisted maximum value extent.
    --  @param Item Valid complete family configuration
    --  @return Exact maximum value bytes
    function Column_Family_Configuration_Max_Value_Bytes
      (Item : Column_Family_Configuration) return Interfaces.Unsigned_64
-     with Pre => Is_Valid_Column_Family_Configuration (Item);
+   with Pre => Is_Valid_Column_Family_Configuration (Item);
 
    --  Exact persisted logical memtable byte authority.
    --  @param Item Valid complete family configuration
    --  @return Exact memtable byte ceiling
    function Column_Family_Configuration_Memtable_Max_Bytes
      (Item : Column_Family_Configuration) return Interfaces.Unsigned_64
-     with Pre => Is_Valid_Column_Family_Configuration (Item);
+   with Pre => Is_Valid_Column_Family_Configuration (Item);
 
    --  Exact persisted memtable-entry authority.
    --  @param Item Valid complete family configuration
    --  @return Exact memtable entry ceiling
    function Column_Family_Configuration_Memtable_Max_Entries
      (Item : Column_Family_Configuration) return Interfaces.Unsigned_32
-     with Pre => Is_Valid_Column_Family_Configuration (Item);
+   with Pre => Is_Valid_Column_Family_Configuration (Item);
 
    --  Exact persisted per-family L0-run authority.
    --  @param Item Valid complete family configuration
    --  @return Exact per-family L0-run ceiling
    function Column_Family_Configuration_Maximum_L0_Runs
      (Item : Column_Family_Configuration) return Interfaces.Unsigned_32
-     with Pre => Is_Valid_Column_Family_Configuration (Item);
+   with Pre => Is_Valid_Column_Family_Configuration (Item);
 
    --  Bind one configured family to the immutable run identity selected by a
    --  checkpoint operation. Run_ID must be nonzero. Flush and complete
@@ -228,9 +226,7 @@ package Flyology.DB is
    --  @enum Complete_Compaction_Required Additive growth is full but a complete
    --  run per nonempty family fits
    type L0_Checkpoint_Action is
-     (No_L0_Checkpoint_Work,
-      Additive_Flush_Required,
-      Complete_Compaction_Required);
+     (No_L0_Checkpoint_Work, Additive_Flush_Required, Complete_Compaction_Required);
    --  Owned exact-family projection of one checkpoint-action observation.
    --  Dynamic storage is derived from the observed persisted registry and is
    --  reclaimed automatically; the type retains no Database borrow.
@@ -245,8 +241,8 @@ package Flyology.DB is
    type Commit_Operation
      (Set          : not null access Flyology.Operations.Completion_Set'Class;
       Item         : not null access Database;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation with private;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation with private;
    --  Caller-composable atomic group publication. Set, Item, and Cancellation
    --  are retained borrows through terminal Finish or abandonment drain.
    --  Members is the exact caller-supplied transaction-array length and
@@ -258,8 +254,8 @@ package Flyology.DB is
      (Set          : not null access Flyology.Operations.Completion_Set'Class;
       Item         : not null access Database;
       Cancellation : access Flyology.Cancellation.Token;
-      Members      : Natural) is
-     new Flyology.Operations.Operation with private;
+      Members      : Natural)
+   is new Flyology.Operations.Operation with private;
    --  Caller-composable initial database publication. The discriminants are
    --  retained borrows and must outlive terminal Finish or abandonment drain.
    --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
@@ -274,8 +270,8 @@ package Flyology.DB is
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation with private;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation with private;
    --  Caller-composable checkpoint and family-registry publication. The discriminants are
    --  retained borrows: Set, Item, Storage, HTTP, Payload_Pool, and
    --  Cancellation must outlive terminal Finish or scope-abandonment drain.
@@ -292,8 +288,8 @@ package Flyology.DB is
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation with private;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation with private;
    --  Caller-composable monotonic replica refresh and commit-receipt
    --  reconciliation. The discriminants are
    --  retained borrows and must outlive terminal Finish or abandonment drain.
@@ -307,8 +303,8 @@ package Flyology.DB is
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation with private;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation with private;
    --  Caller-composable cacheless open. The discriminants are retained borrows
    --  and must outlive terminal Finish or abandonment drain. Storage must be
    --  bound to the exact HTTP client. Payload_Pool supplies the caller-selected
@@ -321,8 +317,8 @@ package Flyology.DB is
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation with private;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation with private;
    --  Caller-composable fixed-snapshot point read. Item and Txn are retained
    --  borrows through terminal publication; the caller must not use Txn while
    --  the operation is active. Payload_Pool supplies the sole caller-selected
@@ -354,8 +350,8 @@ package Flyology.DB is
       Item         : not null access Database;
       Txn          : not null access Transaction;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation with private;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation with private;
    --  Project admission policy documented by the synchronous topology: one
    --  public atomic group has at most eight members. This is a bounded API and
    --  coordinator-capacity choice, not a wire-count limit or database default.
@@ -408,7 +404,7 @@ package Flyology.DB is
       Token                 : access Flyology.Cancellation.Token := null;
       Receipt               : out Create_Receipt;
       Result                : out Outcome_Code)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+   with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Start or restart one owner-driven initial publication. All caller input
    --  is copied into owned manifest/HEAD state before return. Conditional
@@ -433,11 +429,13 @@ package Flyology.DB is
       Payload_Buffer        : in out Flyology.Buffers.Unique_Buffer;
       Timeout               : Duration;
       Operation             : in out Create_Operation)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Consume one terminal Create and restore its exact token into any vacant
    --  same-pool handle. Receipt remains self-contained for caller-driven
@@ -451,10 +449,12 @@ package Flyology.DB is
       Receipt        : out Create_Receipt;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-     with Pre => Flyology.Operations.Is_Terminal (Operation)
+   with
+     Pre  =>
+       Flyology.Operations.Is_Terminal (Operation)
        and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Start or restart receipt-driven Create resolution on the same provider-
    --  owned state machine as Create. The exact receipt authority and scratch
@@ -472,11 +472,13 @@ package Flyology.DB is
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
       Operation      : in out Create_Operation)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Resume or reconcile Create through the owner-driven operation while
    --  moving one exact caller scratch token. Client-bound execution waits the
@@ -497,7 +499,7 @@ package Flyology.DB is
       Timeout        : Duration;
       Token          : access Flyology.Cancellation.Token := null;
       Result         : out Outcome_Code)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+   with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Resume a confirmed-manifest creation before HEAD admission, or reconcile
    --  a possibly admitted HEAD publication without replaying it.
@@ -547,7 +549,7 @@ package Flyology.DB is
       Timeout        : Duration;
       Token          : access Flyology.Cancellation.Token := null;
       Result         : out Outcome_Code)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+   with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Start or restart one cacheless open in an established caller-owned
    --  operation. Lifecycle admission and owner validation precede moving the
@@ -563,11 +565,13 @@ package Flyology.DB is
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
       Operation      : in out Open_Operation)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Consume one terminal owner-driven open and restore its exact scratch
    --  token into any vacant same-pool handle. An unexpected provider exception
@@ -579,10 +583,12 @@ package Flyology.DB is
      (Operation      : in out Open_Operation;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-     with Pre => Flyology.Operations.Is_Terminal (Operation)
+   with
+     Pre  =>
+       Flyology.Operations.Is_Terminal (Operation)
        and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Perform one caller-triggered monotonic refresh of an open handle used as
    --  a read-only replica. The caller must finish every transaction and other
@@ -622,11 +628,13 @@ package Flyology.DB is
      (Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
       Operation      : in out Refresh_Operation)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Consume a terminal owner-driven refresh and restore its exact scratch
    --  token. Payload_Buffer may be any vacant handle from the original pool;
@@ -640,17 +648,22 @@ package Flyology.DB is
      (Operation      : in out Refresh_Operation;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-     with Pre => Flyology.Operations.Is_Terminal (Operation)
+   with
+     Pre  =>
+       Flyology.Operations.Is_Terminal (Operation)
        and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Append one explicit immutable column-family configuration and publish
    --  one conditional manifest-bearing HEAD transition. Configuration supplies
    --  every key/value, memtable, and L0 authority; the DB selects no defaults.
    --  ID must be strictly greater than the current last family ID and Name must
-   --  be unique. The current state must be an exact durable checkpoint with no
-   --  later commit suffix; call Flush first when commits follow that checkpoint.
+   --  be unique. The operation preserves an authenticated post-checkpoint commit
+   --  suffix without changing the checkpoint replay boundary or identity ledger;
+   --  confirmed suffix-bearing publication is activated by cacheless recovery.
+   --  A retained durable checkpoint carrier is required; fresh-root state
+   --  returns Invalid_State and the DB selects no automatic Flush.
    --  This preserves every existing run and reserved identity without selecting
    --  new run identities. Manifest_ID and Transition_ID are caller-stable and
    --  never reusable after their publication begins. Outcome_Unknown must be
@@ -696,11 +709,13 @@ package Flyology.DB is
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
       Operation      : in out Flush_Operation)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Consume a terminal composable family append and restore its exact input
    --  token into any vacant same-pool handle. Receipt preserves the same
@@ -715,10 +730,12 @@ package Flyology.DB is
       Receipt        : out Column_Family_Receipt;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-     with Pre => Flyology.Operations.Is_Terminal (Operation)
+   with
+     Pre  =>
+       Flyology.Operations.Is_Terminal (Operation)
        and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Continue exact immutable-manifest confirmation or reconcile the attempted
    --  HEAD retained by Receipt. No identity, configuration, or bytes change.
@@ -752,11 +769,13 @@ package Flyology.DB is
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
       Operation      : in out Flush_Operation)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Blocking wait over the same provider-bound family resolver. The exact
    --  receipt and caller scratch token are restored before return. Backend-
@@ -777,8 +796,9 @@ package Flyology.DB is
       Timeout        : Duration;
       Token          : access Flyology.Cancellation.Token := null;
       Result         : out Outcome_Code)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer),
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+   with
+     Pre  => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Outcome most recently assigned to Receipt.
    --  @param Item Family-registry publication receipt
@@ -920,11 +940,13 @@ package Flyology.DB is
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
       Operation      : in out Get_Operation)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Consume a terminal owner-driven Get, restore its exact scratch token
    --  into any vacant same-pool handle, and return the same Data/Result pair as
@@ -940,10 +962,12 @@ package Flyology.DB is
       Data           : out Flyology.Bytes.Unbounded_Bytes;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-     with Pre => Flyology.Operations.Is_Terminal (Operation)
+   with
+     Pre  =>
+       Flyology.Operations.Is_Terminal (Operation)
        and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Wait on the same owner-driven storage-backed Get state machine. The
    --  caller supplies the sole scratch token and whole-operation timeout; the
@@ -968,8 +992,9 @@ package Flyology.DB is
       Token          : access Flyology.Cancellation.Token := null;
       Data           : out Flyology.Bytes.Unbounded_Bytes;
       Result         : out Outcome_Code)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer),
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+   with
+     Pre  => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Validate and observe one canonical half-open scan predicate without
    --  reading or returning rows. A false endpoint flag means that endpoint is
@@ -1443,8 +1468,7 @@ package Flyology.DB is
       Item    : not null access Database;
       Txn     : in out Transaction;
       Timeout : Duration;
-      Token   : access Flyology.Cancellation.Token := null)
-      return Commit_Operation'Class;
+      Token   : access Flyology.Cancellation.Token := null) return Commit_Operation'Class;
 
    --  Start or restart one singleton commit in an established owner-bound
    --  operation. Txn is consumed exactly when the bounded coordinator admits
@@ -1456,12 +1480,10 @@ package Flyology.DB is
    --  @param Timeout Whole-publication monotonic timeout budget
    --  @param Operation Fresh or consumed database-bound commit operation
    --  @exception Capacity_Error Completion set has no reusable operation slot
-   procedure Commit
-     (Txn       : in out Transaction;
-      Timeout   : Duration;
-      Operation : in out Commit_Operation)
-   with Pre => not Flyology.Operations.Is_Active (Operation)
-     and then not Flyology.Operations.Is_Terminal (Operation);
+   procedure Commit (Txn : in out Transaction; Timeout : Duration; Operation : in out Commit_Operation)
+   with
+     Pre =>
+       not Flyology.Operations.Is_Active (Operation) and then not Flyology.Operations.Is_Terminal (Operation);
 
    --  Consume one terminal owner-driven commit and move its exact retained
    --  publication receipt to Receipt. Result preserves the same admitted and
@@ -1470,9 +1492,7 @@ package Flyology.DB is
    --  @param Receipt Exact publication or reconciliation authority
    --  @param Result Exact coordinator admission/publication outcome
    procedure Finish
-     (Operation : in out Commit_Operation;
-      Receipt   : out Commit_Receipt;
-      Result    : out Outcome_Code)
+     (Operation : in out Commit_Operation; Receipt : out Commit_Receipt; Result : out Outcome_Code)
    with Pre => Flyology.Operations.Is_Terminal (Operation);
 
    --  Construct and start one atomic transaction group in the caller's
@@ -1491,8 +1511,7 @@ package Flyology.DB is
       Group_ID     : Identifier;
       Transactions : in out Transaction_Array;
       Timeout      : Duration;
-      Token        : access Flyology.Cancellation.Token)
-      return Commit_Group_Operation'Class;
+      Token        : access Flyology.Cancellation.Token) return Commit_Group_Operation'Class;
 
    --  Start or restart one atomic group in an established owner-bound
    --  operation. Transactions must have the structural length selected when
@@ -1509,9 +1528,11 @@ package Flyology.DB is
       Transactions : in out Transaction_Array;
       Timeout      : Duration;
       Operation    : in out Commit_Group_Operation)
-   with Pre => Transactions'Length = Operation.Members
-     and then not Flyology.Operations.Is_Active (Operation)
-     and then not Flyology.Operations.Is_Terminal (Operation);
+   with
+     Pre =>
+       Transactions'Length = Operation.Members
+       and then not Flyology.Operations.Is_Active (Operation)
+       and then not Flyology.Operations.Is_Terminal (Operation);
 
    --  Consume one terminal owner-driven group and move every retained receipt
    --  to the caller's operation-sized array in the original member order.
@@ -1522,8 +1543,7 @@ package Flyology.DB is
      (Operation : in out Commit_Group_Operation;
       Receipts  : out Commit_Receipt_Array;
       Result    : out Outcome_Code)
-   with Pre => Flyology.Operations.Is_Terminal (Operation)
-     and then Receipts'Length = Operation.Members;
+   with Pre => Flyology.Operations.Is_Terminal (Operation) and then Receipts'Length = Operation.Members;
 
    --  Atomically admit and publish one explicit synchronous transaction group.
    --  Transactions and Receipts must have matching lengths of two through
@@ -1573,11 +1593,13 @@ package Flyology.DB is
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
       Operation      : in out Refresh_Operation)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Consume one terminal owner-driven commit resolution, restore the exact
    --  receipt and scratch token, and return the same typed result as the
@@ -1591,10 +1613,12 @@ package Flyology.DB is
       Receipt        : out Commit_Receipt;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-     with Pre => Flyology.Operations.Is_Terminal (Operation)
+   with
+     Pre  =>
+       Flyology.Operations.Is_Terminal (Operation)
        and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Blocking wait over the same client-bound commit resolver. The exact
    --  receipt and caller scratch token are restored before return. A
@@ -1614,8 +1638,9 @@ package Flyology.DB is
       Timeout        : Duration;
       Token          : access Flyology.Cancellation.Token := null;
       Result         : out Outcome_Code)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer),
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+   with
+     Pre  => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Outcome most recently assigned to Receipt.
    function Receipt_Outcome (Item : Commit_Receipt) return Outcome_Code;
@@ -1652,11 +1677,13 @@ package Flyology.DB is
       Transition_ID  : Identifier;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Start an exact complete-view compaction in an established operation.
    --  Runs maps every nonempty family to a caller-selected fresh output
@@ -1684,11 +1711,13 @@ package Flyology.DB is
       Transition_ID  : Identifier;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Start an exact caller-selected adjacent-run compaction. Older_Run_ID
    --  and Newer_Run_ID must name adjacent current descriptors in one family;
@@ -1718,11 +1747,13 @@ package Flyology.DB is
       Transition_ID  : Identifier;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Start an exact caller-selected three-run compaction. First_Run_ID,
    --  Middle_Run_ID, and Last_Run_ID must name three consecutive current
@@ -1753,11 +1784,13 @@ package Flyology.DB is
       Transition_ID  : Identifier;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Consume a terminal composable Flush and restore its exact input token.
    --  Payload_Buffer may be any vacant handle from the original pool; no
@@ -1776,10 +1809,12 @@ package Flyology.DB is
       Receipt        : out Flush_Receipt;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-     with Pre => Flyology.Operations.Is_Terminal (Operation)
+   with
+     Pre  =>
+       Flyology.Operations.Is_Terminal (Operation)
        and then not Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool,
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Publish an immutable checkpoint at the current committed boundary. The
    --  first call writes complete nonempty-family runs; each later call appends
@@ -1931,11 +1966,13 @@ package Flyology.DB is
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
       Operation      : in out Flush_Operation)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer)
+   with
+     Pre  =>
+       Flyology.Buffers.Has_Buffer (Payload_Buffer)
        and then Payload_Buffer.Owner = Operation.Payload_Pool
        and then not Flyology.Operations.Is_Active (Operation)
        and then not Flyology.Operations.Is_Terminal (Operation),
-       Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
+     Post => not Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Blocking wait over the same provider-bound Resolve_Flush state machine.
    --  The exact receipt and caller scratch token are restored before return.
@@ -1956,8 +1993,9 @@ package Flyology.DB is
       Timeout        : Duration;
       Token          : access Flyology.Cancellation.Token := null;
       Result         : out Outcome_Code)
-     with Pre => Flyology.Buffers.Has_Buffer (Payload_Buffer),
-       Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
+   with
+     Pre  => Flyology.Buffers.Has_Buffer (Payload_Buffer),
+     Post => Flyology.Buffers.Has_Buffer (Payload_Buffer);
 
    --  Outcome most recently assigned to Receipt.
    --  @param Item Flush receipt to inspect
@@ -2007,9 +2045,7 @@ package Flyology.DB is
    --  @param Action Exact current action selected from persisted run authorities
    --  @param Result Success or a definite local state/capacity classification
    procedure Required_L0_Checkpoint_Action
-     (Item   : in out Database;
-      Action : out L0_Checkpoint_Action;
-      Result : out Outcome_Code);
+     (Item : in out Database; Action : out L0_Checkpoint_Action; Result : out Outcome_Code);
 
    --  Atomically replace Requirement with the action and exact affected
    --  family IDs from one quiescent writer observation. Additive_Flush_Required
@@ -2021,14 +2057,11 @@ package Flyology.DB is
    --  @param Requirement Owned observation replaced only after complete success
    --  @param Result Success or a definite local state/capacity classification
    procedure Observe_L0_Checkpoint_Requirement
-     (Item        : in out Database;
-      Requirement : in out L0_Checkpoint_Requirement;
-      Result      : out Outcome_Code);
+     (Item : in out Database; Requirement : in out L0_Checkpoint_Requirement; Result : out Outcome_Code);
 
    --  @param Item Successfully observed checkpoint requirement
    --  @return Action captured by the observation
-   function Checkpoint_Requirement_Action
-     (Item : L0_Checkpoint_Requirement) return L0_Checkpoint_Action;
+   function Checkpoint_Requirement_Action (Item : L0_Checkpoint_Requirement) return L0_Checkpoint_Action;
 
    --  @param Item Successfully observed checkpoint requirement
    --  @return Number of exact affected families carried by Item
@@ -2429,14 +2462,14 @@ private
    end record;
 
    type Transaction is limited record
-      Active         : Boolean := False;
-      Database_ID    : Database_Identifier := Zero_Database_ID;
-      Incarnation    : Engine_Incarnation := No_Incarnation;
-      Transaction_ID : Transaction_Identifier := Zero_Transaction_ID;
+      Active           : Boolean := False;
+      Database_ID      : Database_Identifier := Zero_Database_ID;
+      Incarnation      : Engine_Incarnation := No_Incarnation;
+      Transaction_ID   : Transaction_Identifier := Zero_Transaction_ID;
       --  Snapshot sequence is captured from authenticated HEAD at Begin. Zero
       --  is the valid empty-database snapshot and the vacant reset value; it
       --  controls write/write validation but is not a new persisted field.
-      Snapshot_At : Sequence_Number := 0;
+      Snapshot_At      : Sequence_Number := 0;
       --  Snapshot and zero observation capacities are vacant/reset state only.
       --  Begin assigns the caller-selected runtime mode and exact persisted
       --  point/range ceilings; none is a public default or new persisted field.
@@ -2500,20 +2533,20 @@ private
       Family_Resolved);
 
    type Column_Family_Receipt is record
-      Current_Outcome   : Outcome_Code := Invalid_State;
-      Phase             : Column_Family_Receipt_Phase := No_Family_Publication;
-      Configuration     : Column_Family_Configuration;
-      Database_ID       : Database_Identifier := Zero_Database_ID;
-      Incarnation       : Engine_Incarnation := No_Incarnation;
-      Manifest_ID       : Identifier := Zero_Identifier;
-      Retained_Manifest : Shared_Image_Lease;
+      Current_Outcome     : Outcome_Code := Invalid_State;
+      Phase               : Column_Family_Receipt_Phase := No_Family_Publication;
+      Configuration       : Column_Family_Configuration;
+      Database_ID         : Database_Identifier := Zero_Database_ID;
+      Incarnation         : Engine_Incarnation := No_Incarnation;
+      Manifest_ID         : Identifier := Zero_Identifier;
+      Retained_Manifest   : Shared_Image_Lease;
       Expected_Generation : Generation_Value;
-      Expected_Head     : Head_Snapshot;
-      Attempted_Head    : Head_Snapshot;
+      Expected_Head       : Head_Snapshot;
+      Attempted_Head      : Head_Snapshot;
       --  Runtime-only certainty witness: True immediately before entering the
       --  conditional HEAD provider call. It prevents a pre-call rejection
       --  from exposing an identity as though publication had been attempted.
-      Head_Entered      : Boolean := False;
+      Head_Entered        : Boolean := False;
    end record;
 
    --  Receipt phases are in-memory certainty states, never persisted enum
@@ -2529,8 +2562,8 @@ private
    subtype Flush_Run_Receipt_Array is Checkpoint_Run_Identity_Array (1 .. Maximum_Initial_Column_Families);
 
    type Flush_Receipt is record
-      Current_Outcome     : Outcome_Code := Invalid_State;
-      Phase               : Flush_Receipt_Phase := No_Flush_Publication;
+      Current_Outcome       : Outcome_Code := Invalid_State;
+      Phase                 : Flush_Receipt_Phase := No_Flush_Publication;
       --  Private operation-shape authority used only to rebuild the exact
       --  same plan during Objects_Unknown reconciliation. False is additive
       --  Flush; True is complete current-run replacement. It is runtime state,
@@ -2540,23 +2573,23 @@ private
       --  merge. The selected input identities are retained only so
       --  Objects_Unknown reconciliation can rebuild the same immutable bytes;
       --  they are neither a trigger nor a retained borrow.
-      Merges_Adjacent_Runs : Boolean := False;
+      Merges_Adjacent_Runs  : Boolean := False;
       --  Exact-three qualification authority only. When true, Middle_Run_ID
       --  completes the caller-selected triple between Older/Newer. It is not
       --  a persisted fanout, trigger, level, or automatic-selection policy.
-      Merges_Three_Runs    : Boolean := False;
-      Older_Run_ID         : Identifier := Zero_Identifier;
-      Middle_Run_ID        : Identifier := Zero_Identifier;
-      Newer_Run_ID         : Identifier := Zero_Identifier;
-      Run_Total           : Natural range 0 .. Maximum_Initial_Column_Families := 0;
-      Runs                : Flush_Run_Receipt_Array := [others => (others => <>)];
-      Database_ID         : Database_Identifier := Zero_Database_ID;
-      Incarnation         : Engine_Incarnation := 0;
-      Manifest_ID         : Identifier := Zero_Identifier;
-      Replay_Boundary     : Sequence_Number := 0;
-      Expected_Generation : Generation_Value;
-      Expected_Head       : Head_Snapshot;
-      Attempted_Head      : Head_Snapshot;
+      Merges_Three_Runs     : Boolean := False;
+      Older_Run_ID          : Identifier := Zero_Identifier;
+      Middle_Run_ID         : Identifier := Zero_Identifier;
+      Newer_Run_ID          : Identifier := Zero_Identifier;
+      Run_Total             : Natural range 0 .. Maximum_Initial_Column_Families := 0;
+      Runs                  : Flush_Run_Receipt_Array := [others => (others => <>)];
+      Database_ID           : Database_Identifier := Zero_Database_ID;
+      Incarnation           : Engine_Incarnation := 0;
+      Manifest_ID           : Identifier := Zero_Identifier;
+      Replay_Boundary       : Sequence_Number := 0;
+      Expected_Generation   : Generation_Value;
+      Expected_Head         : Head_Snapshot;
+      Attempted_Head        : Head_Snapshot;
    end record;
 
    type Flush_Driver_State;
@@ -2595,8 +2628,8 @@ private
    type Commit_Operation
      (Set          : not null access Flyology.Operations.Completion_Set'Class;
       Item         : not null access Database;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation (Set) with record
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation (Set) with record
       Driver_State     : Commit_Driver_State_Access := null;
       Final_Receipt    : Commit_Receipt;
       Final_Result     : Outcome_Code := Invalid_State;
@@ -2606,21 +2639,22 @@ private
    end record;
 
    --  @exclude
-   overriding procedure Drive
-     (Item : in out Commit_Operation;
-      Event : Flyology.Operations.Driver_Event);
+   overriding
+   procedure Drive (Item : in out Commit_Operation; Event : Flyology.Operations.Driver_Event);
    --  @exclude
-   overriding procedure Request_Cancellation (Item : in out Commit_Operation);
+   overriding
+   procedure Request_Cancellation (Item : in out Commit_Operation);
    --  @exclude
-   overriding procedure Finalize (Item : in out Commit_Operation);
+   overriding
+   procedure Finalize (Item : in out Commit_Operation);
 
    --  @exclude
    type Commit_Group_Operation
      (Set          : not null access Flyology.Operations.Completion_Set'Class;
       Item         : not null access Database;
       Cancellation : access Flyology.Cancellation.Token;
-      Members      : Natural) is
-     new Flyology.Operations.Operation (Set) with record
+      Members      : Natural)
+   is new Flyology.Operations.Operation (Set) with record
       Driver_State     : Commit_Group_Driver_State_Access := null;
       Final_Receipts   : Commit_Receipt_Array (1 .. Maximum_Group_Transactions);
       Final_Result     : Outcome_Code := Invalid_State;
@@ -2630,13 +2664,14 @@ private
    end record;
 
    --  @exclude
-   overriding procedure Drive
-     (Item : in out Commit_Group_Operation;
-      Event : Flyology.Operations.Driver_Event);
+   overriding
+   procedure Drive (Item : in out Commit_Group_Operation; Event : Flyology.Operations.Driver_Event);
    --  @exclude
-   overriding procedure Request_Cancellation (Item : in out Commit_Group_Operation);
+   overriding
+   procedure Request_Cancellation (Item : in out Commit_Group_Operation);
    --  @exclude
-   overriding procedure Finalize (Item : in out Commit_Group_Operation);
+   overriding
+   procedure Finalize (Item : in out Commit_Group_Operation);
 
    --  @exclude
    type Flush_Operation
@@ -2645,42 +2680,43 @@ private
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation (Set) with record
-      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
-      Put_Child        : Flyology.Object_Storage.Client.Objects.Conditional_Put_Operation
-        (Set, HTTP, Cancellation);
-      Read_Child       : Whole_Get_Operation_Access := null;
-      Range_Child      : Range_Get_Operation_Access := null;
-      Head_Child       : Head_Operation_Access := null;
-      Recovery_Child   : Refresh_Operation_Access := null;
-      Driver_State     : Flush_Driver_State_Access := null;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation (Set) with record
+      Payload                : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Put_Child              :
+        Flyology.Object_Storage.Client.Objects.Conditional_Put_Operation (Set, HTTP, Cancellation);
+      Read_Child             : Whole_Get_Operation_Access := null;
+      Range_Child            : Range_Get_Operation_Access := null;
+      Head_Child             : Head_Operation_Access := null;
+      Recovery_Child         : Refresh_Operation_Access := null;
+      Driver_State           : Flush_Driver_State_Access := null;
       --  Vacant-operation sentinel only. Start_Flush replaces it with the one
       --  caller-derived monotonic deadline before the operation can be active.
-      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
-      HTTP_Deadline    : Flyology.HTTP.Client.Monotonic_Deadline;
-      Final_Receipt    : Flush_Receipt;
-      Final_Family_Receipt : Column_Family_Receipt;
-      Final_Create_Receipt : Create_Receipt;
+      Deadline               : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      HTTP_Deadline          : Flyology.HTTP.Client.Monotonic_Deadline;
+      Final_Receipt          : Flush_Receipt;
+      Final_Family_Receipt   : Column_Family_Receipt;
+      Final_Create_Receipt   : Create_Receipt;
       --  Runtime terminal-result discriminator for the two typed Finish
       --  overloads sharing this checkpoint state machine. It is never
       --  persisted and prevents the wrong Finish from consuming ownership.
       Final_Is_Family_Append : Boolean := False;
-      Final_Is_Create  : Boolean := False;
-      Final_Result     : Outcome_Code := Invalid_State;
-      Has_Final_Result : Boolean := False;
-      Has_Saved_Error  : Boolean := False;
-      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+      Final_Is_Create        : Boolean := False;
+      Final_Result           : Outcome_Code := Invalid_State;
+      Has_Final_Result       : Boolean := False;
+      Has_Saved_Error        : Boolean := False;
+      Saved_Error            : Ada.Exceptions.Exception_Occurrence;
    end record;
 
    --  @exclude
-   overriding procedure Drive
-     (Item : in out Flush_Operation;
-      Event : Flyology.Operations.Driver_Event);
+   overriding
+   procedure Drive (Item : in out Flush_Operation; Event : Flyology.Operations.Driver_Event);
    --  @exclude
-   overriding procedure Request_Cancellation (Item : in out Flush_Operation);
+   overriding
+   procedure Request_Cancellation (Item : in out Flush_Operation);
    --  @exclude
-   overriding procedure Finalize (Item : in out Flush_Operation);
+   overriding
+   procedure Finalize (Item : in out Flush_Operation);
 
    --  @exclude
    type Create_Operation
@@ -2689,14 +2725,12 @@ private
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flush_Operation (Set, Item, Storage, HTTP, Payload_Pool, Cancellation)
-       with null record;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flush_Operation (Set, Item, Storage, HTTP, Payload_Pool, Cancellation) with null record;
 
    --  @exclude
-   overriding procedure Drive
-     (Item : in out Create_Operation;
-      Event : Flyology.Operations.Driver_Event);
+   overriding
+   procedure Drive (Item : in out Create_Operation; Event : Flyology.Operations.Driver_Event);
 
    --  @exclude
    type Refresh_Operation
@@ -2705,35 +2739,36 @@ private
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation (Set) with record
-      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
-      Read_Child       : Whole_Get_Operation_Access := null;
-      Range_Child      : Range_Get_Operation_Access := null;
-      Head_Child       : Head_Operation_Access := null;
-      Driver_State     : Refresh_Driver_State_Access := null;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation (Set) with record
+      Payload                    : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Read_Child                 : Whole_Get_Operation_Access := null;
+      Range_Child                : Range_Get_Operation_Access := null;
+      Head_Child                 : Head_Operation_Access := null;
+      Driver_State               : Refresh_Driver_State_Access := null;
       --  Vacant-operation sentinel only. Refresh_Replica replaces it with the
       --  caller-derived monotonic deadline before the operation can be active.
-      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
-      HTTP_Deadline    : Flyology.HTTP.Client.Monotonic_Deadline;
-      Final_Commit_Receipt : Commit_Receipt;
+      Deadline                   : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      HTTP_Deadline              : Flyology.HTTP.Client.Monotonic_Deadline;
+      Final_Commit_Receipt       : Commit_Receipt;
       --  Runtime-only typed-Finish discriminator. It prevents an ordinary
       --  replica-refresh Finish from consuming a moved commit receipt.
       Final_Is_Commit_Resolution : Boolean := False;
-      Final_Result     : Outcome_Code := Invalid_State;
-      Has_Final_Result : Boolean := False;
-      Has_Saved_Error  : Boolean := False;
-      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+      Final_Result               : Outcome_Code := Invalid_State;
+      Has_Final_Result           : Boolean := False;
+      Has_Saved_Error            : Boolean := False;
+      Saved_Error                : Ada.Exceptions.Exception_Occurrence;
    end record;
 
    --  @exclude
-   overriding procedure Drive
-     (Item : in out Refresh_Operation;
-      Event : Flyology.Operations.Driver_Event);
+   overriding
+   procedure Drive (Item : in out Refresh_Operation; Event : Flyology.Operations.Driver_Event);
    --  @exclude
-   overriding procedure Request_Cancellation (Item : in out Refresh_Operation);
+   overriding
+   procedure Request_Cancellation (Item : in out Refresh_Operation);
    --  @exclude
-   overriding procedure Finalize (Item : in out Refresh_Operation);
+   overriding
+   procedure Finalize (Item : in out Refresh_Operation);
 
    --  @exclude
    type Open_Operation
@@ -2742,14 +2777,12 @@ private
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Refresh_Operation (Set, Item, Storage, HTTP, Payload_Pool, Cancellation)
-       with null record;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Refresh_Operation (Set, Item, Storage, HTTP, Payload_Pool, Cancellation) with null record;
 
    --  @exclude
-   overriding procedure Drive
-     (Item : in out Open_Operation;
-      Event : Flyology.Operations.Driver_Event);
+   overriding
+   procedure Drive (Item : in out Open_Operation; Event : Flyology.Operations.Driver_Event);
 
    --  Private engine operation for one generation-bound SST-v1/v2 point or
    --  next-visible-entry read. Version 2 reads only header/index/one frame;
@@ -2762,40 +2795,40 @@ private
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation (Set) with record
-      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
-      Whole_Child      : Whole_Get_Operation_Access := null;
-      Range_Child      : Range_Get_Operation_Access := null;
-      Head_Child       : Head_Operation_Access := null;
-      Driver_State     : Lazy_SST_Read_State_Access := null;
-      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
-      HTTP_Deadline    : Flyology.HTTP.Client.Monotonic_Deadline;
-      Final_Result     : Outcome_Code := Invalid_State;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation (Set) with record
+      Payload           : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Whole_Child       : Whole_Get_Operation_Access := null;
+      Range_Child       : Range_Get_Operation_Access := null;
+      Head_Child        : Head_Operation_Access := null;
+      Driver_State      : Lazy_SST_Read_State_Access := null;
+      Deadline          : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      HTTP_Deadline     : Flyology.HTTP.Client.Monotonic_Deadline;
+      Final_Result      : Outcome_Code := Invalid_State;
       Final_Disposition : Lazy_SST_Entry_Disposition := Lazy_Read_Failed;
-      Final_Sequence   : Sequence_Number := 0;
-      Final_Key        : Flyology.Bytes.Unbounded_Bytes;
-      Final_Value      : Flyology.Bytes.Unbounded_Bytes;
+      Final_Sequence    : Sequence_Number := 0;
+      Final_Key         : Flyology.Bytes.Unbounded_Bytes;
+      Final_Value       : Flyology.Bytes.Unbounded_Bytes;
       Final_Purpose     : Lazy_SST_Read_Purpose := Lazy_Point_Entry;
-      Has_Final_Result : Boolean := False;
-      Has_Saved_Error  : Boolean := False;
-      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+      Has_Final_Result  : Boolean := False;
+      Has_Saved_Error   : Boolean := False;
+      Saved_Error       : Ada.Exceptions.Exception_Occurrence;
    end record;
    type Lazy_SST_Read_Operation_Access is access Lazy_SST_Read_Operation;
 
    procedure Read_Lazy_SST_Entry
-     (Database_ID          : Database_Identifier;
-      Family               : Column_Family_Configuration;
-      Run_ID               : Identifier;
-      Lowest_Sequence      : Sequence_Number;
-      Highest_Sequence     : Sequence_Number;
-      Entry_Total          : Interfaces.Unsigned_32;
+     (Database_ID           : Database_Identifier;
+      Family                : Column_Family_Configuration;
+      Run_ID                : Identifier;
+      Lowest_Sequence       : Sequence_Number;
+      Highest_Sequence      : Sequence_Number;
+      Entry_Total           : Interfaces.Unsigned_32;
       Logical_Payload_Bytes : Interfaces.Unsigned_64;
-      Snapshot_At          : Sequence_Number;
-      Item_Key             : Byte_Array;
-      Payload_Buffer       : in out Flyology.Buffers.Unique_Buffer;
-      Timeout              : Duration;
-      Operation            : in out Lazy_SST_Read_Operation);
+      Snapshot_At           : Sequence_Number;
+      Item_Key              : Byte_Array;
+      Payload_Buffer        : in out Flyology.Buffers.Unique_Buffer;
+      Timeout               : Duration;
+      Operation             : in out Lazy_SST_Read_Operation);
 
    --  Read one exact next snapshot-visible entry from a single immutable run.
    --  A present start is inclusive or strict as selected; a present upper
@@ -2840,11 +2873,12 @@ private
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer);
 
-   overriding procedure Drive
-     (Item : in out Lazy_SST_Read_Operation;
-      Event : Flyology.Operations.Driver_Event);
-   overriding procedure Request_Cancellation (Item : in out Lazy_SST_Read_Operation);
-   overriding procedure Finalize (Item : in out Lazy_SST_Read_Operation);
+   overriding
+   procedure Drive (Item : in out Lazy_SST_Read_Operation; Event : Flyology.Operations.Driver_Event);
+   overriding
+   procedure Request_Cancellation (Item : in out Lazy_SST_Read_Operation);
+   overriding
+   procedure Finalize (Item : in out Lazy_SST_Read_Operation);
 
    --  Private fixed-snapshot parent over one exact oldest-to-newest manifest
    --  run slice. The dynamic retained copy has the caller/persisted extent;
@@ -2854,20 +2888,19 @@ private
       Storage      : not null access Storage_Context;
       HTTP         : not null access Flyology.HTTP.Client.Client;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation (Set) with record
-      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
-      Child            : aliased Lazy_SST_Read_Operation
-        (Set, Storage, HTTP, Payload_Pool, Cancellation);
-      Driver_State     : Lazy_Checkpoint_Read_State_Access := null;
-      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
-      Final_Result     : Outcome_Code := Invalid_State;
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation (Set) with record
+      Payload           : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Child             : aliased Lazy_SST_Read_Operation (Set, Storage, HTTP, Payload_Pool, Cancellation);
+      Driver_State      : Lazy_Checkpoint_Read_State_Access := null;
+      Deadline          : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      Final_Result      : Outcome_Code := Invalid_State;
       Final_Disposition : Lazy_SST_Entry_Disposition := Lazy_Read_Failed;
-      Final_Sequence   : Sequence_Number := 0;
-      Final_Value      : Flyology.Bytes.Unbounded_Bytes;
-      Has_Final_Result : Boolean := False;
-      Has_Saved_Error  : Boolean := False;
-      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+      Final_Sequence    : Sequence_Number := 0;
+      Final_Value       : Flyology.Bytes.Unbounded_Bytes;
+      Has_Final_Result  : Boolean := False;
+      Has_Saved_Error   : Boolean := False;
+      Saved_Error       : Ada.Exceptions.Exception_Occurrence;
    end record;
    type Lazy_Checkpoint_Read_Operation_Access is access Lazy_Checkpoint_Read_Operation;
 
@@ -2889,11 +2922,12 @@ private
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer);
 
-   overriding procedure Drive
-     (Item : in out Lazy_Checkpoint_Read_Operation;
-      Event : Flyology.Operations.Driver_Event);
-   overriding procedure Request_Cancellation (Item : in out Lazy_Checkpoint_Read_Operation);
-   overriding procedure Finalize (Item : in out Lazy_Checkpoint_Read_Operation);
+   overriding
+   procedure Drive (Item : in out Lazy_Checkpoint_Read_Operation; Event : Flyology.Operations.Driver_Event);
+   overriding
+   procedure Request_Cancellation (Item : in out Lazy_Checkpoint_Read_Operation);
+   overriding
+   procedure Finalize (Item : in out Lazy_Checkpoint_Read_Operation);
 
    type Storage_Fault_Point is
      (Before_Batch_Put,
@@ -2981,24 +3015,14 @@ private
       procedure Release;
       procedure Begin_Close (State : out Engine_State_Access; Result : out Outcome_Code);
       procedure Begin_Resolve (State : out Engine_State_Access; Result : out Outcome_Code);
-      procedure Begin_Composable_Resolve
-        (State  : out Engine_State_Access;
-         Result : out Outcome_Code);
+      procedure Begin_Composable_Resolve (State : out Engine_State_Access; Result : out Outcome_Code);
       procedure Begin_Checkpoint (State : out Engine_State_Access; Result : out Outcome_Code);
-      procedure Begin_Composable_Checkpoint
-        (State  : out Engine_State_Access;
-         Result : out Outcome_Code);
+      procedure Begin_Composable_Checkpoint (State : out Engine_State_Access; Result : out Outcome_Code);
       --  @exclude
       procedure Promote_Composable_Checkpoint
-        (Expected : not null Engine_State_Access;
-         State    : out Engine_State_Access;
-         Result   : out Outcome_Code);
-      procedure Checkpoint_Wait_Source
-        (Descriptor : out Interfaces.C.int;
-         Ready_Now  : out Boolean);
-      procedure Resolve_Wait_Source
-        (Descriptor : out Interfaces.C.int;
-         Ready_Now  : out Boolean);
+        (Expected : not null Engine_State_Access; State : out Engine_State_Access; Result : out Outcome_Code);
+      procedure Checkpoint_Wait_Source (Descriptor : out Interfaces.C.int; Ready_Now : out Boolean);
+      procedure Resolve_Wait_Source (Descriptor : out Interfaces.C.int; Ready_Now : out Boolean);
       entry Await_Quiescent;
       procedure Finish_Close;
       procedure Finish_Resolve (State : not null Engine_State_Access; Visible : Sequence_Number);
@@ -3009,10 +3033,10 @@ private
       procedure Set_Visible (Value : Sequence_Number);
       function Highest (Result : out Outcome_Code) return Sequence_Number;
    private
-      Mode         : Database_Lifecycle_Mode := Closed;
-      Current      : Engine_State_Access := null;
-      Active_Calls : Natural := 0;
-      Last_Visible : Sequence_Number := 0;
+      Mode                 : Database_Lifecycle_Mode := Closed;
+      Current              : Engine_State_Access := null;
+      Active_Calls         : Natural := 0;
+      Last_Visible         : Sequence_Number := 0;
       Quiescence_Wake      : Flyology.Wake_Sources.Source;
       Quiescence_Signalled : Boolean := False;
    end Database_Lifecycle;
@@ -3028,8 +3052,8 @@ private
       Item         : not null access Database;
       Txn          : not null access Transaction;
       Payload_Pool : not null access Flyology.Buffers.Pool;
-      Cancellation : access Flyology.Cancellation.Token) is
-     new Flyology.Operations.Operation (Set) with record
+      Cancellation : access Flyology.Cancellation.Token)
+   is new Flyology.Operations.Operation (Set) with record
       Payload          : Flyology.Buffers.Unique_Buffer (Payload_Pool);
       Child            : Lazy_Checkpoint_Read_Operation_Access := null;
       Driver_State     : Get_Driver_State_Access := null;
@@ -3046,13 +3070,14 @@ private
    end record;
 
    --  @exclude
-   overriding procedure Drive
-     (Item : in out Get_Operation;
-      Event : Flyology.Operations.Driver_Event);
+   overriding
+   procedure Drive (Item : in out Get_Operation; Event : Flyology.Operations.Driver_Event);
    --  @exclude
-   overriding procedure Request_Cancellation (Item : in out Get_Operation);
+   overriding
+   procedure Request_Cancellation (Item : in out Get_Operation);
    --  @exclude
-   overriding procedure Finalize (Item : in out Get_Operation);
+   overriding
+   procedure Finalize (Item : in out Get_Operation);
 
    --  @exclude
    type Scan_Operation
@@ -3062,27 +3087,27 @@ private
       Payload_Pool : not null access Flyology.Buffers.Pool;
       Cancellation : access Flyology.Cancellation.Token)
    is new Flyology.Operations.Operation (Set) with record
-      Payload          : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
-      Child            : Lazy_SST_Read_Operation_Access := null;
-      Driver_State     : Scan_Driver_State_Access := null;
-      Candidate_Cursor : Scan_Cursor;
-      Candidate_Rows   : Scan_Result;
+      Payload           : aliased Flyology.Buffers.Unique_Buffer (Payload_Pool);
+      Child             : Lazy_SST_Read_Operation_Access := null;
+      Driver_State      : Scan_Driver_State_Access := null;
+      Candidate_Cursor  : Scan_Cursor;
+      Candidate_Rows    : Scan_Result;
       --  Runtime-only typed-Finish discriminator and exact cursor borrow for
       --  page publication. They are cleared by Finish and are never persisted
       --  or exposed as caller-selected identity policy.
-      Final_Is_Page    : Boolean := False;
-      Borrowed_Cursor  : Scan_Cursor_State_Access := null;
+      Final_Is_Page     : Boolean := False;
+      Borrowed_Cursor   : Scan_Cursor_State_Access := null;
       Borrowed_Revision : Interfaces.Unsigned_64 := 0;
-      Retained_Life    : Database_Lifecycle_Access := null;
-      Retained_State   : Engine_State_Access := null;
+      Retained_Life     : Database_Lifecycle_Access := null;
+      Retained_State    : Engine_State_Access := null;
       --  Vacant-operation sentinel only. Start_Scan replaces it with the
       --  caller-derived monotonic deadline before any child can start.
-      Deadline         : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
-      Final_Result     : Outcome_Code := Invalid_State;
-      Final_Done       : Boolean := False;
-      Has_Final_Result : Boolean := False;
-      Has_Saved_Error  : Boolean := False;
-      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+      Deadline          : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      Final_Result      : Outcome_Code := Invalid_State;
+      Final_Done        : Boolean := False;
+      Has_Final_Result  : Boolean := False;
+      Has_Saved_Error   : Boolean := False;
+      Saved_Error       : Ada.Exceptions.Exception_Occurrence;
    end record;
 
    --  @exclude
@@ -3138,10 +3163,7 @@ private
       Family_ID : Column_Family_ID;
       Result    : out Outcome_Code);
    procedure Convert_Test_Run_To_V1
-     (Item    : in out Storage_Context;
-      Run_ID  : Identifier;
-      Timeout : Duration;
-      Result  : out Outcome_Code);
+     (Item : in out Storage_Context; Run_ID : Identifier; Timeout : Duration; Result : out Outcome_Code);
    procedure Rewrite_Test_Manifest
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;

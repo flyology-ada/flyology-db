@@ -6,6 +6,7 @@ toolchain_root="$project_root/.deps/flyology-tla-toolchain"
 tla_cli="$project_root/.deps/flyology-tla-cli/bin/flyology-tla"
 model_root="$project_root/formal/tla"
 trace_root="$model_root/traces"
+trace_update_mode=${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}
 
 test -x "$tla_cli"
 "$tla_cli" toolchain verify "$toolchain_root"
@@ -16,7 +17,24 @@ tlapm=$FLYOLOGY_TLAPM
 toolchain_identity=tla2tools-1.8.0+9787e65
 
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/flyology-db-tla.XXXXXX")
-trap 'rm -rf "$temporary_root"' EXIT HUP INT TERM
+trace_update_staging=
+
+cleanup() {
+  if test -n "$trace_update_staging"
+  then
+    case "$trace_update_staging" in
+      "$trace_root"/.flyology-db-trace.*)
+        rm -f -- "$trace_update_staging"
+        ;;
+      *)
+        printf '%s\n' "Flyology.DB TLA refused unsafe staging cleanup" >&2
+        ;;
+    esac
+  fi
+  rm -rf "$temporary_root"
+}
+
+trap cleanup EXIT HUP INT TERM
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1
@@ -27,6 +45,61 @@ sha256_file() {
   fi
 }
 
+write_trace_inventory() {
+  trace_inventory_output=$1
+  test -d "$trace_root"
+  test ! -L "$trace_root"
+  if find "$trace_root" -mindepth 1 \
+    \( ! -type f -o ! -name '*.trace.json' \) -print | grep -q .
+  then
+    printf '%s\n' "Flyology.DB TLA trace inventory has an unexpected path" >&2
+    exit 1
+  fi
+  if find "$trace_root" -name '.flyology-db-trace.*' -print | grep -q .
+  then
+    printf '%s\n' "Flyology.DB TLA trace inventory contains staging residue" >&2
+    exit 1
+  fi
+  (
+    cd "$trace_root"
+    find . -type f -name '*.trace.json' -print | LC_ALL=C sort |
+      while IFS= read -r trace_file
+      do
+        trace_relative=${trace_file#./}
+        trace_hash=$(sha256_file "$trace_relative")
+        printf '%s  %s\n' "$trace_hash" "$trace_relative"
+      done
+  ) >"$trace_inventory_output"
+}
+
+install_trace_no_clobber() {
+  normalized_trace=$1
+  canonical_trace=$2
+  trace_module=$3
+  trace_update_staging=$(mktemp "$trace_root/.flyology-db-trace.$trace_module.XXXXXX")
+  case "$trace_update_staging" in
+    "$trace_root"/.flyology-db-trace."$trace_module".*)
+      ;;
+    *)
+      printf '%s\n' "Flyology.DB TLA created an unsafe staging path" >&2
+      exit 1
+      ;;
+  esac
+  test -f "$trace_update_staging"
+  test ! -L "$trace_update_staging"
+  cp -p "$normalized_trace" "$trace_update_staging"
+  cmp "$normalized_trace" "$trace_update_staging"
+  ln "$trace_update_staging" "$canonical_trace"
+  rm -f -- "$trace_update_staging"
+  trace_update_staging=
+}
+
+if test "$trace_update_mode" = 1
+then
+  trace_inventory_before="$temporary_root/trace-inventory.before"
+  write_trace_inventory "$trace_inventory_before"
+fi
+
 check_trace() {
   raw_trace=$1
   module=$2
@@ -35,15 +108,31 @@ check_trace() {
     "$raw_trace" "$normalized_trace" "$model_root/$module.tla" \
     --config "$model_root/$module.cfg" --toolchain "$toolchain_identity" 128 64
   "$tla_cli" trace validate "$normalized_trace" 128 64
-  if test "${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}" != 1
+  canonical_trace="$trace_root/$module.trace.json"
+  if test -e "$canonical_trace" || test -L "$canonical_trace"
   then
-    cmp "$normalized_trace" "$trace_root/$module.trace.json"
+    test -f "$canonical_trace"
+    test ! -L "$canonical_trace"
+    cmp "$normalized_trace" "$canonical_trace"
+  elif test "$trace_update_mode" = 1
+  then
+    case "$module" in
+      LiveSuffixRegistryRecoveryWitness|LiveSuffixRegistryCancellationWitness)
+        ;;
+      *)
+        printf '%s\n' \
+          "Flyology.DB TLA update rejected unexpected absent trace: $module" >&2
+        exit 1
+        ;;
+    esac
+  else
+    cmp "$normalized_trace" "$canonical_trace"
   fi
 }
 
 trace_path() {
   module=$1
-  if test "${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}" = 1
+  if test "$trace_update_mode" = 1
   then
     printf '%s\n' "$temporary_root/$module.trace.json"
   else
@@ -348,10 +437,394 @@ check_trace \
   "$temporary_root/successive-checkpoint-recovery.json" \
   SuccessiveCheckpointRecoveryWitness
 
+successive_checkpoint_fail_with_log() {
+  successive_checkpoint_failure=$1
+  printf '%s\n' \
+    "Flyology.DB TLA successive-checkpoint TLAPS failed: $successive_checkpoint_failure" \
+    >&2
+  cat "$temporary_root/tlaps-successive-checkpoint.log" >&2
+  exit 1
+}
+
+set +e
 "$tlapm" --cache-dir "$temporary_root/tlapm-successive-checkpoint-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/SuccessiveCheckpointSafetyProof.tla" \
   >"$temporary_root/tlaps-successive-checkpoint.log" 2>&1
-grep -q 'All 24 obligations proved.' "$temporary_root/tlaps-successive-checkpoint.log"
+successive_checkpoint_tlaps_status=$?
+set -e
+if test "$successive_checkpoint_tlaps_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA successive-checkpoint TLAPS exited $successive_checkpoint_tlaps_status" \
+    >&2
+  cat "$temporary_root/tlaps-successive-checkpoint.log" >&2
+  exit "$successive_checkpoint_tlaps_status"
+fi
+successive_checkpoint_obligation_lines=$(
+  grep -E 'All [0-9][0-9]* obligations proved[.]' \
+    "$temporary_root/tlaps-successive-checkpoint.log" || :
+)
+if test "$successive_checkpoint_obligation_lines" != \
+  'All 24 obligations proved.' && \
+  test "$successive_checkpoint_obligation_lines" != \
+    '[INFO]: All 24 obligations proved.'
+then
+  successive_checkpoint_fail_with_log "obligation summary missing or malformed"
+fi
+if grep -q '^Warning:' "$temporary_root/tlaps-successive-checkpoint.log"
+then
+  successive_checkpoint_fail_with_log "warning emitted"
+fi
+
+#  One checkpoint identity and one two-member suffix are finite qualification
+#  geometry. This lane checks that a registry successor carries their exact
+#  disjoint partition, fences on conclusive HEAD, and recovers by the same
+#  receipt without replaying a provider mutation.
+live_suffix_fail_with_log() {
+  live_suffix_failure=$1
+  printf '%s\n' \
+    "Flyology.DB TLA live-suffix positive lane failed: $live_suffix_failure" \
+    >&2
+  cat "$temporary_root/tlc-live-suffix-registry.log" >&2
+  exit 1
+}
+
+live_suffix_fail_field() {
+  live_suffix_field=$1
+  live_suffix_failure=$2
+  live_suffix_source_lines=${3-}
+  printf '%s\n' \
+    "Flyology.DB TLA live-suffix $live_suffix_field failed: $live_suffix_failure" \
+    >&2
+  if test -n "$live_suffix_source_lines"
+  then
+    printf '%s\n' "$live_suffix_source_lines" >&2
+  fi
+  exit 1
+}
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 \
+  -metadir "$temporary_root/tlc-live-suffix-registry-states" \
+  -config LiveSuffixRegistryPublication.cfg LiveSuffixRegistryPublication \
+  >"$temporary_root/tlc-live-suffix-registry.log" 2>&1
+live_suffix_tlc_status=$?
+set -e
+if test "$live_suffix_tlc_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA live-suffix positive TLC exited $live_suffix_tlc_status" \
+    >&2
+  cat "$temporary_root/tlc-live-suffix-registry.log" >&2
+  exit "$live_suffix_tlc_status"
+fi
+if ! grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-live-suffix-registry.log"
+then
+  live_suffix_fail_with_log "completion sentinel missing"
+fi
+if grep -q '^Warning:' "$temporary_root/tlc-live-suffix-registry.log"
+then
+  live_suffix_fail_with_log "warning emitted"
+fi
+
+live_suffix_state_source_lines=$(
+  grep 'distinct states found' \
+    "$temporary_root/tlc-live-suffix-registry.log" || :
+)
+if test -z "$live_suffix_state_source_lines"
+then
+  live_suffix_fail_field "state count" "missing"
+fi
+live_suffix_state_lines=$(
+  printf '%s\n' "$live_suffix_state_source_lines" |
+    grep -E \
+      '^[0-9][0-9]* states generated, [0-9][0-9]* distinct states found, 0 states left on queue[.]$' || :
+)
+if test -z "$live_suffix_state_lines"
+then
+  live_suffix_fail_field \
+    "state count" "malformed final summary" "$live_suffix_state_source_lines"
+fi
+if test "$(printf '%s\n' "$live_suffix_state_lines" | wc -l | tr -d ' ')" \
+  -ne 1
+then
+  live_suffix_fail_field \
+    "state count" "duplicate or ambiguous" "$live_suffix_state_lines"
+fi
+live_suffix_registry_generated=$(
+  printf '%s\n' "$live_suffix_state_lines" | awk '{print $1}'
+)
+live_suffix_registry_states=$(
+  printf '%s\n' "$live_suffix_state_lines" | awk '{print $4}'
+)
+case "$live_suffix_registry_generated" in
+  ''|*[!0-9]*)
+    live_suffix_fail_field \
+      "generated state count" "malformed or nonnumeric" "$live_suffix_state_lines"
+    ;;
+esac
+case "$live_suffix_registry_states" in
+  ''|*[!0-9]*)
+    live_suffix_fail_field \
+      "state count" "malformed or nonnumeric" "$live_suffix_state_lines"
+    ;;
+esac
+if test "$live_suffix_registry_generated" -ne 26
+then
+  live_suffix_fail_field \
+    "generated state count" \
+    "expected 26, observed $live_suffix_registry_generated" \
+    "$live_suffix_state_lines"
+fi
+if test "$live_suffix_registry_states" -ne 18
+then
+  live_suffix_fail_field \
+    "distinct state count" \
+    "expected 18, observed $live_suffix_registry_states" \
+    "$live_suffix_state_lines"
+fi
+
+live_suffix_depth_source_lines=$(
+  grep 'depth of the complete state graph search is' \
+    "$temporary_root/tlc-live-suffix-registry.log" || :
+)
+if test -z "$live_suffix_depth_source_lines"
+then
+  live_suffix_fail_field "state depth" "missing"
+fi
+live_suffix_depth_lines=$(
+  printf '%s\n' "$live_suffix_depth_source_lines" |
+    grep -E \
+      '^The depth of the complete state graph search is [0-9][0-9]*[.]$' || :
+)
+if test -z "$live_suffix_depth_lines"
+then
+  live_suffix_fail_field \
+    "state depth" "malformed" "$live_suffix_depth_source_lines"
+fi
+if test "$(printf '%s\n' "$live_suffix_depth_lines" | wc -l | tr -d ' ')" \
+  -ne 1
+then
+  live_suffix_fail_field \
+    "state depth" "duplicate or ambiguous" "$live_suffix_depth_lines"
+fi
+live_suffix_registry_depth=$(
+  printf '%s\n' "$live_suffix_depth_lines" |
+    sed -n \
+      's/^The depth of the complete state graph search is \([0-9][0-9]*\)[.]$/\1/p'
+)
+case "$live_suffix_registry_depth" in
+  ''|*[!0-9]*)
+    live_suffix_fail_field \
+      "state depth" "malformed or nonnumeric" "$live_suffix_depth_lines"
+    ;;
+esac
+if test "$live_suffix_registry_depth" -ne 9
+then
+  live_suffix_fail_field \
+    "state depth" \
+    "expected 9, observed $live_suffix_registry_depth" \
+    "$live_suffix_depth_lines"
+fi
+
+live_suffix_action_report="$temporary_root/live-suffix-action-coverage.txt"
+: >"$live_suffix_action_report"
+for action in CommitSuffixGroup SnapshotPartition BeginFamilyAppend \
+  StoreAppendManifest ConfirmAppendManifest PublishAppendHead \
+  LoseAcceptedManifestResponse ResolveManifestByRead \
+  LoseAcceptedHeadResponse ObserveHeadPreconditionFailure \
+  ExternalPublishRival ResolveCommitted \
+  ResolveRejected CancelAfterHead FailLocalActivation RecoverActivation
+do
+  live_suffix_action_lines=$(
+    grep -E "^<$action " \
+      "$temporary_root/tlc-live-suffix-registry.log" || :
+  )
+  if test -z "$live_suffix_action_lines"
+  then
+    live_suffix_fail_field "action $action" "missing"
+  fi
+  if test "$(printf '%s\n' "$live_suffix_action_lines" | wc -l | tr -d ' ')" \
+    -ne 1
+  then
+    live_suffix_fail_field \
+      "action $action" "duplicate or ambiguous" "$live_suffix_action_lines"
+  fi
+  if ! printf '%s\n' "$live_suffix_action_lines" |
+    grep -Eq "^<$action .*: [0-9][0-9]*(:[0-9]+)?$"
+  then
+    live_suffix_fail_field \
+      "action $action" "malformed or nonnumeric" "$live_suffix_action_lines"
+  fi
+  live_suffix_action_counts=${live_suffix_action_lines##*: }
+  live_suffix_action_count=${live_suffix_action_counts%%:*}
+  case "$live_suffix_action_count" in
+    ''|*[!0-9]*)
+      live_suffix_fail_field \
+        "action $action" "malformed or nonnumeric" "$live_suffix_action_lines"
+      ;;
+    0)
+      live_suffix_fail_field \
+        "action $action" "zero coverage" "$live_suffix_action_lines"
+      ;;
+  esac
+  printf '    %s %s\n' "$action" "$live_suffix_action_count" \
+    >>"$live_suffix_action_report"
+done
+live_suffix_expected_action_report="$temporary_root/live-suffix-action-coverage.expected.txt"
+{
+  printf '%s\n' \
+    '    CommitSuffixGroup 1' \
+    '    SnapshotPartition 1' \
+    '    BeginFamilyAppend 1' \
+    '    StoreAppendManifest 1' \
+    '    ConfirmAppendManifest 1' \
+    '    PublishAppendHead 1' \
+    '    LoseAcceptedManifestResponse 1' \
+    '    ResolveManifestByRead 1' \
+    '    LoseAcceptedHeadResponse 1' \
+    '    ObserveHeadPreconditionFailure 1' \
+    '    ExternalPublishRival 1' \
+    '    ResolveCommitted 1' \
+    '    ResolveRejected 1' \
+    '    CancelAfterHead 1' \
+    '    FailLocalActivation 1' \
+    '    RecoverActivation 2'
+} >"$live_suffix_expected_action_report"
+if ! cmp -s \
+  "$live_suffix_expected_action_report" "$live_suffix_action_report"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA live-suffix action coverage differs from the retained geometry' >&2
+  printf '%s\n' 'Expected action coverage:' >&2
+  cat "$live_suffix_expected_action_report" >&2
+  printf '%s\n' 'Observed action coverage:' >&2
+  cat "$live_suffix_action_report" >&2
+  exit 1
+fi
+
+for live_suffix_probe in partition confirmed-head manifest-replay replay rival
+do
+  case "$live_suffix_probe" in
+    partition)
+      live_suffix_probe_module=LiveSuffixRegistryPartitionProbe
+      live_suffix_probe_invariant=CapturedPartitionIsExact
+      ;;
+    confirmed-head)
+      live_suffix_probe_module=LiveSuffixRegistryConfirmedHeadProbe
+      live_suffix_probe_invariant=ConfirmedHeadImpliesFenced
+      ;;
+    manifest-replay)
+      live_suffix_probe_module=LiveSuffixRegistryManifestReplayProbe
+      live_suffix_probe_invariant=ManifestResolutionDoesNotReplay
+      ;;
+    replay)
+      live_suffix_probe_module=LiveSuffixRegistryReplayProbe
+      live_suffix_probe_invariant=ResolutionDoesNotReplay
+      ;;
+    rival)
+      live_suffix_probe_module=LiveSuffixRegistryRivalProbe
+      live_suffix_probe_invariant=RivalCannotResolveCommitted
+      ;;
+  esac
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-live-suffix-$live_suffix_probe-states" \
+    -config "$live_suffix_probe_module.cfg" "$live_suffix_probe_module" \
+    >"$temporary_root/tlc-live-suffix-$live_suffix_probe.log" 2>&1
+  live_suffix_probe_status=$?
+  set -e
+  test "$live_suffix_probe_status" -eq 12
+  grep -q "Invariant $live_suffix_probe_invariant is violated" \
+    "$temporary_root/tlc-live-suffix-$live_suffix_probe.log"
+  ! grep -q '^Warning:' \
+    "$temporary_root/tlc-live-suffix-$live_suffix_probe.log"
+done
+
+for live_suffix_witness in recovery cancellation
+do
+  case "$live_suffix_witness" in
+    recovery)
+      live_suffix_witness_module=LiveSuffixRegistryRecoveryWitness
+      ;;
+    cancellation)
+      live_suffix_witness_module=LiveSuffixRegistryCancellationWitness
+      ;;
+  esac
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-live-suffix-$live_suffix_witness-states" \
+    -config "$live_suffix_witness_module.cfg" \
+    -dumpTrace json \
+    "$temporary_root/live-suffix-$live_suffix_witness.json" \
+    "$live_suffix_witness_module" \
+    >"$temporary_root/tlc-live-suffix-$live_suffix_witness.log" 2>&1
+  live_suffix_witness_status=$?
+  set -e
+  test "$live_suffix_witness_status" -eq 12
+  grep -q 'Invariant WitnessPending is violated.' \
+    "$temporary_root/tlc-live-suffix-$live_suffix_witness.log"
+  ! grep -q '^Warning:' \
+    "$temporary_root/tlc-live-suffix-$live_suffix_witness.log"
+  check_trace \
+    "$temporary_root/live-suffix-$live_suffix_witness.json" \
+    "$live_suffix_witness_module"
+done
+
+live_suffix_tlaps_fail_with_log() {
+  live_suffix_tlaps_failure=$1
+  printf '%s\n' \
+    "Flyology.DB TLA live-suffix TLAPS failed: $live_suffix_tlaps_failure" >&2
+  cat "$temporary_root/tlaps-live-suffix-registry.log" >&2
+  exit 1
+}
+
+set +e
+"$tlapm" --cache-dir "$temporary_root/tlapm-live-suffix-registry-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/LiveSuffixRegistryPublicationSafetyProof.tla" \
+  >"$temporary_root/tlaps-live-suffix-registry.log" 2>&1
+live_suffix_tlaps_status=$?
+set -e
+if test "$live_suffix_tlaps_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA live-suffix TLAPS exited $live_suffix_tlaps_status" >&2
+  cat "$temporary_root/tlaps-live-suffix-registry.log" >&2
+  exit "$live_suffix_tlaps_status"
+fi
+live_suffix_tlaps_lines=$(
+  grep -E '^(\[INFO\]: )?All [1-9][0-9]* obligations proved[.]$' \
+    "$temporary_root/tlaps-live-suffix-registry.log" || :
+)
+if test "$(printf '%s\n' "$live_suffix_tlaps_lines" | wc -l | tr -d ' ')" \
+  -ne 1
+then
+  live_suffix_tlaps_fail_with_log "obligation summary missing or malformed"
+fi
+live_suffix_tlaps_obligations=$(
+  printf '%s\n' "$live_suffix_tlaps_lines" |
+    sed -n -e 's/^All \([1-9][0-9]*\) obligations proved[.]$/\1/p' \
+      -e 's/^\[INFO\]: All \([1-9][0-9]*\) obligations proved[.]$/\1/p'
+)
+case "$live_suffix_tlaps_obligations" in
+  ''|0|*[!0-9]*)
+    live_suffix_tlaps_fail_with_log "obligation total malformed or zero"
+    ;;
+esac
+if grep -q '^Warning:' "$temporary_root/tlaps-live-suffix-registry.log"
+then
+  live_suffix_tlaps_fail_with_log "warning emitted"
+fi
+if test "$live_suffix_tlaps_obligations" -ne 25
+then
+  live_suffix_tlaps_fail_with_log \
+    "expected 25 obligations, observed $live_suffix_tlaps_obligations"
+fi
 
 #  Two families and zero-to-two current runs are finite qualification geometry
 #  for the persisted per-family and database-wide limit decision. They are not
@@ -1606,10 +2079,53 @@ grep -q 'All 13 obligations proved.' \
 
 if test "${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}" = 1
 then
-  for normalized_trace in "$temporary_root"/*.trace.json
+  trace_inventory_before_copy="$temporary_root/trace-inventory.before-copy"
+  write_trace_inventory "$trace_inventory_before_copy"
+  cmp "$trace_inventory_before" "$trace_inventory_before_copy"
+  for trace_module in LiveSuffixRegistryRecoveryWitness \
+    LiveSuffixRegistryCancellationWitness
   do
-    cp "$normalized_trace" "$trace_root/$(basename "$normalized_trace")"
+    normalized_trace="$temporary_root/$trace_module.trace.json"
+    canonical_trace="$trace_root/$trace_module.trace.json"
+    test -f "$normalized_trace"
+    test ! -L "$normalized_trace"
+    if test -e "$canonical_trace" || test -L "$canonical_trace"
+    then
+      test -f "$canonical_trace"
+      test ! -L "$canonical_trace"
+      cmp "$normalized_trace" "$canonical_trace"
+    fi
   done
+  trace_inventory_expected="$temporary_root/trace-inventory.expected"
+  cp "$trace_inventory_before" "$trace_inventory_expected.unsorted"
+  for trace_module in LiveSuffixRegistryRecoveryWitness \
+    LiveSuffixRegistryCancellationWitness
+  do
+    normalized_trace="$temporary_root/$trace_module.trace.json"
+    canonical_trace="$trace_root/$trace_module.trace.json"
+    if test ! -e "$canonical_trace" && test ! -L "$canonical_trace"
+    then
+      trace_hash=$(sha256_file "$normalized_trace")
+      printf '%s  %s\n' "$trace_hash" "$trace_module.trace.json" \
+        >>"$trace_inventory_expected.unsorted"
+    fi
+  done
+  LC_ALL=C sort -k2,2 \
+    "$trace_inventory_expected.unsorted" >"$trace_inventory_expected"
+  for trace_module in LiveSuffixRegistryRecoveryWitness \
+    LiveSuffixRegistryCancellationWitness
+  do
+    normalized_trace="$temporary_root/$trace_module.trace.json"
+    canonical_trace="$trace_root/$trace_module.trace.json"
+    if test ! -e "$canonical_trace" && test ! -L "$canonical_trace"
+    then
+      install_trace_no_clobber \
+        "$normalized_trace" "$canonical_trace" "$trace_module"
+    fi
+  done
+  trace_inventory_after="$temporary_root/trace-inventory.after"
+  write_trace_inventory "$trace_inventory_after"
+  cmp "$trace_inventory_expected" "$trace_inventory_after"
 fi
 
 printf '%s\n' "Flyology.DB TLA+ checks passed"
@@ -1631,6 +2147,15 @@ printf '%s\n' "  Successive checkpoint TLC 37 distinct states, depth 17"
 printf '%s\n' "  Successive checkpoint TLAPS 24/24 obligations"
 printf '%s\n' "  Successive checkpoint lost-response recovery trace canonical"
 printf '%s\n' "  Negative successive-checkpoint early-HEAD probe detected"
+printf '%s\n' \
+  "  Live suffix registry TLC 26 generated, 18 distinct states, depth 9"
+printf '%s\n' "  Live suffix registry action coverage"
+cat "$live_suffix_action_report"
+printf '%s\n' \
+  "  Live suffix registry TLAPS 25/25 obligations"
+printf '%s\n' "  Live suffix registry recovery/cancellation traces canonical"
+printf '%s\n' \
+  "  Negative live-suffix partition/fence/manifest-replay/HEAD-replay/rival probes detected"
 printf '%s\n' "  L0 checkpoint selection TLC 2240 distinct states, depth 2"
 printf '%s\n' "  L0 checkpoint selection TLAPS 8/8 obligations"
 printf '%s\n' "  L0 checkpoint four-outcome traces replayed against Ada policy"

@@ -1,5 +1,45 @@
 # Review record
 
+## Accepted retained-checkpoint live-suffix column-family append and recovery
+
+- Parent and scope: integrate the qualified slice over public base `ea9971927d59aaa41eccb6f4f637a9f7c42a6dfe`.
+  `Add_Column_Family` may append one caller-configured family when authenticated retained checkpoint authority also
+  carries a structurally exact later commit suffix. No public type or profile, persisted byte, capacity, default,
+  timeout, retry, provider policy, automatic Flush, generated identity, rename, drop, reorder, or reconfiguration
+  behavior changes.
+- Authority, certainty, and ownership: runtime summaries validate a nonzero pairwise-distinct partition of checkpoint
+  and suffix identities before the private policy kernel accepts it. Exact-checkpoint activation remains direct. A
+  suffix-bearing append uses the existing cacheless reconciliation path, and conclusive HEAD confirmation fences the
+  obsolete coordinator before any fallible local recovery. Manifest uncertainty resolves by one exact read with no
+  second Put; HEAD uncertainty and confirmed-local failure retain the same receipt for bounded recovery. Cancellation,
+  local activation failure, stale-writer rejection, exact token restoration, and abandonment preserve no-replay and
+  ownership rules.
+- Executable evidence: the maintained deterministic suite is green on the mechanically identical runtime and test
+  source candidate. It covers valid and malformed identity partitions, fresh-root rejection, exact-checkpoint and
+  suffix/group append, ambiguous manifest and HEAD outcomes, immediate fencing, proxy-held cancellation while the
+  owner completion set progresses, no-proxy pre-request failure, `Stale_Writer`, same-receipt recovery, exact
+  publication counts, cacheless reopen, and the maintained Files/Object Storage showcases. The integrated public-base
+  tree passes all 18 RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite provider lanes, three repetitions each.
+  Every provider lane reaches the live-suffix path, pre-request failure, exact receipt/token restoration, read-only
+  recovery, and zero replay. Proxy-held cancellation is deterministic-only evidence and is not attributed to the
+  provider matrix.
+- TLA/TLAPS evidence: update mode and ordinary mode are byte-stable over exactly 41 canonical traces. The focused model
+  generates 26 states, finds 18 distinct states with an empty queue at depth 9, and pins 16 ordered action counts: the
+  first 15 are one and `RecoverActivation` is two. Five negative probes cover exact partition, confirmed-HEAD fencing,
+  manifest no-replay, HEAD no-replay, and rival rejection. The authenticated recovery trace is
+  `7ed76ff0875dfd574b1856585112ea07f9df23b1a4159d283b845ad0920eed71`; the cancellation trace is
+  `5078c9cea85e21c182a3197f8c482be151a49c2c6b8a7e4d904b5fbe9f8a7329`. Successive checkpoint TLAPS remains 24/24
+  and the focused live-suffix kernel proves 25/25. The existing four Ada L0 replays and intentional divergence are
+  unchanged; the new witnesses prove neither provider behavior nor an Ada-to-TLA refinement.
+- SPARK evidence and disposition: warning-strict FSF GNATprove 16.1.0 proves 1,119/1,119 checks, 176 by flow and 943 by
+  provers, with zero failed, unproved, justified, warning, or actual `pragma Assume` findings and maximum successful
+  effort 6,522 steps. The exact +16 over the 1,103-check boundary is 12 instantiated run-time checks plus four flow
+  termination checks, with every baseline unit's prover count unchanged. The preliminary partial representation-data
+  event is an ordinary non-warning tool notice. Final resource and formal audits are clean. Under the repository rubric
+  the final exact-tree API/compatibility, ownership/certainty/cancellation, persisted-authority, executable-evidence,
+  model/proof, documentation, and unnecessary-surface reviews find P0 none, P1 none, and P2 none. This experimental
+  slice makes no production, portability, performance, provider-proof, or refinement claim.
+
 ## Accepted caller-composable atomic Commit_Group
 
 - Parent: accepted caller-composable singleton Commit commit `bd35da5`.

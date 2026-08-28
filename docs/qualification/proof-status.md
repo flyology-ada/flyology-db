@@ -177,6 +177,17 @@ manifest continuation, checkpoint-admission handoff, provider I/O, and local eng
 integration boundaries covered by the authenticated deterministic corpus and 18-lane provider matrix; no refinement
 proof is claimed.
 
+The retained-checkpoint live-suffix final tree adds a private allocation-free identity-partition policy and one
+SPARK-enabled proof instantiation without changing a public API, persisted format, capacity, or provider rule.
+Warning-strict FSF GNATprove 16.1.0 proves 1,119/1,119 selected checks: 98 initialization, 543 run-time, 91 assertion,
+308 functional-contract, and 79 termination checks; flow analysis discharges 176 and provers discharge 943. The
+instantiation proves 11 `Valid_Partition` checks plus one nested `Recorded` check. Relative to the accepted 1,103-check
+boundary, the exact additive delta is 12 prover run-time checks and four flow termination checks; every baseline
+unit's prover count is unchanged. There are zero failed, unproved, justified, warning, or actual `pragma Assume`
+findings, and maximum successful effort remains 6,522 steps. The preliminary partial representation-data event is an
+ordinary non-warning tool notice. Runtime allocation and summary derivation, provider I/O, ownership handoffs, and an
+Ada-to-TLA refinement remain outside this selected SPARK boundary.
+
 The provider-centric Object Storage migration at source
 `3455cde3158fd589480281beac39bea51305bb5e` reruns this maintained gate without changing the selected SPARK
 algorithms or their proof boundary. The exact campaign proves 1,090/1,090 selected checks: 166 by flow analysis and
@@ -517,6 +528,18 @@ remain executable boundaries rather than newly selected proof units.
   checkpoint authority, recovery, and disposable local state. Concrete codecs, sorting, allocation, provider
   behavior, progress, garbage collection, multi-run levels, compaction, and refinement to Ada remain outside this
   proof.
+- The live-suffix registry model generates 26 states, finds 18 distinct states with an empty queue at depth 9, and
+  pins 16 ordered action counts: the first 15 are one and `RecoverActivation` is two. Five negative probes detect an
+  inexact partition, missing post-confirmation fence, replayed manifest resolution, replayed HEAD resolution, and a
+  rival resolution. The normalized canonical witnesses are
+  `LiveSuffixRegistryRecoveryWitness.trace.json`
+  (`7ed76ff0875dfd574b1856585112ea07f9df23b1a4159d283b845ad0920eed71`) and
+  `LiveSuffixRegistryCancellationWitness.trace.json`
+  (`5078c9cea85e21c182a3197f8c482be151a49c2c6b8a7e4d904b5fbe9f8a7329`). Update mode reproduces them without
+  changing any byte in the 41-file canonical trace inventory, and ordinary mode consumes the same exact inventory. The
+  successive checkpoint kernel remains 24/24 and the focused live-suffix kernel proves 25/25 strict TLAPS obligations.
+  The existing Ada L0 traces and intentional divergence remain unchanged; neither live-suffix witness is a new
+  Ada replay or a refinement proof.
 - The L0 checkpoint-selection model exhausts 2,240 distinct states at depth 2 with nonzero coverage of no work,
   additive flush, complete compaction, and no admissible action. It checks the exact persisted per-family and
   database-wide run-ceiling decision without mutating authority or reserving identity. Four canonical traces cover

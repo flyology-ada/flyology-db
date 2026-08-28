@@ -7,19 +7,22 @@ with Flyology.DB.Batch_Formats;
 with Flyology.DB.Checkpoint_Policy;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
+with Flyology.DB.Identity_Partition_Policy;
 with Flyology.DB.LSM_Runtime_Formats;
 with Flyology.DB.Manifest_Formats;
 with Flyology.Object_Storage;
 with Flyology.Object_Storage.S3.SigV4;
 with GNAT.SHA256;
-pragma Warnings
-  (Off,
-   """System.Soft_Links"" is an internal GNAT unit",
-   Reason => "GNAT abort deferral makes the ownership handoff abort-atomic");
-pragma Warnings
-  (Off,
-   "use of this unit is non-portable and version-dependent",
-   Reason => "GNAT abort deferral makes the ownership handoff abort-atomic");
+pragma
+  Warnings
+    (Off,
+     """System.Soft_Links"" is an internal GNAT unit",
+     Reason => "GNAT abort deferral makes the ownership handoff abort-atomic");
+pragma
+  Warnings
+    (Off,
+     "use of this unit is non-portable and version-dependent",
+     Reason => "GNAT abort deferral makes the ownership handoff abort-atomic");
 with System.Soft_Links;
 pragma Warnings (On, """System.Soft_Links"" is an internal GNAT unit");
 pragma Warnings (On, "use of this unit is non-portable and version-dependent");
@@ -627,20 +630,20 @@ package body Flyology.DB is
         Maximum_Live_State_Bytes          => Item.Maximum_Live_State_Bytes));
 
    function To_Public_Limits (Item : Manifests.Database_Limits) return Database_Limits
-   is ((Maximum_Column_Families           => Item.Maximum_Column_Families,
-        Maximum_Manifest_History          => Item.Maximum_Manifest_History,
-        Maximum_Batch_History             => Item.Maximum_Batch_History,
-        Maximum_Transactions_Per_Batch    => Item.Maximum_Transactions_Per_Batch,
-        Maximum_Mutations_Per_Transaction => Item.Maximum_Mutations_Per_Transaction,
-        Maximum_Mutations_Per_Batch       => Item.Maximum_Mutations_Per_Batch,
-        Maximum_Live_Entries              => Item.Maximum_Live_Entries,
-        Maximum_Transaction_Payload_Bytes => Item.Maximum_Transaction_Payload_Bytes,
-        Maximum_Batch_Payload_Bytes       => Item.Maximum_Batch_Payload_Bytes,
-        Maximum_Live_State_Bytes          => Item.Maximum_Live_State_Bytes,
+   is ((Maximum_Column_Families             => Item.Maximum_Column_Families,
+        Maximum_Manifest_History            => Item.Maximum_Manifest_History,
+        Maximum_Batch_History               => Item.Maximum_Batch_History,
+        Maximum_Transactions_Per_Batch      => Item.Maximum_Transactions_Per_Batch,
+        Maximum_Mutations_Per_Transaction   => Item.Maximum_Mutations_Per_Transaction,
+        Maximum_Mutations_Per_Batch         => Item.Maximum_Mutations_Per_Batch,
+        Maximum_Live_Entries                => Item.Maximum_Live_Entries,
+        Maximum_Transaction_Payload_Bytes   => Item.Maximum_Transaction_Payload_Bytes,
+        Maximum_Batch_Payload_Bytes         => Item.Maximum_Batch_Payload_Bytes,
+        Maximum_Live_State_Bytes            => Item.Maximum_Live_State_Bytes,
         --  These zeroes mean the manifest-v1 base has no LSM extension; they
         --  are never substituted for v2/v3 persisted allocation authority.
-        Maximum_Total_L0_Runs             => 0,
-        Maximum_Checkpoint_Identities     => 0,
+        Maximum_Total_L0_Runs               => 0,
+        Maximum_Checkpoint_Identities       => 0,
         Maximum_Point_Reads_Per_Transaction => 0,
         Maximum_Scan_Ranges_Per_Transaction => 0));
 
@@ -735,11 +738,7 @@ package body Flyology.DB is
    function Quoted_Generation (Item : Generation_Value) return String
    is ('"' & Generation_String (Item) & '"');
 
-   procedure Set_Quoted_Generation
-     (Target : out Generation_Value;
-      Value  : String;
-      Valid  : out Boolean)
-   is
+   procedure Set_Quoted_Generation (Target : out Generation_Value; Value : String; Valid : out Boolean) is
    begin
       Valid :=
         Value'Length >= 2
@@ -2111,12 +2110,12 @@ package body Flyology.DB is
 
    type Slot_State is (Free, Queued, Running, Completed);
    type Completion_Slot is record
-      State      : Slot_State := Free;
-      Generation : Interfaces.Unsigned_64 := 0;
-      Order      : Interfaces.Unsigned_64 := 0;
-      Work       : Work_Item;
-      Receipt    : Internal_Receipt;
-      Result     : Outcome_Code := Invalid_State;
+      State             : Slot_State := Free;
+      Generation        : Interfaces.Unsigned_64 := 0;
+      Order             : Interfaces.Unsigned_64 := 0;
+      Work              : Work_Item;
+      Receipt           : Internal_Receipt;
+      Result            : Outcome_Code := Invalid_State;
       --  Borrowed from an admitted composable commit's completion set. Atomic
       --  groups attach it only to member one. A negative value denotes no
       --  external completion source; the operation's lifecycle lease keeps
@@ -2253,52 +2252,52 @@ package body Flyology.DB is
    type Prepared_Flush_Image_Array is array (Manifests.Family_Slot) of Prepared_Flush_Image;
 
    type Flush_Driver_State is record
-      Engine              : Engine_State_Access := null;
-      Plan                : Checkpoint_Plan;
-      Selected_Source     : Checkpoint_Plan;
-      Selected_Base       : Manifests.Manifest;
-      Selected_Head       : Head_Snapshot;
-      Runs                : Flush_Run_Receipt_Array := [others => (others => <>)];
-      Run_Total           : Natural range 0 .. Maximum_Initial_Column_Families := 0;
-      Manifest_ID         : Identifier := Zero_Identifier;
-      Transition_ID       : Identifier := Zero_Identifier;
-      Older_Run_ID        : Identifier := Zero_Identifier;
-      Middle_Run_ID       : Identifier := Zero_Identifier;
-      Newer_Run_ID        : Identifier := Zero_Identifier;
-      Output_Run_ID       : Identifier := Zero_Identifier;
-      Family_Configuration : Column_Family_Configuration;
-      Run_Images          : Prepared_Flush_Image_Array := [others => (others => <>)];
-      Manifest_Image      : Prepared_Flush_Image;
-      Head_Image          : Prepared_Flush_Image;
+      Engine                           : Engine_State_Access := null;
+      Plan                             : Checkpoint_Plan;
+      Selected_Source                  : Checkpoint_Plan;
+      Selected_Base                    : Manifests.Manifest;
+      Selected_Head                    : Head_Snapshot;
+      Runs                             : Flush_Run_Receipt_Array := [others => (others => <>)];
+      Run_Total                        : Natural range 0 .. Maximum_Initial_Column_Families := 0;
+      Manifest_ID                      : Identifier := Zero_Identifier;
+      Transition_ID                    : Identifier := Zero_Identifier;
+      Older_Run_ID                     : Identifier := Zero_Identifier;
+      Middle_Run_ID                    : Identifier := Zero_Identifier;
+      Newer_Run_ID                     : Identifier := Zero_Identifier;
+      Output_Run_ID                    : Identifier := Zero_Identifier;
+      Family_Configuration             : Column_Family_Configuration;
+      Run_Images                       : Prepared_Flush_Image_Array := [others => (others => <>)];
+      Manifest_Image                   : Prepared_Flush_Image;
+      Head_Image                       : Prepared_Flush_Image;
       --  Zero is the transient "before first/after last" cursor for both the
       --  family publication scan and selected-run reader. Persisted manifest
       --  family/run indices remain one-based and never use it.
-      Current_Family_Slot : Natural range 0 .. Maximum_Initial_Column_Families := 0;
-      Selected_Run_Index  : Natural := 0;
-      Selected_Family_Slot : Natural range 0 .. Maximum_Initial_Column_Families := 0;
-      Selected_Object_Length : Natural := 0;
-      Selected_Generation : Generation_Value;
-      Selected_Admission  : LSM_Runtime.SST_Header_Admission := (others => <>);
-      Current_Kind        : Stored_Object_Kind := Run_Object;
-      Phase               : Flush_Driver_Phase := Flush_Idle;
-      Precheck_Result     : Outcome_Code := Success;
-      Checkpoint_Admitted : Boolean := False;
-      Create_Open_Admitted : Boolean := False;
+      Current_Family_Slot              : Natural range 0 .. Maximum_Initial_Column_Families := 0;
+      Selected_Run_Index               : Natural := 0;
+      Selected_Family_Slot             : Natural range 0 .. Maximum_Initial_Column_Families := 0;
+      Selected_Object_Length           : Natural := 0;
+      Selected_Generation              : Generation_Value;
+      Selected_Admission               : LSM_Runtime.SST_Header_Admission := (others => <>);
+      Current_Kind                     : Stored_Object_Kind := Run_Object;
+      Phase                            : Flush_Driver_Phase := Flush_Idle;
+      Precheck_Result                  : Outcome_Code := Success;
+      Checkpoint_Admitted              : Boolean := False;
+      Create_Open_Admitted             : Boolean := False;
       Create_Mutation_May_Have_Entered : Boolean := False;
       --  Receipt resolution reuses Create's exact operation and Finish
       --  vocabulary, but authenticates the retained immutable manifest before
       --  either one permitted HEAD admission or read-only reconciliation.
-      Resolving_Create    : Boolean := False;
+      Resolving_Create                 : Boolean := False;
       --  Ordinary resolution reconstructs only the receipt-selected plan or
       --  transfers its checkpoint admission to bounded read-only recovery.
-      Resolving_Flush     : Boolean := False;
+      Resolving_Flush                  : Boolean := False;
       --  Family resolution retains the exact encoded manifest and transfers
       --  only its existing checkpoint admission into read-only recovery.
-      Resolving_Family    : Boolean := False;
+      Resolving_Family                 : Boolean := False;
       --  Fresh-state additive mode is only a vacant initializer. Every Start
       --  assigns its explicit private constructor-selected algorithm before
       --  the driver can run.
-      Mode                : Flush_Plan_Mode := Additive_Plan;
+      Mode                             : Flush_Plan_Mode := Additive_Plan;
    end record;
 
    procedure Free_Flush_Driver_State is new
@@ -2320,6 +2319,14 @@ package body Flyology.DB is
    type Seen_Transaction_Array is array (Positive range <>) of Transaction_Identifier;
    type Used_Batch_ID_Array is array (Positive range <>) of Identifier;
    type Reserved_Identity_Array is array (Positive range <>) of Identifier;
+   type Identity_Batch_Index_Array is array (Positive range <>) of Natural;
+
+   package Identity_Partitions is new
+     Flyology.DB.Identity_Partition_Policy
+       (Identity          => Identifier,
+        Zero              => Zero_Identifier,
+        Identity_Array    => Reserved_Identity_Array,
+        Batch_Index_Array => Identity_Batch_Index_Array);
 
    type Family_LSM_Authority is record
       ID    : Interfaces.Unsigned_32 := 0;
@@ -2330,13 +2337,13 @@ package body Flyology.DB is
    --  ceiling beyond that existing persisted-format compatibility boundary.
    type Family_LSM_Authority_Array is array (Manifests.Family_Slot) of Family_LSM_Authority;
    type Engine_LSM_Authority is record
-      Enabled                       : Boolean := False;
-      Replay_Boundary               : Interfaces.Unsigned_64 := 0;
-      Maximum_Total_L0_Runs         : Interfaces.Unsigned_32 := 0;
-      Maximum_Checkpoint_Identities : Interfaces.Unsigned_32 := 0;
+      Enabled                             : Boolean := False;
+      Replay_Boundary                     : Interfaces.Unsigned_64 := 0;
+      Maximum_Total_L0_Runs               : Interfaces.Unsigned_32 := 0;
+      Maximum_Checkpoint_Identities       : Interfaces.Unsigned_32 := 0;
       Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32 := 0;
       Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32 := 0;
-      Families                      : Family_LSM_Authority_Array := [others => (others => <>)];
+      Families                            : Family_LSM_Authority_Array := [others => (others => <>)];
    end record;
 
    --  Legacy manifest-v1 state carries no LSM extension. This sentinel keeps
@@ -2346,13 +2353,13 @@ package body Flyology.DB is
 
    function To_Engine_LSM_Authority (Value : LSM_Runtime.Checkpoint_Manifest) return Engine_LSM_Authority is
       Result : Engine_LSM_Authority :=
-        (Enabled                       => True,
-         Replay_Boundary               => Value.Replay_Boundary,
-         Maximum_Total_L0_Runs         => Value.Maximum_Total_L0_Runs,
-         Maximum_Checkpoint_Identities => Value.Maximum_Checkpoint_Identities,
+        (Enabled                             => True,
+         Replay_Boundary                     => Value.Replay_Boundary,
+         Maximum_Total_L0_Runs               => Value.Maximum_Total_L0_Runs,
+         Maximum_Checkpoint_Identities       => Value.Maximum_Checkpoint_Identities,
          Maximum_Point_Reads_Per_Transaction => Value.Maximum_Point_Reads_Per_Transaction,
          Maximum_Scan_Ranges_Per_Transaction => Value.Maximum_Scan_Ranges_Per_Transaction,
-         Families                      => [others => (others => <>)]);
+         Families                            => [others => (others => <>)]);
    begin
       for Index in Value.Families'Range loop
          Result.Families (Index) := (ID => Value.Base.Families (Index).ID, State => Value.Families (Index));
@@ -2376,8 +2383,7 @@ package body Flyology.DB is
      (Base          : Column_Family_Configuration;
       Authority     : Engine_LSM_Authority;
       Configuration : out Column_Family_Configuration;
-      Result        : out Outcome_Code)
-   is
+      Result        : out Outcome_Code) is
    begin
       Configuration := (others => <>);
       if not Authority.Enabled then
@@ -2390,8 +2396,7 @@ package body Flyology.DB is
             Configuration.Memtable_Max_Bytes := Family.State.Memtable_Max_Bytes;
             Configuration.Memtable_Max_Entries := Family.State.Memtable_Max_Entries;
             Configuration.Maximum_L0_Runs := Family.State.Maximum_L0_Runs;
-            Result :=
-              (if Is_Valid_Column_Family_Configuration (Configuration) then Success else Corrupt);
+            Result := (if Is_Valid_Column_Family_Configuration (Configuration) then Success else Corrupt);
             return;
          end if;
       end loop;
@@ -2404,10 +2409,8 @@ package body Flyology.DB is
         or else not Right.Enabled
         or else Left.Maximum_Total_L0_Runs /= Right.Maximum_Total_L0_Runs
         or else Left.Maximum_Checkpoint_Identities /= Right.Maximum_Checkpoint_Identities
-        or else Left.Maximum_Point_Reads_Per_Transaction
-                /= Right.Maximum_Point_Reads_Per_Transaction
-        or else Left.Maximum_Scan_Ranges_Per_Transaction
-                /= Right.Maximum_Scan_Ranges_Per_Transaction
+        or else Left.Maximum_Point_Reads_Per_Transaction /= Right.Maximum_Point_Reads_Per_Transaction
+        or else Left.Maximum_Scan_Ranges_Per_Transaction /= Right.Maximum_Scan_Ranges_Per_Transaction
       then
          return False;
       end if;
@@ -2467,42 +2470,42 @@ package body Flyology.DB is
       Reserved_Capacity : Positive)
    is
       procedure Initialize
-        (Head       : Head_Snapshot;
-         Generation : Generation_Value;
-         Manifest   : Manifests.Manifest;
+        (Head             : Head_Snapshot;
+         Generation       : Generation_Value;
+         Manifest         : Manifests.Manifest;
          --  Exact authenticated checkpoint replay boundary. History strictly
          --  after it is retained; an older transaction cannot be validated.
          History_Boundary : Sequence_Number;
-         Stamp      : Engine_Incarnation);
+         Stamp            : Engine_Incarnation);
 
       procedure Recover_Batch (Batch : in out Runtime_Batch; Result : out Outcome_Code);
 
       procedure Recover_Checkpoint
-        (Plan   : Checkpoint_Plan;
-         Images : Checkpoint_Image_Array_Access;
-         Base   : State_Entry_Array_Access;
+        (Plan       : Checkpoint_Plan;
+         Images     : Checkpoint_Image_Array_Access;
+         Base       : State_Entry_Array_Access;
          Live_Count : out Natural;
-         Result : out Outcome_Code);
+         Result     : out Outcome_Code);
 
       procedure Transaction_Available (Transaction_ID : Transaction_Identifier; Result : out Outcome_Code);
 
       procedure Admit
-        (Txn      : in out Transaction;
-         Deadline : Ada.Real_Time.Time;
-         Token    : access Flyology.Cancellation.Token;
+        (Txn               : in out Transaction;
+         Deadline          : Ada.Real_Time.Time;
+         Token             : access Flyology.Cancellation.Token;
          Signal_Descriptor : Interfaces.C.int;
-         Slot     : out Slot_Token;
-         Result   : out Outcome_Code);
+         Slot              : out Slot_Token;
+         Result            : out Outcome_Code);
 
       procedure Admit_Group
-        (Transactions : in out Transaction_Array;
-         Batch_ID     : Identifier;
-         Deadline     : Ada.Real_Time.Time;
-         Token        : access Flyology.Cancellation.Token;
+        (Transactions      : in out Transaction_Array;
+         Batch_ID          : Identifier;
+         Deadline          : Ada.Real_Time.Time;
+         Token             : access Flyology.Cancellation.Token;
          Signal_Descriptor : Interfaces.C.int;
-         Tokens       : out Token_Group;
-         Count        : out Group_Count;
-         Result       : out Outcome_Code);
+         Tokens            : out Token_Group;
+         Count             : out Group_Count;
+         Result            : out Outcome_Code);
 
       entry Take_Group
         (Items      : out Work_Group;
@@ -2533,8 +2536,7 @@ package body Flyology.DB is
       function Result_Ready (Slot : Slot_Token) return Boolean;
 
       procedure Signal_Next_Completion
-        (Found   : out Boolean;
-         Attempt : out Flyology.Wake_Sources.Signal_Attempt_Result);
+        (Found : out Boolean; Attempt : out Flyology.Wake_Sources.Signal_Attempt_Result);
 
       procedure Install_Published
         (Batch      : in out Runtime_Batch;
@@ -2560,14 +2562,14 @@ package body Flyology.DB is
          Result          : out Outcome_Code);
 
       procedure Scan_Source_Requirements
-        (Family        : Column_Family_ID;
-         Snapshot_At   : Sequence_Number;
+        (Family          : Column_Family_ID;
+         Snapshot_At     : Sequence_Number;
          Checkpoint_Base : State_Entry_Array_Access;
-         Extra_Count   : Natural;
-         Source_Count  : out Natural;
-         Maximum_Rows  : out Interfaces.Unsigned_32;
-         Maximum_Bytes : out Interfaces.Unsigned_64;
-         Result        : out Outcome_Code);
+         Extra_Count     : Natural;
+         Source_Count    : out Natural;
+         Maximum_Rows    : out Interfaces.Unsigned_32;
+         Maximum_Bytes   : out Interfaces.Unsigned_64;
+         Result          : out Outcome_Code);
 
       procedure Copy_Scan_Sources
         (Family          : Column_Family_ID;
@@ -2607,6 +2609,9 @@ package body Flyology.DB is
       procedure Copy_Checkpoint_Identities
         (Value : not null LSM_Runtime.Checkpoint_Manifest_Access; Result : out Outcome_Code);
 
+      procedure Validate_Checkpoint_Identity_Partition
+        (Value : not null LSM_Runtime.Checkpoint_Manifest_Access; Result : out Outcome_Code);
+
       procedure Find_Family
         (ID : Column_Family_ID; Configuration : out Column_Family_Configuration; Result : out Outcome_Code);
 
@@ -2638,49 +2643,49 @@ package body Flyology.DB is
          Mutation_Total    : out Natural;
          Result            : out Outcome_Code);
       procedure Copy_History_Batch
-        (Index  : Positive;
-         Batch  : in out Runtime_Batch;
-         Result : out Outcome_Code);
+        (Index : Positive; Batch : in out Runtime_Batch; Result : out Outcome_Code);
       procedure Take_History_Batch (Index : Positive; Batch : out Runtime_Batch);
       entry Join;
       function Highest return Sequence_Number;
    private
-      Slots             : Completion_Array;
-      Queue_Order       : Interfaces.Unsigned_64 := 0;
-      In_Use_Count      : Natural range 0 .. Maximum_Commit_Slots := 0;
-      Queued_Count      : Natural range 0 .. Maximum_Commit_Slots := 0;
-      In_Flight_Bytes   : Interfaces.Unsigned_64 := 0;
-      Current_Head      : Head_Snapshot;
-      Head_Generation   : Generation_Value;
-      Current_Manifest  : Manifests.Manifest;
-      Incarnation       : Engine_Incarnation := No_Incarnation;
-      Live_State_Bytes  : Interfaces.Unsigned_64 := 0;
-      Entries           : State_Entry_Array (1 .. Entry_Capacity);
+      Slots                     : Completion_Array;
+      Queue_Order               : Interfaces.Unsigned_64 := 0;
+      In_Use_Count              : Natural range 0 .. Maximum_Commit_Slots := 0;
+      Queued_Count              : Natural range 0 .. Maximum_Commit_Slots := 0;
+      In_Flight_Bytes           : Interfaces.Unsigned_64 := 0;
+      Current_Head              : Head_Snapshot;
+      Head_Generation           : Generation_Value;
+      Current_Manifest          : Manifests.Manifest;
+      Incarnation               : Engine_Incarnation := No_Incarnation;
+      Live_State_Bytes          : Interfaces.Unsigned_64 := 0;
+      Entries                   : State_Entry_Array (1 .. Entry_Capacity);
       --  Preallocated projection scratch keeps potentially large allocation
       --  and Storage_Error outside protected operations.  Apply_Batch writes
       --  only this scratch until every final-state limit has passed.
-      Projected_Entries : State_Entry_Array (1 .. Entry_Capacity);
-      Entry_Count       : Natural := 0;
-      Seen              : Seen_Transaction_Array (1 .. Seen_Capacity) := [others => Zero_Transaction_ID];
-      Seen_Count        : Natural := 0;
-      Used_Batches      : Used_Batch_ID_Array (1 .. History_Capacity) := [others => Zero_Identifier];
-      History_Count     : Natural := 0;
+      Projected_Entries         : State_Entry_Array (1 .. Entry_Capacity);
+      Entry_Count               : Natural := 0;
+      Seen                      : Seen_Transaction_Array (1 .. Seen_Capacity) :=
+        [others => Zero_Transaction_ID];
+      Seen_Count                : Natural := 0;
+      Used_Batches              : Used_Batch_ID_Array (1 .. History_Capacity) := [others => Zero_Identifier];
+      History_Count             : Natural := 0;
       --  Retain exact decoded batch descriptors lazily with their already-owned
       --  immutable images. They are the post-checkpoint write authority used
       --  for snapshot conflict checks; no theoretical key table is allocated.
-      History_Batches   : Runtime_Batch_Array (1 .. History_Capacity) := [others => (others => <>)];
-      Reserved          : Reserved_Identity_Array (1 .. Reserved_Capacity) := [others => Zero_Identifier];
-      Reserved_Count    : Natural := 0;
+      History_Batches           : Runtime_Batch_Array (1 .. History_Capacity) := [others => (others => <>)];
+      Reserved                  : Reserved_Identity_Array (1 .. Reserved_Capacity) :=
+        [others => Zero_Identifier];
+      Reserved_Count            : Natural := 0;
       --  Zero is the authenticated root/legacy replay boundary. A nonzero
       --  boundary comes only from the persisted checkpoint authority and makes
       --  older snapshots conservatively unverifiable.
       Retained_History_Boundary : Sequence_Number := 0;
-      Uncertain         : Boolean := False;
-      Fenced            : Boolean := False;
-      Closing           : Boolean := False;
-      Stopped           : Boolean := False;
-      Paused            : Boolean := False;
-      Fail_Install      : Boolean := False;
+      Uncertain                 : Boolean := False;
+      Fenced                    : Boolean := False;
+      Closing                   : Boolean := False;
+      Stopped                   : Boolean := False;
+      Paused                    : Boolean := False;
+      Fail_Install              : Boolean := False;
    end Coordinator;
 
    procedure Visit_Scan_Batch
@@ -2699,8 +2704,7 @@ package body Flyology.DB is
          return Batch.Image /= null and then Offset <= Image_Length and then Length <= Image_Length - Offset;
       end Valid_Slice;
 
-      procedure Add_Source
-        (Mutation : Runtime_Mutation; Version : Sequence_Number; Order : Positive) is
+      procedure Add_Source (Mutation : Runtime_Mutation; Version : Sequence_Number; Order : Positive) is
       begin
          if Captured = Natural'Last or else (Sources /= null and then Captured = Sources'Length) then
             Result := Capacity_Exceeded;
@@ -2741,9 +2745,8 @@ package body Flyology.DB is
             Mutation : Runtime_Mutation renames Batch.Mutations (Mutation_Index);
          begin
             if not Valid_Slice (Mutation.Key_Offset, Mutation.Key_Length)
-              or else
-                (Mutation.Operation = Put_Mutation
-                 and then not Valid_Slice (Mutation.Value_Offset, Mutation.Value_Length))
+              or else (Mutation.Operation = Put_Mutation
+                       and then not Valid_Slice (Mutation.Value_Offset, Mutation.Value_Length))
             then
                Result := Corrupt;
                return;
@@ -2758,19 +2761,18 @@ package body Flyology.DB is
               or else Transaction.Mutation_Count = 0
               or else Transaction.First_Mutation = 0
               or else Transaction.Mutation_Count > Batch.Mutation_Total
-              or else
-                Transaction.First_Mutation > Batch.Mutation_Total - Transaction.Mutation_Count + 1
+              or else Transaction.First_Mutation > Batch.Mutation_Total - Transaction.Mutation_Count + 1
             then
                Result := Corrupt;
                return;
             elsif Transaction.Sequence <= Snapshot_At then
-               for Mutation_Index in Positive range
-                 Transaction.First_Mutation
-                 .. Transaction.First_Mutation + Transaction.Mutation_Count - 1
+               for Mutation_Index in
+                 Positive
+                   range Transaction.First_Mutation
+                         .. Transaction.First_Mutation + Transaction.Mutation_Count - 1
                loop
                   if Batch.Mutations (Mutation_Index).Family = Family then
-                     Add_Source
-                       (Batch.Mutations (Mutation_Index), Transaction.Sequence, Mutation_Index);
+                     Add_Source (Batch.Mutations (Mutation_Index), Transaction.Sequence, Mutation_Index);
                      if Result /= Success then
                         return;
                      end if;
@@ -2789,9 +2791,7 @@ package body Flyology.DB is
       Captured        : in out Natural;
       Result          : out Outcome_Code)
    is
-      function Valid_Slice
-        (Source : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
-      is
+      function Valid_Slice (Source : not null Shared_Image_Access; Offset, Length : Natural) return Boolean is
          Image_Length : constant Natural := Flyology.Bytes.Length (Source.Data);
       begin
          return Offset <= Image_Length and then Length <= Image_Length - Offset;
@@ -2800,23 +2800,19 @@ package body Flyology.DB is
       if Checkpoint_Base /= null then
          for Index in Checkpoint_Base'Range loop
             if Checkpoint_Base (Index).Image = null
-              or else
-                not Valid_Slice
-                      (Checkpoint_Base (Index).Image,
-                       Checkpoint_Base (Index).Key_Offset,
-                       Checkpoint_Base (Index).Key_Length)
-              or else
-                not Valid_Slice
-                      (Checkpoint_Base (Index).Image,
-                       Checkpoint_Base (Index).Value_Offset,
-                       Checkpoint_Base (Index).Value_Length)
+              or else not Valid_Slice
+                            (Checkpoint_Base (Index).Image,
+                             Checkpoint_Base (Index).Key_Offset,
+                             Checkpoint_Base (Index).Key_Length)
+              or else not Valid_Slice
+                            (Checkpoint_Base (Index).Image,
+                             Checkpoint_Base (Index).Value_Offset,
+                             Checkpoint_Base (Index).Value_Length)
             then
                Result := Corrupt;
                return;
             elsif Checkpoint_Base (Index).Family = Family then
-               if Captured = Natural'Last
-                 or else (Sources /= null and then Captured = Sources'Length)
-               then
+               if Captured = Natural'Last or else (Sources /= null and then Captured = Sources'Length) then
                   Result := Capacity_Exceeded;
                   return;
                end if;
@@ -2844,11 +2840,11 @@ package body Flyology.DB is
    protected body Coordinator is
 
       procedure Initialize
-        (Head       : Head_Snapshot;
-         Generation : Generation_Value;
-         Manifest   : Manifests.Manifest;
+        (Head             : Head_Snapshot;
+         Generation       : Generation_Value;
+         Manifest         : Manifests.Manifest;
          History_Boundary : Sequence_Number;
-         Stamp      : Engine_Incarnation) is
+         Stamp            : Engine_Incarnation) is
       begin
          Current_Head := Head;
          Head_Generation := Generation;
@@ -2858,10 +2854,7 @@ package body Flyology.DB is
       end Initialize;
 
       function Same_History_Key
-        (Candidate : Owned_Mutation;
-         Batch     : Runtime_Batch;
-         Mutation  : Runtime_Mutation) return Boolean
-      is
+        (Candidate : Owned_Mutation; Batch : Runtime_Batch; Mutation : Runtime_Mutation) return Boolean is
       begin
          if Batch.Image = null
            or else Candidate.Family /= Mutation.Family
@@ -2933,23 +2926,20 @@ package body Flyology.DB is
       end History_Key_Before_Bound;
 
       function History_Key_In_Range
-        (Candidate : Owned_Scan_Range; Batch : Runtime_Batch; Mutation : Runtime_Mutation) return Boolean
-      is
+        (Candidate : Owned_Scan_Range; Batch : Runtime_Batch; Mutation : Runtime_Mutation) return Boolean is
       begin
-         return Candidate.Family = Mutation.Family
-           and then
-             (not Candidate.Has_Lower
-              or else not History_Key_Before_Bound
-                            (Batch, Mutation, Candidate.Lower, Candidate.Lower_Length))
-           and then
-             (not Candidate.Has_Upper
-              or else History_Key_Before_Bound
-                        (Batch, Mutation, Candidate.Upper, Candidate.Upper_Length));
+         return
+           Candidate.Family = Mutation.Family
+           and then (not Candidate.Has_Lower
+                     or else not History_Key_Before_Bound
+                                   (Batch, Mutation, Candidate.Lower, Candidate.Lower_Length))
+           and then (not Candidate.Has_Upper
+                     or else History_Key_Before_Bound
+                               (Batch, Mutation, Candidate.Upper, Candidate.Upper_Length));
       end History_Key_In_Range;
 
       function Has_Transaction_Conflict
-        (Arena       : Transaction_Arena_Access;
-         Snapshot_At : Sequence_Number) return Boolean
+        (Arena : Transaction_Arena_Access; Snapshot_At : Sequence_Number) return Boolean
       is
          Point : Owned_Point_Read_Access;
          Scan  : Owned_Scan_Range_Access;
@@ -2973,9 +2963,7 @@ package body Flyology.DB is
                      loop
                         for Candidate_Index in Positive range 1 .. Arena.Count loop
                            if Same_History_Key
-                                (Arena.Mutations (Candidate_Index),
-                                 Batch,
-                                 Batch.Mutations (Mutation_Index))
+                                (Arena.Mutations (Candidate_Index), Batch, Batch.Mutations (Mutation_Index))
                            then
                               return True;
                            end if;
@@ -3373,8 +3361,7 @@ package body Flyology.DB is
          Candidate_Count : Natural range 0 .. Entry_Capacity := 0;
          Candidate_Bytes : Interfaces.Unsigned_64 := 0;
 
-         function Valid_Slice
-           (Image : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
+         function Valid_Slice (Image : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
          is
             Image_Length : constant Natural := Flyology.Bytes.Length (Image.Data);
          begin
@@ -3382,9 +3369,8 @@ package body Flyology.DB is
          end Valid_Slice;
 
          function Same_Key
-           (Left : State_Entry; Right_Image : not null Shared_Image_Access;
-            Right : LSM_Runtime.SST_Entry) return Boolean
-         is
+           (Left : State_Entry; Right_Image : not null Shared_Image_Access; Right : LSM_Runtime.SST_Entry)
+            return Boolean is
          begin
             if Left.Key_Length /= Right.Key_Byte_Total then
                return False;
@@ -3400,9 +3386,8 @@ package body Flyology.DB is
          end Same_Key;
 
          function Find_Key
-           (Family : Column_Family_ID; Image : not null Shared_Image_Access;
-            Item : LSM_Runtime.SST_Entry) return Natural
-         is
+           (Family : Column_Family_ID; Image : not null Shared_Image_Access; Item : LSM_Runtime.SST_Entry)
+            return Natural is
          begin
             for Index in Positive range 1 .. Candidate_Count loop
                if Projected_Entries (Index).Family = Family
@@ -3432,15 +3417,15 @@ package body Flyology.DB is
          end Remove_At;
 
          procedure Add_Put
-           (Family : Column_Family_ID; Image : not null Shared_Image_Access;
-            Item : LSM_Runtime.SST_Entry; Valid : out Boolean)
+           (Family : Column_Family_ID;
+            Image  : not null Shared_Image_Access;
+            Item   : LSM_Runtime.SST_Entry;
+            Valid  : out Boolean)
          is
             Amount : constant Interfaces.Unsigned_64 :=
-              Interfaces.Unsigned_64 (Item.Key_Byte_Total)
-              + Interfaces.Unsigned_64 (Item.Value_Byte_Total);
+              Interfaces.Unsigned_64 (Item.Key_Byte_Total) + Interfaces.Unsigned_64 (Item.Value_Byte_Total);
          begin
-            if Candidate_Count = Entry_Capacity
-              or else Candidate_Bytes > Interfaces.Unsigned_64'Last - Amount
+            if Candidate_Count = Entry_Capacity or else Candidate_Bytes > Interfaces.Unsigned_64'Last - Amount
             then
                Valid := False;
                return;
@@ -3483,8 +3468,7 @@ package body Flyology.DB is
                   declare
                      Item   : State_Entry renames Base (Index);
                      Amount : constant Interfaces.Unsigned_64 :=
-                       Interfaces.Unsigned_64 (Item.Key_Length)
-                       + Interfaces.Unsigned_64 (Item.Value_Length);
+                       Interfaces.Unsigned_64 (Item.Key_Length) + Interfaces.Unsigned_64 (Item.Value_Length);
                   begin
                      if Item.Image = null
                        or else Images (Index) /= Item.Image
@@ -3506,21 +3490,19 @@ package body Flyology.DB is
          else
             if (Plan.Manifest.Run_Total = 0
                 and then (Plan.Recovered_SSTs /= null or else Images /= null or else Base /= null))
-              or else
-                (Plan.Manifest.Run_Total > 0
-                 and then
-                   (Plan.Recovered_SSTs = null
-                    or else Images = null
-                    or else Base = null
-                    or else Plan.Recovered_SSTs'Length /= Plan.Manifest.Run_Total
-                    or else Images'Length /= Plan.Manifest.Run_Total))
+              or else (Plan.Manifest.Run_Total > 0
+                       and then (Plan.Recovered_SSTs = null
+                                 or else Images = null
+                                 or else Base = null
+                                 or else Plan.Recovered_SSTs'Length /= Plan.Manifest.Run_Total
+                                 or else Images'Length /= Plan.Manifest.Run_Total))
             then
                Result := Corrupt;
                return;
             end if;
             for Family_Index in Plan.Manifest.Families'Range loop
                declare
-                  Family : LSM_Runtime.Family_LSM_State renames Plan.Manifest.Families (Family_Index);
+                  Family    : LSM_Runtime.Family_LSM_State renames Plan.Manifest.Families (Family_Index);
                   Family_ID : constant Column_Family_ID :=
                     Column_Family_ID (Plan.Manifest.Base.Families (Family_Index).ID);
                begin
@@ -3533,19 +3515,15 @@ package body Flyology.DB is
                            Image : Shared_Image_Access renames Images (Run_Index);
                            Valid : Boolean;
 
-                           function Same_SST_Key
-                             (Left, Right : LSM_Runtime.SST_Entry) return Boolean
-                           is
+                           function Same_SST_Key (Left, Right : LSM_Runtime.SST_Entry) return Boolean is
                            begin
                               if Left.Key_Byte_Total /= Right.Key_Byte_Total then
                                  return False;
                               end if;
                               if Left.Key_Byte_Total > 0 then
                                  for Offset in Natural range 0 .. Left.Key_Byte_Total - 1 loop
-                                    if Flyology.Bytes.Element
-                                         (Image.Data, Left.Key_Offset + Offset)
-                                      /= Flyology.Bytes.Element
-                                           (Image.Data, Right.Key_Offset + Offset)
+                                    if Flyology.Bytes.Element (Image.Data, Left.Key_Offset + Offset)
+                                      /= Flyology.Bytes.Element (Image.Data, Right.Key_Offset + Offset)
                                     then
                                        return False;
                                     end if;
@@ -3558,17 +3536,16 @@ package body Flyology.DB is
                            begin
                               return
                                 Index = SST.Entries'First
-                                or else not Same_SST_Key
-                                              (SST.Entries (Index - 1), SST.Entries (Index));
+                                or else not Same_SST_Key (SST.Entries (Index - 1), SST.Entries (Index));
                            end Latest_For_Key;
                         begin
                            if SST = null
                              or else Image = null
                              or else not LSM_Runtime.Descriptor_Matches
-                                          (SST.all,
-                                           Plan.Manifest.Base.Database_ID,
-                                           Plan.Manifest.Base.Families (Family_Index).ID,
-                                           Plan.Manifest.Runs (Run_Index))
+                                           (SST.all,
+                                            Plan.Manifest.Base.Database_ID,
+                                            Plan.Manifest.Base.Families (Family_Index).ID,
+                                            Plan.Manifest.Runs (Run_Index))
                              or else Flyology.Bytes.Length (Image.Data) /= SST.Payload_Byte_Total
                            then
                               Result := Corrupt;
@@ -3577,14 +3554,13 @@ package body Flyology.DB is
                            for Item of SST.Entries loop
                               if Item.Sequence = 0
                                 or else Item.Sequence > Plan.Manifest.Replay_Boundary
-                                or else Item.Operation not in
-                                  LSM_Runtime.LSM.Put_Operation | LSM_Runtime.LSM.Delete_Operation
+                                or else Item.Operation
+                                        not in LSM_Runtime.LSM.Put_Operation
+                                             | LSM_Runtime.LSM.Delete_Operation
                                 or else not Valid_Slice (Image, Item.Key_Offset - 1, Item.Key_Byte_Total)
-                                or else
-                                  (Item.Operation = LSM_Runtime.LSM.Put_Operation
-                                   and then
-                                     not Valid_Slice
-                                           (Image, Item.Value_Offset - 1, Item.Value_Byte_Total))
+                                or else (Item.Operation = LSM_Runtime.LSM.Put_Operation
+                                         and then not Valid_Slice
+                                                        (Image, Item.Value_Offset - 1, Item.Value_Byte_Total))
                               then
                                  Result := Corrupt;
                                  return;
@@ -3738,12 +3714,12 @@ package body Flyology.DB is
       end Transaction_Available;
 
       procedure Admit
-        (Txn      : in out Transaction;
-         Deadline : Ada.Real_Time.Time;
-         Token    : access Flyology.Cancellation.Token;
+        (Txn               : in out Transaction;
+         Deadline          : Ada.Real_Time.Time;
+         Token             : access Flyology.Cancellation.Token;
          Signal_Descriptor : Interfaces.C.int;
-         Slot     : out Slot_Token;
-         Result   : out Outcome_Code)
+         Slot              : out Slot_Token;
+         Result            : out Outcome_Code)
       is
          Selected           : Commit_Slot := Commit_Slot'First;
          --  Singleton commits deliberately reuse the caller transaction ID as
@@ -3853,14 +3829,14 @@ package body Flyology.DB is
       end Admit;
 
       procedure Admit_Group
-        (Transactions : in out Transaction_Array;
-         Batch_ID     : Identifier;
-         Deadline     : Ada.Real_Time.Time;
-         Token        : access Flyology.Cancellation.Token;
+        (Transactions      : in out Transaction_Array;
+         Batch_ID          : Identifier;
+         Deadline          : Ada.Real_Time.Time;
+         Token             : access Flyology.Cancellation.Token;
          Signal_Descriptor : Interfaces.C.int;
-         Tokens       : out Token_Group;
-         Count        : out Group_Count;
-         Result       : out Outcome_Code)
+         Tokens            : out Token_Group;
+         Count             : out Group_Count;
+         Result            : out Outcome_Code)
       is
          Total_Bytes     : Interfaces.Unsigned_64 := 0;
          Total_Mutations : Natural := 0;
@@ -4056,8 +4032,7 @@ package body Flyology.DB is
                --  protected cut. Only member one owns the caller operation's
                --  borrowed descriptor, yielding exactly one external wake
                --  after the complete atomic group is ready for collection.
-               Slots (Selected).Signal_Descriptor :=
-                 (if Offset = 0 then Signal_Descriptor else -1);
+               Slots (Selected).Signal_Descriptor := (if Offset = 0 then Signal_Descriptor else -1);
                Slots (Selected).State := Queued;
                Tokens (Offset + 1) := (Index => Selected, Generation => Slots (Selected).Generation);
             end;
@@ -4210,8 +4185,7 @@ package body Flyology.DB is
          Receipt    : out Internal_Receipt;
          Arena      : out Transaction_Arena_Access;
          Result     : out Outcome_Code)
-        when Slots (Index).State = Completed
-          and then Slots (Index).Signal_Descriptor < 0
+        when Slots (Index).State = Completed and then Slots (Index).Signal_Descriptor < 0
       is
       begin
          Arena := null;
@@ -4240,24 +4214,19 @@ package body Flyology.DB is
       end Result_Ready;
 
       procedure Signal_Next_Completion
-        (Found   : out Boolean;
-         Attempt : out Flyology.Wake_Sources.Signal_Attempt_Result) is
+        (Found : out Boolean; Attempt : out Flyology.Wake_Sources.Signal_Attempt_Result) is
       begin
          Found := False;
          Attempt := Flyology.Wake_Sources.Signal_Delivered;
          for Index in Commit_Slot loop
-            if Slots (Index).State = Completed
-              and then Slots (Index).Signal_Descriptor >= 0
-            then
+            if Slots (Index).State = Completed and then Slots (Index).Signal_Descriptor >= 0 then
                Found := True;
                --  Flyology fixes this call as one O_NONBLOCK write with no
                --  retry or retained state, so it forms a bounded protected
                --  cut. A delivered wake and result availability become one
                --  atomic transition; an interrupted attempt retains the
                --  descriptor for a later outside-lock retry.
-               Attempt :=
-                 Flyology.Wake_Sources.Try_Signal_Borrowed
-                   (Slots (Index).Signal_Descriptor);
+               Attempt := Flyology.Wake_Sources.Try_Signal_Borrowed (Slots (Index).Signal_Descriptor);
                if Attempt = Flyology.Wake_Sources.Signal_Delivered then
                   Slots (Index).Signal_Descriptor := -1;
                end if;
@@ -4306,25 +4275,20 @@ package body Flyology.DB is
          Matched         : out Boolean;
          Result          : out Outcome_Code)
       is
-         function Valid_Slice
-           (Source : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
+         function Valid_Slice (Source : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
          is
             Image_Length : constant Natural := Flyology.Bytes.Length (Source.Data);
          begin
             return Offset <= Image_Length and then Length <= Image_Length - Offset;
          end Valid_Slice;
 
-         function Same_Key
-           (Source : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
-         is
+         function Same_Key (Source : not null Shared_Image_Access; Offset, Length : Natural) return Boolean is
          begin
             if Length /= Item_Key'Length then
                return False;
             end if;
             for Key_Index in Item_Key'Range loop
-               if Byte
-                    (Flyology.Bytes.Element
-                       (Source.Data, Offset + (Key_Index - Item_Key'First) + 1))
+               if Byte (Flyology.Bytes.Element (Source.Data, Offset + (Key_Index - Item_Key'First) + 1))
                  /= Item_Key (Key_Index)
                then
                   return False;
@@ -4370,20 +4334,20 @@ package body Flyology.DB is
                            Result := Corrupt;
                            return;
                         end if;
-                        for Mutation_Index in reverse Positive range
-                          Batch_Transaction.First_Mutation
-                          .. Batch_Transaction.First_Mutation + Batch_Transaction.Mutation_Count - 1
+                        for Mutation_Index in reverse
+                          Positive
+                            range Batch_Transaction.First_Mutation
+                                  .. Batch_Transaction.First_Mutation + Batch_Transaction.Mutation_Count - 1
                         loop
                            declare
                               Mutation : Runtime_Mutation renames Batch.Mutations (Mutation_Index);
                            begin
                               if not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
-                                or else
-                                  (Mutation.Operation = Put_Mutation
-                                   and then not Valid_Slice
-                                                  (Batch.Image,
-                                                   Mutation.Value_Offset,
-                                                   Mutation.Value_Length))
+                                or else (Mutation.Operation = Put_Mutation
+                                         and then not Valid_Slice
+                                                        (Batch.Image,
+                                                         Mutation.Value_Offset,
+                                                         Mutation.Value_Length))
                               then
                                  Result := Corrupt;
                                  return;
@@ -4449,8 +4413,7 @@ package body Flyology.DB is
          Source_Count    : out Natural;
          Maximum_Rows    : out Interfaces.Unsigned_32;
          Maximum_Bytes   : out Interfaces.Unsigned_64;
-         Result          : out Outcome_Code)
-      is
+         Result          : out Outcome_Code) is
       begin
          Source_Count := Extra_Count;
          Maximum_Rows := Current_Manifest.Limits.Maximum_Live_Entries;
@@ -4488,8 +4451,7 @@ package body Flyology.DB is
          Checkpoint_Base : State_Entry_Array_Access;
          Sources         : not null Scan_Source_Array_Access;
          Captured        : out Natural;
-         Result          : out Outcome_Code)
-      is
+         Result          : out Outcome_Code) is
       begin
          Captured := 0;
          if Snapshot_At < Retained_History_Boundary then
@@ -4632,8 +4594,7 @@ package body Flyology.DB is
          Total : Interfaces.Unsigned_64 := 0;
          Next  : Natural := 0;
 
-         function Valid_Slice
-           (Image : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
+         function Valid_Slice (Image : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
          is
             Image_Length : constant Natural := Flyology.Bytes.Length (Image.Data);
          begin
@@ -4659,10 +4620,9 @@ package body Flyology.DB is
                   if Runtime_Mutation_Sequence (Batch, Index) = 0
                     or else not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
                     or else Mutation.Operation not in Put_Mutation | Delete_Mutation
-                    or else
-                      (Mutation.Operation = Put_Mutation
-                       and then not Valid_Slice
-                                      (Batch.Image, Mutation.Value_Offset, Mutation.Value_Length))
+                    or else (Mutation.Operation = Put_Mutation
+                             and then not Valid_Slice
+                                            (Batch.Image, Mutation.Value_Offset, Mutation.Value_Length))
                     or else (Mutation.Operation = Delete_Mutation and then Mutation.Value_Length /= 0)
                   then
                      return False;
@@ -4727,8 +4687,7 @@ package body Flyology.DB is
                         begin
                            if Mutation.Operation = Put_Mutation then
                               if Amount
-                                > Interfaces.Unsigned_64'Last
-                                  - Interfaces.Unsigned_64 (Mutation.Value_Length)
+                                > Interfaces.Unsigned_64'Last - Interfaces.Unsigned_64 (Mutation.Value_Length)
                               then
                                  Result := Capacity_Exceeded;
                                  return;
@@ -4796,6 +4755,50 @@ package body Flyology.DB is
          end loop;
          Result := Success;
       end Copy_Checkpoint_Identities;
+
+      procedure Validate_Checkpoint_Identity_Partition
+        (Value : not null LSM_Runtime.Checkpoint_Manifest_Access; Result : out Outcome_Code)
+      is
+         Checkpoint_IDs : Reserved_Identity_Array (Value.Identities'Range);
+         Batch_IDs      : Reserved_Identity_Array (1 .. History_Count);
+         Member_IDs     : Reserved_Identity_Array (1 .. Reserved_Count);
+         Member_Batches : Identity_Batch_Index_Array (1 .. Reserved_Count);
+         Member_Total   : Natural := 0;
+      begin
+         for Index in Value.Identities'Range loop
+            Checkpoint_IDs (Index) := To_Identifier (Value.Identities (Index));
+         end loop;
+         for Batch_Index in Positive range 1 .. History_Count loop
+            declare
+               Batch : Runtime_Batch renames History_Batches (Batch_Index);
+            begin
+               if Batch.Transactions = null
+                 or else Batch.Transaction_Total = 0
+                 or else Batch.Transaction_Total /= Batch.Transactions'Length
+                 or else Batch.Transaction_Total > Reserved_Count - Member_Total
+               then
+                  Result := Corrupt;
+                  return;
+               end if;
+               Batch_IDs (Batch_Index) := Batch.Batch_ID;
+               for Transaction_Index in Positive range 1 .. Batch.Transaction_Total loop
+                  Member_Total := Member_Total + 1;
+                  Member_IDs (Member_Total) :=
+                    Identifier (Batch.Transactions (Transaction_Index).Transaction_ID);
+                  Member_Batches (Member_Total) := Batch_Index;
+               end loop;
+            end;
+         end loop;
+         Result :=
+           (if Identity_Partitions.Valid_Partition
+                 (Reserved       => Reserved (1 .. Reserved_Count),
+                  Checkpoint     => Checkpoint_IDs,
+                  Batch_IDs      => Batch_IDs,
+                  Member_IDs     => Member_IDs (1 .. Member_Total),
+                  Member_Batches => Member_Batches (1 .. Member_Total))
+            then Success
+            else Corrupt);
+      end Validate_Checkpoint_Identity_Partition;
 
       procedure Find_Family
         (ID : Column_Family_ID; Configuration : out Column_Family_Configuration; Result : out Outcome_Code) is
@@ -4956,8 +4959,7 @@ package body Flyology.DB is
         (Index             : Positive;
          Transaction_Total : out Natural;
          Mutation_Total    : out Natural;
-         Result            : out Outcome_Code)
-      is
+         Result            : out Outcome_Code) is
       begin
          Transaction_Total := 0;
          Mutation_Total := 0;
@@ -4967,8 +4969,7 @@ package body Flyology.DB is
            or else History_Batches (Index).Image = null
            or else History_Batches (Index).Transaction_Total = 0
            or else History_Batches (Index).Mutation_Total = 0
-           or else History_Batches (Index).Transactions'Length
-                     /= History_Batches (Index).Transaction_Total
+           or else History_Batches (Index).Transactions'Length /= History_Batches (Index).Transaction_Total
            or else History_Batches (Index).Mutations'Length /= History_Batches (Index).Mutation_Total
          then
             Result := Corrupt;
@@ -4979,10 +4980,7 @@ package body Flyology.DB is
          end if;
       end History_Batch_Shape;
 
-      procedure Copy_History_Batch
-        (Index  : Positive;
-         Batch  : in out Runtime_Batch;
-         Result : out Outcome_Code)
+      procedure Copy_History_Batch (Index : Positive; Batch : in out Runtime_Batch; Result : out Outcome_Code)
       is
       begin
          if Index > History_Count then
@@ -5058,11 +5056,11 @@ package body Flyology.DB is
       History_Capacity  : Positive;
       Reserved_Capacity : Positive)
    is limited record
-      Storage           : access Storage_Context;
-      Life              : Database_Lifecycle_Access := null;
-      LSM_Authority     : Engine_LSM_Authority := No_LSM_Authority;
-      Gate              : Coordinator (Entry_Capacity, Seen_Capacity, History_Capacity, Reserved_Capacity);
-      Checkpoint_Images : Checkpoint_Image_Array_Access := null;
+      Storage             : access Storage_Context;
+      Life                : Database_Lifecycle_Access := null;
+      LSM_Authority       : Engine_LSM_Authority := No_LSM_Authority;
+      Gate                : Coordinator (Entry_Capacity, Seen_Capacity, History_Capacity, Reserved_Capacity);
+      Checkpoint_Images   : Checkpoint_Image_Array_Access := null;
       --  Exact current manifest owns the oldest-to-newest run descriptors used
       --  to derive the next successor. It is released only with this engine.
       Checkpoint_Manifest : LSM_Runtime.Checkpoint_Manifest_Access := null;
@@ -5070,8 +5068,8 @@ package body Flyology.DB is
       --  quiescent coordinator during local activation or authenticated SST
       --  counts during cacheless recovery. They borrow Checkpoint_Images and
       --  preserve the base after newer suffix writes replace Entries.
-      Checkpoint_Base   : State_Entry_Array_Access := null;
-      Worker            : Commit_Worker_Access := null;
+      Checkpoint_Base     : State_Entry_Array_Access := null;
+      Worker              : Commit_Worker_Access := null;
    end record;
 
    procedure Signal_Ready_Completions (State : not null Engine_State_Access) is
@@ -5082,14 +5080,16 @@ package body Flyology.DB is
          State.Gate.Signal_Next_Completion (Found, Attempt);
          exit when not Found;
          case Attempt is
-            when Flyology.Wake_Sources.Signal_Delivered =>
+            when Flyology.Wake_Sources.Signal_Delivered   =>
                null;
+
             when Flyology.Wake_Sources.Signal_Interrupted =>
                --  The protected call retained the exact descriptor. Leave
                --  the coordinator before retrying so repeated EINTR cannot
                --  monopolize its bounded critical section.
                null;
-            when Flyology.Wake_Sources.Signal_Failed =>
+
+            when Flyology.Wake_Sources.Signal_Failed      =>
                raise Program_Error with "commit completion signaling failed";
          end case;
       end loop;
@@ -5156,13 +5156,13 @@ package body Flyology.DB is
    end Sort_Snapshot_References;
 
    procedure Build_Family_SST
-     (State        : not null Engine_State_Access;
-      Family_ID    : Column_Family_ID;
-      Run_ID       : Identifier;
-      Value        : out LSM_Runtime.SST_Access;
-      Result       : out Outcome_Code;
+     (State         : not null Engine_State_Access;
+      Family_ID     : Column_Family_ID;
+      Run_ID        : Identifier;
+      Value         : out LSM_Runtime.SST_Access;
+      Result        : out Outcome_Code;
       Complete_View : Boolean := False;
-      Allow_Fenced : Boolean := False)
+      Allow_Fenced  : Boolean := False)
    is
       References      : Snapshot_Entry_Reference_Array_Access := null;
       Entry_Total     : Natural;
@@ -5231,10 +5231,8 @@ package body Flyology.DB is
             Copied_Entries : Natural;
             Copied_Bytes   : Natural;
          begin
-            State.Gate.Family_Delta_Snapshot
-              (Family_ID, References, Copied_Entries, Copied_Bytes, Result);
-            if Result = Success
-              and then (Copied_Entries /= Entry_Total or else Copied_Bytes /= Payload_Bytes)
+            State.Gate.Family_Delta_Snapshot (Family_ID, References, Copied_Entries, Copied_Bytes, Result);
+            if Result = Success and then (Copied_Entries /= Entry_Total or else Copied_Bytes /= Payload_Bytes)
             then
                Result := Invalid_State;
             end if;
@@ -5317,9 +5315,7 @@ package body Flyology.DB is
    end Build_Family_SST;
 
    procedure Prepare_Live_Checkpoint_Base
-     (State  : not null Engine_State_Access;
-      Plan   : in out Checkpoint_Plan;
-      Result : out Outcome_Code)
+     (State : not null Engine_State_Access; Plan : in out Checkpoint_Plan; Result : out Outcome_Code)
    is
       Entry_Total   : Natural := 0;
       Payload_Bytes : Natural;
@@ -5469,32 +5465,44 @@ package body Flyology.DB is
       end loop;
    end Sort_Checkpoint_Identities;
 
+   procedure Snapshot_Engine_History
+     (State   : not null Engine_State_Access;
+      History : out Batch_History_Access;
+      Count   : out Natural;
+      Result  : out Outcome_Code);
+
+   function Valid_History_Snapshot
+     (History    : Batch_History_Access;
+      Count      : Natural;
+      Head       : Head_Snapshot;
+      Checkpoint : LSM_Runtime.Checkpoint_Manifest) return Boolean;
+
    procedure Build_Checkpoint_Plan
-     (State         : not null Engine_State_Access;
-      Runs          : Checkpoint_Run_Identity_Array;
-      Manifest_ID   : Identifier;
-      Transition_ID : Identifier;
-      Plan          : out Checkpoint_Plan;
-      Result        : out Outcome_Code;
+     (State                : not null Engine_State_Access;
+      Runs                 : Checkpoint_Run_Identity_Array;
+      Manifest_ID          : Identifier;
+      Transition_ID        : Identifier;
+      Plan                 : out Checkpoint_Plan;
+      Result               : out Outcome_Code;
       Replace_Current_Runs : Boolean := False;
-      Allow_Fenced  : Boolean := False)
+      Allow_Fenced         : Boolean := False)
    is
-      Base           : Manifests.Manifest;
-      Head           : Head_Snapshot;
-      Generation     : Generation_Value;
-      Uncertain      : Boolean;
-      Fenced         : Boolean;
-      Identity_Total : Natural;
-      Prior          : constant LSM_Runtime.Checkpoint_Manifest_Access := State.Checkpoint_Manifest;
+      Base               : Manifests.Manifest;
+      Head               : Head_Snapshot;
+      Generation         : Generation_Value;
+      Uncertain          : Boolean;
+      Fenced             : Boolean;
+      Identity_Total     : Natural;
+      Prior              : constant LSM_Runtime.Checkpoint_Manifest_Access := State.Checkpoint_Manifest;
       Existing_Run_Total : Natural := 0;
-      New_Run_Total  : Natural := 0;
-      Run_Total      : Natural := 0;
-      Run_Index      : Natural := 0;
-      Allocation     : LSM_Runtime.Allocation_Status;
+      New_Run_Total      : Natural := 0;
+      Run_Total          : Natural := 0;
+      Run_Index          : Natural := 0;
+      Allocation         : LSM_Runtime.Allocation_Status;
       --  This transient projection has exactly the persisted manifest family
       --  slot extent. It changes no database limit and lets map validation
       --  finish before any SST allocation.
-      Required_Families : array (Manifests.Family_Slot) of Boolean := [others => False];
+      Required_Families  : array (Manifests.Family_Slot) of Boolean := [others => False];
 
       function Run_For (Family_ID : Column_Family_ID) return Identifier is
       begin
@@ -5568,9 +5576,7 @@ package body Flyology.DB is
       --  Registry_Revision the current manifest-chain depth. The persisted
       --  history limit is therefore the sole authority for another immutable
       --  successor; equality rejects before any object publication.
-      elsif Base.Registry_Revision
-        >= Interfaces.Unsigned_64 (Base.Limits.Maximum_Manifest_History)
-      then
+      elsif Base.Registry_Revision >= Interfaces.Unsigned_64 (Base.Limits.Maximum_Manifest_History) then
          Result := Capacity_Exceeded;
          return;
       elsif Interfaces.Unsigned_64 (Identity_Total)
@@ -5596,8 +5602,7 @@ package body Flyology.DB is
          Existing_Run_Total := (if Replace_Current_Runs then 0 else Prior.Run_Total);
       end if;
 
-      if Runs'Length > Natural (Base.Family_Total)
-        or else (Runs'Length = 0 and then not Replace_Current_Runs)
+      if Runs'Length > Natural (Base.Family_Total) or else (Runs'Length = 0 and then not Replace_Current_Runs)
       then
          Result := Invalid_State;
          return;
@@ -5732,9 +5737,7 @@ package body Flyology.DB is
                   if Prior /= null then
                      Old_First := Prior.Families (Family_Index).First_Run;
                      Old_Total := Prior.Families (Family_Index).Run_Total;
-                     if Family.State.First_Run /= Old_First
-                       or else Family.State.Run_Total /= Old_Total
-                     then
+                     if Family.State.First_Run /= Old_First or else Family.State.Run_Total /= Old_Total then
                         Release_Checkpoint_Plan (Plan);
                         Result := Corrupt;
                         return;
@@ -5750,11 +5753,10 @@ package body Flyology.DB is
                Result := Corrupt;
                return;
             elsif Plan.SSTs (Family_Index) /= null
-              and then
-                (Retained_Total = Natural'Last
-                 or else Interfaces.Unsigned_64 (Retained_Total) + 1
-                           > Interfaces.Unsigned_64
-                               (Plan.Manifest.Families (Family_Index).Maximum_L0_Runs))
+              and then (Retained_Total = Natural'Last
+                        or else Interfaces.Unsigned_64 (Retained_Total) + 1
+                                > Interfaces.Unsigned_64
+                                    (Plan.Manifest.Families (Family_Index).Maximum_L0_Runs))
             then
                Release_Checkpoint_Plan (Plan);
                Result := Capacity_Exceeded;
@@ -5790,7 +5792,7 @@ package body Flyology.DB is
                if not Replace_Current_Runs
                  and then Old_Total > 0
                  and then Plan.Manifest.Runs (Run_Index).Highest_Sequence
-                           >= Plan.SSTs (Family_Index).Lowest_Sequence
+                          >= Plan.SSTs (Family_Index).Lowest_Sequence
                then
                   Release_Checkpoint_Plan (Plan);
                   Result := Corrupt;
@@ -5894,10 +5896,11 @@ package body Flyology.DB is
       --  current manifest-chain depth. The persisted history bound is the
       --  authority for one more immutable registry successor.
       elsif Base.Registry_Revision = Interfaces.Unsigned_64'Last
-        or else Base.Registry_Revision
-          >= Interfaces.Unsigned_64 (Base.Limits.Maximum_Manifest_History)
+        or else Base.Registry_Revision >= Interfaces.Unsigned_64 (Base.Limits.Maximum_Manifest_History)
         or else Base.Family_Total = Manifests.Family_Count'Last
         or else Interfaces.Unsigned_32 (Base.Family_Total) >= Base.Limits.Maximum_Column_Families
+        or else Interfaces.Unsigned_64 (Identity_Total)
+                > Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Checkpoint_Identities)
       then
          Result := Capacity_Exceeded;
          return;
@@ -5914,20 +5917,32 @@ package body Flyology.DB is
       then
          Result := Corrupt;
          return;
-      elsif Prior.Identity_Total /= Identity_Total then
-         --  Additional reserved identities mean commits exist after the
-         --  retained checkpoint. The caller must Flush that suffix before a
-         --  registry-only successor can preserve it exactly.
-         Result := Invalid_State;
+      elsif Prior.Replay_Boundary > Interfaces.Unsigned_64 (Head.Highest) then
+         Result := Corrupt;
+         return;
+      end if;
+
+      --  The retained checkpoint ledger and the coordinator's post-checkpoint
+      --  batches must form one exact partition of the live reserved-identity
+      --  ledger. A count comparison cannot establish that boundary because a
+      --  valid live suffix necessarily contributes additional identities.
+      State.Gate.Validate_Checkpoint_Identity_Partition (Prior, Result);
+      if Result /= Success then
+         return;
+      elsif Prior.Replay_Boundary = Interfaces.Unsigned_64 (Head.Highest)
+        and then State.Gate.History_Length /= 0
+      then
+         --  Equality is the only direct-activation boundary. Retained batches
+         --  at that boundary would contradict the authenticated HEAD.
+         Result := Corrupt;
          return;
       end if;
 
       for Index in Manifests.Family_Slot range 1 .. Base.Family_Total loop
          if Candidate.ID = Base.Families (Index).ID
-           or else
-             (Candidate.Name_Length = Base.Families (Index).Name_Length
-              and then Candidate.Name (1 .. Candidate.Name_Length)
-                         = Base.Families (Index).Name (1 .. Base.Families (Index).Name_Length))
+           or else (Candidate.Name_Length = Base.Families (Index).Name_Length
+                    and then Candidate.Name (1 .. Candidate.Name_Length)
+                             = Base.Families (Index).Name (1 .. Base.Families (Index).Name_Length))
          then
             Result := Already_Exists;
             return;
@@ -5938,16 +5953,27 @@ package body Flyology.DB is
          return;
       end if;
 
+      if Prior.Replay_Boundary < Interfaces.Unsigned_64 (Head.Highest) then
+         Snapshot_Engine_History (State, Plan.History, Plan.History_Count, Result);
+         if Result = Success
+           and then (Plan.History_Count = 0
+                     or else not Valid_History_Snapshot (Plan.History, Plan.History_Count, Head, Prior.all))
+         then
+            Result := Corrupt;
+         end if;
+         if Result /= Success then
+            Release_Checkpoint_Plan (Plan);
+            return;
+         end if;
+      end if;
+
       Allocation_Faults.Check (Checkpoint_Manifest_Allocation);
       --  The successor's only new extent is one family slot. Run and identity
       --  extents come unchanged from the authenticated retained checkpoint.
       LSM_Runtime.Create_Checkpoint_Manifest
-        (Prior.Family_Total + 1,
-         Prior.Run_Total,
-         Prior.Identity_Total,
-         Plan.Manifest,
-         Allocation);
+        (Prior.Family_Total + 1, Prior.Run_Total, Prior.Identity_Total, Plan.Manifest, Allocation);
       if Allocation /= LSM_Runtime.Allocated then
+         Release_Checkpoint_Plan (Plan);
          Result := Capacity_Exceeded;
          return;
       end if;
@@ -5967,10 +5993,8 @@ package body Flyology.DB is
       Plan.Manifest.Replay_Boundary := Prior.Replay_Boundary;
       Plan.Manifest.Maximum_Total_L0_Runs := Prior.Maximum_Total_L0_Runs;
       Plan.Manifest.Maximum_Checkpoint_Identities := Prior.Maximum_Checkpoint_Identities;
-      Plan.Manifest.Maximum_Point_Reads_Per_Transaction :=
-        Prior.Maximum_Point_Reads_Per_Transaction;
-      Plan.Manifest.Maximum_Scan_Ranges_Per_Transaction :=
-        Prior.Maximum_Scan_Ranges_Per_Transaction;
+      Plan.Manifest.Maximum_Point_Reads_Per_Transaction := Prior.Maximum_Point_Reads_Per_Transaction;
+      Plan.Manifest.Maximum_Scan_Ranges_Per_Transaction := Prior.Maximum_Scan_Ranges_Per_Transaction;
       Plan.Manifest.Families (1 .. Prior.Family_Total) := Prior.Families;
       Plan.Manifest.Families (Plan.Manifest.Family_Total) :=
         (Memtable_Max_Bytes   => Configuration.Memtable_Max_Bytes,
@@ -5987,12 +6011,16 @@ package body Flyology.DB is
          Release_Checkpoint_Plan (Plan);
          Result := Invalid_State;
       elsif Prepare_Activation then
-         --  Direct composable activation needs the same complete current-state
-         --  ownership graph as Flush. The appended family contributes no rows;
-         --  all extents derive lazily from the authenticated live snapshot.
-         Prepare_Live_Checkpoint_Base (State, Plan, Result);
-         if Result /= Success then
-            Release_Checkpoint_Plan (Plan);
+         if Prior.Replay_Boundary = Interfaces.Unsigned_64 (Head.Highest) then
+            --  Only an exact checkpoint boundary can reuse the local base
+            --  directly. A live suffix is activated by cacheless recovery
+            --  after the attempted HEAD has been confirmed.
+            Prepare_Live_Checkpoint_Base (State, Plan, Result);
+            if Result /= Success then
+               Release_Checkpoint_Plan (Plan);
+            end if;
+         else
+            Result := Success;
          end if;
       else
          Result := Success;
@@ -6096,10 +6124,7 @@ package body Flyology.DB is
          end if;
       end Begin_Resolve;
 
-      procedure Begin_Composable_Resolve
-        (State  : out Engine_State_Access;
-         Result : out Outcome_Code)
-      is
+      procedure Begin_Composable_Resolve (State : out Engine_State_Access; Result : out Outcome_Code) is
       begin
          State := null;
          if Mode /= Opened or else Current = null then
@@ -6129,10 +6154,7 @@ package body Flyology.DB is
          end if;
       end Begin_Checkpoint;
 
-      procedure Begin_Composable_Checkpoint
-        (State  : out Engine_State_Access;
-         Result : out Outcome_Code)
-      is
+      procedure Begin_Composable_Checkpoint (State : out Engine_State_Access; Result : out Outcome_Code) is
       begin
          State := null;
          if Mode /= Opened or else Current = null then
@@ -6152,9 +6174,7 @@ package body Flyology.DB is
       end Begin_Composable_Checkpoint;
 
       procedure Promote_Composable_Checkpoint
-        (Expected : not null Engine_State_Access;
-         State    : out Engine_State_Access;
-         Result   : out Outcome_Code)
+        (Expected : not null Engine_State_Access; State : out Engine_State_Access; Result : out Outcome_Code)
       is
       begin
          State := null;
@@ -6188,10 +6208,7 @@ package body Flyology.DB is
          Result := Success;
       end Promote_Composable_Checkpoint;
 
-      procedure Checkpoint_Wait_Source
-        (Descriptor : out Interfaces.C.int;
-         Ready_Now  : out Boolean)
-      is
+      procedure Checkpoint_Wait_Source (Descriptor : out Interfaces.C.int; Ready_Now : out Boolean) is
       begin
          if Mode /= Checkpointing or else Current = null then
             raise Program_Error with "checkpoint wait source outside checkpoint mode";
@@ -6213,10 +6230,7 @@ package body Flyology.DB is
          end if;
       end Checkpoint_Wait_Source;
 
-      procedure Resolve_Wait_Source
-        (Descriptor : out Interfaces.C.int;
-         Ready_Now  : out Boolean)
-      is
+      procedure Resolve_Wait_Source (Descriptor : out Interfaces.C.int; Ready_Now : out Boolean) is
       begin
          if Mode /= Resolving or else Current = null then
             raise Program_Error with "refresh wait source outside resolving mode";
@@ -6372,7 +6386,8 @@ package body Flyology.DB is
 
    procedure Free_Commit_Group_Driver_State is new
      Ada.Unchecked_Deallocation
-       (Object => Commit_Group_Driver_State, Name => Commit_Group_Driver_State_Access);
+       (Object => Commit_Group_Driver_State,
+        Name   => Commit_Group_Driver_State_Access);
 
    procedure Acquire (Item : in out Database; Lease : in out Lifecycle_Lease; Result : out Outcome_Code) is
    begin
@@ -6383,10 +6398,7 @@ package body Flyology.DB is
    end Acquire;
 
    procedure Promote_Composable_Checkpoint
-     (Lease  : in out Lifecycle_Lease;
-      State  : out Engine_State_Access;
-      Result : out Outcome_Code)
-   is
+     (Lease : in out Lifecycle_Lease; State : out Engine_State_Access; Result : out Outcome_Code) is
    begin
       if Lease.Life = null or else Lease.State = null then
          raise Program_Error with "composable checkpoint requires one database lifecycle lease";
@@ -6586,8 +6598,7 @@ package body Flyology.DB is
       end if;
    end Release_Checkpoint_Images;
 
-   procedure Prepare_Checkpoint_Images
-     (Plan : in out Checkpoint_Plan; Result : out Outcome_Code) is
+   procedure Prepare_Checkpoint_Images (Plan : in out Checkpoint_Plan; Result : out Outcome_Code) is
    begin
       Release_Checkpoint_Images (Plan.Images);
       if Plan.Manifest = null then
@@ -6596,9 +6607,7 @@ package body Flyology.DB is
       elsif Plan.Manifest.Run_Total = 0 then
          Result := Success;
          return;
-      elsif Plan.Recovered_SSTs = null
-        or else Plan.Recovered_SSTs'Length /= Plan.Manifest.Run_Total
-      then
+      elsif Plan.Recovered_SSTs = null or else Plan.Recovered_SSTs'Length /= Plan.Manifest.Run_Total then
          Result := Corrupt;
          return;
       end if;
@@ -6624,9 +6633,7 @@ package body Flyology.DB is
          raise;
    end Prepare_Checkpoint_Images;
 
-   procedure Prepare_Checkpoint_Base
-     (Plan : in out Checkpoint_Plan; Result : out Outcome_Code)
-   is
+   procedure Prepare_Checkpoint_Base (Plan : in out Checkpoint_Plan; Result : out Outcome_Code) is
       Entry_Total : Natural := 0;
    begin
       Free_State_Entries (Plan.Base);
@@ -6636,9 +6643,7 @@ package body Flyology.DB is
       elsif Plan.Manifest.Run_Total = 0 then
          Result := Success;
          return;
-      elsif Plan.Recovered_SSTs = null
-        or else Plan.Recovered_SSTs'Length /= Plan.Manifest.Run_Total
-      then
+      elsif Plan.Recovered_SSTs = null or else Plan.Recovered_SSTs'Length /= Plan.Manifest.Run_Total then
          Result := Corrupt;
          return;
       end if;
@@ -7246,8 +7251,7 @@ package body Flyology.DB is
      (Batch          : Runtime_Batch;
       Head           : Head_Snapshot;
       Manifests_Seen : Manifest_History;
-      Manifest_Count : Natural) return Boolean
-   is
+      Manifest_Count : Natural) return Boolean is
    begin
       if Batch.Image = null
         or else Manifest_Count = 0
@@ -7263,9 +7267,8 @@ package body Flyology.DB is
          if To_Database_ID (Manifests_Seen (Index).Database_ID) = Batch.Database_ID
            and then Manifests_Seen (Index).Writer_Epoch = Batch.Epoch
            and then To_Identifier (Manifests_Seen (Index).Expected_Transition_ID)
-              = Batch.Publication_Transition_ID
-           and then Manifests_Seen (Index).Expected_Transition_Number
-                      = Batch.Publication_Transition_Number
+                    = Batch.Publication_Transition_ID
+           and then Manifests_Seen (Index).Expected_Transition_Number = Batch.Publication_Transition_Number
          then
             return True;
          end if;
@@ -7650,19 +7653,14 @@ package body Flyology.DB is
             Transaction_Total : Natural;
             Mutation_Total    : Natural;
          begin
-            State.Gate.History_Batch_Shape
-              (Source_Index, Transaction_Total, Mutation_Total, Result);
-            if Result /= Success
-              or else Transaction_Total = 0
-              or else Mutation_Total = 0
-            then
+            State.Gate.History_Batch_Shape (Source_Index, Transaction_Total, Mutation_Total, Result);
+            if Result /= Success or else Transaction_Total = 0 or else Mutation_Total = 0 then
                Release_History (History, Count);
                Result := Corrupt;
                return;
             end if;
             Allocation_Faults.Check (Recovery_History_Allocation);
-            History (Target_Index).Transactions :=
-              new Runtime_Transaction_Array (1 .. Transaction_Total);
+            History (Target_Index).Transactions := new Runtime_Transaction_Array (1 .. Transaction_Total);
             Allocation_Faults.Check (Recovery_History_Allocation);
             History (Target_Index).Mutations := new Runtime_Mutation_Array (1 .. Mutation_Total);
             State.Gate.Copy_History_Batch (Source_Index, History (Target_Index), Result);
@@ -7686,8 +7684,7 @@ package body Flyology.DB is
      (History    : Batch_History_Access;
       Count      : Natural;
       Head       : Head_Snapshot;
-      Checkpoint : LSM_Runtime.Checkpoint_Manifest) return Boolean
-   is
+      Checkpoint : LSM_Runtime.Checkpoint_Manifest) return Boolean is
    begin
       if History = null
         or else Count = 0
@@ -7701,8 +7698,7 @@ package body Flyology.DB is
       begin
          if Checkpoint.Replay_Boundary = Interfaces.Unsigned_64'Last
            or else Oldest.First_Sequence /= Sequence_Number (Checkpoint.Replay_Boundary) + 1
-           or else Oldest.Expected_Transition_ID
-                     /= To_Identifier (Checkpoint.Base.Publication_Transition_ID)
+           or else Oldest.Expected_Transition_ID /= To_Identifier (Checkpoint.Base.Publication_Transition_ID)
            or else Oldest.Expected_Transition_Number /= Checkpoint.Base.Publication_Transition_Number
          then
             return False;
@@ -7875,8 +7871,8 @@ package body Flyology.DB is
       Admission.Is_Checkpoint :=
         Image (Common_Version_High_Offset) = 0
         and then Image (Common_Version_Low_Offset)
-                   in Byte (LSM_Runtime.LSM.Previous_Checkpoint_Manifest_Format_Version)
-                      | Byte (LSM_Runtime.LSM.Checkpoint_Manifest_Format_Version);
+                 in Byte (LSM_Runtime.LSM.Previous_Checkpoint_Manifest_Format_Version)
+                  | Byte (LSM_Runtime.LSM.Checkpoint_Manifest_Format_Version);
       if Admission.Is_Checkpoint then
          LSM_Runtime.Inspect_Checkpoint_Manifest_Header
            (Image.all,
@@ -7901,8 +7897,7 @@ package body Flyology.DB is
             else Corrupt);
       else
          LSM_Runtime.Release (Image);
-         Result :=
-           (if Object_Length <= Small_Metadata_Buffer'Length then Success else Capacity_Exceeded);
+         Result := (if Object_Length <= Small_Metadata_Buffer'Length then Success else Capacity_Exceeded);
       end if;
    exception
       when Storage_Error =>
@@ -8000,7 +7995,7 @@ package body Flyology.DB is
    --  single bounded range discriminates v1/v2 before allocation. A short v1
    --  object may end after its 96-byte header, one 20-byte entry header, and
    --  4-byte object trailer, so the observed prefix may be shorter than v2.
-   Compatible_SST_Header_Length : constant Positive := LSM_Runtime.SST_V2_Header_Length;
+   Compatible_SST_Header_Length  : constant Positive := LSM_Runtime.SST_V2_Header_Length;
    Minimum_Compatible_SST_Length : constant Positive :=
      LSM_Runtime.LSM.SST_Header_Length
      + LSM_Runtime.LSM.SST_Entry_Header_Length
@@ -8013,8 +8008,7 @@ package body Flyology.DB is
       Expected_Descriptor : LSM_Runtime.Run_Descriptor;
       Object_Length       : Interfaces.Unsigned_64;
       Admission           : out LSM_Runtime.SST_Header_Admission;
-      Status              : out LSM_Runtime.Decode_Status)
-   is
+      Status              : out LSM_Runtime.Decode_Status) is
    begin
       Admission := LSM_Runtime.Empty_SST_Header_Admission;
       if Header'Length < LSM_Runtime.LSM.SST_Header_Length
@@ -8023,22 +8017,16 @@ package body Flyology.DB is
          Status := LSM_Runtime.Invalid_Length;
       elsif Header (Header'First + Common_Version_High_Offset) /= 0 then
          Status := LSM_Runtime.Unsupported_Version;
-      elsif Header (Header'First + Common_Version_Low_Offset)
-        = Byte (LSM_Runtime.LSM.SST_Format_Version)
-      then
+      elsif Header (Header'First + Common_Version_Low_Offset) = Byte (LSM_Runtime.LSM.SST_Format_Version) then
          LSM_Runtime.Inspect_SST_Header
-           (Header
-              (Header'First
-               .. Header'First + LSM_Runtime.LSM.SST_Header_Length - 1),
+           (Header (Header'First .. Header'First + LSM_Runtime.LSM.SST_Header_Length - 1),
             Expected_Database,
             Expected_Family,
             Expected_Descriptor,
             Object_Length,
             Admission,
             Status);
-      elsif Header (Header'First + Common_Version_Low_Offset)
-        = Byte (LSM_Runtime.SST_V2_Format_Version)
-      then
+      elsif Header (Header'First + Common_Version_Low_Offset) = Byte (LSM_Runtime.SST_V2_Format_Version) then
          if Header'Length /= Compatible_SST_Header_Length then
             Status := LSM_Runtime.Invalid_Length;
          else
@@ -8128,8 +8116,7 @@ package body Flyology.DB is
       Maximum_Value_Bytes : Interfaces.Unsigned_64;
       Admission           : LSM_Runtime.SST_Header_Admission;
       Value               : out LSM_Runtime.SST_Access;
-      Status              : out LSM_Runtime.Decode_Status)
-   is
+      Status              : out LSM_Runtime.Decode_Status) is
    begin
       if Admission.Format_Version = LSM_Runtime.LSM.SST_Format_Version then
          LSM_Runtime.Decode_SST
@@ -8247,8 +8234,7 @@ package body Flyology.DB is
             if Family.Run_Total > 0 then
                for Run_Index in Family.First_Run .. Family.First_Run + Family.Run_Total - 1 loop
                   declare
-                     Descriptor        : LSM_Runtime.Run_Descriptor renames
-                       Plan.Manifest.Runs (Run_Index);
+                     Descriptor        : LSM_Runtime.Run_Descriptor renames Plan.Manifest.Runs (Run_Index);
                      Header_Data       : Flyology.Bytes.Unbounded_Bytes;
                      Whole_Data        : Flyology.Bytes.Unbounded_Bytes;
                      Object_Length     : Natural;
@@ -8332,18 +8318,18 @@ package body Flyology.DB is
    end Read_Checkpoint_SSTs;
 
    procedure Prepare_Selected_Merge_Source
-     (State          : not null Engine_State_Access;
-      Older_Run_ID   : Identifier;
-      Middle_Run_ID  : Identifier;
-      Newer_Run_ID   : Identifier;
-      Output_Run_ID  : Identifier;
-      Manifest_ID    : Identifier;
-      Transition_ID  : Identifier;
-      Base           : out Manifests.Manifest;
-      Head           : out Head_Snapshot;
-      Current        : out Checkpoint_Plan;
-      Result         : out Outcome_Code;
-      Allow_Fenced   : Boolean := False)
+     (State         : not null Engine_State_Access;
+      Older_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Base          : out Manifests.Manifest;
+      Head          : out Head_Snapshot;
+      Current       : out Checkpoint_Plan;
+      Result        : out Outcome_Code;
+      Allow_Fenced  : Boolean := False)
    is
       Generation     : Generation_Value;
       Uncertain      : Boolean;
@@ -8363,12 +8349,10 @@ package body Flyology.DB is
         or else Is_Zero (Manifest_ID)
         or else Is_Zero (Transition_ID)
         or else Older_Run_ID = Newer_Run_ID
-        or else
-          (not Is_Zero (Middle_Run_ID)
-           and then
-             (Middle_Run_ID = Older_Run_ID
-              or else Middle_Run_ID = Newer_Run_ID
-              or else Output_Run_ID = Middle_Run_ID))
+        or else (not Is_Zero (Middle_Run_ID)
+                 and then (Middle_Run_ID = Older_Run_ID
+                           or else Middle_Run_ID = Newer_Run_ID
+                           or else Output_Run_ID = Middle_Run_ID))
         or else Output_Run_ID = Older_Run_ID
         or else Output_Run_ID = Newer_Run_ID
         or else Output_Run_ID = Manifest_ID
@@ -8406,16 +8390,13 @@ package body Flyology.DB is
       if Result /= Success then
          return;
       elsif Base.Registry_Revision = Interfaces.Unsigned_64'Last
-        or else Base.Registry_Revision
-          >= Interfaces.Unsigned_64 (Base.Limits.Maximum_Manifest_History)
+        or else Base.Registry_Revision >= Interfaces.Unsigned_64 (Base.Limits.Maximum_Manifest_History)
         or else Interfaces.Unsigned_64 (Identity_Total)
-          > Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Checkpoint_Identities)
+                > Interfaces.Unsigned_64 (State.LSM_Authority.Maximum_Checkpoint_Identities)
       then
          Result := Capacity_Exceeded;
          return;
-      elsif Prior = null
-        or else Prior.Run_Total < (if Is_Zero (Middle_Run_ID) then 2 else 3)
-      then
+      elsif Prior = null or else Prior.Run_Total < (if Is_Zero (Middle_Run_ID) then 2 else 3) then
          Result := Invalid_State;
          return;
       elsif not LSM_Runtime.Structurally_Valid (Prior.all)
@@ -8448,11 +8429,7 @@ package body Flyology.DB is
       --  identity, key, value, or byte ceiling participates in this plan.
       Allocation_Faults.Check (Checkpoint_Manifest_Allocation);
       LSM_Runtime.Create_Checkpoint_Manifest
-        (Prior.Family_Total,
-         Prior.Run_Total,
-         Prior.Identity_Total,
-         Current.Manifest,
-         Allocation);
+        (Prior.Family_Total, Prior.Run_Total, Prior.Identity_Total, Current.Manifest, Allocation);
       if Allocation /= LSM_Runtime.Allocated then
          Result := Capacity_Exceeded;
          return;
@@ -8461,10 +8438,8 @@ package body Flyology.DB is
       Current.Manifest.Replay_Boundary := Prior.Replay_Boundary;
       Current.Manifest.Maximum_Total_L0_Runs := Prior.Maximum_Total_L0_Runs;
       Current.Manifest.Maximum_Checkpoint_Identities := Prior.Maximum_Checkpoint_Identities;
-      Current.Manifest.Maximum_Point_Reads_Per_Transaction :=
-        Prior.Maximum_Point_Reads_Per_Transaction;
-      Current.Manifest.Maximum_Scan_Ranges_Per_Transaction :=
-        Prior.Maximum_Scan_Ranges_Per_Transaction;
+      Current.Manifest.Maximum_Point_Reads_Per_Transaction := Prior.Maximum_Point_Reads_Per_Transaction;
+      Current.Manifest.Maximum_Scan_Ranges_Per_Transaction := Prior.Maximum_Scan_Ranges_Per_Transaction;
       Current.Manifest.Families := Prior.Families;
       Current.Manifest.Runs := Prior.Runs;
       Current.Manifest.Identities := Prior.Identities;
@@ -8480,16 +8455,16 @@ package body Flyology.DB is
    end Prepare_Selected_Merge_Source;
 
    procedure Complete_Selected_Merge_Plan
-     (State          : not null Engine_State_Access;
-      Older_Run_ID   : Identifier;
-      Middle_Run_ID  : Identifier;
-      Newer_Run_ID   : Identifier;
-      Output_Run_ID  : Identifier;
-      Base           : Manifests.Manifest;
-      Head           : Head_Snapshot;
-      Current        : in out Checkpoint_Plan;
-      Plan           : out Checkpoint_Plan;
-      Result         : out Outcome_Code)
+     (State         : not null Engine_State_Access;
+      Older_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Base          : Manifests.Manifest;
+      Head          : Head_Snapshot;
+      Current       : in out Checkpoint_Plan;
+      Plan          : out Checkpoint_Plan;
+      Result        : out Outcome_Code)
    is
       Older_Index  : Natural := 0;
       Middle_Index : Natural := 0;
@@ -8500,16 +8475,13 @@ package body Flyology.DB is
       Merge_Result : LSM_Runtime.Merge_Status;
 
       procedure Clone_SST
-        (Source : LSM_Runtime.SST;
-         Target : out LSM_Runtime.SST_Access;
-         Status : out Outcome_Code)
+        (Source : LSM_Runtime.SST; Target : out LSM_Runtime.SST_Access; Status : out Outcome_Code)
       is
          Clone_Status : LSM_Runtime.Allocation_Status;
       begin
          Target := null;
          Allocation_Faults.Check (Recovery_SST_Image_Allocation);
-         LSM_Runtime.Create_SST
-           (Source.Entry_Total, Source.Payload_Byte_Total, Target, Clone_Status);
+         LSM_Runtime.Create_SST (Source.Entry_Total, Source.Payload_Byte_Total, Target, Clone_Status);
          if Clone_Status = LSM_Runtime.Allocated then
             Target.all := Source;
             Status := Success;
@@ -8532,18 +8504,16 @@ package body Flyology.DB is
       end if;
       for Family_Index in Current.Manifest.Families'Range loop
          declare
-            Family : LSM_Runtime.Family_LSM_State renames
-              Current.Manifest.Families (Family_Index);
+            Family : LSM_Runtime.Family_LSM_State renames Current.Manifest.Families (Family_Index);
          begin
             if Family.Run_Total > 0 then
                for Run_Index in Family.First_Run .. Family.First_Run + Family.Run_Total - 1 loop
                   if Current.Recovered_SSTs (Run_Index) = null
-                    or else
-                      not LSM_Runtime.Descriptor_Matches
-                        (Current.Recovered_SSTs (Run_Index).all,
-                         Current.Manifest.Base.Database_ID,
-                         Current.Manifest.Base.Families (Family_Index).ID,
-                         Current.Manifest.Runs (Run_Index))
+                    or else not LSM_Runtime.Descriptor_Matches
+                                  (Current.Recovered_SSTs (Run_Index).all,
+                                   Current.Manifest.Base.Database_ID,
+                                   Current.Manifest.Base.Families (Family_Index).ID,
+                                   Current.Manifest.Runs (Run_Index))
                   then
                      Release_Checkpoint_Plan (Current);
                      Result := Corrupt;
@@ -8629,8 +8599,7 @@ package body Flyology.DB is
       --  ownership. Allocate_Engine replays the separately snapshotted suffix.
       if Plan.Manifest.Run_Total > 0 then
          Allocation_Faults.Check (Recovery_SST_Image_Allocation);
-         Plan.Recovered_SSTs :=
-           new Recovered_SST_Array'(1 .. Plan.Manifest.Run_Total => null);
+         Plan.Recovered_SSTs := new Recovered_SST_Array'(1 .. Plan.Manifest.Run_Total => null);
       end if;
       for Successor_Index in Plan.Manifest.Runs'Range loop
          if To_Identifier (Plan.Manifest.Runs (Successor_Index).Run_ID) = Output_Run_ID then
@@ -8660,16 +8629,12 @@ package body Flyology.DB is
       if Result = Success then
          Prepare_Checkpoint_Base (Plan, Result);
       end if;
-      if Result = Success
-        and then Plan.Manifest.Replay_Boundary < Interfaces.Unsigned_64 (Head.Highest)
-      then
+      if Result = Success and then Plan.Manifest.Replay_Boundary < Interfaces.Unsigned_64 (Head.Highest) then
          Snapshot_Engine_History (State, Plan.History, Plan.History_Count, Result);
          if Result = Success
-           and then
-             (Plan.History_Count = 0
-              or else
-                not Valid_History_Snapshot
-                  (Plan.History, Plan.History_Count, Head, Current.Manifest.all))
+           and then (Plan.History_Count = 0
+                     or else not Valid_History_Snapshot
+                                   (Plan.History, Plan.History_Count, Head, Current.Manifest.all))
          then
             Result := Corrupt;
          end if;
@@ -8696,18 +8661,18 @@ package body Flyology.DB is
    end Complete_Selected_Merge_Plan;
 
    procedure Build_Selected_Merge_Plan
-     (State          : not null Engine_State_Access;
-      Older_Run_ID   : Identifier;
-      Middle_Run_ID  : Identifier;
-      Newer_Run_ID   : Identifier;
-      Output_Run_ID  : Identifier;
-      Manifest_ID    : Identifier;
-      Transition_ID  : Identifier;
-      Deadline       : Ada.Real_Time.Time;
-      Token          : access Flyology.Cancellation.Token;
-      Plan           : out Checkpoint_Plan;
-      Result         : out Outcome_Code;
-      Allow_Fenced   : Boolean := False)
+     (State         : not null Engine_State_Access;
+      Older_Run_ID  : Identifier;
+      Middle_Run_ID : Identifier;
+      Newer_Run_ID  : Identifier;
+      Output_Run_ID : Identifier;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Deadline      : Ada.Real_Time.Time;
+      Token         : access Flyology.Cancellation.Token;
+      Plan          : out Checkpoint_Plan;
+      Result        : out Outcome_Code;
+      Allow_Fenced  : Boolean := False)
    is
       Base    : Manifests.Manifest;
       Head    : Head_Snapshot;
@@ -8736,16 +8701,7 @@ package body Flyology.DB is
          return;
       end if;
       Complete_Selected_Merge_Plan
-        (State,
-         Older_Run_ID,
-         Middle_Run_ID,
-         Newer_Run_ID,
-         Output_Run_ID,
-         Base,
-         Head,
-         Current,
-         Plan,
-         Result);
+        (State, Older_Run_ID, Middle_Run_ID, Newer_Run_ID, Output_Run_ID, Base, Head, Current, Plan, Result);
    exception
       when others =>
          Release_Checkpoint_Plan (Current);
@@ -8790,8 +8746,7 @@ package body Flyology.DB is
       end loop;
       Formats.Decode_Head (Image, To_Head_ID (Database_ID), Value, Decode_Result);
       if Decode_Result /= Formats.Decoded then
-         Result :=
-           (if Decode_Result = Formats.Unsupported_Version then Unsupported_Format else Corrupt);
+         Result := (if Decode_Result = Formats.Unsupported_Version then Unsupported_Format else Corrupt);
          return;
       end if;
       Head := From_Head (Value);
@@ -8863,33 +8818,33 @@ package body Flyology.DB is
    type Checkpoint_Replay_Boundary_Array is array (History_Slot) of Interfaces.Unsigned_64;
 
    type Recovery_Traversal is record
-      Database_ID       : Database_Identifier := Zero_Database_ID;
-      Sought_Manifest   : Identifier := Zero_Identifier;
-      Found_Sought      : Boolean := False;
-      Phase             : Recovery_Traversal_Phase := Recovery_Needs_Head;
-      Terminal_Result   : Outcome_Code := Invalid_State;
-      Head              : Head_Snapshot;
-      Generation        : Generation_Value;
-      Manifest          : Manifests.Manifest;
-      Root              : Manifests.Manifest;
-      LSM_Authority     : Engine_LSM_Authority;
-      Checkpoint        : Checkpoint_Plan;
-      History           : Batch_History_Access := null;
-      Count             : Natural := 0;
-      Manifests_Seen    : Manifest_History := [others => Manifests.Empty_Manifest];
+      Database_ID                  : Database_Identifier := Zero_Database_ID;
+      Sought_Manifest              : Identifier := Zero_Identifier;
+      Found_Sought                 : Boolean := False;
+      Phase                        : Recovery_Traversal_Phase := Recovery_Needs_Head;
+      Terminal_Result              : Outcome_Code := Invalid_State;
+      Head                         : Head_Snapshot;
+      Generation                   : Generation_Value;
+      Manifest                     : Manifests.Manifest;
+      Root                         : Manifests.Manifest;
+      LSM_Authority                : Engine_LSM_Authority;
+      Checkpoint                   : Checkpoint_Plan;
+      History                      : Batch_History_Access := null;
+      Count                        : Natural := 0;
+      Manifests_Seen               : Manifest_History := [others => Manifests.Empty_Manifest];
       --  These runtime witnesses record which retained fixed bases were
       --  authenticated as complete checkpoint manifests. Their positions are
       --  private traversal state and are never persisted.
-      Checkpoint_Manifests : Checkpoint_Manifest_Flag_Array := [others => False];
+      Checkpoint_Manifests         : Checkpoint_Manifest_Flag_Array := [others => False];
       Checkpoint_Replay_Boundaries : Checkpoint_Replay_Boundary_Array := [others => 0];
-      Manifest_Count      : Natural := 0;
-      Current_Manifest_ID : Identifier := Zero_Identifier;
-      Manifest_Admission  : Manifest_Read_Admission;
-      Replay_Boundary     : Sequence_Number := 0;
-      SST_Run_Index       : Natural := 0;
-      SST_Family_Index    : Natural := 0;
-      SST_Admission       : SST_Read_Admission;
-      Current_Batch_ID    : Identifier := Zero_Identifier;
+      Manifest_Count               : Natural := 0;
+      Current_Manifest_ID          : Identifier := Zero_Identifier;
+      Manifest_Admission           : Manifest_Read_Admission;
+      Replay_Boundary              : Sequence_Number := 0;
+      SST_Run_Index                : Natural := 0;
+      SST_Family_Index             : Natural := 0;
+      SST_Admission                : SST_Read_Admission;
+      Current_Batch_ID             : Identifier := Zero_Identifier;
    end record;
 
    --  Owner-stack scheduling phases only. Positions are never persisted or
@@ -8915,26 +8870,26 @@ package body Flyology.DB is
       Reconcile_Flush_Publication);
 
    type Refresh_Driver_State is record
-      Mode                  : Recovery_Driver_Mode := Refresh_Existing_Database;
-      Database_ID           : Database_Identifier := Zero_Database_ID;
-      Engine                : Engine_State_Access := null;
-      Current_Head          : Head_Snapshot;
-      Current_Generation    : Generation_Value;
-      Expected_Root         : Manifests.Manifest := Manifests.Empty_Manifest;
-      Expected_LSM          : Engine_LSM_Authority := No_LSM_Authority;
-      Expected_Commit       : Commit_Receipt;
-      Expected_Family       : Column_Family_Receipt;
-      Expected_Flush        : Flush_Receipt;
+      Mode                    : Recovery_Driver_Mode := Refresh_Existing_Database;
+      Database_ID             : Database_Identifier := Zero_Database_ID;
+      Engine                  : Engine_State_Access := null;
+      Current_Head            : Head_Snapshot;
+      Current_Generation      : Generation_Value;
+      Expected_Root           : Manifests.Manifest := Manifests.Empty_Manifest;
+      Expected_LSM            : Engine_LSM_Authority := No_LSM_Authority;
+      Expected_Commit         : Commit_Receipt;
+      Expected_Family         : Column_Family_Receipt;
+      Expected_Flush          : Flush_Receipt;
       Observed_Head_Is_Legacy : Boolean := False;
-      Traversal             : Recovery_Traversal;
-      Request               : Recovery_Request;
-      Current_Object_Length : Natural := 0;
-      Request_Generation    : Generation_Value;
-      Phase                 : Refresh_Driver_Phase := Refresh_Idle;
-      Precheck_Result       : Outcome_Code := Success;
-      Resolve_Admitted      : Boolean := False;
-      Open_Admitted         : Boolean := False;
-      Checkpoint_Admitted   : Boolean := False;
+      Traversal               : Recovery_Traversal;
+      Request                 : Recovery_Request;
+      Current_Object_Length   : Natural := 0;
+      Request_Generation      : Generation_Value;
+      Phase                   : Refresh_Driver_Phase := Refresh_Idle;
+      Precheck_Result         : Outcome_Code := Success;
+      Resolve_Admitted        : Boolean := False;
+      Open_Admitted           : Boolean := False;
+      Checkpoint_Admitted     : Boolean := False;
    end record;
 
    procedure Free_Refresh_Driver_State is new
@@ -8994,26 +8949,25 @@ package body Flyology.DB is
    end record;
 
    procedure Free_Lazy_Checkpoint_Read_State is new
-     Ada.Unchecked_Deallocation
-       (Lazy_Checkpoint_Read_State, Lazy_Checkpoint_Read_State_Access);
+     Ada.Unchecked_Deallocation (Lazy_Checkpoint_Read_State, Lazy_Checkpoint_Read_State_Access);
 
    type Get_Driver_Phase is (Get_Idle, Get_Reading_Checkpoint, Get_Terminal);
 
    type Get_Driver_State is record
-      Database_ID      : Database_Identifier := Zero_Database_ID;
-      Incarnation      : Engine_Incarnation := No_Incarnation;
-      Transaction_ID   : Transaction_Identifier := Zero_Transaction_ID;
-      Snapshot_At      : Sequence_Number := 0;
-      Mutation_Version : Interfaces.Unsigned_64 := 0;
+      Database_ID          : Database_Identifier := Zero_Database_ID;
+      Incarnation          : Engine_Incarnation := No_Incarnation;
+      Transaction_ID       : Transaction_Identifier := Zero_Transaction_ID;
+      Snapshot_At          : Sequence_Number := 0;
+      Mutation_Version     : Interfaces.Unsigned_64 := 0;
       Transaction_Captured : Boolean := False;
-      Family           : Column_Family_Configuration;
-      Runs             : Lazy_SST_Run_Array_Access := null;
-      Item_Key         : Flyology.Bytes.Unbounded_Bytes;
-      Phase            : Get_Driver_Phase := Get_Idle;
-      Precheck_Result  : Outcome_Code := Success;
-      Local_Result     : Outcome_Code := Invalid_State;
-      Has_Local_Result : Boolean := False;
-      Needs_Observation : Boolean := False;
+      Family               : Column_Family_Configuration;
+      Runs                 : Lazy_SST_Run_Array_Access := null;
+      Item_Key             : Flyology.Bytes.Unbounded_Bytes;
+      Phase                : Get_Driver_Phase := Get_Idle;
+      Precheck_Result      : Outcome_Code := Success;
+      Local_Result         : Outcome_Code := Invalid_State;
+      Has_Local_Result     : Boolean := False;
+      Needs_Observation    : Boolean := False;
    end record;
 
    procedure Free_Get_Driver_State is new
@@ -9044,7 +8998,7 @@ package body Flyology.DB is
       Count    : Natural := 0;
       Complete : Boolean := False;
       Payload  : Flyology.Bytes.Unbounded_Bytes;
-      Image : Shared_Image_Access := null;
+      Image    : Shared_Image_Access := null;
    end record;
    type Scan_Loaded_Run_Array is array (Positive range <>) of Scan_Loaded_Run;
    type Scan_Loaded_Run_Array_Access is access Scan_Loaded_Run_Array;
@@ -9052,9 +9006,7 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Scan_Loaded_Run_Array, Scan_Loaded_Run_Array_Access);
 
    type Scan_Driver_Purpose is
-     (Materialized_Scan_Initialization,
-      Storage_Scan_Initialization,
-      Storage_Scan_Page);
+     (Materialized_Scan_Initialization, Storage_Scan_Initialization, Storage_Scan_Page);
    type Scan_Driver_Phase is (Scan_Idle, Scan_Reading_Entry, Scan_Terminal);
    --  DB scan parent, next-entry reader, provider, HTTP, and transport work fit
    --  within six exact caller-owned slots. This is private scheduling geometry,
@@ -9099,8 +9051,7 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Scan_Driver_State, Scan_Driver_State_Access);
 
    procedure Free_Lazy_Checkpoint_Read_Operation is new
-     Ada.Unchecked_Deallocation
-       (Lazy_Checkpoint_Read_Operation, Lazy_Checkpoint_Read_Operation_Access);
+     Ada.Unchecked_Deallocation (Lazy_Checkpoint_Read_Operation, Lazy_Checkpoint_Read_Operation_Access);
 
    procedure Free_Lazy_SST_Read_Operation is new
      Ada.Unchecked_Deallocation (Lazy_SST_Read_Operation, Lazy_SST_Read_Operation_Access);
@@ -9124,21 +9075,18 @@ package body Flyology.DB is
       State.Phase := Recovery_Failed;
    end Release_Recovery;
 
-   function Starts_After_Checkpoint
-     (State : Recovery_Traversal;
-      Batch : Runtime_Batch) return Boolean
-   is
+   function Starts_After_Checkpoint (State : Recovery_Traversal; Batch : Runtime_Batch) return Boolean is
    begin
       for Index in Positive range 1 .. State.Manifest_Count loop
          if State.Checkpoint_Manifests (Index)
            and then State.Checkpoint_Replay_Boundaries (Index)
-                      = Interfaces.Unsigned_64 (State.Replay_Boundary)
+                    = Interfaces.Unsigned_64 (State.Replay_Boundary)
            and then To_Database_ID (State.Manifests_Seen (Index).Database_ID) = Batch.Database_ID
            and then State.Manifests_Seen (Index).Writer_Epoch = Batch.Epoch
            and then To_Identifier (State.Manifests_Seen (Index).Publication_Transition_ID)
-                      = Batch.Expected_Transition_ID
+                    = Batch.Expected_Transition_ID
            and then State.Manifests_Seen (Index).Publication_Transition_Number
-                      = Batch.Expected_Transition_Number
+                    = Batch.Expected_Transition_Number
          then
             return True;
          end if;
@@ -9147,62 +9095,46 @@ package body Flyology.DB is
    end Starts_After_Checkpoint;
 
    procedure Start_Recovery
-     (State           : out Recovery_Traversal;
-      Database_ID     : Database_Identifier;
-      Sought_Manifest : Identifier) is
+     (State : out Recovery_Traversal; Database_ID : Database_Identifier; Sought_Manifest : Identifier) is
    begin
-      State :=
-        (Database_ID     => Database_ID,
-         Sought_Manifest => Sought_Manifest,
-         others          => <>);
+      State := (Database_ID => Database_ID, Sought_Manifest => Sought_Manifest, others => <>);
    end Start_Recovery;
 
-   procedure Next_Recovery_Request
-     (State   : Recovery_Traversal;
-      Request : out Recovery_Request)
-   is
+   procedure Next_Recovery_Request (State : Recovery_Traversal; Request : out Recovery_Request) is
    begin
       Request := (others => <>);
       case State.Phase is
-         when Recovery_Needs_Head =>
+         when Recovery_Needs_Head                  =>
             Request.Kind := Recovery_Head_Request;
             Request.Maximum := Formats.Head_Image_Length;
 
-         when Recovery_Needs_Manifest_Header =>
+         when Recovery_Needs_Manifest_Header       =>
             Request.Kind := Recovery_Manifest_Header_Request;
             Request.Object_ID := State.Current_Manifest_ID;
             Request.Maximum := LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length;
             Request.Requested :=
-              (Kind  => OS.Bounded_Range,
-               First => 0,
-               Last  => OS.Byte_Count (Request.Maximum - 1),
-               Count => 0);
+              (Kind => OS.Bounded_Range, First => 0, Last => OS.Byte_Count (Request.Maximum - 1), Count => 0);
 
-         when Recovery_Needs_Manifest_Body =>
+         when Recovery_Needs_Manifest_Body         =>
             Request.Kind := Recovery_Manifest_Body_Request;
             Request.Object_ID := State.Current_Manifest_ID;
             Request.Expected_Generation := State.Manifest_Admission.Generation;
             Request.Maximum := State.Manifest_Admission.Object_Length;
 
-         when Recovery_Needs_SST_Header =>
+         when Recovery_Needs_SST_Header            =>
             Request.Kind := Recovery_SST_Header_Request;
-            Request.Object_ID :=
-              To_Identifier (State.Checkpoint.Manifest.Runs (State.SST_Run_Index).Run_ID);
+            Request.Object_ID := To_Identifier (State.Checkpoint.Manifest.Runs (State.SST_Run_Index).Run_ID);
             Request.Maximum := Compatible_SST_Header_Length;
             Request.Requested :=
-              (Kind  => OS.Bounded_Range,
-               First => 0,
-               Last  => OS.Byte_Count (Request.Maximum - 1),
-               Count => 0);
+              (Kind => OS.Bounded_Range, First => 0, Last => OS.Byte_Count (Request.Maximum - 1), Count => 0);
 
-         when Recovery_Needs_SST_Body =>
+         when Recovery_Needs_SST_Body              =>
             Request.Kind := Recovery_SST_Body_Request;
-            Request.Object_ID :=
-              To_Identifier (State.Checkpoint.Manifest.Runs (State.SST_Run_Index).Run_ID);
+            Request.Object_ID := To_Identifier (State.Checkpoint.Manifest.Runs (State.SST_Run_Index).Run_ID);
             Request.Expected_Generation := State.SST_Admission.Generation;
             Request.Maximum := State.SST_Admission.Object_Length;
 
-         when Recovery_Needs_Batch =>
+         when Recovery_Needs_Batch                 =>
             Request.Kind := Recovery_Batch_Request;
             Request.Object_ID := State.Current_Batch_ID;
             Request.Maximum := Maximum_Runtime_Batch_Length (State.Manifest.Limits);
@@ -9234,8 +9166,7 @@ package body Flyology.DB is
       elsif State.Head.Highest < State.Replay_Boundary then
          Fail_Recovery (State, Corrupt);
          return;
-      elsif Capacity = 0
-        or else Interfaces.Unsigned_64 (Capacity) > Interfaces.Unsigned_64 (Positive'Last)
+      elsif Capacity = 0 or else Interfaces.Unsigned_64 (Capacity) > Interfaces.Unsigned_64 (Positive'Last)
       then
          Fail_Recovery (State, Capacity_Exceeded);
          return;
@@ -9263,12 +9194,10 @@ package body Flyology.DB is
       State.SST_Family_Index := 0;
       for Family_Index in State.Checkpoint.Manifest.Families'Range loop
          declare
-            Family : LSM_Runtime.Family_LSM_State renames
-              State.Checkpoint.Manifest.Families (Family_Index);
+            Family : LSM_Runtime.Family_LSM_State renames State.Checkpoint.Manifest.Families (Family_Index);
          begin
             if Family.Run_Total > 0
-              and then State.SST_Run_Index
-                         in Family.First_Run .. Family.First_Run + Family.Run_Total - 1
+              and then State.SST_Run_Index in Family.First_Run .. Family.First_Run + Family.Run_Total - 1
             then
                State.SST_Family_Index := Family_Index;
                exit;
@@ -9333,12 +9262,7 @@ package body Flyology.DB is
          return;
       end if;
       Inspect_Leading_Manifest_Header
-        (Data,
-         Length,
-         Generation,
-         State.Database_ID,
-         State.Manifest_Admission,
-         Result);
+        (Data, Length, Generation, State.Database_ID, State.Manifest_Admission, Result);
       if Result = Success then
          State.Phase := Recovery_Needs_Manifest_Body;
       else
@@ -9391,8 +9315,7 @@ package body Flyology.DB is
       if To_Identifier (Decoded_Manifest.Manifest_ID) /= State.Current_Manifest_ID then
          Fail_Recovery (State, Corrupt);
          return;
-      elsif not Is_Zero (State.Sought_Manifest)
-        and then State.Current_Manifest_ID = State.Sought_Manifest
+      elsif not Is_Zero (State.Sought_Manifest) and then State.Current_Manifest_ID = State.Sought_Manifest
       then
          State.Found_Sought := True;
       end if;
@@ -9421,7 +9344,7 @@ package body Flyology.DB is
             Fail_Recovery (State, Result);
             return;
          elsif Interfaces.Unsigned_32 (State.Manifest_Count)
-                 = State.Manifests_Seen (1).Limits.Maximum_Manifest_History
+           = State.Manifests_Seen (1).Limits.Maximum_Manifest_History
          then
             Fail_Recovery (State, Corrupt);
             return;
@@ -9438,8 +9361,7 @@ package body Flyology.DB is
       if not Manifests.Runtime_Compatible (State.Manifest) then
          Fail_Recovery (State, Capacity_Exceeded);
          return;
-      elsif State.Checkpoint.Manifest /= null
-        and then not Manifests.Is_Root (State.Checkpoint.Manifest.Base)
+      elsif State.Checkpoint.Manifest /= null and then not Manifests.Is_Root (State.Checkpoint.Manifest.Base)
       then
          if State.Checkpoint.Manifest.Replay_Boundary = 0
            or else State.Checkpoint.Manifest.Replay_Boundary > Interfaces.Unsigned_64 (State.Head.Highest)
@@ -9566,9 +9488,8 @@ package body Flyology.DB is
          return;
       elsif State.Count = 1
         and then not Runtime_Published_By (State.History (State.Count), State.Head)
-        and then
-          not Runtime_Anchored_By_Manifest_Chain
-                (State.History (State.Count), State.Head, State.Manifests_Seen, State.Manifest_Count)
+        and then not Runtime_Anchored_By_Manifest_Chain
+                       (State.History (State.Count), State.Head, State.Manifests_Seen, State.Manifest_Count)
       then
          Fail_Recovery (State, Corrupt);
          return;
@@ -9576,8 +9497,7 @@ package body Flyology.DB is
          Fail_Recovery (State, Corrupt);
          return;
       elsif State.Count > 1
-        and then not Runtime_Valid_Predecessor
-                       (State.History (State.Count - 1), State.History (State.Count))
+        and then not Runtime_Valid_Predecessor (State.History (State.Count - 1), State.History (State.Count))
       then
          Fail_Recovery (State, Corrupt);
          return;
@@ -9613,8 +9533,7 @@ package body Flyology.DB is
       Checkpoint    : out Checkpoint_Plan;
       History       : out Batch_History_Access;
       Count         : out Natural;
-      Result        : out Outcome_Code)
-   is
+      Result        : out Outcome_Code) is
    begin
       Result := State.Terminal_Result;
       if State.Phase = Recovery_Completed then
@@ -9659,13 +9578,13 @@ package body Flyology.DB is
       Sought_Manifest : Identifier := Zero_Identifier;
       Sought_Found    : access Boolean := null)
    is
-      State      : Recovery_Traversal;
-      Request    : Recovery_Request;
-      Small_Data : Small_Metadata_Buffer;
-      Data       : Flyology.Bytes.Unbounded_Bytes;
-      Length     : Natural;
+      State                 : Recovery_Traversal;
+      Request               : Recovery_Request;
+      Small_Data            : Small_Metadata_Buffer;
+      Data                  : Flyology.Bytes.Unbounded_Bytes;
+      Length                : Natural;
       Generation_Value_Read : Generation_Value;
-      Read_Result : Read_Outcome;
+      Read_Result           : Read_Outcome;
    begin
       if Sought_Found /= null then
          Sought_Found.all := False;
@@ -9674,7 +9593,7 @@ package body Flyology.DB is
       loop
          Next_Recovery_Request (State, Request);
          case Request.Kind is
-            when Recovery_Head_Request =>
+            when Recovery_Head_Request            =>
                Storage_Port.Get_Whole
                  (Storage,
                   Full_Key (Storage, Head_Key_Suffix),
@@ -9685,8 +9604,7 @@ package body Flyology.DB is
                   Length,
                   Generation_Value_Read,
                   Read_Result);
-               Consume_Recovery_Head
-                 (State, Small_Data, Length, Generation_Value_Read, Read_Result);
+               Consume_Recovery_Head (State, Small_Data, Length, Generation_Value_Read, Read_Result);
 
             when Recovery_Manifest_Header_Request =>
                Storage_Port.Get_Selected
@@ -9702,10 +9620,9 @@ package body Flyology.DB is
                   Generation_Value_Read,
                   Read_Result,
                   Request.Maximum);
-               Consume_Recovery_Manifest_Header
-                 (State, Data, Length, Generation_Value_Read, Read_Result);
+               Consume_Recovery_Manifest_Header (State, Data, Length, Generation_Value_Read, Read_Result);
 
-            when Recovery_Manifest_Body_Request =>
+            when Recovery_Manifest_Body_Request   =>
                Storage_Port.Get_Selected
                  (Storage,
                   Manifest_Key (Storage, Request.Object_ID),
@@ -9719,10 +9636,9 @@ package body Flyology.DB is
                   Generation_Value_Read,
                   Read_Result,
                   Request.Maximum);
-               Consume_Recovery_Manifest_Body
-                 (State, Data, Length, Generation_Value_Read, Read_Result);
+               Consume_Recovery_Manifest_Body (State, Data, Length, Generation_Value_Read, Read_Result);
 
-            when Recovery_SST_Header_Request =>
+            when Recovery_SST_Header_Request      =>
                Storage_Port.Get_Selected
                  (Storage,
                   Run_Key (Storage, Request.Object_ID),
@@ -9736,10 +9652,9 @@ package body Flyology.DB is
                   Generation_Value_Read,
                   Read_Result,
                   Request.Maximum);
-               Consume_Recovery_SST_Header
-                 (State, Data, Length, Generation_Value_Read, Read_Result);
+               Consume_Recovery_SST_Header (State, Data, Length, Generation_Value_Read, Read_Result);
 
-            when Recovery_SST_Body_Request =>
+            when Recovery_SST_Body_Request        =>
                Storage_Port.Get_Selected
                  (Storage,
                   Run_Key (Storage, Request.Object_ID),
@@ -9753,10 +9668,9 @@ package body Flyology.DB is
                   Generation_Value_Read,
                   Read_Result,
                   Request.Maximum);
-               Consume_Recovery_SST_Body
-                 (State, Data, Length, Generation_Value_Read, Read_Result);
+               Consume_Recovery_SST_Body (State, Data, Length, Generation_Value_Read, Read_Result);
 
-            when Recovery_Batch_Request =>
+            when Recovery_Batch_Request           =>
                Storage_Port.Get_Whole
                  (Storage,
                   Batch_Key (Storage, Request.Object_ID),
@@ -9769,7 +9683,7 @@ package body Flyology.DB is
                   Request.Maximum);
                Consume_Recovery_Batch (State, Data, Read_Result);
 
-            when Recovery_No_Request =>
+            when Recovery_No_Request              =>
                exit;
          end case;
       end loop;
@@ -9777,16 +9691,7 @@ package body Flyology.DB is
          Sought_Found.all := State.Found_Sought;
       end if;
       Finish_Recovery
-        (State,
-         Head,
-         Generation,
-         Manifest,
-         Root,
-         LSM_Authority,
-         Checkpoint,
-         History,
-         Count,
-         Result);
+        (State, Head, Generation, Manifest, Root, LSM_Authority, Checkpoint, History, Count, Result);
    exception
       when others =>
          if Sought_Found /= null then
@@ -9985,11 +9890,7 @@ package body Flyology.DB is
          Incarnation);
       if Checkpoint.Manifest /= null then
          State.Gate.Recover_Checkpoint
-           (Checkpoint,
-            Checkpoint.Images,
-            Checkpoint.Base,
-            Checkpoint_Live_Count,
-            Result);
+           (Checkpoint, Checkpoint.Images, Checkpoint.Base, Checkpoint_Live_Count, Result);
          if Result /= Success then
             Release_History (History, Count);
             Release_Checkpoint_Plan (Checkpoint);
@@ -10154,19 +10055,15 @@ package body Flyology.DB is
    end Configure_Column_Family;
 
    function Is_Valid_Column_Family_Configuration (Item : Column_Family_Configuration) return Boolean
-   is
-     (Manifests.Valid_Configuration (To_Manifest_Configuration (Item))
-      and then Item.Memtable_Max_Bytes /= 0
-      and then Item.Memtable_Max_Entries /= 0
-      and then Item.Maximum_L0_Runs /= 0);
+   is (Manifests.Valid_Configuration (To_Manifest_Configuration (Item))
+       and then Item.Memtable_Max_Bytes /= 0
+       and then Item.Memtable_Max_Entries /= 0
+       and then Item.Maximum_L0_Runs /= 0);
 
-   function Column_Family_Configuration_ID
-     (Item : Column_Family_Configuration) return Column_Family_ID
+   function Column_Family_Configuration_ID (Item : Column_Family_Configuration) return Column_Family_ID
    is (Item.ID);
 
-   function Column_Family_Configuration_Name
-     (Item : Column_Family_Configuration) return Byte_Array
-   is
+   function Column_Family_Configuration_Name (Item : Column_Family_Configuration) return Byte_Array is
       Result : Byte_Array (1 .. Item.Name_Length);
    begin
       for Index in Result'Range loop
@@ -11085,8 +10982,7 @@ package body Flyology.DB is
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
       Timeout        : Duration;
       Token          : access Flyology.Cancellation.Token := null;
-      Result         : out Outcome_Code)
-   is
+      Result         : out Outcome_Code) is
    begin
       if not Storage_Bound (Storage.all)
         or else Storage.HTTP_Client = null
@@ -11101,15 +10997,12 @@ package body Flyology.DB is
          --  recovery owner stack. This derived scheduling geometry is not a
          --  persisted or public recovery-object bound.
          Synchronous_Open_Set_Capacity : constant := 4;
-         Set : aliased Flyology.Operations.Completion_Set (Synchronous_Open_Set_Capacity);
-         Operation : Open_Operation
-           (Set'Access,
-            Item'Unchecked_Access,
-            Storage,
-            Storage.HTTP_Client,
-            Payload_Buffer.Owner,
-            Token);
-         Started : Boolean := False;
+         Set                           :
+           aliased Flyology.Operations.Completion_Set (Synchronous_Open_Set_Capacity);
+         Operation                     :
+           Open_Operation
+             (Set'Access, Item'Unchecked_Access, Storage, Storage.HTTP_Client, Payload_Buffer.Owner, Token);
+         Started                       : Boolean := False;
       begin
          Open (Database_ID, Payload_Buffer, Timeout, Operation);
          Started := True;
@@ -11178,8 +11071,7 @@ package body Flyology.DB is
      (Item           : in out Database;
       Transaction_ID : Transaction_Identifier;
       Txn            : out Transaction;
-      Result         : out Outcome_Code)
-   is
+      Result         : out Outcome_Code) is
    begin
       Begin_Transaction (Item, Transaction_ID, Snapshot, Txn, Result);
    end Begin_Transaction;
@@ -11230,11 +11122,7 @@ package body Flyology.DB is
          Allocation_Faults.Check (Transaction_Arena_Allocation);
          Mutations := new Owned_Mutation_Array (1 .. Natural (Mutation_Limit));
          Txn.Owner.Arena :=
-           new Transaction_Arena'
-             (Mutations => Mutations,
-              Count => 0,
-              Bytes_Used => 0,
-              others => <>);
+           new Transaction_Arena'(Mutations => Mutations, Count => 0, Bytes_Used => 0, others => <>);
          Mutations := null;
          Image_Accounting.Record_Arena_Allocation;
          Txn.Active := True;
@@ -11370,7 +11258,8 @@ package body Flyology.DB is
       Candidate_Snapshot : Database_Configuration_Snapshot;
       --  Persisted manifest compatibility bounds the complete candidate set;
       --  this is not a new registry capacity or caller-visible default.
-      Candidates : Column_Family_Configuration_Array (Manifests.Family_Slot) := [others => (others => <>)];
+      Candidates         : Column_Family_Configuration_Array (Manifests.Family_Slot) :=
+        [others => (others => <>)];
    begin
       Acquire (Item, Lease, Result);
       if Result /= Success then
@@ -11499,8 +11388,7 @@ package body Flyology.DB is
    end Compare_Bytes;
 
    function Same_Endpoint
-     (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural; Value : Byte_Array) return Boolean
-   is
+     (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural; Value : Byte_Array) return Boolean is
    begin
       if Stored_Length /= Value'Length then
          return False;
@@ -11630,71 +11518,67 @@ package body Flyology.DB is
       Copied_Upper    : Natural := 0;
 
       function Stored_Before_Final_Lower
-        (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural) return Boolean
-      is
+        (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural) return Boolean is
       begin
          if Lower_Is_Input then
             return Compare_Stored_To_Bytes (Stored, Stored_Length, Lower) = Before;
          else
-            return Compare_Stored_Endpoints
-              (Stored, Stored_Length, Lower_Source.Lower, Lower_Source.Lower_Length)
+            return
+              Compare_Stored_Endpoints (Stored, Stored_Length, Lower_Source.Lower, Lower_Source.Lower_Length)
               = Before;
          end if;
       end Stored_Before_Final_Lower;
 
       function Final_Upper_Before_Stored
-        (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural) return Boolean
-      is
+        (Stored : Flyology.Bytes.Unbounded_Bytes; Stored_Length : Natural) return Boolean is
       begin
          if Upper_Is_Input then
             return Compare_Stored_To_Bytes (Stored, Stored_Length, Upper) = After;
          else
-            return Compare_Stored_Endpoints
-              (Upper_Source.Upper, Upper_Source.Upper_Length, Stored, Stored_Length)
+            return
+              Compare_Stored_Endpoints (Upper_Source.Upper, Upper_Source.Upper_Length, Stored, Stored_Length)
               = Before;
          end if;
       end Final_Upper_Before_Stored;
 
       function Connected_To_Final (Item : Owned_Scan_Range) return Boolean is
       begin
-         return Item.Family = Family
-           and then
-             (not Item.Has_Upper
-              or else not Final_Has_Lower
-              or else not Stored_Before_Final_Lower (Item.Upper, Item.Upper_Length))
-           and then
-             (not Final_Has_Upper
-              or else not Item.Has_Lower
-              or else not Final_Upper_Before_Stored (Item.Lower, Item.Lower_Length));
+         return
+           Item.Family = Family
+           and then (not Item.Has_Upper
+                     or else not Final_Has_Lower
+                     or else not Stored_Before_Final_Lower (Item.Upper, Item.Upper_Length))
+           and then (not Final_Has_Upper
+                     or else not Item.Has_Lower
+                     or else not Final_Upper_Before_Stored (Item.Lower, Item.Lower_Length));
       end Connected_To_Final;
 
       function Same_As_Final (Item : Owned_Scan_Range) return Boolean is
       begin
-         return Item.Family = Family
+         return
+           Item.Family = Family
            and then Item.Has_Lower = Final_Has_Lower
            and then Item.Has_Upper = Final_Has_Upper
-           and then
-             (not Final_Has_Lower
-              or else
-                (if Lower_Is_Input
-                 then Same_Endpoint (Item.Lower, Item.Lower_Length, Lower)
-                 else Compare_Stored_Endpoints
-                        (Item.Lower,
-                         Item.Lower_Length,
-                         Lower_Source.Lower,
-                         Lower_Source.Lower_Length)
-                      = Same))
-           and then
-             (not Final_Has_Upper
-              or else
-                (if Upper_Is_Input
-                 then Same_Endpoint (Item.Upper, Item.Upper_Length, Upper)
-                 else Compare_Stored_Endpoints
-                        (Item.Upper,
-                         Item.Upper_Length,
-                         Upper_Source.Upper,
-                         Upper_Source.Upper_Length)
-                      = Same));
+           and then (not Final_Has_Lower
+                     or else (if Lower_Is_Input
+                              then Same_Endpoint (Item.Lower, Item.Lower_Length, Lower)
+                              else
+                                Compare_Stored_Endpoints
+                                  (Item.Lower,
+                                   Item.Lower_Length,
+                                   Lower_Source.Lower,
+                                   Lower_Source.Lower_Length)
+                                = Same))
+           and then (not Final_Has_Upper
+                     or else (if Upper_Is_Input
+                              then Same_Endpoint (Item.Upper, Item.Upper_Length, Upper)
+                              else
+                                Compare_Stored_Endpoints
+                                  (Item.Upper,
+                                   Item.Upper_Length,
+                                   Upper_Source.Upper,
+                                   Upper_Source.Upper_Length)
+                                = Same));
       end Same_As_Final;
    begin
       loop
@@ -12123,27 +12007,26 @@ package body Flyology.DB is
          Result := Success;
          return;
       end if;
-      Record_Scan_Range
-        (Txn, Family.Configuration.ID, Has_Lower, Lower, Has_Upper, Upper, Result);
+      Record_Scan_Range (Txn, Family.Configuration.ID, Has_Lower, Lower, Has_Upper, Upper, Result);
    exception
       when Storage_Error =>
          Result := Capacity_Exceeded;
    end Observe_Range;
 
    procedure Build_Scan_Cursor
-     (Item      : in out Database;
-      Txn       : in out Transaction;
-      Family    : Column_Family;
-      Has_Lower : Boolean;
-      Lower     : Byte_Array;
-      Has_Upper : Boolean;
-      Upper     : Byte_Array;
-      Retained_Runs : Lazy_SST_Run_Array_Access;
+     (Item           : in out Database;
+      Txn            : in out Transaction;
+      Family         : Column_Family;
+      Has_Lower      : Boolean;
+      Lower          : Byte_Array;
+      Has_Upper      : Boolean;
+      Upper          : Byte_Array;
+      Retained_Runs  : Lazy_SST_Run_Array_Access;
       Storage_Backed : Boolean;
-      Loaded       : Scan_Loaded_Run_Array_Access;
-      Pinned_State : Engine_State_Access;
-      Cursor    : in out Scan_Cursor;
-      Result    : out Outcome_Code)
+      Loaded         : Scan_Loaded_Run_Array_Access;
+      Pinned_State   : Engine_State_Access;
+      Cursor         : in out Scan_Cursor;
+      Result         : out Outcome_Code)
    is
       Lease         : Lifecycle_Lease;
       State         : Engine_State_Access := Pinned_State;
@@ -12158,7 +12041,7 @@ package body Flyology.DB is
          Captured          : Natural := 0;
          Raw_Count         : Natural := 0;
          Own_Count         : Natural := 0;
-         External_Count         : Natural := 0;
+         External_Count    : Natural := 0;
          Entry_Total       : Natural := 0;
          Source_Total      : Natural := 0;
          Raw               : Scan_Source_Array_Access := null;
@@ -12541,8 +12424,7 @@ package body Flyology.DB is
          State := Lease.State;
       end if;
       State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
-      if Txn.Database_ID /= Head.Database_ID or else Txn.Incarnation /= State.Gate.Current_Incarnation
-      then
+      if Txn.Database_ID /= Head.Database_ID or else Txn.Incarnation /= State.Gate.Current_Incarnation then
          Result := Invalid_State;
          return;
       elsif Uncertain then
@@ -12652,12 +12534,12 @@ package body Flyology.DB is
          Lower,
          Has_Upper,
          Upper,
-         Retained_Runs => null,
+         Retained_Runs  => null,
          Storage_Backed => False,
-         Loaded => null,
-         Pinned_State => null,
-         Cursor => Cursor,
-         Result => Result);
+         Loaded         => null,
+         Pinned_State   => null,
+         Cursor         => Cursor,
+         Result         => Result);
    end Start_Scan;
 
    procedure Materialize_Physical_Scan_Page
@@ -12696,8 +12578,7 @@ package body Flyology.DB is
       Cursor : Scan_Cursor;
       Done   : Boolean;
    begin
-      Start_Scan
-        (Item, Txn, Family, Has_Lower, Lower, Has_Upper, Upper, Cursor, Result);
+      Start_Scan (Item, Txn, Family, Has_Lower, Lower, Has_Upper, Upper, Cursor, Result);
       if Result /= Success then
          return;
       end if;
@@ -13132,8 +13013,7 @@ package body Flyology.DB is
       Maximum_Bytes : Interfaces.Unsigned_64;
       Rows          : in out Scan_Result;
       Done          : out Boolean;
-      Result        : out Outcome_Code)
-   is
+      Result        : out Outcome_Code) is
    begin
       Continue_Scan_Page
         (Item,
@@ -13238,8 +13118,7 @@ package body Flyology.DB is
    end Release_Commit_Driver;
 
    procedure Collect_Composable_Commit
-     (Item     : in out Commit_Operation;
-      Terminal : Flyology.Operations.Terminal_Outcome)
+     (Item : in out Commit_Operation; Terminal : Flyology.Operations.Terminal_Outcome)
    is
       Internal       : Internal_Receipt;
       Released_Arena : Transaction_Arena_Owner;
@@ -13285,17 +13164,15 @@ package body Flyology.DB is
          --  Every externally completed operation in one set shares its wake
          --  descriptor. Another operation may therefore have produced this
          --  readiness event; rearm the exact admitted slot without polling.
-         Flyology.Operations.Drivers.Arm_Readiness
-           (Item, Item.Driver_State.Read_Descriptor, False);
+         Flyology.Operations.Drivers.Arm_Readiness (Item, Item.Driver_State.Read_Descriptor, False);
          return;
       end if;
 
       Collect_Composable_Commit (Item, Flyology.Operations.Succeeded);
    end Complete_Composable_Commit;
 
-   overriding procedure Drive
-     (Item  : in out Commit_Operation;
-      Event : Flyology.Operations.Driver_Event) is
+   overriding
+   procedure Drive (Item : in out Commit_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       if Event in Flyology.Operations.Start_Operation | Flyology.Operations.Source_Ready then
          Complete_Composable_Commit (Item);
@@ -13317,7 +13194,8 @@ package body Flyology.DB is
          end if;
    end Drive;
 
-   overriding procedure Request_Cancellation (Item : in out Commit_Operation) is
+   overriding
+   procedure Request_Cancellation (Item : in out Commit_Operation) is
       pragma Unreferenced (Item);
    begin
       --  Coordinator admission is the mutation boundary. The blocking API has
@@ -13332,19 +13210,14 @@ package body Flyology.DB is
       Item    : not null access Database;
       Txn     : in out Transaction;
       Timeout : Duration;
-      Token   : access Flyology.Cancellation.Token := null)
-      return Commit_Operation'Class is
+      Token   : access Flyology.Cancellation.Token := null) return Commit_Operation'Class is
    begin
       return Result : Commit_Operation (Set, Item, Token) do
          Commit (Txn, Timeout, Result);
       end return;
    end Commit;
 
-   procedure Commit
-     (Txn       : in out Transaction;
-      Timeout   : Duration;
-      Operation : in out Commit_Operation)
-   is
+   procedure Commit (Txn : in out Transaction; Timeout : Duration; Operation : in out Commit_Operation) is
       Deadline          : constant Ada.Real_Time.Time := Deadline_After (Timeout);
       Head              : Head_Snapshot;
       Generation        : Generation_Value;
@@ -13453,9 +13326,7 @@ package body Flyology.DB is
    end Commit;
 
    procedure Finish
-     (Operation : in out Commit_Operation;
-      Receipt   : out Commit_Receipt;
-      Result    : out Outcome_Code) is
+     (Operation : in out Commit_Operation; Receipt : out Commit_Receipt; Result : out Outcome_Code) is
    begin
       Flyology.Operations.Consume (Operation);
       Receipt := Operation.Final_Receipt;
@@ -13481,7 +13352,8 @@ package body Flyology.DB is
       Operation.Has_Saved_Error := False;
    end Finish;
 
-   overriding procedure Finalize (Item : in out Commit_Operation) is
+   overriding
+   procedure Finalize (Item : in out Commit_Operation) is
    begin
       begin
          Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
@@ -13561,8 +13433,7 @@ package body Flyology.DB is
    end Release_Commit_Group_Driver;
 
    procedure Collect_Composable_Commit_Group
-     (Item     : in out Commit_Group_Operation;
-      Terminal : Flyology.Operations.Terminal_Outcome)
+     (Item : in out Commit_Group_Operation; Terminal : Flyology.Operations.Terminal_Outcome)
    is
       Internal       : Internal_Receipt;
       Released_Arena : Transaction_Arena_Owner;
@@ -13580,12 +13451,8 @@ package body Flyology.DB is
             begin
                Internal := (others => <>);
                Released_Arena.Arena := null;
-               Item.Driver_State.Lease.State.Gate.Await_Result
-                 (Item.Driver_State.Tokens (Index).Index)
-                 (Item.Driver_State.Tokens (Index).Generation,
-                  Internal,
-                  Released_Arena.Arena,
-                  Member_Result);
+               Item.Driver_State.Lease.State.Gate.Await_Result (Item.Driver_State.Tokens (Index).Index)
+                 (Item.Driver_State.Tokens (Index).Generation, Internal, Released_Arena.Arena, Member_Result);
                Collected := True;
                Item.Driver_State.Next := Natural (Index) + 1;
                Adopt_Receipt (Item.Final_Receipts (Index), Internal);
@@ -13624,17 +13491,15 @@ package body Flyology.DB is
       then
          raise Program_Error with "commit group operation has no admitted coordinator slots";
       elsif not Item.Driver_State.Lease.State.Gate.Result_Ready (Item.Driver_State.Tokens (1)) then
-         Flyology.Operations.Drivers.Arm_Readiness
-           (Item, Item.Driver_State.Read_Descriptor, False);
+         Flyology.Operations.Drivers.Arm_Readiness (Item, Item.Driver_State.Read_Descriptor, False);
          return;
       end if;
 
       Collect_Composable_Commit_Group (Item, Flyology.Operations.Succeeded);
    end Complete_Composable_Commit_Group;
 
-   overriding procedure Drive
-     (Item  : in out Commit_Group_Operation;
-      Event : Flyology.Operations.Driver_Event) is
+   overriding
+   procedure Drive (Item : in out Commit_Group_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       if Event in Flyology.Operations.Start_Operation | Flyology.Operations.Source_Ready then
          Complete_Composable_Commit_Group (Item);
@@ -13656,7 +13521,8 @@ package body Flyology.DB is
          end if;
    end Drive;
 
-   overriding procedure Request_Cancellation (Item : in out Commit_Group_Operation) is
+   overriding
+   procedure Request_Cancellation (Item : in out Commit_Group_Operation) is
       pragma Unreferenced (Item);
    begin
       --  Atomic admission is the mutation boundary. Once admitted, the exact
@@ -13670,8 +13536,7 @@ package body Flyology.DB is
       Group_ID     : Identifier;
       Transactions : in out Transaction_Array;
       Timeout      : Duration;
-      Token        : access Flyology.Cancellation.Token)
-      return Commit_Group_Operation'Class is
+      Token        : access Flyology.Cancellation.Token) return Commit_Group_Operation'Class is
    begin
       return Result : Commit_Group_Operation (Set, Item, Token, Transactions'Length) do
          Commit_Group (Group_ID, Transactions, Timeout, Result);
@@ -13693,9 +13558,7 @@ package body Flyology.DB is
       Result            : Outcome_Code := Success;
       Started           : Boolean := False;
    begin
-      if Operation.Driver_State /= null
-        or else Operation.Has_Final_Result
-        or else Operation.Has_Saved_Error
+      if Operation.Driver_State /= null or else Operation.Has_Final_Result or else Operation.Has_Saved_Error
       then
          raise Program_Error with "commit group operation retains unconsumed ownership";
       end if;
@@ -13736,8 +13599,7 @@ package body Flyology.DB is
             else
                Acquire (Operation.Item.all, Operation.Driver_State.Lease, Result);
                if Result = Success then
-                  Operation.Driver_State.Lease.State.Gate.Snapshot
-                    (Head, Generation, Uncertain, Fenced);
+                  Operation.Driver_State.Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
                   for Offset in Natural range 0 .. Transactions'Length - 1 loop
                      if not Transactions (Transactions'First + Offset).Active
                        or else Mutation_Count (Transactions (Transactions'First + Offset)) = 0
@@ -13771,8 +13633,7 @@ package body Flyology.DB is
                      Release (Operation.Driver_State.Lease);
                      Operation.Final_Result := Result;
                      Operation.Has_Final_Result := True;
-                     Flyology.Operations.Drivers.Complete
-                       (Operation, Flyology.Operations.Succeeded);
+                     Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
                   else
                      Operation.Driver_State.Admitted := True;
                      Pause_Test_Commit_Handoff (After_Admission);
@@ -13780,8 +13641,7 @@ package body Flyology.DB is
                         Reset_Transaction (Transactions (Transactions'First + Offset));
                      end loop;
                      Flyology.Operations.Drive
-                       (Flyology.Operations.Operation'Class (Operation),
-                        Flyology.Operations.Start_Operation);
+                       (Flyology.Operations.Operation'Class (Operation), Flyology.Operations.Start_Operation);
                   end if;
                end if;
             end if;
@@ -13843,7 +13703,8 @@ package body Flyology.DB is
       Operation.Has_Saved_Error := False;
    end Finish;
 
-   overriding procedure Finalize (Item : in out Commit_Group_Operation) is
+   overriding
+   procedure Finalize (Item : in out Commit_Group_Operation) is
    begin
       begin
          Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
@@ -13873,8 +13734,7 @@ package body Flyology.DB is
       end if;
       declare
          Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
-         Operation : Commit_Group_Operation
-           (Set'Access, Item'Unchecked_Access, Token, Transactions'Length);
+         Operation : Commit_Group_Operation (Set'Access, Item'Unchecked_Access, Token, Transactions'Length);
          Started   : Boolean := False;
       begin
          Commit_Group (Group_ID, Transactions, Timeout, Operation);
@@ -14094,8 +13954,7 @@ package body Flyology.DB is
 
    function Head_Pair_Less (Left, Right : Head_Snapshot) return Boolean
    is (Left.Transition_Number < Right.Transition_Number
-       or else
-         (Left.Transition_Number = Right.Transition_Number and then Left.Epoch < Right.Epoch));
+       or else (Left.Transition_Number = Right.Transition_Number and then Left.Epoch < Right.Epoch));
 
    procedure Stop_Replaced_Engine (State : in out Engine_State_Access);
 
@@ -14108,24 +13967,24 @@ package body Flyology.DB is
       --  One caller-selected monotonic deadline covers capture, complete
       --  recovery, allocation, and installation. The public one-shot call adds
       --  no polling cadence, retry budget, or refresh timeout default.
-      Deadline           : constant Ada.Real_Time.Time := Deadline_After (Timeout);
-      State              : Engine_State_Access;
-      New_State          : Engine_State_Access := null;
-      Storage            : access Storage_Context;
-      Current_Head       : Head_Snapshot;
-      Observed_Head      : Head_Snapshot;
-      Current_Generation : Generation_Value;
+      Deadline            : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State               : Engine_State_Access;
+      New_State           : Engine_State_Access := null;
+      Storage             : access Storage_Context;
+      Current_Head        : Head_Snapshot;
+      Observed_Head       : Head_Snapshot;
+      Current_Generation  : Generation_Value;
       Observed_Generation : Generation_Value;
-      Uncertain          : Boolean;
-      Fenced             : Boolean;
-      Manifest           : Manifests.Manifest;
-      Root               : Manifests.Manifest;
-      LSM_Authority      : Engine_LSM_Authority;
-      Checkpoint         : Checkpoint_Plan;
-      History            : Batch_History_Access := null;
-      History_Count      : Natural := 0;
-      Stamp              : Engine_Incarnation;
-      Guard              : Resolve_Guard;
+      Uncertain           : Boolean;
+      Fenced              : Boolean;
+      Manifest            : Manifests.Manifest;
+      Root                : Manifests.Manifest;
+      LSM_Authority       : Engine_LSM_Authority;
+      Checkpoint          : Checkpoint_Plan;
+      History             : Batch_History_Access := null;
+      History_Count       : Natural := 0;
+      Stamp               : Engine_Incarnation;
+      Guard               : Resolve_Guard;
       pragma Unreferenced (Guard);
    begin
       Item.Life.Begin_Resolve (State, Result);
@@ -14219,9 +14078,7 @@ package body Flyology.DB is
       Result := Success;
    end Refresh_Replica;
 
-   function Refresh_Read_Failure
-     (Failure : Client_Common.Failure_Reason) return Read_Outcome
-   is
+   function Refresh_Read_Failure (Failure : Client_Common.Failure_Reason) return Read_Outcome is
    begin
       return
         (case Failure is
@@ -14231,9 +14088,7 @@ package body Flyology.DB is
            when others                           => Read_Failed);
    end Refresh_Read_Failure;
 
-   function Refresh_Read_Rejection
-     (Status : Flyology.HTTP.Status_Code) return Read_Outcome
-   is
+   function Refresh_Read_Rejection (Status : Flyology.HTTP.Status_Code) return Read_Outcome is
    begin
       --  S3 Get/Head binds missing objects to HTTP 404 and failed If-Match to
       --  HTTP 412. These wire statuses preserve the existing Storage_Port
@@ -14246,28 +14101,28 @@ package body Flyology.DB is
          else Read_Failed);
    end Refresh_Read_Rejection;
 
-   function Refresh_Request_Key
-     (Item    : Refresh_Operation;
-      Request : Recovery_Request) return String
-   is
+   function Refresh_Request_Key (Item : Refresh_Operation; Request : Recovery_Request) return String is
    begin
       case Request.Kind is
-         when Recovery_Head_Request =>
+         when Recovery_Head_Request                                             =>
             return Full_Key (Item.Storage.all, Head_Key_Suffix);
+
          when Recovery_Manifest_Header_Request | Recovery_Manifest_Body_Request =>
             return Manifest_Key (Item.Storage.all, Request.Object_ID);
-         when Recovery_SST_Header_Request | Recovery_SST_Body_Request =>
+
+         when Recovery_SST_Header_Request | Recovery_SST_Body_Request           =>
             return Run_Key (Item.Storage.all, Request.Object_ID);
-         when Recovery_Batch_Request =>
+
+         when Recovery_Batch_Request                                            =>
             return Batch_Key (Item.Storage.all, Request.Object_ID);
-         when Recovery_No_Request =>
+
+         when Recovery_No_Request                                               =>
             raise Program_Error with "terminal recovery request has no object key";
       end case;
    end Refresh_Request_Key;
 
    procedure Copy_Refresh_Payload
-     (Source : Flyology.Buffers.Unique_Buffer;
-      Data   : out Flyology.Bytes.Unbounded_Bytes)
+     (Source : Flyology.Buffers.Unique_Buffer; Data : out Flyology.Bytes.Unbounded_Bytes)
    is
       procedure Copy (Bytes : Ada.Streams.Stream_Element_Array) is
       begin
@@ -14293,8 +14148,7 @@ package body Flyology.DB is
          end if;
          if Bytes'Length > 0 then
             for Offset in Natural range 0 .. Bytes'Length - 1 loop
-               Data (Offset) :=
-                 Byte (Bytes (Bytes'First + Ada.Streams.Stream_Element_Offset (Offset)));
+               Data (Offset) := Byte (Bytes (Bytes'First + Ada.Streams.Stream_Element_Offset (Offset)));
             end loop;
          end if;
          Valid := True;
@@ -14327,8 +14181,7 @@ package body Flyology.DB is
    procedure Complete_Composable_Refresh
      (Item   : in out Refresh_Operation;
       Result : Outcome_Code;
-      Kind   : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded)
-   is
+      Kind   : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded) is
    begin
       if Item.Driver_State /= null then
          if Item.Driver_State.Resolve_Admitted then
@@ -14350,9 +14203,7 @@ package body Flyology.DB is
    end Complete_Composable_Refresh;
 
    procedure Fail_Composable_Refresh
-     (Item  : in out Refresh_Operation;
-      Error : Ada.Exceptions.Exception_Occurrence)
-   is
+     (Item : in out Refresh_Operation; Error : Ada.Exceptions.Exception_Occurrence) is
    begin
       if Ada.Exceptions.Exception_Identity (Error) = Storage_Error'Identity then
          --  Allocation during request preparation or response ownership is
@@ -14363,8 +14214,7 @@ package body Flyology.DB is
       end if;
       Item.Has_Saved_Error := True;
       Ada.Exceptions.Save_Occurrence (Item.Saved_Error, Error);
-      Complete_Composable_Refresh
-        (Item, Storage_Failure, Flyology.Operations.Failed);
+      Complete_Composable_Refresh (Item, Storage_Failure, Flyology.Operations.Failed);
    exception
       when others =>
          if Flyology.Operations.Is_Active (Item) then
@@ -14379,25 +14229,18 @@ package body Flyology.DB is
       Data        : Flyology.Bytes.Unbounded_Bytes;
       Object_Size : Natural;
       Generation  : Generation_Value;
-      Read_Result : Read_Outcome)
-   is
+      Read_Result : Read_Outcome) is
    begin
       case Item.Driver_State.Request.Kind is
          when Recovery_Manifest_Header_Request =>
             Consume_Recovery_Manifest_Header
-              (Item.Driver_State.Traversal,
-               Data,
-               Object_Size,
-               Generation,
-               Read_Result);
-         when Recovery_SST_Header_Request =>
+              (Item.Driver_State.Traversal, Data, Object_Size, Generation, Read_Result);
+
+         when Recovery_SST_Header_Request      =>
             Consume_Recovery_SST_Header
-              (Item.Driver_State.Traversal,
-               Data,
-               Object_Size,
-               Generation,
-               Read_Result);
-         when others =>
+              (Item.Driver_State.Traversal, Data, Object_Size, Generation, Read_Result);
+
+         when others                           =>
             raise Program_Error with "non-header recovery request consumed as a header";
       end case;
       Advance_Composable_Refresh (Item);
@@ -14414,7 +14257,7 @@ package body Flyology.DB is
       Head_Valid  : Boolean := False;
    begin
       case Item.Driver_State.Request.Kind is
-         when Recovery_Head_Request =>
+         when Recovery_Head_Request          =>
             if Read_Result = Object_Read then
                Copy_Refresh_Head (Item.Payload, Head_Data, Head_Length, Head_Valid);
             else
@@ -14426,8 +14269,7 @@ package body Flyology.DB is
               and then Head_Length = Formats.Head_Image_Length
             then
                declare
-                  Observed_Database : constant Database_Identifier :=
-                    Head_Database_ID (Head_Data);
+                  Observed_Database : constant Database_Identifier := Head_Database_ID (Head_Data);
                begin
                   --  Create collision reconciliation must authenticate the
                   --  database actually named by the existing HEAD before it
@@ -14438,8 +14280,7 @@ package body Flyology.DB is
                      Item.Driver_State.Traversal.Database_ID := Observed_Database;
                   end if;
                   Item.Driver_State.Observed_Head_Is_Legacy :=
-                    Head_Data (8) = 0
-                    and then Head_Data (9) = Byte (Formats.Legacy_Head_Format_Version);
+                    Head_Data (8) = 0 and then Head_Data (9) = Byte (Formats.Legacy_Head_Format_Version);
                end;
             end if;
             Consume_Recovery_Head
@@ -14453,34 +14294,22 @@ package body Flyology.DB is
 
          when Recovery_Manifest_Body_Request =>
             Consume_Recovery_Manifest_Body
-              (Item.Driver_State.Traversal,
-               Data,
-               Flyology.Bytes.Length (Data),
-               Generation,
-               Read_Result);
+              (Item.Driver_State.Traversal, Data, Flyology.Bytes.Length (Data), Generation, Read_Result);
 
-         when Recovery_SST_Body_Request =>
+         when Recovery_SST_Body_Request      =>
             Consume_Recovery_SST_Body
-              (Item.Driver_State.Traversal,
-               Data,
-               Flyology.Bytes.Length (Data),
-               Generation,
-               Read_Result);
+              (Item.Driver_State.Traversal, Data, Flyology.Bytes.Length (Data), Generation, Read_Result);
 
-         when Recovery_Batch_Request =>
-            Consume_Recovery_Batch
-              (Item.Driver_State.Traversal, Data, Read_Result);
+         when Recovery_Batch_Request         =>
+            Consume_Recovery_Batch (Item.Driver_State.Traversal, Data, Read_Result);
 
-         when others =>
+         when others                         =>
             raise Program_Error with "non-whole recovery request consumed as whole";
       end case;
       Advance_Composable_Refresh (Item);
    end Consume_Refresh_Whole;
 
-   procedure Consume_Refresh_Whole_Failure
-     (Item        : in out Refresh_Operation;
-      Read_Result : Read_Outcome)
-   is
+   procedure Consume_Refresh_Whole_Failure (Item : in out Refresh_Operation; Read_Result : Read_Outcome) is
       Data : Flyology.Bytes.Unbounded_Bytes;
    begin
       Consume_Refresh_Whole (Item, Data, (others => <>), Read_Result);
@@ -14492,10 +14321,10 @@ package body Flyology.DB is
       Expected      : Column_Family_Configuration) return Boolean;
 
    function Valid_Commit_Resolution_Receipt
-     (Receipt : Commit_Receipt; Storage : Storage_Context) return Boolean
-   is
+     (Receipt : Commit_Receipt; Storage : Storage_Context) return Boolean is
    begin
-      return Receipt.Phase = Head_Publication_Unknown
+      return
+        Receipt.Phase = Head_Publication_Unknown
         and then Receipt.Retained_Image.Image /= null
         and then Receipt.Expected_Head.Database_ID /= Zero_Database_ID
         and then Receipt.Attempted_Head.Database_ID = Receipt.Expected_Head.Database_ID
@@ -14562,9 +14391,8 @@ package body Flyology.DB is
                   Exact :=
                     State.Expected_Commit.Retained_Image.Image /= null
                     and then History (Index).Image /= null
-                    and then
-                      Exact_Bytes
-                        (State.Expected_Commit.Retained_Image.Image, History (Index).Image.Data);
+                    and then Exact_Bytes
+                               (State.Expected_Commit.Retained_Image.Image, History (Index).Image.Data);
                   exit;
                end if;
             end loop;
@@ -14602,8 +14430,7 @@ package body Flyology.DB is
                Release_History (History, History_Count);
                Release_Checkpoint_Plan (Checkpoint);
                Complete_Composable_Refresh (Item, Corrupt);
-            elsif Observed_Head.Transition_Number >=
-              State.Expected_Commit.Attempted_Head.Transition_Number
+            elsif Observed_Head.Transition_Number >= State.Expected_Commit.Attempted_Head.Transition_Number
             then
                Release_History (History, History_Count);
                Release_Checkpoint_Plan (Checkpoint);
@@ -14622,9 +14449,7 @@ package body Flyology.DB is
          end;
          return;
       elsif State.Mode = Reconcile_Family_Publication then
-         if Observed_Head.Transition_Number <
-           State.Expected_Family.Attempted_Head.Transition_Number
-         then
+         if Observed_Head.Transition_Number < State.Expected_Family.Attempted_Head.Transition_Number then
             Release_History (History, History_Count);
             Release_Checkpoint_Plan (Checkpoint);
             Complete_Composable_Refresh
@@ -14643,7 +14468,7 @@ package body Flyology.DB is
                 else Stale_Writer));
          elsif Checkpoint.Manifest = null
            or else not Family_Configuration_Matches
-             (Manifest, LSM_Authority, State.Expected_Family.Configuration)
+                         (Manifest, LSM_Authority, State.Expected_Family.Configuration)
          then
             Release_History (History, History_Count);
             Release_Checkpoint_Plan (Checkpoint);
@@ -14685,16 +14510,13 @@ package body Flyology.DB is
          return;
       elsif State.Mode = Reconcile_Flush_Publication then
          if Checkpoint.Manifest /= null
-           and then To_Identifier (Checkpoint.Manifest.Base.Manifest_ID) =
-             State.Expected_Flush.Manifest_ID
-           and then Checkpoint.Manifest.Replay_Boundary =
-             Interfaces.Unsigned_64 (State.Expected_Flush.Replay_Boundary)
-           and then
-             (Observed_Head = State.Expected_Flush.Attempted_Head
-              or else
-                (Observed_Head.Transition_Number >
-                   State.Expected_Flush.Attempted_Head.Transition_Number
-                 and then Observed_Head.Latest_Manifest = State.Expected_Flush.Manifest_ID))
+           and then To_Identifier (Checkpoint.Manifest.Base.Manifest_ID) = State.Expected_Flush.Manifest_ID
+           and then Checkpoint.Manifest.Replay_Boundary
+                    = Interfaces.Unsigned_64 (State.Expected_Flush.Replay_Boundary)
+           and then (Observed_Head = State.Expected_Flush.Attempted_Head
+                     or else (Observed_Head.Transition_Number
+                              > State.Expected_Flush.Attempted_Head.Transition_Number
+                              and then Observed_Head.Latest_Manifest = State.Expected_Flush.Manifest_ID))
          then
             Stamp := State.Expected_Flush.Incarnation;
             Consume_Fault (Item.Storage.all, Before_Local_Activation, Fault);
@@ -14731,9 +14553,7 @@ package body Flyology.DB is
             Release_History (History, History_Count);
             Release_Checkpoint_Plan (Checkpoint);
             Complete_Composable_Refresh (Item, Corrupt);
-         elsif Observed_Head.Transition_Number >=
-           State.Expected_Flush.Attempted_Head.Transition_Number
-         then
+         elsif Observed_Head.Transition_Number >= State.Expected_Flush.Attempted_Head.Transition_Number then
             Release_History (History, History_Count);
             Release_Checkpoint_Plan (Checkpoint);
             Fence_Engine (State.Engine);
@@ -14750,13 +14570,10 @@ package body Flyology.DB is
          Release_History (History, History_Count);
          Release_Checkpoint_Plan (Checkpoint);
          Complete_Composable_Refresh
-           (Item,
-            (if State.Mode = Reconcile_Create_Publication then Already_Exists else Corrupt));
+           (Item, (if State.Mode = Reconcile_Create_Publication then Already_Exists else Corrupt));
          return;
       elsif State.Mode = Reconcile_Create_Publication
-        and then
-          (Root /= State.Expected_Root
-           or else not Same_LSM_Policy (LSM_Authority, State.Expected_LSM))
+        and then (Root /= State.Expected_Root or else not Same_LSM_Policy (LSM_Authority, State.Expected_LSM))
       then
          Release_History (History, History_Count);
          Release_Checkpoint_Plan (Checkpoint);
@@ -14859,8 +14676,7 @@ package body Flyology.DB is
       if State.Request.Maximum = 0
         or else State.Request.Maximum > Flyology.Buffers.Buffer_Capacity (Item.Payload)
       then
-         Consume_Refresh_Header
-           (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
+         Consume_Refresh_Header (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
          return;
       end if;
       Client_Objects.Get_Range
@@ -14884,17 +14700,16 @@ package body Flyology.DB is
       Flyology.Operations.Continue_After (Item, Item.Range_Child.all);
    exception
       when Flyology.Operations.Capacity_Error =>
-         Consume_Refresh_Header
-           (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
+         Consume_Refresh_Header (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
       when Error : others =>
          Fail_Composable_Refresh (Item, Error);
    end Start_Refresh_Header_Range;
 
    procedure Complete_Refresh_Header_Head (Item : in out Refresh_Operation) is
-      State      : Refresh_Driver_State renames Item.Driver_State.all;
-      Outcome    : Client_Objects.Head_Result;
+      State       : Refresh_Driver_State renames Item.Driver_State.all;
+      Outcome     : Client_Objects.Head_Result;
       Read_Result : Read_Outcome := Read_Failed;
-      Valid      : Boolean := False;
+      Valid       : Boolean := False;
    begin
       begin
          Client_Objects.Finish (Item.Head_Child.all, Outcome);
@@ -14922,9 +14737,7 @@ package body Flyology.DB is
          Read_Result := Read_Corrupt;
       else
          Set_Quoted_Generation
-           (State.Request_Generation,
-            UStrings.To_String (Outcome.Response.Result.Entity_Tag),
-            Valid);
+           (State.Request_Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
          if Valid then
             State.Current_Object_Length := Natural (Outcome.Response.Result.Content_Length);
             Start_Refresh_Header_Range (Item);
@@ -14932,8 +14745,7 @@ package body Flyology.DB is
          end if;
          Read_Result := Read_Corrupt;
       end if;
-      Consume_Refresh_Header
-        (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Result);
+      Consume_Refresh_Header (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Result);
    exception
       when Error : others =>
          Fail_Composable_Refresh (Item, Error);
@@ -14966,8 +14778,7 @@ package body Flyology.DB is
       elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
          Read_Result := Refresh_Read_Rejection (Outcome.Response.Status);
       else
-         Set_Quoted_Generation
-           (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+         Set_Quoted_Generation (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
          --  A bounded S3 range response is HTTP 206 with an exact
          --  Content-Range. These wire checks bind the header bytes and total
          --  object length to the preceding HeadObject generation.
@@ -15029,8 +14840,7 @@ package body Flyology.DB is
       elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
          Read_Result := Refresh_Read_Rejection (Outcome.Response.Status);
       else
-         Set_Quoted_Generation
-           (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+         Set_Quoted_Generation (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
          --  Whole GetObject success is HTTP 200. Exact Content-Length and the
          --  optional authenticated ETag are recovery framing authority, not a
          --  transport optimization.
@@ -15040,10 +14850,9 @@ package body Flyology.DB is
            or else Outcome.Response.Result.Content_Length.Value > OS.Byte_Count (Natural'Last)
            or else Natural (Outcome.Response.Result.Content_Length.Value) > State.Request.Maximum
            or else Natural (Outcome.Response.Result.Content_Length.Value)
-                     /= Flyology.Buffers.Length (Item.Payload)
-           or else
-             (State.Request.Expected_Generation.Length > 0
-              and then Generation /= State.Request.Expected_Generation)
+                   /= Flyology.Buffers.Length (Item.Payload)
+           or else (State.Request.Expected_Generation.Length > 0
+                    and then Generation /= State.Request.Expected_Generation)
          then
             Read_Result :=
               (if Outcome.Response.Result.Content_Length.Is_Set
@@ -15114,8 +14923,7 @@ package body Flyology.DB is
       if State.Request.Maximum = 0
         or else State.Request.Maximum > Flyology.Buffers.Buffer_Capacity (Item.Payload)
       then
-         Consume_Refresh_Header
-           (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
+         Consume_Refresh_Header (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
          return;
       end if;
       State.Current_Object_Length := 0;
@@ -15139,8 +14947,7 @@ package body Flyology.DB is
       Flyology.Operations.Continue_After (Item, Item.Head_Child.all);
    exception
       when Flyology.Operations.Capacity_Error =>
-         Consume_Refresh_Header
-           (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
+         Consume_Refresh_Header (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Capacity_Exceeded);
       when Error : others =>
          Fail_Composable_Refresh (Item, Error);
    end Start_Refresh_Header_Head;
@@ -15162,23 +14969,17 @@ package body Flyology.DB is
       end if;
       Consume_Fault
         (Item.Storage.all,
-         (if State.Request.Kind
-               in Recovery_Manifest_Header_Request | Recovery_Manifest_Body_Request
+         (if State.Request.Kind in Recovery_Manifest_Header_Request | Recovery_Manifest_Body_Request
           then Before_Manifest_Get
           else Before_Get),
          Fault);
       if Fault /= No_Fault then
-         if State.Request.Kind
-           in Recovery_Manifest_Header_Request | Recovery_SST_Header_Request
-         then
-            Consume_Refresh_Header
-              (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Failed);
+         if State.Request.Kind in Recovery_Manifest_Header_Request | Recovery_SST_Header_Request then
+            Consume_Refresh_Header (Item, Flyology.Bytes.Empty, 0, (others => <>), Read_Failed);
          else
             Consume_Refresh_Whole_Failure (Item, Read_Failed);
          end if;
-      elsif State.Request.Kind
-        in Recovery_Manifest_Header_Request | Recovery_SST_Header_Request
-      then
+      elsif State.Request.Kind in Recovery_Manifest_Header_Request | Recovery_SST_Header_Request then
          Start_Refresh_Header_Head (Item);
       else
          Start_Refresh_Whole (Item);
@@ -15193,11 +14994,11 @@ package body Flyology.DB is
       Uncertain : Boolean;
       Fenced    : Boolean;
    begin
-      if State.Mode in
-        Open_Closed_Database
-        | Reconcile_Create_Publication
-        | Reconcile_Family_Publication
-        | Reconcile_Flush_Publication
+      if State.Mode
+         in Open_Closed_Database
+          | Reconcile_Create_Publication
+          | Reconcile_Family_Publication
+          | Reconcile_Flush_Publication
       then
          Start_Recovery
            (State.Traversal,
@@ -15207,8 +15008,7 @@ package body Flyology.DB is
              else Zero_Identifier));
          Advance_Composable_Refresh (Item);
       elsif State.Mode = Reconcile_Commit_Publication then
-         State.Engine.Gate.Snapshot
-           (State.Current_Head, State.Current_Generation, Uncertain, Fenced);
+         State.Engine.Gate.Snapshot (State.Current_Head, State.Current_Generation, Uncertain, Fenced);
          if State.Current_Head.Database_ID /= State.Expected_Commit.Expected_Head.Database_ID then
             Complete_Composable_Refresh (Item, Invalid_State);
          else
@@ -15220,15 +15020,13 @@ package body Flyology.DB is
             Advance_Composable_Refresh (Item);
          end if;
       else
-         State.Engine.Gate.Snapshot
-           (State.Current_Head, State.Current_Generation, Uncertain, Fenced);
+         State.Engine.Gate.Snapshot (State.Current_Head, State.Current_Generation, Uncertain, Fenced);
          if Uncertain then
             Complete_Composable_Refresh (Item, Outcome_Unknown);
          elsif Fenced then
             Complete_Composable_Refresh (Item, Stale_Writer);
          else
-            Start_Recovery
-              (State.Traversal, State.Current_Head.Database_ID, Zero_Identifier);
+            Start_Recovery (State.Traversal, State.Current_Head.Database_ID, Zero_Identifier);
             Advance_Composable_Refresh (Item);
          end if;
       end if;
@@ -15237,9 +15035,7 @@ package body Flyology.DB is
          Fail_Composable_Refresh (Item, Error);
    end Prepare_Composable_Refresh;
 
-   procedure Await_Composable_Refresh_Quiescence
-     (Item : in out Refresh_Operation)
-   is
+   procedure Await_Composable_Refresh_Quiescence (Item : in out Refresh_Operation) is
       Descriptor        : Interfaces.C.int;
       --  Flyology.IO fixes negative descriptors as invalid; this initializer
       --  is overwritten only when the optional cancellation source is live.
@@ -15283,18 +15079,16 @@ package body Flyology.DB is
          Fail_Composable_Refresh (Item, Error);
    end Await_Composable_Refresh_Quiescence;
 
-   overriding procedure Drive
-     (Item : in out Refresh_Operation;
-      Event : Flyology.Operations.Driver_Event)
-   is
+   overriding
+   procedure Drive (Item : in out Refresh_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       if Event = Flyology.Operations.Start_Operation
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Mode in
-          Open_Closed_Database
-          | Reconcile_Create_Publication
-          | Reconcile_Family_Publication
-          | Reconcile_Flush_Publication
+        and then Item.Driver_State.Mode
+                 in Open_Closed_Database
+                  | Reconcile_Create_Publication
+                  | Reconcile_Family_Publication
+                  | Reconcile_Flush_Publication
       then
          Prepare_Composable_Refresh (Item);
       elsif Event in Flyology.Operations.Start_Operation | Flyology.Operations.Source_Ready then
@@ -15335,7 +15129,8 @@ package body Flyology.DB is
          end if;
    end Drive;
 
-   overriding procedure Request_Cancellation (Item : in out Refresh_Operation) is
+   overriding
+   procedure Request_Cancellation (Item : in out Refresh_Operation) is
    begin
       if Item.Head_Child /= null and then Flyology.Operations.Is_Active (Item.Head_Child.all) then
          Flyology.Operations.Cancel (Item.Head_Child.all);
@@ -15371,15 +15166,13 @@ package body Flyology.DB is
             Request_Cancellation (Item);
          end if;
       elsif Flyology.Operations.Is_Active (Item) then
-         Complete_Composable_Refresh
-           (Item, Cancelled, Flyology.Operations.Cancelled);
+         Complete_Composable_Refresh (Item, Cancelled, Flyology.Operations.Cancelled);
       end if;
    exception
       when others =>
          if Flyology.Operations.Is_Active (Item) then
             begin
-               Complete_Composable_Refresh
-                 (Item, Storage_Failure, Flyology.Operations.Failed);
+               Complete_Composable_Refresh (Item, Storage_Failure, Flyology.Operations.Failed);
             exception
                when others =>
                   null;
@@ -15388,20 +15181,20 @@ package body Flyology.DB is
    end Request_Cancellation;
 
    procedure Start_Composable_Recovery
-     (Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
-      Timeout        : Duration;
-      Operation      : in out Refresh_Operation;
-      Mode           : Recovery_Driver_Mode;
-      Database_ID    : Database_Identifier;
-      Expected_Root  : Manifests.Manifest := Manifests.Empty_Manifest;
-      Expected_LSM   : Engine_LSM_Authority := No_LSM_Authority;
-      Expected_Commit : Commit_Receipt := (others => <>);
-      Expected_Family : Column_Family_Receipt := (others => <>);
-      Expected_Flush : Flush_Receipt := (others => <>);
-      Checkpoint_Engine : Engine_State_Access := null;
-      Open_Already_Admitted : Boolean := False;
-      Open_Admission_Consumed : out Boolean;
-      Checkpoint_Already_Admitted : Boolean := False;
+     (Payload_Buffer                : in out Flyology.Buffers.Unique_Buffer;
+      Timeout                       : Duration;
+      Operation                     : in out Refresh_Operation;
+      Mode                          : Recovery_Driver_Mode;
+      Database_ID                   : Database_Identifier;
+      Expected_Root                 : Manifests.Manifest := Manifests.Empty_Manifest;
+      Expected_LSM                  : Engine_LSM_Authority := No_LSM_Authority;
+      Expected_Commit               : Commit_Receipt := (others => <>);
+      Expected_Family               : Column_Family_Receipt := (others => <>);
+      Expected_Flush                : Flush_Receipt := (others => <>);
+      Checkpoint_Engine             : Engine_State_Access := null;
+      Open_Already_Admitted         : Boolean := False;
+      Open_Admission_Consumed       : out Boolean;
+      Checkpoint_Already_Admitted   : Boolean := False;
       Checkpoint_Admission_Consumed : out Boolean)
    is
       Result  : Outcome_Code;
@@ -15410,9 +15203,7 @@ package body Flyology.DB is
    begin
       Open_Admission_Consumed := False;
       Checkpoint_Admission_Consumed := False;
-      if Operation.Storage.HTTP_Client /= Operation.HTTP
-        or else Operation.Storage.Client_Identity = null
-      then
+      if Operation.Storage.HTTP_Client /= Operation.HTTP or else Operation.Storage.Client_Identity = null then
          raise Program_Error with "recovery operation does not match client-bound storage";
       elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "recovery payload belongs to a different pool";
@@ -15465,27 +15256,27 @@ package body Flyology.DB is
             --  every child before any such borrow may end.
             Operation.Read_Child :=
               new Client_Objects.Whole_Get_Operation
-                (Operation.Set.all'Unchecked_Access,
-                 Operation.HTTP.all'Unchecked_Access,
-                 Operation.Payload'Unchecked_Access,
-                 (if Operation.Cancellation = null
-                  then null
-                  else Operation.Cancellation.all'Unchecked_Access));
+                    (Operation.Set.all'Unchecked_Access,
+                     Operation.HTTP.all'Unchecked_Access,
+                     Operation.Payload'Unchecked_Access,
+                     (if Operation.Cancellation = null
+                      then null
+                      else Operation.Cancellation.all'Unchecked_Access));
             Operation.Range_Child :=
               new Client_Objects.Range_Get_Operation
-                (Operation.Set.all'Unchecked_Access,
-                 Operation.HTTP.all'Unchecked_Access,
-                 Operation.Payload'Unchecked_Access,
-                 (if Operation.Cancellation = null
-                  then null
-                  else Operation.Cancellation.all'Unchecked_Access));
+                    (Operation.Set.all'Unchecked_Access,
+                     Operation.HTTP.all'Unchecked_Access,
+                     Operation.Payload'Unchecked_Access,
+                     (if Operation.Cancellation = null
+                      then null
+                      else Operation.Cancellation.all'Unchecked_Access));
             Operation.Head_Child :=
               new Client_Objects.Head_Operation
-                (Operation.Set.all'Unchecked_Access,
-                 Operation.HTTP.all'Unchecked_Access,
-                 (if Operation.Cancellation = null
-                  then null
-                  else Operation.Cancellation.all'Unchecked_Access));
+                    (Operation.Set.all'Unchecked_Access,
+                     Operation.HTTP.all'Unchecked_Access,
+                     (if Operation.Cancellation = null
+                      then null
+                      else Operation.Cancellation.all'Unchecked_Access));
          exception
             when Storage_Error =>
                Operation.Driver_State.Precheck_Result := Capacity_Exceeded;
@@ -15494,9 +15285,7 @@ package body Flyology.DB is
 
       Flyology.Operations.Drivers.Start (Operation);
       Started := True;
-      if Operation.Driver_State /= null
-        and then Operation.Driver_State.Precheck_Result = Success
-      then
+      if Operation.Driver_State /= null and then Operation.Driver_State.Precheck_Result = Success then
          if Mode in Open_Closed_Database | Reconcile_Create_Publication then
             if Is_Zero (Database_ID) then
                Operation.Driver_State.Precheck_Result := Invalid_State;
@@ -15523,11 +15312,8 @@ package body Flyology.DB is
                Checkpoint_Admission_Consumed := True;
             end if;
          else
-            Operation.Item.Life.Begin_Composable_Resolve
-              (Operation.Driver_State.Engine, Result);
-            if Result = Success
-              and then Operation.Driver_State.Engine.Storage /= Operation.Storage
-            then
+            Operation.Item.Life.Begin_Composable_Resolve (Operation.Driver_State.Engine, Result);
+            if Result = Success and then Operation.Driver_State.Engine.Storage /= Operation.Storage then
                Operation.Item.Life.Cancel_Resolve;
                raise Program_Error with "recovery storage does not own the open database";
             elsif Result = Success then
@@ -15543,24 +15329,19 @@ package body Flyology.DB is
       if Operation.Driver_State = null then
          Operation.Final_Result := Capacity_Exceeded;
          Operation.Has_Final_Result := True;
-         Flyology.Operations.Drivers.Complete
-           (Operation, Flyology.Operations.Succeeded);
+         Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
       elsif Operation.Driver_State.Precheck_Result /= Success then
-         Complete_Composable_Refresh
-           (Operation, Operation.Driver_State.Precheck_Result);
+         Complete_Composable_Refresh (Operation, Operation.Driver_State.Precheck_Result);
       else
          Flyology.Operations.Drive
-           (Flyology.Operations.Operation'Class (Operation),
-            Flyology.Operations.Start_Operation);
+           (Flyology.Operations.Operation'Class (Operation), Flyology.Operations.Start_Operation);
       end if;
    exception
       when others =>
          if Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
             Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
          end if;
-         if Operation.Driver_State /= null
-           and then Operation.Driver_State.Resolve_Admitted
-         then
+         if Operation.Driver_State /= null and then Operation.Driver_State.Resolve_Admitted then
             Operation.Driver_State.Resolve_Admitted := False;
             Operation.Item.Life.Cancel_Resolve;
          end if;
@@ -15605,7 +15386,7 @@ package body Flyology.DB is
       Timeout        : Duration;
       Operation      : in out Refresh_Operation)
    is
-      Open_Admission_Consumed : Boolean;
+      Open_Admission_Consumed       : Boolean;
       Checkpoint_Admission_Consumed : Boolean;
    begin
       Start_Composable_Recovery
@@ -15628,14 +15409,14 @@ package body Flyology.DB is
       Checkpoint_Admission_Consumed : Boolean;
    begin
       Start_Composable_Recovery
-        (Payload_Buffer                 => Payload_Buffer,
-         Timeout                        => Timeout,
-         Operation                      => Operation,
-         Mode                           => Reconcile_Commit_Publication,
-         Database_ID                    => Receipt.Expected_Head.Database_ID,
-         Expected_Commit                => Receipt,
-         Open_Admission_Consumed        => Open_Admission_Consumed,
-         Checkpoint_Admission_Consumed  => Checkpoint_Admission_Consumed);
+        (Payload_Buffer                => Payload_Buffer,
+         Timeout                       => Timeout,
+         Operation                     => Operation,
+         Mode                          => Reconcile_Commit_Publication,
+         Database_ID                   => Receipt.Expected_Head.Database_ID,
+         Expected_Commit               => Receipt,
+         Open_Admission_Consumed       => Open_Admission_Consumed,
+         Checkpoint_Admission_Consumed => Checkpoint_Admission_Consumed);
       Receipt := (others => <>);
    end Resolve;
 
@@ -15662,14 +15443,10 @@ package body Flyology.DB is
       end if;
       declare
          Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
-         Operation : Refresh_Operation
-           (Set'Access,
-            Item'Unchecked_Access,
-            Storage,
-            Storage.HTTP_Client,
-            Payload_Buffer.Owner,
-            Token);
-         Started : Boolean := False;
+         Operation :
+           Refresh_Operation
+             (Set'Access, Item'Unchecked_Access, Storage, Storage.HTTP_Client, Payload_Buffer.Owner, Token);
+         Started   : Boolean := False;
       begin
          Resolve (Receipt, Payload_Buffer, Timeout, Operation);
          Started := True;
@@ -15710,7 +15487,7 @@ package body Flyology.DB is
       Timeout        : Duration;
       Operation      : in out Open_Operation)
    is
-      Open_Admission_Consumed : Boolean;
+      Open_Admission_Consumed       : Boolean;
       Checkpoint_Admission_Consumed : Boolean;
    begin
       Start_Composable_Recovery
@@ -15726,8 +15503,7 @@ package body Flyology.DB is
    procedure Finish
      (Operation      : in out Refresh_Operation;
       Result         : out Outcome_Code;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-   is
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "recovery Finish requires the original buffer pool";
@@ -15760,8 +15536,7 @@ package body Flyology.DB is
      (Operation      : in out Refresh_Operation;
       Receipt        : out Commit_Receipt;
       Result         : out Outcome_Code;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-   is
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "commit reconciliation Finish requires the original buffer pool";
@@ -15794,7 +15569,8 @@ package body Flyology.DB is
       Result := Operation.Final_Result;
    end Finish;
 
-   overriding procedure Finish
+   overriding
+   procedure Finish
      (Operation      : in out Open_Operation;
       Result         : out Outcome_Code;
       Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
@@ -15802,7 +15578,8 @@ package body Flyology.DB is
       Finish (Refresh_Operation (Operation), Result, Payload_Buffer);
    end Finish;
 
-   overriding procedure Finalize (Item : in out Refresh_Operation) is
+   overriding
+   procedure Finalize (Item : in out Refresh_Operation) is
    begin
       begin
          Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
@@ -15824,9 +15601,8 @@ package body Flyology.DB is
       Flyology.Buffers.Release (Item.Payload);
    end Finalize;
 
-   overriding procedure Drive
-     (Item : in out Open_Operation;
-      Event : Flyology.Operations.Driver_Event) is
+   overriding
+   procedure Drive (Item : in out Open_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       Drive (Refresh_Operation (Item), Event);
    end Drive;
@@ -15853,13 +15629,13 @@ package body Flyology.DB is
       Result     : out Outcome_Code);
 
    procedure Initialize_Column_Family_Receipt
-     (State          : not null Engine_State_Access;
-      Configuration  : Column_Family_Configuration;
-      Manifest_ID    : Identifier;
-      Transition_ID  : Identifier;
-      Plan           : Checkpoint_Plan;
-      Receipt        : out Column_Family_Receipt;
-      Result         : out Outcome_Code);
+     (State         : not null Engine_State_Access;
+      Configuration : Column_Family_Configuration;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Plan          : Checkpoint_Plan;
+      Receipt       : out Column_Family_Receipt;
+      Result        : out Outcome_Code);
 
    procedure Release_Flush_State (Value : in out Flush_Driver_State_Access) is
    begin
@@ -15900,9 +15676,7 @@ package body Flyology.DB is
    end Digest_Image;
 
    procedure Adopt_Encoded_Image
-     (Encoded : in out LSM_Runtime.Image_Access;
-      Target  : in out Prepared_Flush_Image)
-   is
+     (Encoded : in out LSM_Runtime.Image_Access; Target : in out Prepared_Flush_Image) is
    begin
       Target.Owner := New_Image (Encoded.all);
       LSM_Runtime.Release (Encoded);
@@ -15915,13 +15689,13 @@ package body Flyology.DB is
    end Adopt_Encoded_Image;
 
    procedure Initialize_Flush_Receipt
-     (State         : not null Engine_State_Access;
-      Plan          : Checkpoint_Plan;
-      Runs          : Checkpoint_Run_Identity_Array;
-      Manifest_ID   : Identifier;
-      Transition_ID : Identifier;
-      Receipt       : out Flush_Receipt;
-      Result        : out Outcome_Code;
+     (State                : not null Engine_State_Access;
+      Plan                 : Checkpoint_Plan;
+      Runs                 : Checkpoint_Run_Identity_Array;
+      Manifest_ID          : Identifier;
+      Transition_ID        : Identifier;
+      Receipt              : out Flush_Receipt;
+      Result               : out Outcome_Code;
       Replace_Current_Runs : Boolean := False;
       Merge_Older_Run_ID   : Identifier := Zero_Identifier;
       Merge_Middle_Run_ID  : Identifier := Zero_Identifier;
@@ -15972,9 +15746,7 @@ package body Flyology.DB is
    end Initialize_Flush_Receipt;
 
    procedure Prepare_Flush_Images
-     (Item   : in out Flush_Operation;
-      State  : in out Flush_Driver_State;
-      Result : out Outcome_Code)
+     (Item : in out Flush_Operation; State : in out Flush_Driver_State; Result : out Outcome_Code)
    is
       Encoded       : LSM_Runtime.Image_Access := null;
       Encode_Result : LSM_Runtime.Encode_Status;
@@ -15985,8 +15757,7 @@ package body Flyology.DB is
             --  Newly published runs use frozen SST-v2 so point reads can
             --  authenticate the index and selected frame independently.
             --  Recovery retains SST-v1 decoding for existing databases.
-            LSM_Runtime.Encode_SST_V2
-              (State.Plan.SSTs (Index).all, Encoded, Encode_Result);
+            LSM_Runtime.Encode_SST_V2 (State.Plan.SSTs (Index).all, Encoded, Encode_Result);
             if Encode_Result /= LSM_Runtime.Encoded then
                Result := Corrupt;
                return;
@@ -16041,16 +15812,11 @@ package body Flyology.DB is
          raise;
    end Prepare_Flush_Images;
 
-   procedure Load_Payload
-     (Item  : in out Flyology.Buffers.Unique_Buffer;
-      Image : not null Shared_Image_Access)
+   procedure Load_Payload (Item : in out Flyology.Buffers.Unique_Buffer; Image : not null Shared_Image_Access)
    is
       Length : constant Natural := Flyology.Bytes.Length (Image.Data);
 
-      procedure Copy
-        (Data    : in out Ada.Streams.Stream_Element_Array;
-         Written : in out Natural)
-      is
+      procedure Copy (Data : in out Ada.Streams.Stream_Element_Array; Written : in out Natural) is
       begin
          for Offset in Natural range 0 .. Length - 1 loop
             Data (Data'First + Ada.Streams.Stream_Element_Offset (Offset)) :=
@@ -16063,8 +15829,7 @@ package body Flyology.DB is
    end Load_Payload;
 
    function Payload_Matches
-     (Item  : Flyology.Buffers.Unique_Buffer;
-      Image : not null Shared_Image_Access) return Boolean
+     (Item : Flyology.Buffers.Unique_Buffer; Image : not null Shared_Image_Access) return Boolean
    is
       Matches : Boolean := False;
 
@@ -16073,8 +15838,8 @@ package body Flyology.DB is
          Matches := Data'Length = Flyology.Bytes.Length (Image.Data);
          if Matches and then Data'Length > 0 then
             for Offset in Natural range 0 .. Natural (Data'Length) - 1 loop
-               if Data (Data'First + Ada.Streams.Stream_Element_Offset (Offset)) /=
-                 Flyology.Bytes.Element (Image.Data, Offset + 1)
+               if Data (Data'First + Ada.Streams.Stream_Element_Offset (Offset))
+                 /= Flyology.Bytes.Element (Image.Data, Offset + 1)
                then
                   Matches := False;
                   exit;
@@ -16087,37 +15852,39 @@ package body Flyology.DB is
       return Matches;
    end Payload_Matches;
 
-   function Current_Flush_Image
-     (State : Flush_Driver_State) return Shared_Image_Access
-   is
+   function Current_Flush_Image (State : Flush_Driver_State) return Shared_Image_Access is
    begin
       case State.Current_Kind is
-         when Run_Object =>
+         when Run_Object      =>
             if State.Current_Family_Slot = 0 then
                return null;
             end if;
             return State.Run_Images (Manifests.Family_Slot (State.Current_Family_Slot)).Owner;
+
          when Manifest_Object =>
             return State.Manifest_Image.Owner;
-         when Head_Object =>
+
+         when Head_Object     =>
             return State.Head_Image.Owner;
-         when Batch_Object =>
+
+         when Batch_Object    =>
             return null;
       end case;
    end Current_Flush_Image;
 
-   function Current_Flush_Digest
-     (State : Flush_Driver_State) return GNAT.SHA256.Message_Digest
-   is
+   function Current_Flush_Digest (State : Flush_Driver_State) return GNAT.SHA256.Message_Digest is
    begin
       case State.Current_Kind is
-         when Run_Object =>
+         when Run_Object      =>
             return State.Run_Images (Manifests.Family_Slot (State.Current_Family_Slot)).Digest;
+
          when Manifest_Object =>
             return State.Manifest_Image.Digest;
-         when Head_Object =>
+
+         when Head_Object     =>
             return State.Head_Image.Digest;
-         when Batch_Object =>
+
+         when Batch_Object    =>
             raise Program_Error with "batch selected by Flush driver";
       end case;
    end Current_Flush_Digest;
@@ -16126,24 +15893,24 @@ package body Flyology.DB is
       State : Flush_Driver_State renames Item.Driver_State.all;
    begin
       case State.Current_Kind is
-         when Run_Object =>
-            return Run_Key
-              (Item.Storage.all,
-               To_Identifier
-                 (State.Plan.SSTs (Manifests.Family_Slot (State.Current_Family_Slot)).Run_ID));
+         when Run_Object      =>
+            return
+              Run_Key
+                (Item.Storage.all,
+                 To_Identifier (State.Plan.SSTs (Manifests.Family_Slot (State.Current_Family_Slot)).Run_ID));
+
          when Manifest_Object =>
             return Manifest_Key (Item.Storage.all, State.Manifest_ID);
-         when Head_Object =>
+
+         when Head_Object     =>
             return Full_Key (Item.Storage.all, Head_Key_Suffix);
-         when Batch_Object =>
+
+         when Batch_Object    =>
             raise Program_Error with "batch selected by Flush driver";
       end case;
    end Current_Flush_Key;
 
-   function Flush_Fault_Point
-     (Kind : Stored_Object_Kind;
-      After_Entry : Boolean) return Storage_Fault_Point
-   is
+   function Flush_Fault_Point (Kind : Stored_Object_Kind; After_Entry : Boolean) return Storage_Fault_Point is
    begin
       --  Test-injection authority mirrors Storage_Port exactly: each object
       --  kind has one pre-entry and one post-entry certainty boundary.
@@ -16158,8 +15925,7 @@ package body Flyology.DB is
    procedure Complete_Composable_Flush
      (Item    : in out Flush_Operation;
       Result  : Outcome_Code;
-      Outcome : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded)
-   is
+      Outcome : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded) is
    begin
       if Item.Driver_State /= null then
          if Item.Driver_State.Checkpoint_Admitted then
@@ -16189,9 +15955,7 @@ package body Flyology.DB is
          end if;
       elsif Is_Family_Append (Item) then
          Item.Final_Family_Receipt.Current_Outcome := Result;
-         if Item.Final_Family_Receipt.Phase = No_Family_Publication
-           and then Result /= Outcome_Unknown
-         then
+         if Item.Final_Family_Receipt.Phase = No_Family_Publication and then Result /= Outcome_Unknown then
             Release_Retained_Manifest (Item.Final_Family_Receipt);
          end if;
       else
@@ -16203,8 +15967,7 @@ package body Flyology.DB is
    end Complete_Composable_Flush;
 
    procedure Fail_Composable_Flush
-     (Item  : in out Flush_Operation;
-      Error : Ada.Exceptions.Exception_Occurrence)
+     (Item : in out Flush_Operation; Error : Ada.Exceptions.Exception_Occurrence)
    is
       Result : Outcome_Code := Storage_Failure;
    begin
@@ -16213,13 +15976,9 @@ package body Flyology.DB is
         and then Item.Driver_State.Create_Mutation_May_Have_Entered
       then
          Result := Outcome_Unknown;
-      elsif Is_Create (Item)
-        and then Item.Final_Create_Receipt.Phase = Head_Publication_Unknown
-      then
+      elsif Is_Create (Item) and then Item.Final_Create_Receipt.Phase = Head_Publication_Unknown then
          Result := Outcome_Unknown;
-      elsif Is_Create (Item)
-        and then Item.Final_Create_Receipt.Phase = Head_Confirmed
-      then
+      elsif Is_Create (Item) and then Item.Final_Create_Receipt.Phase = Head_Confirmed then
          Result := Local_Activation_Failed;
       elsif Is_Create (Item) then
          --  Before possible mutation admission, Create preserves the
@@ -16233,9 +15992,7 @@ package body Flyology.DB is
             Fence_Engine (Item.Driver_State.Engine);
          end if;
          Result := Outcome_Unknown;
-      elsif Is_Family_Append (Item)
-        and then Item.Final_Family_Receipt.Phase = Family_Head_Confirmed
-      then
+      elsif Is_Family_Append (Item) and then Item.Final_Family_Receipt.Phase = Family_Head_Confirmed then
          if Item.Driver_State.Engine /= null then
             Fence_Engine (Item.Driver_State.Engine);
          end if;
@@ -16260,10 +16017,7 @@ package body Flyology.DB is
          (if Item.Has_Saved_Error then Flyology.Operations.Failed else Flyology.Operations.Succeeded));
    end Fail_Composable_Flush;
 
-   procedure Finish_Composable_Phase
-     (Item   : in out Flush_Operation;
-      Result : Outcome_Code)
-   is
+   procedure Finish_Composable_Phase (Item : in out Flush_Operation; Result : Outcome_Code) is
    begin
       if Is_Create (Item) then
          null;
@@ -16314,8 +16068,7 @@ package body Flyology.DB is
          Item.Final_Receipt.Phase :=
            (if State.Current_Kind = Head_Object then Flush_Head_Unknown else Objects_Unknown);
       end if;
-      Consume_Fault
-        (Item.Storage.all, Flush_Fault_Point (State.Current_Kind, After_Entry => False), Fault);
+      Consume_Fault (Item.Storage.all, Flush_Fault_Point (State.Current_Kind, After_Entry => False), Fault);
       if Fault = Definite_Failure then
          Finish_Composable_Phase (Item, Storage_Failure);
          return;
@@ -16533,18 +16286,17 @@ package body Flyology.DB is
          Exact :=
            Outcome.Response.Status = 200
            and then Outcome.Response.Result.Content_Length.Is_Set
-           and then Outcome.Response.Result.Content_Length.Value =
-             OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
+           and then Outcome.Response.Result.Content_Length.Value
+                    = OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
            and then Payload_Matches (Item.Payload, Image);
          if Exact then
             Advance_After_Immutable (Item);
          elsif Outcome.Response.Status = 200
            and then Outcome.Response.Result.Content_Length.Is_Set
-           and then Outcome.Response.Result.Content_Length.Value =
-             OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
+           and then Outcome.Response.Result.Content_Length.Value
+                    = OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
          then
-            Finish_Composable_Phase
-              (Item, (if Is_Create (Item) then Already_Exists else Conflict));
+            Finish_Composable_Phase (Item, (if Is_Create (Item) then Already_Exists else Conflict));
          else
             if Item.Driver_State.Engine /= null then
                Fence_Engine (Item.Driver_State.Engine);
@@ -16629,8 +16381,8 @@ package body Flyology.DB is
             Exact :=
               Outcome.Response.Status = 200
               and then Outcome.Response.Result.Content_Length.Is_Set
-              and then Outcome.Response.Result.Content_Length.Value =
-                OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
+              and then Outcome.Response.Result.Content_Length.Value
+                       = OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
               and then Payload_Matches (Item.Payload, Image);
             if Exact then
                if Item.Final_Create_Receipt.Phase = No_Create_Publication then
@@ -16644,8 +16396,8 @@ package body Flyology.DB is
                return;
             elsif Outcome.Response.Status = 200
               and then Outcome.Response.Result.Content_Length.Is_Set
-              and then Outcome.Response.Result.Content_Length.Value =
-                OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
+              and then Outcome.Response.Result.Content_Length.Value
+                       = OS.Byte_Count (Flyology.Buffers.Length (Item.Payload))
             then
                Result :=
                  (if Item.Final_Create_Receipt.Phase = No_Create_Publication
@@ -16668,9 +16420,7 @@ package body Flyology.DB is
       end if;
       if Missing then
          Result :=
-           (if Item.Final_Create_Receipt.Phase = No_Create_Publication
-            then Storage_Failure
-            else Corrupt);
+           (if Item.Final_Create_Receipt.Phase = No_Create_Publication then Storage_Failure else Corrupt);
          if Result = Corrupt then
             Release_Retained_Manifest (Item.Final_Create_Receipt);
          end if;
@@ -16682,9 +16432,7 @@ package body Flyology.DB is
    end Complete_Create_Manifest_Confirmation;
 
    procedure Activate_Composable_Family
-     (Item       : in out Flush_Operation;
-      Generation : Generation_Value;
-      Result     : out Outcome_Code)
+     (Item : in out Flush_Operation; Generation : Generation_Value; Result : out Outcome_Code)
    is
       Guard : Checkpoint_Guard;
       Core  : Flush_Receipt :=
@@ -16703,13 +16451,7 @@ package body Flyology.DB is
       Guard.Life := Item.Item.Life'Unchecked_Access;
       Guard.Active := True;
       Activate_Flush_Plan
-        (Item.Item.all,
-         Item.Driver_State.Engine,
-         Item.Driver_State.Plan,
-         Generation,
-         Core,
-         Guard,
-         Result);
+        (Item.Item.all, Item.Driver_State.Engine, Item.Driver_State.Plan, Generation, Core, Guard, Result);
       Item.Driver_State.Checkpoint_Admitted := Guard.Active;
       if Guard.Active then
          Item.Final_Family_Receipt.Current_Outcome := Local_Activation_Failed;
@@ -16723,9 +16465,7 @@ package body Flyology.DB is
    end Activate_Composable_Family;
 
    procedure Activate_Composable_Create
-     (Item       : in out Flush_Operation;
-      Generation : Generation_Value;
-      Result     : out Outcome_Code)
+     (Item : in out Flush_Operation; Generation : Generation_Value; Result : out Outcome_Code)
    is
       State      : Flush_Driver_State renames Item.Driver_State.all;
       Manifest   : constant Manifests.Manifest := State.Plan.Manifest.Base;
@@ -16776,8 +16516,8 @@ package body Flyology.DB is
    end Activate_Composable_Create;
 
    procedure Start_Create_Reconciliation (Item : in out Flush_Operation) is
-      State                   : Flush_Driver_State renames Item.Driver_State.all;
-      Open_Admission_Consumed : Boolean;
+      State                         : Flush_Driver_State renames Item.Driver_State.all;
+      Open_Admission_Consumed       : Boolean;
       Checkpoint_Admission_Consumed : Boolean;
    begin
       if not State.Create_Open_Admitted then
@@ -16786,14 +16526,12 @@ package body Flyology.DB is
       if Item.Recovery_Child = null then
          Item.Recovery_Child :=
            new Refresh_Operation
-             (Item.Set.all'Unchecked_Access,
-              Item.Item.all'Unchecked_Access,
-              Item.Storage.all'Unchecked_Access,
-              Item.HTTP.all'Unchecked_Access,
-              Item.Payload_Pool.all'Unchecked_Access,
-              (if Item.Cancellation = null
-               then null
-               else Item.Cancellation.all'Unchecked_Access));
+                 (Item.Set.all'Unchecked_Access,
+                  Item.Item.all'Unchecked_Access,
+                  Item.Storage.all'Unchecked_Access,
+                  Item.HTTP.all'Unchecked_Access,
+                  Item.Payload_Pool.all'Unchecked_Access,
+                  (if Item.Cancellation = null then null else Item.Cancellation.all'Unchecked_Access));
       end if;
       Start_Composable_Recovery
         (Item.Payload,
@@ -16846,8 +16584,7 @@ package body Flyology.DB is
          Item.Final_Create_Receipt.Phase := Head_Confirmed;
          Release_Retained_Manifest (Item.Final_Create_Receipt);
          Complete_Composable_Flush (Item, Success);
-      elsif Result = Capacity_Exceeded
-        and then Item.Final_Create_Receipt.Phase = Head_Publication_Unknown
+      elsif Result = Capacity_Exceeded and then Item.Final_Create_Receipt.Phase = Head_Publication_Unknown
       then
          --  Local reconciliation capacity cannot narrow an already-possible
          --  mutation admission. Preserve the exact attempted transition for
@@ -16874,26 +16611,24 @@ package body Flyology.DB is
       if Item.Recovery_Child = null then
          Item.Recovery_Child :=
            new Refresh_Operation
-             (Item.Set.all'Unchecked_Access,
-              Item.Item.all'Unchecked_Access,
-              Item.Storage.all'Unchecked_Access,
-              Item.HTTP.all'Unchecked_Access,
-              Item.Payload_Pool.all'Unchecked_Access,
-              (if Item.Cancellation = null
-               then null
-               else Item.Cancellation.all'Unchecked_Access));
+                 (Item.Set.all'Unchecked_Access,
+                  Item.Item.all'Unchecked_Access,
+                  Item.Storage.all'Unchecked_Access,
+                  Item.HTTP.all'Unchecked_Access,
+                  Item.Payload_Pool.all'Unchecked_Access,
+                  (if Item.Cancellation = null then null else Item.Cancellation.all'Unchecked_Access));
       end if;
       Start_Composable_Recovery
-        (Payload_Buffer                 => Item.Payload,
-         Timeout                        => Remaining_Time (Item.Deadline),
-         Operation                      => Item.Recovery_Child.all,
-         Mode                           => Reconcile_Family_Publication,
-         Database_ID                    => Item.Final_Family_Receipt.Database_ID,
-         Expected_Family                => Item.Final_Family_Receipt,
-         Checkpoint_Engine              => State.Engine,
-         Open_Admission_Consumed        => Open_Admission_Consumed,
-         Checkpoint_Already_Admitted    => True,
-         Checkpoint_Admission_Consumed  => Checkpoint_Admission_Consumed);
+        (Payload_Buffer                => Item.Payload,
+         Timeout                       => Remaining_Time (Item.Deadline),
+         Operation                     => Item.Recovery_Child.all,
+         Mode                          => Reconcile_Family_Publication,
+         Database_ID                   => Item.Final_Family_Receipt.Database_ID,
+         Expected_Family               => Item.Final_Family_Receipt,
+         Checkpoint_Engine             => State.Engine,
+         Open_Admission_Consumed       => Open_Admission_Consumed,
+         Checkpoint_Already_Admitted   => True,
+         Checkpoint_Admission_Consumed => Checkpoint_Admission_Consumed);
       if Checkpoint_Admission_Consumed then
          State.Checkpoint_Admitted := False;
       end if;
@@ -16933,15 +16668,22 @@ package body Flyology.DB is
       if Item.Recovery_Child /= null then
          Free_Refresh_Operation (Item.Recovery_Child);
       end if;
+      if Item.Final_Family_Receipt.Phase = Family_Head_Confirmed and then Result /= Success then
+         --  Publication is already certain. Cancellation, deadline expiry,
+         --  capacity, or provider failure can now affect only local recovery;
+         --  preserve the exact receipt as activation authority.
+         Result := Local_Activation_Failed;
+      end if;
       case Result is
-         when Success | Stale_Writer =>
-            Item.Driver_State.Engine :=
-              (if Result = Success then null else Item.Driver_State.Engine);
+         when Success | Stale_Writer  =>
+            Item.Driver_State.Engine := (if Result = Success then null else Item.Driver_State.Engine);
             Item.Final_Family_Receipt.Phase := Family_Resolved;
             Release_Retained_Manifest (Item.Final_Family_Receipt);
+
          when Local_Activation_Failed =>
             Item.Final_Family_Receipt.Phase := Family_Head_Confirmed;
-         when others =>
+
+         when others                  =>
             null;
       end case;
       Complete_Composable_Flush (Item, Result);
@@ -16958,26 +16700,24 @@ package body Flyology.DB is
       if Item.Recovery_Child = null then
          Item.Recovery_Child :=
            new Refresh_Operation
-             (Item.Set.all'Unchecked_Access,
-              Item.Item.all'Unchecked_Access,
-              Item.Storage.all'Unchecked_Access,
-              Item.HTTP.all'Unchecked_Access,
-              Item.Payload_Pool.all'Unchecked_Access,
-              (if Item.Cancellation = null
-               then null
-               else Item.Cancellation.all'Unchecked_Access));
+                 (Item.Set.all'Unchecked_Access,
+                  Item.Item.all'Unchecked_Access,
+                  Item.Storage.all'Unchecked_Access,
+                  Item.HTTP.all'Unchecked_Access,
+                  Item.Payload_Pool.all'Unchecked_Access,
+                  (if Item.Cancellation = null then null else Item.Cancellation.all'Unchecked_Access));
       end if;
       Start_Composable_Recovery
-        (Payload_Buffer                 => Item.Payload,
-         Timeout                        => Remaining_Time (Item.Deadline),
-         Operation                      => Item.Recovery_Child.all,
-         Mode                           => Reconcile_Flush_Publication,
-         Database_ID                    => Item.Final_Receipt.Database_ID,
-         Expected_Flush                 => Item.Final_Receipt,
-         Checkpoint_Engine              => State.Engine,
-         Open_Admission_Consumed        => Open_Admission_Consumed,
-         Checkpoint_Already_Admitted    => True,
-         Checkpoint_Admission_Consumed  => Checkpoint_Admission_Consumed);
+        (Payload_Buffer                => Item.Payload,
+         Timeout                       => Remaining_Time (Item.Deadline),
+         Operation                     => Item.Recovery_Child.all,
+         Mode                          => Reconcile_Flush_Publication,
+         Database_ID                   => Item.Final_Receipt.Database_ID,
+         Expected_Flush                => Item.Final_Receipt,
+         Checkpoint_Engine             => State.Engine,
+         Open_Admission_Consumed       => Open_Admission_Consumed,
+         Checkpoint_Already_Admitted   => True,
+         Checkpoint_Admission_Consumed => Checkpoint_Admission_Consumed);
       if Checkpoint_Admission_Consumed then
          State.Checkpoint_Admitted := False;
       end if;
@@ -17011,22 +16751,24 @@ package body Flyology.DB is
          Free_Refresh_Operation (Item.Recovery_Child);
       end if;
       case Result is
-         when Success =>
+         when Success                 =>
             Item.Driver_State.Engine := null;
             Item.Final_Receipt.Phase := Flush_Resolved;
-         when Stale_Writer =>
+
+         when Stale_Writer            =>
             Item.Final_Receipt.Phase := Flush_Resolved;
+
          when Local_Activation_Failed =>
             Item.Final_Receipt.Phase := Flush_Head_Confirmed;
-         when others =>
+
+         when others                  =>
             null;
       end case;
       Complete_Composable_Flush (Item, Result);
    end Complete_Flush_Reconciliation;
 
    procedure Complete_Head_Put
-     (Item    : in out Flush_Operation;
-      Outcome : Client_Objects.Conditional_Put_Result)
+     (Item : in out Flush_Operation; Outcome : Client_Objects.Conditional_Put_Result)
    is
       Generation : Generation_Value;
       Valid      : Boolean := False;
@@ -17034,7 +16776,7 @@ package body Flyology.DB is
       Guard      : Checkpoint_Guard;
    begin
       case Outcome.Disposition is
-         when Client_Common.Published =>
+         when Client_Common.Published                    =>
             if Outcome.Kind = Client_Objects.Put_Response_Available
               and then Outcome.Response.Kind = Client_Low_Level.Object_Put
             then
@@ -17053,7 +16795,26 @@ package body Flyology.DB is
             if Is_Create (Item) then
                Activate_Composable_Create (Item, Generation, Result);
             elsif Is_Family_Append (Item) then
-               Activate_Composable_Family (Item, Generation, Result);
+               Item.Final_Family_Receipt.Phase := Family_Head_Confirmed;
+               if Item.Driver_State.Plan.Manifest.Replay_Boundary
+                 < Interfaces.Unsigned_64 (Item.Final_Family_Receipt.Attempted_Head.Highest)
+               then
+                  --  The publication retained an authenticated live suffix.
+                  --  Fence the obsolete coordinator before fallible recovery;
+                  --  durable HEAD already names the successor. Re-read HEAD
+                  --  and recover the exact chain rather than activating a
+                  --  prepublication in-memory snapshot.
+                  Fence_Engine (Item.Driver_State.Engine);
+                  Start_Family_Reconciliation (Item);
+                  return;
+               elsif Item.Driver_State.Plan.Manifest.Replay_Boundary
+                 = Interfaces.Unsigned_64 (Item.Final_Family_Receipt.Attempted_Head.Highest)
+               then
+                  Activate_Composable_Family (Item, Generation, Result);
+               else
+                  Item.Final_Family_Receipt.Current_Outcome := Local_Activation_Failed;
+                  Result := Local_Activation_Failed;
+               end if;
             else
                Guard.Life := Item.Item.Life'Unchecked_Access;
                Guard.Active := True;
@@ -17072,7 +16833,7 @@ package body Flyology.DB is
             end if;
             Complete_Composable_Flush (Item, Result);
 
-         when Client_Common.Precondition_Failed =>
+         when Client_Common.Precondition_Failed          =>
             if Is_Create (Item) then
                --  The provider conclusively rejected this exact HEAD
                --  mutation. Recovery may discover an idempotent existing
@@ -17098,7 +16859,7 @@ package body Flyology.DB is
             end if;
             Finish_Composable_Phase (Item, Cancelled);
 
-         when Client_Common.Definitely_Not_Published =>
+         when Client_Common.Definitely_Not_Published     =>
             if Is_Create (Item) then
                Item.Final_Create_Receipt.Phase := Manifest_Confirmed;
             end if;
@@ -17110,7 +16871,7 @@ package body Flyology.DB is
                 then Timed_Out
                 else Storage_Failure));
 
-         when Client_Common.Outcome_Unknown =>
+         when Client_Common.Outcome_Unknown              =>
             if Is_Create (Item) then
                Start_Create_Reconciliation (Item);
             else
@@ -17121,12 +16882,10 @@ package body Flyology.DB is
    end Complete_Head_Put;
 
    procedure Complete_Immutable_Put
-     (Item    : in out Flush_Operation;
-      Outcome : Client_Objects.Conditional_Put_Result)
-   is
+     (Item : in out Flush_Operation; Outcome : Client_Objects.Conditional_Put_Result) is
    begin
       case Outcome.Disposition is
-         when Client_Common.Published =>
+         when Client_Common.Published                                           =>
             if Outcome.Kind = Client_Objects.Put_Response_Available
               and then Outcome.Response.Kind = Client_Low_Level.Object_Put
             then
@@ -17138,10 +16897,10 @@ package body Flyology.DB is
          when Client_Common.Precondition_Failed | Client_Common.Outcome_Unknown =>
             Start_Immutable_Read (Item);
 
-         when Client_Common.Cancelled_Before_Publication =>
+         when Client_Common.Cancelled_Before_Publication                        =>
             Finish_Composable_Phase (Item, Cancelled);
 
-         when Client_Common.Definitely_Not_Published =>
+         when Client_Common.Definitely_Not_Published                            =>
             Finish_Composable_Phase
               (Item,
                (if Outcome.Failure = Client_Common.Cancelled
@@ -17175,9 +16934,7 @@ package body Flyology.DB is
       Item.Driver_State.Create_Mutation_May_Have_Entered := False;
       Flyology.Operations.Release (Item.Put_Child);
       Consume_Fault
-        (Item.Storage.all,
-         Flush_Fault_Point (Item.Driver_State.Current_Kind, After_Entry => True),
-         Fault);
+        (Item.Storage.all, Flush_Fault_Point (Item.Driver_State.Current_Kind, After_Entry => True), Fault);
       if Fault /= No_Fault then
          if Item.Driver_State.Current_Kind = Head_Object then
             if Is_Create (Item) then
@@ -17196,9 +16953,7 @@ package body Flyology.DB is
       end if;
    end Complete_Current_Put;
 
-   function Selected_Read_Failure
-     (Failure : Client_Common.Failure_Reason) return Outcome_Code
-   is
+   function Selected_Read_Failure (Failure : Client_Common.Failure_Reason) return Outcome_Code is
    begin
       return
         (case Failure is
@@ -17208,22 +16963,19 @@ package body Flyology.DB is
            when others                           => Storage_Failure);
    end Selected_Read_Failure;
 
-   function Selected_Rejection
-     (Status : Flyology.HTTP.Status_Code) return Outcome_Code
+   function Selected_Rejection (Status : Flyology.HTTP.Status_Code) return Outcome_Code
    is
-     --  S3 GetObject/HeadObject fixes 404 as missing immutable authority and
-     --  412 as exact-generation mismatch. Both invalidate a manifest-named
-     --  SST; other complete rejections remain provider/storage failures.
-     (if Status in 404 | 412 then Corrupt else Storage_Failure);
+      --  S3 GetObject/HeadObject fixes 404 as missing immutable authority and
+      --  412 as exact-generation mismatch. Both invalidate a manifest-named
+      --  SST; other complete rejections remain provider/storage failures.
+      (if Status in 404 | 412 then Corrupt else Storage_Failure);
 
    --  Selected merge recovery uses the same longest compatible v1/v2 prefix
    --  as cacheless recovery; this is format discrimination, not read tuning.
    Selected_SST_Header_Length : constant Positive := Compatible_SST_Header_Length;
 
    procedure Copy_Selected_Payload
-     (Item     : Flyology.Buffers.Unique_Buffer;
-      Expected : Positive;
-      Image    : out LSM_Runtime.Image_Access)
+     (Item : Flyology.Buffers.Unique_Buffer; Expected : Positive; Image : out LSM_Runtime.Image_Access)
    is
       procedure Copy (Data : Ada.Streams.Stream_Element_Array) is
       begin
@@ -17249,18 +17001,14 @@ package body Flyology.DB is
    begin
       return
         (case Read_Result is
-           when Read_Cancelled          => Cancelled,
-           when Read_Timed_Out          => Timed_Out,
-           when Read_Capacity_Exceeded  => Capacity_Exceeded,
-           when Object_Missing
-              | Read_Precondition_Failed
-              | Read_Corrupt            => Corrupt,
-           when others                  => Storage_Failure);
+           when Read_Cancelled                                           => Cancelled,
+           when Read_Timed_Out                                           => Timed_Out,
+           when Read_Capacity_Exceeded                                   => Capacity_Exceeded,
+           when Object_Missing | Read_Precondition_Failed | Read_Corrupt => Corrupt,
+           when others                                                   => Storage_Failure);
    end Lazy_Read_Outcome;
 
-   function Lazy_Decode_Outcome
-     (Status : LSM_Runtime.Decode_Status) return Outcome_Code
-   is
+   function Lazy_Decode_Outcome (Status : LSM_Runtime.Decode_Status) return Outcome_Code is
    begin
       return
         (if Status = LSM_Runtime.Decoded
@@ -17275,9 +17023,7 @@ package body Flyology.DB is
          else Corrupt);
    end Lazy_Decode_Outcome;
 
-   procedure Release_Lazy_SST_Read_State
-     (Item : in out Lazy_SST_Read_Operation)
-   is
+   procedure Release_Lazy_SST_Read_State (Item : in out Lazy_SST_Read_Operation) is
    begin
       if Item.Driver_State /= null then
          LSM_Runtime.Release (Item.Driver_State.Index);
@@ -17315,9 +17061,7 @@ package body Flyology.DB is
    end Complete_Lazy_SST_Read;
 
    procedure Fail_Lazy_SST_Read
-     (Item  : in out Lazy_SST_Read_Operation;
-      Error : Ada.Exceptions.Exception_Occurrence)
-   is
+     (Item : in out Lazy_SST_Read_Operation; Error : Ada.Exceptions.Exception_Occurrence) is
    begin
       if Ada.Exceptions.Exception_Identity (Error) = Storage_Error'Identity then
          Complete_Lazy_SST_Read (Item, Capacity_Exceeded);
@@ -17325,20 +17069,17 @@ package body Flyology.DB is
       end if;
       Item.Has_Saved_Error := True;
       Ada.Exceptions.Save_Occurrence (Item.Saved_Error, Error);
-      Complete_Lazy_SST_Read
-        (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
+      Complete_Lazy_SST_Read (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
    exception
       when others =>
          if Flyology.Operations.Is_Active (Item) then
-            Flyology.Operations.Drivers.Complete
-              (Item, Flyology.Operations.Failed);
+            Flyology.Operations.Drivers.Complete (Item, Flyology.Operations.Failed);
          end if;
    end Fail_Lazy_SST_Read;
 
    function Lazy_Index_Key_Matches
-     (Index    : LSM_Runtime.SST_V2_Index;
-      Position : Positive;
-      Key      : Flyology.Bytes.Unbounded_Bytes) return Boolean
+     (Index : LSM_Runtime.SST_V2_Index; Position : Positive; Key : Flyology.Bytes.Unbounded_Bytes)
+      return Boolean
    is
       Index_Item : LSM_Runtime.SST_V2_Index_Entry renames Index.Entries (Position);
    begin
@@ -17348,8 +17089,7 @@ package body Flyology.DB is
          return True;
       end if;
       for Offset in Natural range 0 .. Index_Item.Key_Byte_Total - 1 loop
-         if Index.Keys (Index_Item.Key_Offset + Offset)
-           /= Byte (Flyology.Bytes.Element (Key, Offset + 1))
+         if Index.Keys (Index_Item.Key_Offset + Offset) /= Byte (Flyology.Bytes.Element (Key, Offset + 1))
          then
             return False;
          end if;
@@ -17358,9 +17098,7 @@ package body Flyology.DB is
    end Lazy_Index_Key_Matches;
 
    function Lazy_SST_Key_Matches
-     (Table    : LSM_Runtime.SST;
-      Position : Positive;
-      Key      : Flyology.Bytes.Unbounded_Bytes) return Boolean
+     (Table : LSM_Runtime.SST; Position : Positive; Key : Flyology.Bytes.Unbounded_Bytes) return Boolean
    is
       Item_Entry : LSM_Runtime.SST_Entry renames Table.Entries (Position);
    begin
@@ -17370,8 +17108,7 @@ package body Flyology.DB is
          return True;
       end if;
       for Offset in Natural range 0 .. Item_Entry.Key_Byte_Total - 1 loop
-         if Table.Payload (Item_Entry.Key_Offset + Offset)
-           /= Byte (Flyology.Bytes.Element (Key, Offset + 1))
+         if Table.Payload (Item_Entry.Key_Offset + Offset) /= Byte (Flyology.Bytes.Element (Key, Offset + 1))
          then
             return False;
          end if;
@@ -17380,16 +17117,14 @@ package body Flyology.DB is
    end Lazy_SST_Key_Matches;
 
    procedure Select_Lazy_Whole_SST_Entry
-     (Item  : in out Lazy_SST_Read_Operation;
-      Table : in out LSM_Runtime.SST_Access)
+     (Item : in out Lazy_SST_Read_Operation; Table : in out LSM_Runtime.SST_Access)
    is
       State    : Lazy_SST_Read_State renames Item.Driver_State.all;
       Selected : Natural := 0;
    begin
       for Position in Table.Entries'Range loop
          if Lazy_SST_Key_Matches (Table.all, Position, State.Item_Key)
-           and then Table.Entries (Position).Sequence
-                      <= Interfaces.Unsigned_64 (State.Snapshot_At)
+           and then Table.Entries (Position).Sequence <= Interfaces.Unsigned_64 (State.Snapshot_At)
          then
             Selected := Position;
             exit;
@@ -17400,30 +17135,25 @@ package body Flyology.DB is
          Complete_Lazy_SST_Read (Item, Not_Found, Lazy_Key_Absent);
       elsif Table.Entries (Selected).Operation = LSM_Runtime.LSM.Delete_Operation then
          declare
-            Sequence : constant Sequence_Number :=
-              Sequence_Number (Table.Entries (Selected).Sequence);
+            Sequence : constant Sequence_Number := Sequence_Number (Table.Entries (Selected).Sequence);
          begin
             LSM_Runtime.Release (Table);
-            Complete_Lazy_SST_Read
-              (Item, Not_Found, Lazy_Tombstone_Found, Sequence);
+            Complete_Lazy_SST_Read (Item, Not_Found, Lazy_Tombstone_Found, Sequence);
          end;
       else
          declare
             Item_Entry : LSM_Runtime.SST_Entry renames Table.Entries (Selected);
-            Sequence : constant Sequence_Number := Sequence_Number (Item_Entry.Sequence);
+            Sequence   : constant Sequence_Number := Sequence_Number (Item_Entry.Sequence);
          begin
             Flyology.Bytes.Clear (Item.Final_Value);
-            Flyology.Bytes.Reserve_Capacity
-              (Item.Final_Value, Item_Entry.Value_Byte_Total);
+            Flyology.Bytes.Reserve_Capacity (Item.Final_Value, Item_Entry.Value_Byte_Total);
             for Offset in Natural range 1 .. Item_Entry.Value_Byte_Total loop
                Flyology.Bytes.Append
                  (Item.Final_Value,
-                  Ada.Streams.Stream_Element
-                    (Table.Payload (Item_Entry.Value_Offset + Offset - 1)));
+                  Ada.Streams.Stream_Element (Table.Payload (Item_Entry.Value_Offset + Offset - 1)));
             end loop;
             LSM_Runtime.Release (Table);
-            Complete_Lazy_SST_Read
-              (Item, Success, Lazy_Value_Found, Sequence);
+            Complete_Lazy_SST_Read (Item, Success, Lazy_Value_Found, Sequence);
          end;
       end if;
    exception
@@ -17495,24 +17225,18 @@ package body Flyology.DB is
    end Select_Lazy_Whole_SST_Next_Entry;
 
    procedure Start_Lazy_SST_Range
-     (Item  : in out Lazy_SST_Read_Operation;
-      First : Natural;
-      Last  : Natural;
-      Phase : Lazy_SST_Read_Phase)
+     (Item : in out Lazy_SST_Read_Operation; First : Natural; Last : Natural; Phase : Lazy_SST_Read_Phase)
    is
       State : Lazy_SST_Read_State renames Item.Driver_State.all;
       Count : Natural;
    begin
       if Item.Cancellation /= null and then Item.Cancellation.Requested then
-         Complete_Lazy_SST_Read
-           (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
+         Complete_Lazy_SST_Read (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
          return;
       elsif Item.Deadline <= Ada.Real_Time.Clock then
          Complete_Lazy_SST_Read (Item, Timed_Out);
          return;
-      elsif Last < First
-        or else Last - First = Natural'Last
-      then
+      elsif Last < First or else Last - First = Natural'Last then
          Complete_Lazy_SST_Read (Item, Corrupt);
          return;
       end if;
@@ -17522,10 +17246,7 @@ package body Flyology.DB is
          return;
       end if;
       State.Requested :=
-        (Kind  => OS.Bounded_Range,
-         First => OS.Byte_Count (First),
-         Last  => OS.Byte_Count (Last),
-         Count => 0);
+        (Kind => OS.Bounded_Range, First => OS.Byte_Count (First), Last => OS.Byte_Count (Last), Count => 0);
       State.Requested_Bytes := Count;
       Client_Objects.Get_Range
         (Item.HTTP,
@@ -17557,8 +17278,7 @@ package body Flyology.DB is
       State : Lazy_SST_Read_State renames Item.Driver_State.all;
    begin
       if Item.Cancellation /= null and then Item.Cancellation.Requested then
-         Complete_Lazy_SST_Read
-           (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
+         Complete_Lazy_SST_Read (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
          return;
       elsif Item.Deadline <= Ada.Real_Time.Clock then
          Complete_Lazy_SST_Read (Item, Timed_Out);
@@ -17597,8 +17317,7 @@ package body Flyology.DB is
       Parameters : Client_Low_Level.Head_Object_Parameters := (others => <>);
    begin
       if Item.Cancellation /= null and then Item.Cancellation.Requested then
-         Complete_Lazy_SST_Read
-           (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
+         Complete_Lazy_SST_Read (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
          return;
       elsif Item.Deadline <= Ada.Real_Time.Clock then
          Complete_Lazy_SST_Read (Item, Timed_Out);
@@ -17628,9 +17347,7 @@ package body Flyology.DB is
          Fail_Lazy_SST_Read (Item, Error);
    end Start_Lazy_SST_Head;
 
-   procedure Complete_Lazy_SST_Head
-     (Item : in out Lazy_SST_Read_Operation)
-   is
+   procedure Complete_Lazy_SST_Head (Item : in out Lazy_SST_Read_Operation) is
       State       : Lazy_SST_Read_State renames Item.Driver_State.all;
       Outcome     : Client_Objects.Head_Result;
       Read_Result : Read_Outcome := Read_Failed;
@@ -17660,9 +17377,7 @@ package body Flyology.DB is
          Read_Result := Read_Corrupt;
       else
          Set_Quoted_Generation
-           (State.Generation,
-            UStrings.To_String (Outcome.Response.Result.Entity_Tag),
-            Valid);
+           (State.Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
          if Valid then
             State.Object_Length := Natural (Outcome.Response.Result.Content_Length);
             if State.Object_Length < Minimum_Compatible_SST_Length then
@@ -17673,8 +17388,7 @@ package body Flyology.DB is
                Header_Length : constant Positive :=
                  Positive'Min (Compatible_SST_Header_Length, State.Object_Length);
             begin
-               Start_Lazy_SST_Range
-                 (Item, 0, Header_Length - 1, Lazy_Read_Header);
+               Start_Lazy_SST_Range (Item, 0, Header_Length - 1, Lazy_Read_Header);
             end;
             return;
          end if;
@@ -17686,28 +17400,23 @@ package body Flyology.DB is
          Fail_Lazy_SST_Read (Item, Error);
    end Complete_Lazy_SST_Head;
 
-   procedure Select_Lazy_SST_Entry
-     (Item : in out Lazy_SST_Read_Operation)
-   is
+   procedure Select_Lazy_SST_Entry (Item : in out Lazy_SST_Read_Operation) is
       State : Lazy_SST_Read_State renames Item.Driver_State.all;
    begin
       State.Selected_Position := 0;
       for Position in State.Index.Entries'Range loop
          if Lazy_Index_Key_Matches (State.Index.all, Position, State.Item_Key)
-           and then State.Index.Entries (Position).Sequence
-                      <= Interfaces.Unsigned_64 (State.Snapshot_At)
+           and then State.Index.Entries (Position).Sequence <= Interfaces.Unsigned_64 (State.Snapshot_At)
          then
             State.Selected_Position := Position;
             exit;
          end if;
       end loop;
       if State.Selected_Position = 0 then
-         Complete_Lazy_SST_Read
-           (Item, Not_Found, Lazy_Key_Absent);
+         Complete_Lazy_SST_Read (Item, Not_Found, Lazy_Key_Absent);
       else
          declare
-            Index_Item : LSM_Runtime.SST_V2_Index_Entry renames
-              State.Index.Entries (State.Selected_Position);
+            Index_Item : LSM_Runtime.SST_V2_Index_Entry renames State.Index.Entries (State.Selected_Position);
          begin
             Start_Lazy_SST_Range
               (Item,
@@ -17761,9 +17470,7 @@ package body Flyology.DB is
          Fail_Lazy_SST_Read (Item, Error);
    end Select_Lazy_SST_Next_Entry;
 
-   procedure Complete_Lazy_SST_Whole
-     (Item : in out Lazy_SST_Read_Operation)
-   is
+   procedure Complete_Lazy_SST_Whole (Item : in out Lazy_SST_Read_Operation) is
       State         : Lazy_SST_Read_State renames Item.Driver_State.all;
       Outcome       : Client_Objects.Whole_Get_Result;
       Read_Result   : Read_Outcome := Read_Failed;
@@ -17792,8 +17499,7 @@ package body Flyology.DB is
       elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
          Read_Result := Refresh_Read_Rejection (Outcome.Response.Status);
       else
-         Set_Quoted_Generation
-           (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+         Set_Quoted_Generation (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
          if not Valid
            or else Generation /= State.Generation
            or else Outcome.Response.Status /= 200
@@ -17842,18 +17548,16 @@ package body Flyology.DB is
          Fail_Lazy_SST_Read (Item, Error);
    end Complete_Lazy_SST_Whole;
 
-   procedure Complete_Lazy_SST_Range
-     (Item : in out Lazy_SST_Read_Operation)
-   is
-      State         : Lazy_SST_Read_State renames Item.Driver_State.all;
+   procedure Complete_Lazy_SST_Range (Item : in out Lazy_SST_Read_Operation) is
+      State          : Lazy_SST_Read_State renames Item.Driver_State.all;
       Finished_Phase : constant Lazy_SST_Read_Phase := State.Phase;
-      Outcome       : Client_Objects.Range_Get_Result;
-      Read_Result   : Read_Outcome := Read_Failed;
-      Generation    : Generation_Value;
-      Image         : LSM_Runtime.Image_Access := null;
-      Decode_Status : LSM_Runtime.Decode_Status;
-      Valid         : Boolean := False;
-      Expected      : Positive;
+      Outcome        : Client_Objects.Range_Get_Result;
+      Read_Result    : Read_Outcome := Read_Failed;
+      Generation     : Generation_Value;
+      Image          : LSM_Runtime.Image_Access := null;
+      Decode_Status  : LSM_Runtime.Decode_Status;
+      Valid          : Boolean := False;
+      Expected       : Positive;
    begin
       begin
          Client_Objects.Finish (Item.Range_Child.all, Outcome);
@@ -17874,8 +17578,7 @@ package body Flyology.DB is
       elsif Outcome.Response.Kind = Client_Low_Level.Get_Object_Rejected then
          Read_Result := Refresh_Read_Rejection (Outcome.Response.Status);
       else
-         Set_Quoted_Generation
-           (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+         Set_Quoted_Generation (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
          if State.Requested_Bytes = 0 then
             Complete_Lazy_SST_Read (Item, Corrupt);
             return;
@@ -17925,7 +17628,7 @@ package body Flyology.DB is
                   Lazy_Read_Index);
             end if;
 
-         when Lazy_Read_Index =>
+         when Lazy_Read_Index  =>
             LSM_Runtime.Decode_SST_V2_Index
               (Image.all,
                State.Admission,
@@ -17945,18 +17648,14 @@ package body Flyology.DB is
                Select_Lazy_SST_Entry (Item);
             end if;
 
-         when Lazy_Read_Frame =>
+         when Lazy_Read_Frame  =>
             declare
-               Frame : LSM_Runtime.SST_V2_Frame_Access := null;
+               Frame      : LSM_Runtime.SST_V2_Frame_Access := null;
                Index_Item : LSM_Runtime.SST_V2_Index_Entry renames
                  State.Index.Entries (State.Selected_Position);
             begin
                LSM_Runtime.Decode_SST_V2_Frame
-                 (Image.all,
-                  State.Index.all,
-                  State.Selected_Position,
-                  Frame,
-                  Decode_Status);
+                 (Image.all, State.Index.all, State.Selected_Position, Frame, Decode_Status);
                LSM_Runtime.Release (Image);
                if Decode_Status /= LSM_Runtime.Decoded then
                   Complete_Lazy_SST_Read (Item, Lazy_Decode_Outcome (Decode_Status));
@@ -17992,7 +17691,7 @@ package body Flyology.DB is
                   raise;
             end;
 
-         when others =>
+         when others           =>
             LSM_Runtime.Release (Image);
             raise Program_Error with "invalid lazy SST range phase";
       end case;
@@ -18005,10 +17704,8 @@ package body Flyology.DB is
          Fail_Lazy_SST_Read (Item, Error);
    end Complete_Lazy_SST_Range;
 
-   overriding procedure Drive
-     (Item : in out Lazy_SST_Read_Operation;
-      Event : Flyology.Operations.Driver_Event)
-   is
+   overriding
+   procedure Drive (Item : in out Lazy_SST_Read_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       if Event = Flyology.Operations.Start_Operation then
          Start_Lazy_SST_Head (Item);
@@ -18028,8 +17725,7 @@ package body Flyology.DB is
          Complete_Lazy_SST_Whole (Item);
       elsif Event = Flyology.Operations.Dependency_Changed
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Phase
-                   in Lazy_Read_Header | Lazy_Read_Index | Lazy_Read_Frame
+        and then Item.Driver_State.Phase in Lazy_Read_Header | Lazy_Read_Index | Lazy_Read_Frame
         and then Item.Range_Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Range_Child.all)
       then
@@ -18044,13 +17740,10 @@ package body Flyology.DB is
          end if;
    end Drive;
 
-   overriding procedure Request_Cancellation
-     (Item : in out Lazy_SST_Read_Operation)
-   is
+   overriding
+   procedure Request_Cancellation (Item : in out Lazy_SST_Read_Operation) is
    begin
-      if Item.Head_Child /= null
-        and then Flyology.Operations.Is_Active (Item.Head_Child.all)
-      then
+      if Item.Head_Child /= null and then Flyology.Operations.Is_Active (Item.Head_Child.all) then
          Flyology.Operations.Cancel (Item.Head_Child.all);
       elsif Item.Head_Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Head_Child.all)
@@ -18061,9 +17754,7 @@ package body Flyology.DB is
          if Flyology.Operations.Is_Active (Item) then
             Request_Cancellation (Item);
          end if;
-      elsif Item.Whole_Child /= null
-        and then Flyology.Operations.Is_Active (Item.Whole_Child.all)
-      then
+      elsif Item.Whole_Child /= null and then Flyology.Operations.Is_Active (Item.Whole_Child.all) then
          Flyology.Operations.Cancel (Item.Whole_Child.all);
       elsif Item.Whole_Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Whole_Child.all)
@@ -18074,30 +17765,25 @@ package body Flyology.DB is
          if Flyology.Operations.Is_Active (Item) then
             Request_Cancellation (Item);
          end if;
-      elsif Item.Range_Child /= null
-        and then Flyology.Operations.Is_Active (Item.Range_Child.all)
-      then
+      elsif Item.Range_Child /= null and then Flyology.Operations.Is_Active (Item.Range_Child.all) then
          Flyology.Operations.Cancel (Item.Range_Child.all);
       elsif Item.Range_Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Range_Child.all)
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Phase
-                   in Lazy_Read_Header | Lazy_Read_Index | Lazy_Read_Frame
+        and then Item.Driver_State.Phase in Lazy_Read_Header | Lazy_Read_Index | Lazy_Read_Frame
       then
          Complete_Lazy_SST_Range (Item);
          if Flyology.Operations.Is_Active (Item) then
             Request_Cancellation (Item);
          end if;
       elsif Flyology.Operations.Is_Active (Item) then
-         Complete_Lazy_SST_Read
-           (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
+         Complete_Lazy_SST_Read (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
       end if;
    exception
       when others =>
          if Flyology.Operations.Is_Active (Item) then
             begin
-               Complete_Lazy_SST_Read
-                 (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
+               Complete_Lazy_SST_Read (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
             exception
                when others =>
                   null;
@@ -18470,9 +18156,7 @@ package body Flyology.DB is
       Flyology.Buffers.Release (Item.Payload);
    end Finalize;
 
-   procedure Release_Lazy_Checkpoint_Read_State
-     (Item : in out Lazy_Checkpoint_Read_Operation)
-   is
+   procedure Release_Lazy_Checkpoint_Read_State (Item : in out Lazy_Checkpoint_Read_Operation) is
    begin
       if Item.Driver_State /= null then
          Free_Lazy_SST_Run_Array (Item.Driver_State.Runs);
@@ -18485,8 +18169,7 @@ package body Flyology.DB is
       Result      : Outcome_Code;
       Disposition : Lazy_SST_Entry_Disposition := Lazy_Read_Failed;
       Sequence    : Sequence_Number := 0;
-      Kind        : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded)
-   is
+      Kind        : Flyology.Operations.Terminal_Outcome := Flyology.Operations.Succeeded) is
    begin
       if Item.Driver_State /= null then
          Item.Driver_State.Phase := Lazy_Checkpoint_Terminal;
@@ -18499,9 +18182,7 @@ package body Flyology.DB is
    end Complete_Lazy_Checkpoint_Read;
 
    procedure Fail_Lazy_Checkpoint_Read
-     (Item  : in out Lazy_Checkpoint_Read_Operation;
-      Error : Ada.Exceptions.Exception_Occurrence)
-   is
+     (Item : in out Lazy_Checkpoint_Read_Operation; Error : Ada.Exceptions.Exception_Occurrence) is
    begin
       if Ada.Exceptions.Exception_Identity (Error) = Storage_Error'Identity then
          Complete_Lazy_Checkpoint_Read (Item, Capacity_Exceeded);
@@ -18509,31 +18190,25 @@ package body Flyology.DB is
       end if;
       Item.Has_Saved_Error := True;
       Ada.Exceptions.Save_Occurrence (Item.Saved_Error, Error);
-      Complete_Lazy_Checkpoint_Read
-        (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
+      Complete_Lazy_Checkpoint_Read (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
    exception
       when others =>
          if Flyology.Operations.Is_Active (Item) then
-            Flyology.Operations.Drivers.Complete
-              (Item, Flyology.Operations.Failed);
+            Flyology.Operations.Drivers.Complete (Item, Flyology.Operations.Failed);
          end if;
    end Fail_Lazy_Checkpoint_Read;
 
-   procedure Start_Next_Lazy_Checkpoint_Run
-     (Item : in out Lazy_Checkpoint_Read_Operation)
-   is
+   procedure Start_Next_Lazy_Checkpoint_Run (Item : in out Lazy_Checkpoint_Read_Operation) is
       State : Lazy_Checkpoint_Read_State renames Item.Driver_State.all;
    begin
       if Item.Cancellation /= null and then Item.Cancellation.Requested then
-         Complete_Lazy_Checkpoint_Read
-           (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
+         Complete_Lazy_Checkpoint_Read (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
          return;
       elsif Item.Deadline <= Ada.Real_Time.Clock then
          Complete_Lazy_Checkpoint_Read (Item, Timed_Out);
          return;
       end if;
-      if State.Current_Index > 0
-        and then State.Runs (State.Current_Index).Lowest_Sequence > State.Snapshot_At
+      if State.Current_Index > 0 and then State.Runs (State.Current_Index).Lowest_Sequence > State.Snapshot_At
       then
          State.Current_Index := State.Current_Index - 1;
          State.Phase := Lazy_Checkpoint_Idle;
@@ -18541,14 +18216,12 @@ package body Flyology.DB is
          return;
       end if;
       if State.Current_Index = 0 then
-         Complete_Lazy_Checkpoint_Read
-           (Item, Not_Found, Lazy_Key_Absent);
+         Complete_Lazy_Checkpoint_Read (Item, Not_Found, Lazy_Key_Absent);
          return;
       end if;
       declare
          Descriptor : Lazy_SST_Run_Descriptor renames State.Runs (State.Current_Index);
-         Raw_Key    : constant Ada.Streams.Stream_Element_Array :=
-           Flyology.Bytes.To_Array (State.Item_Key);
+         Raw_Key    : constant Ada.Streams.Stream_Element_Array := Flyology.Bytes.To_Array (State.Item_Key);
          Key        : Byte_Array (1 .. Raw_Key'Length);
       begin
          for Index in Key'Range loop
@@ -18577,9 +18250,7 @@ package body Flyology.DB is
          Fail_Lazy_Checkpoint_Read (Item, Error);
    end Start_Next_Lazy_Checkpoint_Run;
 
-   procedure Complete_Lazy_Checkpoint_Child
-     (Item : in out Lazy_Checkpoint_Read_Operation)
-   is
+   procedure Complete_Lazy_Checkpoint_Child (Item : in out Lazy_Checkpoint_Read_Operation) is
       State       : Lazy_Checkpoint_Read_State renames Item.Driver_State.all;
       Disposition : Lazy_SST_Entry_Disposition;
       Sequence    : Sequence_Number;
@@ -18587,13 +18258,7 @@ package body Flyology.DB is
       Result      : Outcome_Code;
    begin
       begin
-         Finish_Lazy_SST_Read
-           (Item.Child,
-            Disposition,
-            Sequence,
-            Value,
-            Result,
-            Item.Payload);
+         Finish_Lazy_SST_Read (Item.Child, Disposition, Sequence, Value, Result, Item.Payload);
       exception
          when Error : others =>
             if Flyology.Operations.Id (Item.Child) /= 0
@@ -18607,7 +18272,7 @@ package body Flyology.DB is
       end;
       Flyology.Operations.Release (Item.Child);
       case Disposition is
-         when Lazy_Value_Found =>
+         when Lazy_Value_Found     =>
             if Result /= Success
               or else Sequence = 0
               or else Sequence > State.Snapshot_At
@@ -18617,9 +18282,9 @@ package body Flyology.DB is
                Complete_Lazy_Checkpoint_Read (Item, Corrupt);
             else
                Flyology.Bytes.Move (Item.Final_Value, Value);
-               Complete_Lazy_Checkpoint_Read
-                 (Item, Success, Lazy_Value_Found, Sequence);
+               Complete_Lazy_Checkpoint_Read (Item, Success, Lazy_Value_Found, Sequence);
             end if;
+
          when Lazy_Tombstone_Found =>
             if Result /= Not_Found
               or else Sequence = 0
@@ -18629,40 +18294,33 @@ package body Flyology.DB is
             then
                Complete_Lazy_Checkpoint_Read (Item, Corrupt);
             else
-               Complete_Lazy_Checkpoint_Read
-                 (Item, Not_Found, Lazy_Tombstone_Found, Sequence);
+               Complete_Lazy_Checkpoint_Read (Item, Not_Found, Lazy_Tombstone_Found, Sequence);
             end if;
-         when Lazy_Key_Absent =>
-            if Result /= Not_Found
-              or else Sequence /= 0
-              or else Flyology.Bytes.Length (Value) /= 0
-            then
+
+         when Lazy_Key_Absent      =>
+            if Result /= Not_Found or else Sequence /= 0 or else Flyology.Bytes.Length (Value) /= 0 then
                Complete_Lazy_Checkpoint_Read (Item, Corrupt);
             else
                State.Current_Index := State.Current_Index - 1;
                State.Phase := Lazy_Checkpoint_Idle;
                Flyology.Operations.Drivers.Reschedule (Item);
             end if;
-         when Lazy_Read_Failed =>
-            Complete_Lazy_Checkpoint_Read
-              (Item,
-               (if Result in Success | Not_Found then Corrupt else Result));
+
+         when Lazy_Read_Failed     =>
+            Complete_Lazy_Checkpoint_Read (Item, (if Result in Success | Not_Found then Corrupt else Result));
       end case;
    exception
       when Error : others =>
          Fail_Lazy_Checkpoint_Read (Item, Error);
    end Complete_Lazy_Checkpoint_Child;
 
-   overriding procedure Drive
-     (Item : in out Lazy_Checkpoint_Read_Operation;
-      Event : Flyology.Operations.Driver_Event)
-   is
+   overriding
+   procedure Drive (Item : in out Lazy_Checkpoint_Read_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       if Event = Flyology.Operations.Start_Operation
-        or else
-          (Event = Flyology.Operations.Continue_Operation
-           and then Item.Driver_State /= null
-           and then Item.Driver_State.Phase = Lazy_Checkpoint_Idle)
+        or else (Event = Flyology.Operations.Continue_Operation
+                 and then Item.Driver_State /= null
+                 and then Item.Driver_State.Phase = Lazy_Checkpoint_Idle)
       then
          Start_Next_Lazy_Checkpoint_Run (Item);
       elsif Event = Flyology.Operations.Dependency_Changed
@@ -18681,9 +18339,8 @@ package body Flyology.DB is
          end if;
    end Drive;
 
-   overriding procedure Request_Cancellation
-     (Item : in out Lazy_Checkpoint_Read_Operation)
-   is
+   overriding
+   procedure Request_Cancellation (Item : in out Lazy_Checkpoint_Read_Operation) is
    begin
       if Flyology.Operations.Is_Active (Item.Child) then
          Flyology.Operations.Cancel (Item.Child);
@@ -18696,15 +18353,13 @@ package body Flyology.DB is
             Request_Cancellation (Item);
          end if;
       elsif Flyology.Operations.Is_Active (Item) then
-         Complete_Lazy_Checkpoint_Read
-           (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
+         Complete_Lazy_Checkpoint_Read (Item, Cancelled, Kind => Flyology.Operations.Cancelled);
       end if;
    exception
       when others =>
          if Flyology.Operations.Is_Active (Item) then
             begin
-               Complete_Lazy_Checkpoint_Read
-                 (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
+               Complete_Lazy_Checkpoint_Read (Item, Storage_Failure, Kind => Flyology.Operations.Failed);
             exception
                when others =>
                   null;
@@ -18725,15 +18380,11 @@ package body Flyology.DB is
       Moved   : Boolean := False;
       Started : Boolean := False;
    begin
-      if Operation.Storage.HTTP_Client /= Operation.HTTP
-        or else Operation.Storage.Client_Identity = null
-      then
+      if Operation.Storage.HTTP_Client /= Operation.HTTP or else Operation.Storage.Client_Identity = null then
          raise Program_Error with "lazy checkpoint operation does not match client-bound storage";
       elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "lazy checkpoint payload belongs to a different pool";
-      elsif Flyology.Buffers.Has_Buffer (Operation.Payload)
-        or else Operation.Driver_State /= null
-      then
+      elsif Flyology.Buffers.Has_Buffer (Operation.Payload) or else Operation.Driver_State /= null then
          raise Program_Error with "lazy checkpoint operation retains unconsumed ownership";
       end if;
 
@@ -18757,8 +18408,7 @@ package body Flyology.DB is
             Operation.Driver_State.Current_Index := Runs'Length;
          end if;
          if Is_Zero (Database_ID)
-           or else not Manifests.Valid_Configuration
-                         (To_Manifest_Configuration (Family))
+           or else not Manifests.Valid_Configuration (To_Manifest_Configuration (Family))
            or else Interfaces.Unsigned_64 (Item_Key'Length) > Family.Max_Key_Bytes
          then
             Operation.Driver_State.Precheck_Result :=
@@ -18768,17 +18418,15 @@ package body Flyology.DB is
          else
             for Index in Positive range 1 .. Runs'Length loop
                declare
-                  Descriptor : Lazy_SST_Run_Descriptor renames
-                    Operation.Driver_State.Runs (Index);
+                  Descriptor : Lazy_SST_Run_Descriptor renames Operation.Driver_State.Runs (Index);
                begin
                   if Is_Zero (Descriptor.Run_ID)
                     or else Descriptor.Lowest_Sequence = 0
                     or else Descriptor.Lowest_Sequence > Descriptor.Highest_Sequence
                     or else Descriptor.Entry_Total = 0
-                    or else
-                      (Index > 1
-                       and then Operation.Driver_State.Runs (Index - 1).Highest_Sequence
-                                  >= Descriptor.Lowest_Sequence)
+                    or else (Index > 1
+                             and then Operation.Driver_State.Runs (Index - 1).Highest_Sequence
+                                      >= Descriptor.Lowest_Sequence)
                   then
                      Operation.Driver_State.Precheck_Result := Invalid_State;
                   end if;
@@ -18789,12 +18437,9 @@ package body Flyology.DB is
                   end loop;
                end;
             end loop;
-            Flyology.Bytes.Reserve_Capacity
-              (Operation.Driver_State.Item_Key, Item_Key'Length);
+            Flyology.Bytes.Reserve_Capacity (Operation.Driver_State.Item_Key, Item_Key'Length);
             for Value of Item_Key loop
-               Flyology.Bytes.Append
-                 (Operation.Driver_State.Item_Key,
-                  Ada.Streams.Stream_Element (Value));
+               Flyology.Bytes.Append (Operation.Driver_State.Item_Key, Ada.Streams.Stream_Element (Value));
             end loop;
          end if;
       exception
@@ -18811,15 +18456,12 @@ package body Flyology.DB is
       if Operation.Driver_State = null then
          Operation.Final_Result := Capacity_Exceeded;
          Operation.Has_Final_Result := True;
-         Flyology.Operations.Drivers.Complete
-           (Operation, Flyology.Operations.Succeeded);
+         Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
       elsif Operation.Driver_State.Precheck_Result /= Success then
-         Complete_Lazy_Checkpoint_Read
-           (Operation, Operation.Driver_State.Precheck_Result);
+         Complete_Lazy_Checkpoint_Read (Operation, Operation.Driver_State.Precheck_Result);
       else
          Flyology.Operations.Drive
-           (Flyology.Operations.Operation'Class (Operation),
-            Flyology.Operations.Start_Operation);
+           (Flyology.Operations.Operation'Class (Operation), Flyology.Operations.Start_Operation);
       end if;
    exception
       when others =>
@@ -18839,8 +18481,7 @@ package body Flyology.DB is
       Sequence       : out Sequence_Number;
       Value          : out Flyology.Bytes.Unbounded_Bytes;
       Result         : out Outcome_Code;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-   is
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "lazy checkpoint Finish requires the moved token's pool";
@@ -18867,13 +18508,11 @@ package body Flyology.DB is
       Result := Operation.Final_Result;
    end Finish_Lazy_Checkpoint_Read;
 
-   overriding procedure Finalize
-     (Item : in out Lazy_Checkpoint_Read_Operation)
-   is
+   overriding
+   procedure Finalize (Item : in out Lazy_Checkpoint_Read_Operation) is
    begin
       begin
-         Flyology.Operations.Finalize
-           (Flyology.Operations.Operation (Item));
+         Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
       exception
          when others =>
             null;
@@ -18914,20 +18553,16 @@ package body Flyology.DB is
       if Item.Driver_State = null then
          Final_Result := Capacity_Exceeded;
       elsif Item.Driver_State.Transaction_Captured
-        and then
-          (not Item.Txn.Active
-           or else Item.Txn.Owner.Arena = null
-           or else Item.Txn.Database_ID /= Item.Driver_State.Database_ID
-           or else Item.Txn.Incarnation /= Item.Driver_State.Incarnation
-           or else Item.Txn.Transaction_ID /= Item.Driver_State.Transaction_ID
-           or else Item.Txn.Snapshot_At /= Item.Driver_State.Snapshot_At
-           or else Item.Txn.Owner.Arena.Mutation_Version
-                     /= Item.Driver_State.Mutation_Version)
+        and then (not Item.Txn.Active
+                  or else Item.Txn.Owner.Arena = null
+                  or else Item.Txn.Database_ID /= Item.Driver_State.Database_ID
+                  or else Item.Txn.Incarnation /= Item.Driver_State.Incarnation
+                  or else Item.Txn.Transaction_ID /= Item.Driver_State.Transaction_ID
+                  or else Item.Txn.Snapshot_At /= Item.Driver_State.Snapshot_At
+                  or else Item.Txn.Owner.Arena.Mutation_Version /= Item.Driver_State.Mutation_Version)
       then
          Final_Result := Invalid_State;
-      elsif Item.Driver_State.Needs_Observation
-        and then Final_Result in Success | Not_Found
-      then
+      elsif Item.Driver_State.Needs_Observation and then Final_Result in Success | Not_Found then
          declare
             Raw_Key : constant Ada.Streams.Stream_Element_Array :=
               Flyology.Bytes.To_Array (Item.Driver_State.Item_Key);
@@ -18936,11 +18571,7 @@ package body Flyology.DB is
             for Index in Key'Range loop
                Key (Index) := Byte (Raw_Key (Ada.Streams.Stream_Element_Offset (Index)));
             end loop;
-            Record_Point_Read
-              (Item.Txn.all,
-               Item.Driver_State.Family.ID,
-               Key,
-               Final_Result);
+            Record_Point_Read (Item.Txn.all, Item.Driver_State.Family.ID, Key, Final_Result);
             if Final_Result = Success then
                Final_Result := Result;
             end if;
@@ -18966,14 +18597,10 @@ package body Flyology.DB is
             Item.Driver_State.Phase := Get_Terminal;
          end if;
          Release_Get_Lease (Item);
-         Flyology.Operations.Drivers.Complete
-           (Item, Flyology.Operations.Succeeded);
+         Flyology.Operations.Drivers.Complete (Item, Flyology.Operations.Succeeded);
    end Complete_Get;
 
-   procedure Fail_Get
-     (Item  : in out Get_Operation;
-      Error : Ada.Exceptions.Exception_Occurrence)
-   is
+   procedure Fail_Get (Item : in out Get_Operation; Error : Ada.Exceptions.Exception_Occurrence) is
       Empty : Flyology.Bytes.Unbounded_Bytes;
    begin
       if Ada.Exceptions.Exception_Identity (Error) = Storage_Error'Identity then
@@ -18982,14 +18609,12 @@ package body Flyology.DB is
       end if;
       Item.Has_Saved_Error := True;
       Ada.Exceptions.Save_Occurrence (Item.Saved_Error, Error);
-      Complete_Get
-        (Item, Storage_Failure, Empty, Flyology.Operations.Failed);
+      Complete_Get (Item, Storage_Failure, Empty, Flyology.Operations.Failed);
    exception
       when others =>
          Release_Get_Lease (Item);
          if Flyology.Operations.Is_Active (Item) then
-            Flyology.Operations.Drivers.Complete
-              (Item, Flyology.Operations.Failed);
+            Flyology.Operations.Drivers.Complete (Item, Flyology.Operations.Failed);
          end if;
    end Fail_Get;
 
@@ -19053,11 +18678,7 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
    end Copy_Get_Checkpoint_Runs;
 
-   procedure Prepare_Get
-     (Operation : in out Get_Operation;
-      Family    : Column_Family;
-      Item_Key  : Byte_Array)
-   is
+   procedure Prepare_Get (Operation : in out Get_Operation; Family : Column_Family; Item_Key : Byte_Array) is
       State         : Get_Driver_State renames Operation.Driver_State.all;
       Head          : Head_Snapshot;
       Generation    : Generation_Value;
@@ -19086,8 +18707,7 @@ package body Flyology.DB is
       end if;
       Operation.Retained_State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
       if Operation.Txn.Database_ID /= Head.Database_ID
-        or else Operation.Txn.Incarnation
-                  /= Operation.Retained_State.Gate.Current_Incarnation
+        or else Operation.Txn.Incarnation /= Operation.Retained_State.Gate.Current_Incarnation
       then
          State.Precheck_Result := Invalid_State;
          return;
@@ -19105,8 +18725,7 @@ package body Flyology.DB is
          State.Precheck_Result := Stale_Writer;
          return;
       end if;
-      Operation.Retained_State.Gate.Validate_Family
-        (Family, State.Family, State.Precheck_Result);
+      Operation.Retained_State.Gate.Validate_Family (Family, State.Family, State.Precheck_Result);
       if State.Precheck_Result /= Success then
          return;
       elsif Interfaces.Unsigned_64 (Item_Key'Length) > State.Family.Max_Key_Bytes then
@@ -19124,16 +18743,13 @@ package body Flyology.DB is
          begin
             if Mutation.Family = State.Family.ID and then Same_Owned_Key (Mutation, Item_Key) then
                State.Has_Local_Result := True;
-               State.Local_Result :=
-                 (if Mutation.Operation = Delete_Mutation then Not_Found else Success);
+               State.Local_Result := (if Mutation.Operation = Delete_Mutation then Not_Found else Success);
                if State.Local_Result = Success then
-                  Flyology.Bytes.Reserve_Capacity
-                    (Operation.Final_Value, Mutation.Value_Length);
+                  Flyology.Bytes.Reserve_Capacity (Operation.Final_Value, Mutation.Value_Length);
                   for Offset in Positive range 1 .. Mutation.Value_Length loop
                      Flyology.Bytes.Append
                        (Operation.Final_Value,
-                        Flyology.Bytes.Element
-                          (Mutation.Payload, Mutation.Key_Length + Offset));
+                        Flyology.Bytes.Element (Mutation.Payload, Mutation.Key_Length + Offset));
                   end loop;
                end if;
                return;
@@ -19158,8 +18774,7 @@ package body Flyology.DB is
          Flyology.Bytes.Reserve_Capacity (Operation.Final_Value, Value_Length);
          for Offset in Positive range 1 .. Value_Length loop
             Flyology.Bytes.Append
-              (Operation.Final_Value,
-               Flyology.Bytes.Element (Image.Data, Value_Offset + Offset));
+              (Operation.Final_Value, Flyology.Bytes.Element (Image.Data, Value_Offset + Offset));
          end loop;
          return;
       elsif Lookup_Result = Not_Found and then Matched then
@@ -19173,8 +18788,7 @@ package body Flyology.DB is
       end if;
 
       State.Needs_Observation := Operation.Txn.Isolation = Serializable;
-      Copy_Get_Checkpoint_Runs
-        (Operation.Retained_State, State.Family, State.Runs, Lookup_Result);
+      Copy_Get_Checkpoint_Runs (Operation.Retained_State, State.Family, State.Runs, Lookup_Result);
       if Lookup_Result = Not_Found then
          State.Has_Local_Result := True;
          State.Local_Result := Not_Found;
@@ -19184,13 +18798,13 @@ package body Flyology.DB is
          Allocation_Faults.Check (Get_Child_Operation_Allocation);
          Operation.Child :=
            new Lazy_Checkpoint_Read_Operation
-             (Operation.Set.all'Unchecked_Access,
-              Operation.Retained_State.Storage,
-              Operation.Retained_State.Storage.HTTP_Client,
-              Operation.Payload_Pool.all'Unchecked_Access,
-              (if Operation.Cancellation = null
-               then null
-               else Operation.Cancellation.all'Unchecked_Access));
+                 (Operation.Set.all'Unchecked_Access,
+                  Operation.Retained_State.Storage,
+                  Operation.Retained_State.Storage.HTTP_Client,
+                  Operation.Payload_Pool.all'Unchecked_Access,
+                  (if Operation.Cancellation = null
+                   then null
+                   else Operation.Cancellation.all'Unchecked_Access));
       end if;
    exception
       when Storage_Error =>
@@ -19199,8 +18813,7 @@ package body Flyology.DB is
 
    procedure Start_Get_Child (Item : in out Get_Operation) is
       State   : Get_Driver_State renames Item.Driver_State.all;
-      Raw_Key : constant Ada.Streams.Stream_Element_Array :=
-        Flyology.Bytes.To_Array (State.Item_Key);
+      Raw_Key : constant Ada.Streams.Stream_Element_Array := Flyology.Bytes.To_Array (State.Item_Key);
       Key     : Byte_Array (1 .. Raw_Key'Length);
    begin
       for Index in Key'Range loop
@@ -19235,13 +18848,7 @@ package body Flyology.DB is
       Result      : Outcome_Code;
    begin
       begin
-         Finish_Lazy_Checkpoint_Read
-           (Item.Child.all,
-            Disposition,
-            Sequence,
-            Value,
-            Result,
-            Item.Payload);
+         Finish_Lazy_Checkpoint_Read (Item.Child.all, Disposition, Sequence, Value, Result, Item.Payload);
       exception
          when Error : others =>
             if Flyology.Operations.Id (Item.Child.all) /= 0
@@ -19256,9 +18863,7 @@ package body Flyology.DB is
       Flyology.Operations.Release (Item.Child.all);
       if Result = Success and then Disposition = Lazy_Value_Found then
          Complete_Get (Item, Success, Value);
-      elsif Result = Not_Found
-        and then Disposition in Lazy_Tombstone_Found | Lazy_Key_Absent
-      then
+      elsif Result = Not_Found and then Disposition in Lazy_Tombstone_Found | Lazy_Key_Absent then
          Complete_Get (Item, Not_Found, Value);
       elsif Result in Success | Not_Found then
          Complete_Get (Item, Corrupt, Value);
@@ -19270,10 +18875,8 @@ package body Flyology.DB is
          Fail_Get (Item, Error);
    end Complete_Get_Child;
 
-   overriding procedure Drive
-     (Item : in out Get_Operation;
-      Event : Flyology.Operations.Driver_Event)
-   is
+   overriding
+   procedure Drive (Item : in out Get_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       if Event = Flyology.Operations.Start_Operation then
          if Item.Driver_State.Precheck_Result /= Success then
@@ -19286,8 +18889,7 @@ package body Flyology.DB is
             declare
                Empty : Flyology.Bytes.Unbounded_Bytes;
             begin
-               Complete_Get
-                 (Item, Cancelled, Empty, Flyology.Operations.Cancelled);
+               Complete_Get (Item, Cancelled, Empty, Flyology.Operations.Cancelled);
             end;
          elsif Item.Deadline <= Ada.Real_Time.Clock then
             declare
@@ -19300,10 +18902,7 @@ package body Flyology.DB is
                Value : Flyology.Bytes.Unbounded_Bytes;
             begin
                Flyology.Bytes.Move (Value, Item.Final_Value);
-               Complete_Get
-                 (Item,
-                  Item.Driver_State.Local_Result,
-                  Value);
+               Complete_Get (Item, Item.Driver_State.Local_Result, Value);
             end;
          else
             Start_Get_Child (Item);
@@ -19325,7 +18924,8 @@ package body Flyology.DB is
          end if;
    end Drive;
 
-   overriding procedure Request_Cancellation (Item : in out Get_Operation) is
+   overriding
+   procedure Request_Cancellation (Item : in out Get_Operation) is
    begin
       if Item.Child /= null and then Flyology.Operations.Is_Active (Item.Child.all) then
          Flyology.Operations.Cancel (Item.Child.all);
@@ -19342,16 +18942,14 @@ package body Flyology.DB is
          declare
             Empty : Flyology.Bytes.Unbounded_Bytes;
          begin
-            Complete_Get
-              (Item, Cancelled, Empty, Flyology.Operations.Cancelled);
+            Complete_Get (Item, Cancelled, Empty, Flyology.Operations.Cancelled);
          end;
       end if;
    exception
       when others =>
          Release_Get_Lease (Item);
          if Flyology.Operations.Is_Active (Item) then
-            Flyology.Operations.Drivers.Complete
-              (Item, Flyology.Operations.Failed);
+            Flyology.Operations.Drivers.Complete (Item, Flyology.Operations.Failed);
          end if;
    end Request_Cancellation;
 
@@ -19396,12 +18994,10 @@ package body Flyology.DB is
       if Operation.Driver_State = null then
          Operation.Final_Result := Capacity_Exceeded;
          Operation.Has_Final_Result := True;
-         Flyology.Operations.Drivers.Complete
-           (Operation, Flyology.Operations.Succeeded);
+         Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
       else
          Flyology.Operations.Drive
-           (Flyology.Operations.Operation'Class (Operation),
-            Flyology.Operations.Start_Operation);
+           (Flyology.Operations.Operation'Class (Operation), Flyology.Operations.Start_Operation);
       end if;
    exception
       when others =>
@@ -19421,8 +19017,7 @@ package body Flyology.DB is
      (Operation      : in out Get_Operation;
       Data           : out Flyology.Bytes.Unbounded_Bytes;
       Result         : out Outcome_Code;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-   is
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "Get Finish requires the moved token's pool";
@@ -19465,13 +19060,10 @@ package body Flyology.DB is
       --  stack is the exact synchronous owner geometry. This is derived
       --  scheduling capacity, not a public queue or persisted DB limit.
       Synchronous_Get_Set_Capacity : constant := 7;
-      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Get_Set_Capacity);
-      Operation : Get_Operation
-        (Set'Access,
-         Item'Unchecked_Access,
-         Txn'Unchecked_Access,
-         Payload_Buffer.Owner,
-         Token);
+      Set                          :
+        aliased Flyology.Operations.Completion_Set (Synchronous_Get_Set_Capacity);
+      Operation                    :
+        Get_Operation (Set'Access, Item'Unchecked_Access, Txn'Unchecked_Access, Payload_Buffer.Owner, Token);
    begin
       Get (Family, Item_Key, Payload_Buffer, Timeout, Operation);
       Flyology.Operations.Wait_All (Set);
@@ -19483,11 +19075,11 @@ package body Flyology.DB is
          raise;
    end Get;
 
-   overriding procedure Finalize (Item : in out Get_Operation) is
+   overriding
+   procedure Finalize (Item : in out Get_Operation) is
    begin
       begin
-         Flyology.Operations.Finalize
-           (Flyology.Operations.Operation (Item));
+         Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
       exception
          when others =>
             null;
@@ -19545,16 +19137,11 @@ package body Flyology.DB is
    end Release_Scan_State;
 
    procedure Clone_Scan_Cursor
-     (Source : not null Scan_Cursor_State_Access;
-      Target : in out Scan_Cursor;
-      Result : out Outcome_Code)
+     (Source : not null Scan_Cursor_State_Access; Target : in out Scan_Cursor; Result : out Outcome_Code)
    is
       Candidate : Scan_Cursor_State_Access := null;
 
-      procedure Copy_Bytes
-        (From : Scan_Cursor_Byte_Array_Access;
-         Into : out Scan_Cursor_Byte_Array_Access)
-      is
+      procedure Copy_Bytes (From : Scan_Cursor_Byte_Array_Access; Into : out Scan_Cursor_Byte_Array_Access) is
       begin
          Into := null;
          if From /= null then
@@ -19704,12 +19291,12 @@ package body Flyology.DB is
             Lower,
             State.Has_Upper,
             Upper,
-            Retained_Runs => null,
+            Retained_Runs  => null,
             Storage_Backed => False,
-            Loaded => State.Loaded,
-            Pinned_State => Item.Retained_State,
-            Cursor => Item.Candidate_Cursor,
-            Result => Result);
+            Loaded         => State.Loaded,
+            Pinned_State   => Item.Retained_State,
+            Cursor         => Item.Candidate_Cursor,
+            Result         => Result);
       end Build;
    begin
       if State.Has_Lower and then State.Has_Upper then
@@ -19746,12 +19333,12 @@ package body Flyology.DB is
             Lower,
             State.Has_Upper,
             Upper,
-            Retained_Runs => State.Runs,
+            Retained_Runs  => State.Runs,
             Storage_Backed => True,
-            Loaded => null,
-            Pinned_State => Item.Retained_State,
-            Cursor => Item.Candidate_Cursor,
-            Result => Result);
+            Loaded         => null,
+            Pinned_State   => Item.Retained_State,
+            Cursor         => Item.Candidate_Cursor,
+            Result         => Result);
       end Build;
    begin
       if State.Has_Lower and then State.Has_Upper then
@@ -19824,7 +19411,7 @@ package body Flyology.DB is
          end loop;
 
          declare
-            Run : Lazy_SST_Run_Descriptor renames State.Runs (State.Current_Run);
+            Run    : Lazy_SST_Run_Descriptor renames State.Runs (State.Current_Run);
             Loaded : Scan_Loaded_Run renames State.Loaded (State.Current_Run);
          begin
             if Run.Entry_Total = 0 then
@@ -19870,13 +19457,13 @@ package body Flyology.DB is
    end Start_Next_Scan_Entry;
 
    procedure Complete_Scan_Entry (Item : in out Scan_Operation) is
-      State  : Scan_Driver_State renames Item.Driver_State.all;
+      State       : Scan_Driver_State renames Item.Driver_State.all;
       Disposition : Lazy_SST_Entry_Disposition;
       Sequence    : Sequence_Number;
       Item_Key    : Flyology.Bytes.Unbounded_Bytes;
       Value       : Flyology.Bytes.Unbounded_Bytes;
-      Result : Outcome_Code;
-      Image  : Shared_Image_Access := null;
+      Result      : Outcome_Code;
+      Image       : Shared_Image_Access := null;
 
       function Prior_Key_Before (Run : Scan_Loaded_Run; Key : Flyology.Bytes.Unbounded_Bytes) return Boolean
       is
@@ -19917,11 +19504,8 @@ package body Flyology.DB is
       end;
       Flyology.Operations.Release (Item.Child.all);
       if (Result = Success and then Disposition /= Lazy_Value_Found)
-        or else
-          (Result = Not_Found
-           and then Disposition not in Lazy_Tombstone_Found | Lazy_Key_Absent)
-        or else
-          (Result not in Success | Not_Found and then Disposition /= Lazy_Read_Failed)
+        or else (Result = Not_Found and then Disposition not in Lazy_Tombstone_Found | Lazy_Key_Absent)
+        or else (Result not in Success | Not_Found and then Disposition /= Lazy_Read_Failed)
       then
          Complete_Scan (Item, Corrupt);
          return;
@@ -20062,8 +19646,7 @@ package body Flyology.DB is
       end Before;
 
       procedure Copy_Bytes
-        (Source : Flyology.Bytes.Unbounded_Bytes;
-         Target : out Scan_Cursor_Byte_Array_Access)
+        (Source : Flyology.Bytes.Unbounded_Bytes; Target : out Scan_Cursor_Byte_Array_Access)
       is
          Length : constant Natural := Flyology.Bytes.Length (Source);
       begin
@@ -20089,9 +19672,7 @@ package body Flyology.DB is
       end;
       Flyology.Operations.Release (Item.Child.all);
       if (Result = Success and then Disposition /= Lazy_Value_Found)
-        or else
-          (Result = Not_Found
-           and then Disposition not in Lazy_Tombstone_Found | Lazy_Key_Absent)
+        or else (Result = Not_Found and then Disposition not in Lazy_Tombstone_Found | Lazy_Key_Absent)
         or else (Result not in Success | Not_Found and then Disposition /= Lazy_Read_Failed)
       then
          Complete_Scan (Item, Corrupt);
@@ -20148,9 +19729,9 @@ package body Flyology.DB is
    end Complete_Storage_Scan_Head;
 
    procedure Advance_Storage_Scan_Page (Item : in out Scan_Operation) is
-      Cursor : Scan_Cursor_State renames Item.Candidate_Cursor.Owner.State.all;
-      State  : Scan_Driver_State renames Item.Driver_State.all;
-      Storage_Total : constant Natural :=
+      Cursor         : Scan_Cursor_State renames Item.Candidate_Cursor.Owner.State.all;
+      State          : Scan_Driver_State renames Item.Driver_State.all;
+      Storage_Total  : constant Natural :=
         (if Cursor.Storage_Runs = null then 0 else Cursor.Storage_Runs'Length);
       Lowest_Storage : Natural := 0;
       Lowest_Memory  : Natural := 0;
@@ -20166,18 +19747,15 @@ package body Flyology.DB is
          end if;
       end Key_Length;
 
-      function Key_Byte
-        (Storage_Index, Memory_Index : Natural;
-         Offset                      : Natural) return Byte
-      is
+      function Key_Byte (Storage_Index, Memory_Index : Natural; Offset : Natural) return Byte is
       begin
          if Storage_Index /= 0 then
-            return Cursor.Storage_Runs (Storage_Index).Head_Key
-              (Cursor.Storage_Runs (Storage_Index).Head_Key'First + Offset);
+            return
+              Cursor.Storage_Runs (Storage_Index).Head_Key
+                (Cursor.Storage_Runs (Storage_Index).Head_Key'First + Offset);
          end if;
          declare
-            Value : Physical_Scan_Entry renames
-              Cursor.Entries (Cursor.Sources (Memory_Index).Position);
+            Value : Physical_Scan_Entry renames Cursor.Entries (Cursor.Sources (Memory_Index).Position);
          begin
             if Value.Image.Image /= null then
                return Byte (Flyology.Bytes.Element (Value.Image.Image.Data, Value.Key_Offset + Offset + 1));
@@ -20187,9 +19765,7 @@ package body Flyology.DB is
          end;
       end Key_Byte;
 
-      function Same_Key
-        (Left_Storage, Left_Memory, Right_Storage, Right_Memory : Natural) return Boolean
-      is
+      function Same_Key (Left_Storage, Left_Memory, Right_Storage, Right_Memory : Natural) return Boolean is
          Length : constant Natural := Key_Length (Left_Storage, Left_Memory);
       begin
          if Length /= Key_Length (Right_Storage, Right_Memory) then
@@ -20207,9 +19783,7 @@ package body Flyology.DB is
          return True;
       end Same_Key;
 
-      function Key_Less
-        (Left_Storage, Left_Memory, Right_Storage, Right_Memory : Natural) return Boolean
-      is
+      function Key_Less (Left_Storage, Left_Memory, Right_Storage, Right_Memory : Natural) return Boolean is
          Left_Length  : constant Natural := Key_Length (Left_Storage, Left_Memory);
          Right_Length : constant Natural := Key_Length (Right_Storage, Right_Memory);
          Common       : constant Natural := Natural'Min (Left_Length, Right_Length);
@@ -20240,9 +19814,8 @@ package body Flyology.DB is
          if Cursor.Storage_Runs /= null then
             for Index in Cursor.Storage_Runs'Range loop
                if Cursor.Storage_Runs (Index).Has_Head
-                 and then
-                   ((Lowest_Storage = 0 and then Lowest_Memory = 0)
-                    or else Key_Less (Index, 0, Lowest_Storage, Lowest_Memory))
+                 and then ((Lowest_Storage = 0 and then Lowest_Memory = 0)
+                           or else Key_Less (Index, 0, Lowest_Storage, Lowest_Memory))
                then
                   Lowest_Storage := Index;
                   Lowest_Memory := 0;
@@ -20252,9 +19825,8 @@ package body Flyology.DB is
          if Cursor.Sources /= null then
             for Index in Cursor.Sources'Range loop
                if Cursor.Sources (Index).Position /= 0
-                 and then
-                   ((Lowest_Storage = 0 and then Lowest_Memory = 0)
-                    or else Key_Less (0, Index, Lowest_Storage, Lowest_Memory))
+                 and then ((Lowest_Storage = 0 and then Lowest_Memory = 0)
+                           or else Key_Less (0, Index, Lowest_Storage, Lowest_Memory))
                then
                   Lowest_Storage := 0;
                   Lowest_Memory := Index;
@@ -20314,13 +19886,13 @@ package body Flyology.DB is
       function Winner_Value_Byte (Offset : Natural) return Ada.Streams.Stream_Element is
       begin
          if Winner_Storage /= 0 then
-            return Ada.Streams.Stream_Element
-              (Cursor.Storage_Runs (Winner_Storage).Head_Value
-                 (Cursor.Storage_Runs (Winner_Storage).Head_Value'First + Offset));
+            return
+              Ada.Streams.Stream_Element
+                (Cursor.Storage_Runs (Winner_Storage).Head_Value
+                   (Cursor.Storage_Runs (Winner_Storage).Head_Value'First + Offset));
          end if;
          declare
-            Value : Physical_Scan_Entry renames
-              Cursor.Entries (Cursor.Sources (Winner_Memory).Position);
+            Value : Physical_Scan_Entry renames Cursor.Entries (Cursor.Sources (Winner_Memory).Position);
          begin
             if Value.Image.Image /= null then
                return Flyology.Bytes.Element (Value.Image.Image.Data, Value.Value_Offset + Offset + 1);
@@ -20384,8 +19956,7 @@ package body Flyology.DB is
          Prior_Length : constant Natural := Flyology.Bytes.Length (State.Page_Payload);
          Node         : Scan_Loaded_Entry_Access := null;
       begin
-         if Key_Size > Natural'Last - Value_Size
-           or else Prior_Length > Natural'Last - (Key_Size + Value_Size)
+         if Key_Size > Natural'Last - Value_Size or else Prior_Length > Natural'Last - (Key_Size + Value_Size)
          then
             raise Storage_Error;
          end if;
@@ -20403,8 +19974,7 @@ package body Flyology.DB is
             for Offset in Positive range 1 .. Key_Size loop
                Flyology.Bytes.Append
                  (State.Page_Payload,
-                  Ada.Streams.Stream_Element
-                    (Key_Byte (Winner_Storage, Winner_Memory, Offset - 1)));
+                  Ada.Streams.Stream_Element (Key_Byte (Winner_Storage, Winner_Memory, Offset - 1)));
             end loop;
             for Offset in Positive range 1 .. Value_Size loop
                Flyology.Bytes.Append (State.Page_Payload, Winner_Value_Byte (Offset - 1));
@@ -20462,9 +20032,9 @@ package body Flyology.DB is
             Cursor.Last_Key := new Byte_Array (1 .. State.Page_Last.Key_Length);
             for Offset in Positive range 1 .. State.Page_Last.Key_Length loop
                Cursor.Last_Key (Offset) :=
-                 Byte (Flyology.Bytes.Element
-                   (Item.Candidate_Rows.Owner.State.Payload,
-                    State.Page_Last.Key_Offset + Offset));
+                 Byte
+                   (Flyology.Bytes.Element
+                      (Item.Candidate_Rows.Owner.State.Payload, State.Page_Last.Key_Offset + Offset));
             end loop;
             Cursor.Has_Last := True;
          end if;
@@ -20483,8 +20053,7 @@ package body Flyology.DB is
                Record_Scan_Range
                  (Item.Txn.all, Cursor.Family.ID, False, Empty_Key, True, Cursor.Upper.all, Result);
             else
-               Record_Scan_Range
-                 (Item.Txn.all, Cursor.Family.ID, False, Empty_Key, False, Empty_Key, Result);
+               Record_Scan_Range (Item.Txn.all, Cursor.Family.ID, False, Empty_Key, False, Empty_Key, Result);
             end if;
             if Result /= Success then
                Complete_Scan (Item, Result);
@@ -20541,8 +20110,10 @@ package body Flyology.DB is
                            Cursor.Snapshot_At,
                            Has_Start       => Run.Has_Start or else Cursor.Has_Lower,
                            Start_Key       =>
-                             (if Run.Has_Start then Run.Start_Key.all
-                              elsif Cursor.Has_Lower then Cursor.Lower.all
+                             (if Run.Has_Start
+                              then Run.Start_Key.all
+                              elsif Cursor.Has_Lower
+                              then Cursor.Lower.all
                               else Empty),
                            Start_Inclusive => not Run.Has_Start,
                            Has_Upper       => Cursor.Has_Upper,
@@ -20567,8 +20138,8 @@ package body Flyology.DB is
       end if;
       if Winner_Operation = Put_Mutation then
          declare
-            Amount : Interfaces.Unsigned_64 := Interfaces.Unsigned_64
-              (Key_Length (Winner_Storage, Winner_Memory));
+            Amount : Interfaces.Unsigned_64 :=
+              Interfaces.Unsigned_64 (Key_Length (Winner_Storage, Winner_Memory));
          begin
             if Interfaces.Unsigned_64 (Winner_Value_Length) > Interfaces.Unsigned_64'Last - Amount then
                Complete_Scan (Item, Capacity_Exceeded);
@@ -20810,13 +20381,7 @@ package body Flyology.DB is
       end;
       if Operation.Driver_State /= null then
          Prepare_Scan
-           (Operation,
-            Materialized_Scan_Initialization,
-            Family,
-            Has_Lower,
-            Lower,
-            Has_Upper,
-            Upper);
+           (Operation, Materialized_Scan_Initialization, Family, Has_Lower, Lower, Has_Upper, Upper);
       end if;
       Flyology.Operations.Drivers.Start (Operation);
       Started := True;
@@ -20887,14 +20452,7 @@ package body Flyology.DB is
             null;
       end;
       if Operation.Driver_State /= null then
-         Prepare_Scan
-           (Operation,
-            Storage_Scan_Initialization,
-            Family,
-            Has_Lower,
-            Lower,
-            Has_Upper,
-            Upper);
+         Prepare_Scan (Operation, Storage_Scan_Initialization, Family, Has_Lower, Lower, Has_Upper, Upper);
       end if;
       Flyology.Operations.Drivers.Start (Operation);
       Started := True;
@@ -20992,9 +20550,8 @@ package body Flyology.DB is
               Value.Key_Offset <= Flyology.Bytes.Length (Value.Image.Image.Data)
               and then Value.Key_Length <= Flyology.Bytes.Length (Value.Image.Image.Data) - Value.Key_Offset
               and then Value.Value_Offset <= Flyology.Bytes.Length (Value.Image.Image.Data)
-              and then
-                Value.Value_Length
-                  <= Flyology.Bytes.Length (Value.Image.Image.Data) - Value.Value_Offset;
+              and then Value.Value_Length
+                       <= Flyology.Bytes.Length (Value.Image.Image.Data) - Value.Value_Offset;
          else
             return
               Value.Key_Offset <= Flyology.Bytes.Length (Value.Owned)
@@ -21027,9 +20584,8 @@ package body Flyology.DB is
               or else Item.Last > Source.Entries'Last
               or else Item.Candidate_Position /= Item.Position
               or else Item.Build_Position /= Item.Position
-              or else
-                (Item.Position /= 0
-                 and then (Item.Position < Item.First or else Item.Position > Item.Last))
+              or else (Item.Position /= 0
+                       and then (Item.Position < Item.First or else Item.Position > Item.Last))
             then
                return False;
             end if;
@@ -21158,8 +20714,7 @@ package body Flyology.DB is
       Operation.Deadline := Deadline_After (Timeout);
       Operation.Final_Is_Page := True;
       Operation.Borrowed_Cursor := Cursor.Owner.State;
-      Operation.Borrowed_Revision :=
-        (if Cursor.Owner.State = null then 0 else Cursor.Owner.State.Revision);
+      Operation.Borrowed_Revision := (if Cursor.Owner.State = null then 0 else Cursor.Owner.State.Revision);
       Operation.Final_Result := Invalid_State;
       Operation.Final_Done := False;
       Operation.Has_Final_Result := False;
@@ -21172,8 +20727,7 @@ package body Flyology.DB is
             null;
       end;
       if Operation.Driver_State /= null then
-         Prepare_Storage_Scan_Page
-           (Operation, Cursor, Maximum_Rows, Maximum_Bytes, Require_Complete);
+         Prepare_Storage_Scan_Page (Operation, Cursor, Maximum_Rows, Maximum_Bytes, Require_Complete);
       end if;
       Flyology.Operations.Drivers.Start (Operation);
       Started := True;
@@ -21216,13 +20770,7 @@ package body Flyology.DB is
       Operation      : in out Scan_Operation) is
    begin
       Start_Storage_Scan_Page
-        (Cursor,
-         Maximum_Rows,
-         Maximum_Bytes,
-         Payload_Buffer,
-         Timeout,
-         False,
-         Operation);
+        (Cursor, Maximum_Rows, Maximum_Bytes, Payload_Buffer, Timeout, False, Operation);
    end Next_Scan_Page;
 
    procedure Finish
@@ -21375,23 +20923,12 @@ package body Flyology.DB is
       Cursor         : in out Scan_Cursor;
       Result         : out Outcome_Code)
    is
-      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
-      Operation : Scan_Operation
-        (Set'Access,
-         Item'Unchecked_Access,
-         Txn'Unchecked_Access,
-         Payload_Buffer.Owner,
-         Token);
+      Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
+      Operation :
+        Scan_Operation (Set'Access, Item'Unchecked_Access, Txn'Unchecked_Access, Payload_Buffer.Owner, Token);
    begin
       Start_Storage_Backed_Scan
-        (Family,
-         Has_Lower,
-         Lower,
-         Has_Upper,
-         Upper,
-         Payload_Buffer,
-         Timeout,
-         Operation);
+        (Family, Has_Lower, Lower, Has_Upper, Upper, Payload_Buffer, Timeout, Operation);
       Flyology.Operations.Wait_All (Set);
       Finish (Operation, Cursor, Result, Payload_Buffer);
       Flyology.Operations.Release (Operation);
@@ -21411,14 +20948,10 @@ package body Flyology.DB is
       Rows           : in out Scan_Result;
       Result         : out Outcome_Code)
    is
-      Deadline : constant Ada.Real_Time.Time := Deadline_After (Timeout);
-      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
-      Operation : Scan_Operation
-        (Set'Access,
-         Item'Unchecked_Access,
-         Txn'Unchecked_Access,
-         Payload_Buffer.Owner,
-         Token);
+      Deadline       : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      Set            : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
+      Operation      :
+        Scan_Operation (Set'Access, Item'Unchecked_Access, Txn'Unchecked_Access, Payload_Buffer.Owner, Token);
       Cursor         : Scan_Cursor;
       Candidate_Rows : Scan_Result;
       Done           : Boolean;
@@ -21485,21 +21018,11 @@ package body Flyology.DB is
       Done           : out Boolean;
       Result         : out Outcome_Code)
    is
-      Set : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
-      Operation : Scan_Operation
-        (Set'Access,
-         Item'Unchecked_Access,
-         Txn'Unchecked_Access,
-         Payload_Buffer.Owner,
-         Token);
+      Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Scan_Set_Capacity);
+      Operation :
+        Scan_Operation (Set'Access, Item'Unchecked_Access, Txn'Unchecked_Access, Payload_Buffer.Owner, Token);
    begin
-      Next_Scan_Page
-        (Cursor,
-         Maximum_Rows,
-         Maximum_Bytes,
-         Payload_Buffer,
-         Timeout,
-         Operation);
+      Next_Scan_Page (Cursor, Maximum_Rows, Maximum_Bytes, Payload_Buffer, Timeout, Operation);
       Flyology.Operations.Wait_All (Set);
       Finish (Operation, Cursor, Rows, Done, Result, Payload_Buffer);
       Flyology.Operations.Release (Operation);
@@ -21566,8 +21089,7 @@ package body Flyology.DB is
          if Item.Final_Receipt.Run_Total /= 1
            or else Item.Final_Receipt.Runs (1).Family_ID /= State.Runs (1).Family_ID
            or else Item.Final_Receipt.Runs (1).Run_ID /= State.Runs (1).Run_ID
-           or else not Plan_Matches_Receipt
-             (State.Plan, State.Selected_Head, Item.Final_Receipt)
+           or else not Plan_Matches_Receipt (State.Plan, State.Selected_Head, Item.Final_Receipt)
          then
             Result := Invalid_State;
          end if;
@@ -21580,9 +21102,9 @@ package body Flyology.DB is
             State.Transition_ID,
             Item.Final_Receipt,
             Result,
-            Merge_Older_Run_ID => State.Older_Run_ID,
+            Merge_Older_Run_ID  => State.Older_Run_ID,
             Merge_Middle_Run_ID => State.Middle_Run_ID,
-            Merge_Newer_Run_ID => State.Newer_Run_ID);
+            Merge_Newer_Run_ID  => State.Newer_Run_ID);
       end if;
       if Result = Success then
          Prepare_Flush_Images (Item, State, Result);
@@ -21683,8 +21205,7 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Selected_Rejection (Outcome.Response.Status));
          return;
       end if;
-      Set_Quoted_Generation
-        (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+      Set_Quoted_Generation (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
       if not Valid
         or else Generation /= State.Selected_Generation
         --  A complete single-range response is exactly HTTP 206 under the
@@ -21712,9 +21233,7 @@ package body Flyology.DB is
       if Decode_Status = LSM_Runtime.Decoded then
          Start_Selected_Whole (Item);
       elsif Decode_Status
-            in LSM_Runtime.Limit_Exceeded
-             | LSM_Runtime.Allocation_Failed
-             | LSM_Runtime.Runtime_Incompatible
+            in LSM_Runtime.Limit_Exceeded | LSM_Runtime.Allocation_Failed | LSM_Runtime.Runtime_Incompatible
       then
          Complete_Composable_Flush (Item, Capacity_Exceeded);
       elsif Decode_Status = LSM_Runtime.Unsupported_Version then
@@ -21752,10 +21271,7 @@ package body Flyology.DB is
          Run_Key
            (Item.Storage.all,
             To_Identifier (State.Selected_Source.Manifest.Runs (State.Selected_Run_Index).Run_ID)),
-         (Kind  => OS.Bounded_Range,
-          First => 0,
-          Last  => OS.Byte_Count (Header_Length - 1),
-          Count => 0),
+         (Kind => OS.Bounded_Range, First => 0, Last => OS.Byte_Count (Header_Length - 1), Count => 0),
          Item.Payload'Unchecked_Access,
          Item.Storage.Client_Identity.all,
          Item.HTTP_Deadline,
@@ -21806,8 +21322,7 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Selected_Rejection (Outcome.Response.Status));
          return;
       end if;
-      Set_Quoted_Generation
-        (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+      Set_Quoted_Generation (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
       if not Valid
         --  A complete successful HeadObject is exactly HTTP 200 under the
         --  maintained Object Storage contract.
@@ -21860,24 +21375,22 @@ package body Flyology.DB is
          Complete_Composable_Flush (Item, Selected_Rejection (Outcome.Response.Status));
          return;
       end if;
-      Set_Quoted_Generation
-        (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
+      Set_Quoted_Generation (Generation, UStrings.To_String (Outcome.Response.Result.Entity_Tag), Valid);
       if not Valid
         or else Generation /= State.Selected_Generation
         --  A complete successful whole GetObject is exactly HTTP 200 under
         --  the maintained Object Storage contract.
         or else Outcome.Response.Status /= 200
         or else not Outcome.Response.Result.Content_Length.Is_Set
-        or else Outcome.Response.Result.Content_Length.Value /=
-          OS.Byte_Count (State.Selected_Admission.Object_Length)
+        or else Outcome.Response.Result.Content_Length.Value
+                /= OS.Byte_Count (State.Selected_Admission.Object_Length)
         or else State.Selected_Admission.Object_Length /= State.Selected_Object_Length
         or else Flyology.Buffers.Length (Item.Payload) /= State.Selected_Admission.Object_Length
       then
          Complete_Composable_Flush (Item, Corrupt);
          return;
       end if;
-      Copy_Selected_Payload
-        (Item.Payload, Positive (State.Selected_Admission.Object_Length), Image);
+      Copy_Selected_Payload (Item.Payload, Positive (State.Selected_Admission.Object_Length), Image);
       Decode_Compatible_SST
         (Image.all,
          State.Selected_Source.Manifest.Base.Database_ID,
@@ -21892,9 +21405,7 @@ package body Flyology.DB is
       if Decode_Status = LSM_Runtime.Decoded then
          Start_Next_Selected_Head (Item);
       elsif Decode_Status
-            in LSM_Runtime.Limit_Exceeded
-             | LSM_Runtime.Allocation_Failed
-             | LSM_Runtime.Runtime_Incompatible
+            in LSM_Runtime.Limit_Exceeded | LSM_Runtime.Allocation_Failed | LSM_Runtime.Runtime_Incompatible
       then
          Complete_Composable_Flush (Item, Capacity_Exceeded);
       elsif Decode_Status = LSM_Runtime.Unsupported_Version then
@@ -21928,8 +21439,7 @@ package body Flyology.DB is
               State.Selected_Source.Manifest.Families (Family_Index);
          begin
             if Family.Run_Total > 0
-              and then State.Selected_Run_Index in
-                Family.First_Run .. Family.First_Run + Family.Run_Total - 1
+              and then State.Selected_Run_Index in Family.First_Run .. Family.First_Run + Family.Run_Total - 1
             then
                State.Selected_Family_Slot := Family_Index;
                exit;
@@ -22038,9 +21548,7 @@ package body Flyology.DB is
       if State.Resolving_Flush and then Item.Final_Receipt.Phase /= Objects_Unknown then
          Start_Flush_Reconciliation (Item);
          return;
-      elsif State.Resolving_Family
-        and then Item.Final_Family_Receipt.Phase /= Family_Manifest_Unknown
-      then
+      elsif State.Resolving_Family and then Item.Final_Family_Receipt.Phase /= Family_Manifest_Unknown then
          Start_Family_Reconciliation (Item);
          return;
       end if;
@@ -22064,37 +21572,29 @@ package body Flyology.DB is
          end if;
          Allocation_Faults.Check (Recovery_SST_Image_Allocation);
          State.Selected_Source.Recovered_SSTs :=
-           new Recovered_SST_Array'
-             (1 .. State.Selected_Source.Manifest.Run_Total => null);
+           new Recovered_SST_Array'(1 .. State.Selected_Source.Manifest.Run_Total => null);
          Item.Head_Child :=
            new Client_Objects.Head_Operation
-             (Item.Set.all'Unchecked_Access,
-              Item.HTTP.all'Unchecked_Access,
-              (if Item.Cancellation = null
-               then null
-               else Item.Cancellation.all'Unchecked_Access));
+                 (Item.Set.all'Unchecked_Access,
+                  Item.HTTP.all'Unchecked_Access,
+                  (if Item.Cancellation = null then null else Item.Cancellation.all'Unchecked_Access));
          Item.Range_Child :=
            new Client_Objects.Range_Get_Operation
-             (Item.Set.all'Unchecked_Access,
-              Item.HTTP.all'Unchecked_Access,
-              Item.Payload'Unchecked_Access,
-              (if Item.Cancellation = null
-               then null
-               else Item.Cancellation.all'Unchecked_Access));
+                 (Item.Set.all'Unchecked_Access,
+                  Item.HTTP.all'Unchecked_Access,
+                  Item.Payload'Unchecked_Access,
+                  (if Item.Cancellation = null then null else Item.Cancellation.all'Unchecked_Access));
          Item.Read_Child :=
            new Client_Objects.Whole_Get_Operation
-             (Item.Set.all'Unchecked_Access,
-              Item.HTTP.all'Unchecked_Access,
-              Item.Payload'Unchecked_Access,
-              (if Item.Cancellation = null
-               then null
-               else Item.Cancellation.all'Unchecked_Access));
+                 (Item.Set.all'Unchecked_Access,
+                  Item.HTTP.all'Unchecked_Access,
+                  Item.Payload'Unchecked_Access,
+                  (if Item.Cancellation = null then null else Item.Cancellation.all'Unchecked_Access));
          Start_Next_Selected_Head (Item);
          return;
       end if;
       if State.Mode = Create_Plan then
-         if State.Plan.Manifest = null
-           or else not LSM_Runtime.Structurally_Valid (State.Plan.Manifest.all)
+         if State.Plan.Manifest = null or else not LSM_Runtime.Structurally_Valid (State.Plan.Manifest.all)
          then
             Complete_Composable_Flush (Item, Invalid_State);
             return;
@@ -22140,9 +21640,7 @@ package body Flyology.DB is
             Item.Final_Family_Receipt,
             Result);
       elsif State.Resolving_Flush then
-         if not Plan_Matches_Receipt
-           (State.Plan, Item.Final_Receipt.Expected_Head, Item.Final_Receipt)
-         then
+         if not Plan_Matches_Receipt (State.Plan, Item.Final_Receipt.Expected_Head, Item.Final_Receipt) then
             Result := Invalid_State;
          end if;
       else
@@ -22166,12 +21664,10 @@ package body Flyology.DB is
         --  requires all of them to outlive Finish/finalization; the child is
         --  drained and freed before any such borrow can end.
         new Client_Objects.Whole_Get_Operation
-          (Item.Set.all'Unchecked_Access,
-           Item.HTTP.all'Unchecked_Access,
-           Item.Payload'Unchecked_Access,
-           (if Item.Cancellation = null
-            then null
-            else Item.Cancellation.all'Unchecked_Access));
+              (Item.Set.all'Unchecked_Access,
+               Item.HTTP.all'Unchecked_Access,
+               Item.Payload'Unchecked_Access,
+               (if Item.Cancellation = null then null else Item.Cancellation.all'Unchecked_Access));
       Prepare_Flush_Images (Item, State, Result);
       if Result /= Success then
          Complete_Composable_Flush (Item, Result);
@@ -22183,6 +21679,12 @@ package body Flyology.DB is
          State.Current_Family_Slot := 0;
          if State.Resolving_Create then
             Start_Create_Manifest_Confirmation (Item);
+         elsif State.Resolving_Family
+           and then Item.Final_Family_Receipt.Phase = Family_Manifest_Unknown
+         then
+            State.Current_Kind := Manifest_Object;
+            Load_Payload (Item.Payload, State.Manifest_Image.Owner);
+            Start_Immutable_Read (Item);
          else
             Start_Next_Immutable (Item);
          end if;
@@ -22238,10 +21740,8 @@ package body Flyology.DB is
          Fail_Composable_Flush (Item, Error);
    end Await_Composable_Quiescence;
 
-   overriding procedure Drive
-     (Item : in out Flush_Operation;
-      Event : Flyology.Operations.Driver_Event)
-   is
+   overriding
+   procedure Drive (Item : in out Flush_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       if Event = Flyology.Operations.Start_Operation
         and then Item.Driver_State /= null
@@ -22327,26 +21827,24 @@ package body Flyology.DB is
          end if;
    end Drive;
 
-   overriding procedure Drive
-     (Item : in out Create_Operation;
-      Event : Flyology.Operations.Driver_Event) is
+   overriding
+   procedure Drive (Item : in out Create_Operation; Event : Flyology.Operations.Driver_Event) is
    begin
       Drive (Flush_Operation (Item), Event);
    end Drive;
 
-   overriding procedure Request_Cancellation (Item : in out Flush_Operation) is
+   overriding
+   procedure Request_Cancellation (Item : in out Flush_Operation) is
    begin
-      if Item.Recovery_Child /= null
-        and then Flyology.Operations.Is_Active (Item.Recovery_Child.all)
-      then
+      if Item.Recovery_Child /= null and then Flyology.Operations.Is_Active (Item.Recovery_Child.all) then
          Flyology.Operations.Cancel (Item.Recovery_Child.all);
       elsif Item.Recovery_Child /= null
         and then Flyology.Operations.Is_Terminal (Item.Recovery_Child.all)
         and then Item.Driver_State /= null
-        and then Item.Driver_State.Phase in
-          Reading_Create_Reconciliation
-          | Reading_Family_Reconciliation
-          | Reading_Flush_Reconciliation
+        and then Item.Driver_State.Phase
+                 in Reading_Create_Reconciliation
+                  | Reading_Family_Reconciliation
+                  | Reading_Flush_Reconciliation
       then
          if Item.Driver_State.Phase = Reading_Create_Reconciliation then
             Complete_Create_Reconciliation (Item);
@@ -22399,7 +21897,7 @@ package body Flyology.DB is
         and then Flyology.Operations.Is_Terminal (Item.Read_Child.all)
         and then Item.Driver_State /= null
         and then Item.Driver_State.Phase
-          in Reading_Selected_Whole | Reading_Immutable | Reading_Create_Manifest
+                 in Reading_Selected_Whole | Reading_Immutable | Reading_Create_Manifest
       then
          if Item.Driver_State.Phase = Reading_Selected_Whole then
             Complete_Selected_Whole (Item);
@@ -22420,33 +21918,32 @@ package body Flyology.DB is
             begin
                Complete_Composable_Flush (Item, Storage_Failure, Flyology.Operations.Failed);
             exception
-               when others => null;
+               when others =>
+                  null;
             end;
          end if;
    end Request_Cancellation;
 
    procedure Start_Composable_Checkpoint
-     (Operation            : in out Flush_Operation;
-      Runs                 : Checkpoint_Run_Identity_Array;
-      Manifest_ID          : Identifier;
-      Transition_ID        : Identifier;
-      Payload_Buffer       : in out Flyology.Buffers.Unique_Buffer;
-      Timeout              : Duration;
-      Mode                 : Flush_Plan_Mode;
-      Configuration        : Column_Family_Configuration;
-      Older_Run_ID         : Identifier;
-      Middle_Run_ID        : Identifier;
-      Newer_Run_ID         : Identifier;
-      Output_Run_ID        : Identifier;
-      Lease                : access Lifecycle_Lease := null)
+     (Operation      : in out Flush_Operation;
+      Runs           : Checkpoint_Run_Identity_Array;
+      Manifest_ID    : Identifier;
+      Transition_ID  : Identifier;
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer;
+      Timeout        : Duration;
+      Mode           : Flush_Plan_Mode;
+      Configuration  : Column_Family_Configuration;
+      Older_Run_ID   : Identifier;
+      Middle_Run_ID  : Identifier;
+      Newer_Run_ID   : Identifier;
+      Output_Run_ID  : Identifier;
+      Lease          : access Lifecycle_Lease := null)
    is
-      Result     : Outcome_Code;
-      Moved      : Boolean := False;
-      Started    : Boolean := False;
+      Result  : Outcome_Code;
+      Moved   : Boolean := False;
+      Started : Boolean := False;
    begin
-      if Operation.Storage.HTTP_Client /= Operation.HTTP
-        or else Operation.Storage.Client_Identity = null
-      then
+      if Operation.Storage.HTTP_Client /= Operation.HTTP or else Operation.Storage.Client_Identity = null then
          raise Program_Error with "Flush operation does not match the client-bound storage context";
       elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "Flush payload buffer belongs to a different pool";
@@ -22458,10 +21955,9 @@ package body Flyology.DB is
       then
          raise Program_Error with "Flush operation retains unconsumed ownership";
       elsif Lease /= null
-        and then
-          (Lease.Life /= Operation.Item.Life'Unchecked_Access
-           or else Lease.State = null
-           or else Lease.State.Storage /= Operation.Storage)
+        and then (Lease.Life /= Operation.Item.Life'Unchecked_Access
+                  or else Lease.State = null
+                  or else Lease.State.Storage /= Operation.Storage)
       then
          raise Program_Error with "Flush operation does not match the promoted lifecycle lease";
       end if;
@@ -22497,10 +21993,7 @@ package body Flyology.DB is
          Operation.Driver_State.Newer_Run_ID := Newer_Run_ID;
          Operation.Driver_State.Output_Run_ID := Output_Run_ID;
          Operation.Driver_State.Family_Configuration := Configuration;
-         if Is_Zero (Manifest_ID)
-           or else Is_Zero (Transition_ID)
-           or else Manifest_ID = Transition_ID
-         then
+         if Is_Zero (Manifest_ID) or else Is_Zero (Transition_ID) or else Manifest_ID = Transition_ID then
             Operation.Driver_State.Precheck_Result := Invalid_State;
          elsif Mode = Family_Append_Plan then
             if Runs'Length /= 0 then
@@ -22512,14 +22005,13 @@ package body Flyology.DB is
               or else Is_Zero (Newer_Run_ID)
               or else Is_Zero (Output_Run_ID)
               or else Older_Run_ID = Newer_Run_ID
-              or else
-                (if Mode = Three_Run_Merge_Plan
-                 then
-                   Is_Zero (Middle_Run_ID)
-                   or else Middle_Run_ID = Older_Run_ID
-                   or else Middle_Run_ID = Newer_Run_ID
-                   or else Output_Run_ID = Middle_Run_ID
-                 else not Is_Zero (Middle_Run_ID))
+              or else (if Mode = Three_Run_Merge_Plan
+                       then
+                         Is_Zero (Middle_Run_ID)
+                         or else Middle_Run_ID = Older_Run_ID
+                         or else Middle_Run_ID = Newer_Run_ID
+                         or else Output_Run_ID = Middle_Run_ID
+                       else not Is_Zero (Middle_Run_ID))
               or else Output_Run_ID = Older_Run_ID
               or else Output_Run_ID = Newer_Run_ID
               or else Output_Run_ID = Manifest_ID
@@ -22621,9 +22113,7 @@ package body Flyology.DB is
       Moved   : Boolean := False;
       Started : Boolean := False;
    begin
-      if Operation.Storage.HTTP_Client /= Operation.HTTP
-        or else Operation.Storage.Client_Identity = null
-      then
+      if Operation.Storage.HTTP_Client /= Operation.HTTP or else Operation.Storage.Client_Identity = null then
          raise Program_Error with "Create operation does not match the client-bound storage context";
       elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "Create payload buffer belongs to a different pool";
@@ -22670,10 +22160,9 @@ package body Flyology.DB is
             Operation.Driver_State.Plan.Manifest,
             Operation.Driver_State.Precheck_Result);
          if Operation.Driver_State.Precheck_Result = Success
-           and then
-             (not Storage_Bound (Operation.Storage.all)
-              or else not OS.Valid_Object_Key (Manifest_Key (Operation.Storage.all, Manifest_ID))
-              or else not OS.Valid_Object_Key (Full_Key (Operation.Storage.all, Head_Key_Suffix)))
+           and then (not Storage_Bound (Operation.Storage.all)
+                     or else not OS.Valid_Object_Key (Manifest_Key (Operation.Storage.all, Manifest_ID))
+                     or else not OS.Valid_Object_Key (Full_Key (Operation.Storage.all, Head_Key_Suffix)))
          then
             Operation.Driver_State.Precheck_Result := Invalid_State;
          end if;
@@ -22693,9 +22182,7 @@ package body Flyology.DB is
 
       Flyology.Operations.Drivers.Start (Operation);
       Started := True;
-      if Operation.Driver_State /= null
-        and then Operation.Driver_State.Precheck_Result = Success
-      then
+      if Operation.Driver_State /= null and then Operation.Driver_State.Precheck_Result = Success then
          Operation.Item.Life.Begin_Open (Result);
          if Result = Success then
             Operation.Driver_State.Create_Open_Admitted := True;
@@ -22721,9 +22208,7 @@ package body Flyology.DB is
          if Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
             Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
          end if;
-         if Operation.Driver_State /= null
-           and then Operation.Driver_State.Create_Open_Admitted
-         then
+         if Operation.Driver_State /= null and then Operation.Driver_State.Create_Open_Admitted then
             Operation.Driver_State.Create_Open_Admitted := False;
             Operation.Item.Life.Abort_Open;
          end if;
@@ -22773,20 +22258,16 @@ package body Flyology.DB is
          Status     : LSM_Runtime.Decode_Status;
       begin
          for Index in Image'Range loop
-            Image (Index) :=
-              Byte (Flyology.Bytes.Element (Receipt.Retained_Manifest.Image.Data, Index + 1));
+            Image (Index) := Byte (Flyology.Bytes.Element (Receipt.Retained_Manifest.Image.Data, Index + 1));
          end loop;
-         LSM_Runtime.Decode_Checkpoint_Manifest
-           (Image, To_Head_ID (Receipt.Database_ID), Checkpoint, Status);
+         LSM_Runtime.Decode_Checkpoint_Manifest (Image, To_Head_ID (Receipt.Database_ID), Checkpoint, Status);
          if Status = LSM_Runtime.Decoded
            and then Checkpoint /= null
            and then Checkpoint.Replay_Boundary = 0
            and then Checkpoint.Run_Total = 0
            and then Checkpoint.Identity_Total = 0
            and then To_Identifier (Checkpoint.Base.Manifest_ID) = Receipt.Manifest_ID
-           and then
-             Manifests.Valid_Root_Publication
-               (To_Head (Receipt.Attempted_Head), Checkpoint.Base)
+           and then Manifests.Valid_Root_Publication (To_Head (Receipt.Attempted_Head), Checkpoint.Base)
          then
             State.Plan.Manifest := Checkpoint;
             Checkpoint := null;
@@ -22823,9 +22304,7 @@ package body Flyology.DB is
       Receipt_Moved : Boolean := False;
       Started       : Boolean := False;
    begin
-      if Operation.Storage.HTTP_Client /= Operation.HTTP
-        or else Operation.Storage.Client_Identity = null
-      then
+      if Operation.Storage.HTTP_Client /= Operation.HTTP or else Operation.Storage.Client_Identity = null then
          raise Program_Error with "Create resolution operation does not match client-bound storage";
       elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "Create resolution payload belongs to a different pool";
@@ -22874,9 +22353,7 @@ package body Flyology.DB is
       Started := True;
       Receipt := (others => <>);
       Receipt_Moved := True;
-      if Operation.Driver_State /= null
-        and then Operation.Driver_State.Precheck_Result = Success
-      then
+      if Operation.Driver_State /= null and then Operation.Driver_State.Precheck_Result = Success then
          Operation.Item.Life.Begin_Open (Result);
          if Result = Success then
             Operation.Driver_State.Create_Open_Admitted := True;
@@ -22902,9 +22379,7 @@ package body Flyology.DB is
          if Buffer_Moved and then Flyology.Buffers.Has_Buffer (Operation.Payload) then
             Flyology.Buffers.Move (Operation.Payload, Payload_Buffer);
          end if;
-         if Operation.Driver_State /= null
-           and then Operation.Driver_State.Create_Open_Admitted
-         then
+         if Operation.Driver_State /= null and then Operation.Driver_State.Create_Open_Admitted then
             Operation.Driver_State.Create_Open_Admitted := False;
             Operation.Item.Life.Abort_Open;
          end if;
@@ -22935,8 +22410,7 @@ package body Flyology.DB is
       State.Family_Configuration := Receipt.Configuration;
       State.Manifest_ID := Receipt.Manifest_ID;
       State.Transition_ID := Receipt.Attempted_Head.Transition_ID;
-      if Receipt.Phase not in
-        Family_Manifest_Unknown | Family_Head_Unknown | Family_Head_Confirmed
+      if Receipt.Phase not in Family_Manifest_Unknown | Family_Head_Unknown | Family_Head_Confirmed
         or else Receipt.Database_ID = Zero_Database_ID
         or else Receipt.Incarnation = No_Incarnation
         or else Is_Zero (Receipt.Manifest_ID)
@@ -22957,20 +22431,16 @@ package body Flyology.DB is
          Status     : LSM_Runtime.Decode_Status;
       begin
          for Index in Image'Range loop
-            Image (Index) :=
-              Byte (Flyology.Bytes.Element (Receipt.Retained_Manifest.Image.Data, Index + 1));
+            Image (Index) := Byte (Flyology.Bytes.Element (Receipt.Retained_Manifest.Image.Data, Index + 1));
          end loop;
-         LSM_Runtime.Decode_Checkpoint_Manifest
-           (Image, To_Head_ID (Receipt.Database_ID), Checkpoint, Status);
+         LSM_Runtime.Decode_Checkpoint_Manifest (Image, To_Head_ID (Receipt.Database_ID), Checkpoint, Status);
          if Status = LSM_Runtime.Decoded
            and then Checkpoint /= null
            and then To_Identifier (Checkpoint.Base.Manifest_ID) = Receipt.Manifest_ID
-           and then
-             Manifests.Valid_Publication
-               (To_Head (Receipt.Expected_Head), To_Head (Receipt.Attempted_Head), Checkpoint.Base)
-           and then
-             Family_Configuration_Matches
-               (Checkpoint.Base, To_Engine_LSM_Authority (Checkpoint.all), Receipt.Configuration)
+           and then Manifests.Valid_Publication
+                      (To_Head (Receipt.Expected_Head), To_Head (Receipt.Attempted_Head), Checkpoint.Base)
+           and then Family_Configuration_Matches
+                      (Checkpoint.Base, To_Engine_LSM_Authority (Checkpoint.all), Receipt.Configuration)
          then
             State.Plan.Manifest := Checkpoint;
             Checkpoint := null;
@@ -23003,9 +22473,7 @@ package body Flyology.DB is
       Receipt_Moved : Boolean := False;
       Started       : Boolean := False;
    begin
-      if Operation.Storage.HTTP_Client /= Operation.HTTP
-        or else Operation.Storage.Client_Identity = null
-      then
+      if Operation.Storage.HTTP_Client /= Operation.HTTP or else Operation.Storage.Client_Identity = null then
          raise Program_Error with "family resolution operation does not match client-bound storage";
       elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "family resolution payload belongs to a different pool";
@@ -23054,9 +22522,7 @@ package body Flyology.DB is
       Started := True;
       Receipt := (others => <>);
       Receipt_Moved := True;
-      if Operation.Driver_State /= null
-        and then Operation.Driver_State.Precheck_Result = Success
-      then
+      if Operation.Driver_State /= null and then Operation.Driver_State.Precheck_Result = Success then
          Operation.Item.Life.Begin_Composable_Checkpoint (Operation.Driver_State.Engine, Result);
          if Result = Success and then Operation.Driver_State.Engine.Storage /= Operation.Storage then
             Operation.Item.Life.Cancel_Checkpoint;
@@ -23100,11 +22566,11 @@ package body Flyology.DB is
          raise;
    end Start_Composable_Family_Resolution;
 
-   function Valid_Flush_Resolution_Receipt
-     (Receipt : Flush_Receipt; Storage : Storage_Context) return Boolean
+   function Valid_Flush_Resolution_Receipt (Receipt : Flush_Receipt; Storage : Storage_Context) return Boolean
    is
    begin
-      return Receipt.Phase in Objects_Unknown | Flush_Head_Unknown | Flush_Head_Confirmed
+      return
+        Receipt.Phase in Objects_Unknown | Flush_Head_Unknown | Flush_Head_Confirmed
         and then Receipt.Run_Total > 0
         and then Receipt.Database_ID /= Zero_Database_ID
         and then not Is_Zero (Receipt.Manifest_ID)
@@ -23112,26 +22578,24 @@ package body Flyology.DB is
         and then Storage_Bound (Storage)
         and then OS.Valid_Object_Key (Manifest_Key (Storage, Receipt.Manifest_ID))
         and then OS.Valid_Object_Key (Full_Key (Storage, Head_Key_Suffix))
-        and then
-          (if Receipt.Merges_Adjacent_Runs
-           then
-             not Receipt.Replaces_Current_Runs
-             and then Receipt.Run_Total = 1
-             and then not Is_Zero (Receipt.Older_Run_ID)
-             and then not Is_Zero (Receipt.Newer_Run_ID)
-             and then Receipt.Older_Run_ID /= Receipt.Newer_Run_ID
-             and then
-               (if Receipt.Merges_Three_Runs
-                then
-                  not Is_Zero (Receipt.Middle_Run_ID)
-                  and then Receipt.Middle_Run_ID /= Receipt.Older_Run_ID
-                  and then Receipt.Middle_Run_ID /= Receipt.Newer_Run_ID
-                else Is_Zero (Receipt.Middle_Run_ID))
-           else
-             not Receipt.Merges_Three_Runs
-             and then Is_Zero (Receipt.Older_Run_ID)
-             and then Is_Zero (Receipt.Middle_Run_ID)
-             and then Is_Zero (Receipt.Newer_Run_ID));
+        and then (if Receipt.Merges_Adjacent_Runs
+                  then
+                    not Receipt.Replaces_Current_Runs
+                    and then Receipt.Run_Total = 1
+                    and then not Is_Zero (Receipt.Older_Run_ID)
+                    and then not Is_Zero (Receipt.Newer_Run_ID)
+                    and then Receipt.Older_Run_ID /= Receipt.Newer_Run_ID
+                    and then (if Receipt.Merges_Three_Runs
+                              then
+                                not Is_Zero (Receipt.Middle_Run_ID)
+                                and then Receipt.Middle_Run_ID /= Receipt.Older_Run_ID
+                                and then Receipt.Middle_Run_ID /= Receipt.Newer_Run_ID
+                              else Is_Zero (Receipt.Middle_Run_ID))
+                  else
+                    not Receipt.Merges_Three_Runs
+                    and then Is_Zero (Receipt.Older_Run_ID)
+                    and then Is_Zero (Receipt.Middle_Run_ID)
+                    and then Is_Zero (Receipt.Newer_Run_ID));
    end Valid_Flush_Resolution_Receipt;
 
    procedure Start_Composable_Flush_Resolution
@@ -23145,9 +22609,7 @@ package body Flyology.DB is
       Receipt_Moved : Boolean := False;
       Started       : Boolean := False;
    begin
-      if Operation.Storage.HTTP_Client /= Operation.HTTP
-        or else Operation.Storage.Client_Identity = null
-      then
+      if Operation.Storage.HTTP_Client /= Operation.HTTP or else Operation.Storage.Client_Identity = null then
          raise Program_Error with "Flush resolution operation does not match client-bound storage";
       elsif Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "Flush resolution payload belongs to a different pool";
@@ -23213,9 +22675,7 @@ package body Flyology.DB is
       Started := True;
       Receipt := (others => <>);
       Receipt_Moved := True;
-      if Operation.Driver_State /= null
-        and then Operation.Driver_State.Precheck_Result = Success
-      then
+      if Operation.Driver_State /= null and then Operation.Driver_State.Precheck_Result = Success then
          Operation.Item.Life.Begin_Composable_Checkpoint (Operation.Driver_State.Engine, Result);
          if Result = Success and then Operation.Driver_State.Engine.Storage /= Operation.Storage then
             Operation.Item.Life.Cancel_Checkpoint;
@@ -23291,14 +22751,10 @@ package body Flyology.DB is
       end if;
       declare
          Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
-         Operation : Flush_Operation
-           (Set'Access,
-            Item'Unchecked_Access,
-            Storage,
-            Storage.HTTP_Client,
-            Payload_Buffer.Owner,
-            Token);
-         Started : Boolean := False;
+         Operation :
+           Flush_Operation
+             (Set'Access, Item'Unchecked_Access, Storage, Storage.HTTP_Client, Payload_Buffer.Owner, Token);
+         Started   : Boolean := False;
       begin
          Resolve_Add_Column_Family (Receipt, Payload_Buffer, Timeout, Operation);
          Started := True;
@@ -23366,14 +22822,10 @@ package body Flyology.DB is
       end if;
       declare
          Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
-         Operation : Flush_Operation
-           (Set'Access,
-            Item'Unchecked_Access,
-            Storage,
-            Storage.HTTP_Client,
-            Payload_Buffer.Owner,
-            Token);
-         Started : Boolean := False;
+         Operation :
+           Flush_Operation
+             (Set'Access, Item'Unchecked_Access, Storage, Storage.HTTP_Client, Payload_Buffer.Owner, Token);
+         Started   : Boolean := False;
       begin
          Resolve_Flush (Receipt, Payload_Buffer, Timeout, Operation);
          Started := True;
@@ -23414,8 +22866,7 @@ package body Flyology.DB is
       Timeout        : Duration;
       Operation      : in out Create_Operation) is
    begin
-      Start_Composable_Create_Resolution
-        (Receipt, Payload_Buffer, Timeout, Flush_Operation (Operation));
+      Start_Composable_Create_Resolution (Receipt, Payload_Buffer, Timeout, Flush_Operation (Operation));
    end Resolve_Create;
 
    procedure Resolve_Create
@@ -23442,14 +22893,10 @@ package body Flyology.DB is
       end if;
       declare
          Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
-         Operation : Create_Operation
-           (Set'Access,
-            Item'Unchecked_Access,
-            Storage,
-            Storage.HTTP_Client,
-            Payload_Buffer.Owner,
-            Token);
-         Started : Boolean := False;
+         Operation :
+           Create_Operation
+             (Set'Access, Item'Unchecked_Access, Storage, Storage.HTTP_Client, Payload_Buffer.Owner, Token);
+         Started   : Boolean := False;
       begin
          Resolve_Create (Receipt, Payload_Buffer, Timeout, Operation);
          Started := True;
@@ -23546,14 +22993,10 @@ package body Flyology.DB is
       end if;
       declare
          Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
-         Operation : Create_Operation
-           (Set'Access,
-            Item'Unchecked_Access,
-            Storage,
-            Storage.HTTP_Client,
-            Payload_Buffer.Owner,
-            Token);
-         Started : Boolean := False;
+         Operation :
+           Create_Operation
+             (Set'Access, Item'Unchecked_Access, Storage, Storage.HTTP_Client, Payload_Buffer.Owner, Token);
+         Started   : Boolean := False;
       begin
          Create
            (Database_ID,
@@ -23605,7 +23048,12 @@ package body Flyology.DB is
       Timeout        : Duration) is
    begin
       Start_Composable_Checkpoint
-        (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
+        (Operation,
+         Runs,
+         Manifest_ID,
+         Transition_ID,
+         Payload_Buffer,
+         Timeout,
          Additive_Plan,
          (others => <>),
          Zero_Identifier,
@@ -23651,7 +23099,12 @@ package body Flyology.DB is
       Timeout        : Duration) is
    begin
       Start_Composable_Checkpoint
-        (Operation, Runs, Manifest_ID, Transition_ID, Payload_Buffer, Timeout,
+        (Operation,
+         Runs,
+         Manifest_ID,
+         Transition_ID,
+         Payload_Buffer,
+         Timeout,
          Complete_Replacement_Plan,
          (others => <>),
          Zero_Identifier,
@@ -23770,8 +23223,7 @@ package body Flyology.DB is
      (Operation      : in out Create_Operation;
       Receipt        : out Create_Receipt;
       Result         : out Outcome_Code;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-   is
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "Create Finish requires the original buffer pool";
@@ -23816,8 +23268,7 @@ package body Flyology.DB is
      (Operation      : in out Flush_Operation;
       Receipt        : out Flush_Receipt;
       Result         : out Outcome_Code;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-   is
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "Flush Finish requires the original buffer pool";
@@ -23857,8 +23308,7 @@ package body Flyology.DB is
      (Operation      : in out Flush_Operation;
       Receipt        : out Column_Family_Receipt;
       Result         : out Outcome_Code;
-      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer)
-   is
+      Payload_Buffer : in out Flyology.Buffers.Unique_Buffer) is
    begin
       if Payload_Buffer.Owner /= Operation.Payload_Pool then
          raise Program_Error with "family append Finish requires the original buffer pool";
@@ -23897,12 +23347,14 @@ package body Flyology.DB is
       Result := Operation.Final_Result;
    end Finish;
 
-   overriding procedure Finalize (Item : in out Flush_Operation) is
+   overriding
+   procedure Finalize (Item : in out Flush_Operation) is
    begin
       begin
          Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
       exception
-         when others => null;
+         when others =>
+            null;
       end;
       if Item.Driver_State /= null and then Item.Driver_State.Create_Open_Admitted then
          Item.Driver_State.Create_Open_Admitted := False;
@@ -23982,6 +23434,43 @@ package body Flyology.DB is
          Result := Storage_Failure;
       end if;
    end Confirm_Immutable_Object;
+
+   procedure Observe_Immutable_Object
+     (Storage  : in out Storage_Context;
+      Key      : String;
+      Kind     : Stored_Object_Kind;
+      Image    : not null Shared_Image_Access;
+      Deadline : Ada.Real_Time.Time;
+      Token    : access Flyology.Cancellation.Token;
+      Result   : out Outcome_Code)
+   is
+      Generation  : Generation_Value;
+      Read_Data   : Flyology.Bytes.Unbounded_Bytes;
+      Read_Result : Read_Outcome;
+   begin
+      Storage_Port.Get_Whole
+        (Storage,
+         Key,
+         Kind,
+         Deadline,
+         Token,
+         Read_Data,
+         Generation,
+         Read_Result,
+         Flyology.Bytes.Length (Image.Data));
+      if Read_Result = Object_Read and then Exact_Bytes (Image, Read_Data) then
+         Result := Success;
+      elsif Read_Result = Object_Read then
+         Result := Conflict;
+      else
+         --  The original create-if-absent PUT may have entered the provider.
+         --  A failed observation cannot prove absence or authorize a replay.
+         Result := Outcome_Unknown;
+      end if;
+   exception
+      when others =>
+         Result := Outcome_Unknown;
+   end Observe_Immutable_Object;
 
    procedure Stop_Replaced_Engine (State : in out Engine_State_Access) is
    begin
@@ -24227,23 +23716,23 @@ package body Flyology.DB is
    end Plan_Matches_Receipt;
 
    procedure Publish_Checkpoint
-     (Item          : in out Database;
-      Runs          : Checkpoint_Run_Identity_Array;
-      Manifest_ID   : Identifier;
-      Transition_ID : Identifier;
+     (Item                 : in out Database;
+      Runs                 : Checkpoint_Run_Identity_Array;
+      Manifest_ID          : Identifier;
+      Transition_ID        : Identifier;
       Replace_Current_Runs : Boolean;
-      Timeout       : Duration;
-      Token         : access Flyology.Cancellation.Token := null;
-      Receipt       : out Flush_Receipt;
-      Result        : out Outcome_Code)
+      Timeout              : Duration;
+      Token                : access Flyology.Cancellation.Token := null;
+      Receipt              : out Flush_Receipt;
+      Result               : out Outcome_Code)
    is
       --  The sole deadline is derived from caller policy; the shared
       --  checkpoint publisher introduces no retry, per-object, or
       --  local-activation timeout for either additive or replacement plans.
-      Deadline   : constant Ada.Real_Time.Time := Deadline_After (Timeout);
-      State      : Engine_State_Access;
-      Plan       : Checkpoint_Plan;
-      Guard      : Checkpoint_Guard;
+      Deadline : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State    : Engine_State_Access;
+      Plan     : Checkpoint_Plan;
+      Guard    : Checkpoint_Guard;
    begin
       Receipt := (others => <>);
       Item.Life.Begin_Checkpoint (State, Result);
@@ -24255,13 +23744,7 @@ package body Flyology.DB is
       Guard.Active := True;
       Item.Life.Await_Quiescent;
       Build_Checkpoint_Plan
-        (State,
-         Runs,
-         Manifest_ID,
-         Transition_ID,
-         Plan,
-         Result,
-         Replace_Current_Runs => Replace_Current_Runs);
+        (State, Runs, Manifest_ID, Transition_ID, Plan, Result, Replace_Current_Runs => Replace_Current_Runs);
       if Result = Success then
          Initialize_Flush_Receipt
            (State,
@@ -24304,10 +23787,10 @@ package body Flyology.DB is
    end Publish_Checkpoint;
 
    procedure Synchronous_Checkpoint_Buffer_Capacity
-     (State   : not null Engine_State_Access;
+     (State                         : not null Engine_State_Access;
       Additional_Family_Name_Length : Natural;
-      Maximum : out Natural;
-      Result  : out Outcome_Code);
+      Maximum                       : out Natural;
+      Result                        : out Outcome_Code);
 
    procedure Publish_Selected_Merge
      (Item          : in out Database;
@@ -24325,15 +23808,15 @@ package body Flyology.DB is
       --  The caller supplies the sole deadline budget and every immutable
       --  identity. This caller-selected publisher selects no merge trigger, retry,
       --  helper task, output name, or timing default.
-      Deadline     : constant Ada.Real_Time.Time := Deadline_After (Timeout);
-      State        : Engine_State_Access;
-      Plan         : Checkpoint_Plan;
-      Guard        : Checkpoint_Guard;
-      Runs         : Checkpoint_Run_Identity_Array (1 .. 1);
-      Family_Index : Natural := 0;
-      Lease        : aliased Lifecycle_Lease;
-      Storage      : access Storage_Context;
-      Maximum      : Natural := 0;
+      Deadline                 : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State                    : Engine_State_Access;
+      Plan                     : Checkpoint_Plan;
+      Guard                    : Checkpoint_Guard;
+      Runs                     : Checkpoint_Run_Identity_Array (1 .. 1);
+      Family_Index             : Natural := 0;
+      Lease                    : aliased Lifecycle_Lease;
+      Storage                  : access Storage_Context;
+      Maximum                  : Natural := 0;
       --  One DB parent, one Object Storage child, one HTTP exchange, and one
       --  transport child are the exact selected-merge owner stack. This is
       --  private operation geometry, not a DB queue or public capacity.
@@ -24358,21 +23841,16 @@ package body Flyology.DB is
             return;
          end if;
          declare
-            Set : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+            Set            : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
             --  Exactly one moved payload token is reused serially across
             --  selected reads and publication. Capacity one expresses that
             --  ownership geometry and is not a persisted or public ceiling.
-            Pool : aliased Flyology.Buffers.Pool
-              (Block_Size => Positive (Maximum), Capacity => 1);
+            Pool           : aliased Flyology.Buffers.Pool (Block_Size => Positive (Maximum), Capacity => 1);
             Payload_Buffer : Flyology.Buffers.Unique_Buffer (Pool'Access);
-            Operation      : Flush_Operation
-              (Set'Access,
-               Item'Unchecked_Access,
-               Storage,
-               Storage.HTTP_Client,
-               Pool'Access,
-               Token);
-            Started : Boolean := False;
+            Operation      :
+              Flush_Operation
+                (Set'Access, Item'Unchecked_Access, Storage, Storage.HTTP_Client, Pool'Access, Token);
+            Started        : Boolean := False;
          begin
             Flyology.Buffers.Acquire (Payload_Buffer);
             if Is_Zero (Middle_Run_ID) then
@@ -24473,9 +23951,9 @@ package body Flyology.DB is
             Transition_ID,
             Receipt,
             Result,
-            Merge_Older_Run_ID => Older_Run_ID,
+            Merge_Older_Run_ID  => Older_Run_ID,
             Merge_Middle_Run_ID => Middle_Run_ID,
-            Merge_Newer_Run_ID => Newer_Run_ID);
+            Merge_Newer_Run_ID  => Newer_Run_ID);
          if Result = Success then
             Publish_Flush_Plan (Item, State, Plan, Deadline, Token, Receipt, Guard, Result);
          end if;
@@ -24588,10 +24066,10 @@ package body Flyology.DB is
    end Compact;
 
    procedure Synchronous_Checkpoint_Buffer_Capacity
-     (State   : not null Engine_State_Access;
+     (State                         : not null Engine_State_Access;
       Additional_Family_Name_Length : Natural;
-      Maximum : out Natural;
-      Result  : out Outcome_Code)
+      Maximum                       : out Natural;
+      Result                        : out Outcome_Code)
    is
       Base           : Manifests.Manifest;
       Identity_Total : Natural;
@@ -24604,10 +24082,7 @@ package body Flyology.DB is
         Interfaces.Unsigned_64
           (LSM_Runtime.LSM.Checkpoint_Manifest_Header_Length + LSM_Runtime.LSM.Object_Trailer_Length);
 
-      function Add
-        (Total  : in out Interfaces.Unsigned_64;
-         Amount : Interfaces.Unsigned_64) return Boolean
-      is
+      function Add (Total : in out Interfaces.Unsigned_64; Amount : Interfaces.Unsigned_64) return Boolean is
       begin
          if Amount > Interfaces.Unsigned_64'Last - Total then
             return False;
@@ -24676,8 +24151,7 @@ package body Flyology.DB is
          if not Add
                   (Manifest_Bound,
                    Interfaces.Unsigned_64
-                     (LSM_Runtime.LSM.Checkpoint_Family_Header_Length
-                      + Base.Families (Index).Name_Length))
+                     (LSM_Runtime.LSM.Checkpoint_Family_Header_Length + Base.Families (Index).Name_Length))
          then
             Result := Capacity_Exceeded;
             return;
@@ -24685,9 +24159,9 @@ package body Flyology.DB is
       end loop;
       if Additional_Family_Name_Length > 0
         and then not Add
-          (Manifest_Bound,
-           Interfaces.Unsigned_64
-             (LSM_Runtime.LSM.Checkpoint_Family_Header_Length + Additional_Family_Name_Length))
+                       (Manifest_Bound,
+                        Interfaces.Unsigned_64
+                          (LSM_Runtime.LSM.Checkpoint_Family_Header_Length + Additional_Family_Name_Length))
       then
          Result := Capacity_Exceeded;
          return;
@@ -24709,7 +24183,9 @@ package body Flyology.DB is
          Bound : constant Interfaces.Unsigned_64 :=
            Interfaces.Unsigned_64'Max
              (Interfaces.Unsigned_64 (Formats.Head_Image_Length),
-              Interfaces.Unsigned_64'Max (SST_Bound, Manifest_Bound));
+              Interfaces.Unsigned_64'Max
+                (Interfaces.Unsigned_64 (Maximum_Runtime_Batch_Length (Base.Limits)),
+                 Interfaces.Unsigned_64'Max (SST_Bound, Manifest_Bound)));
       begin
          if Bound = 0 or else Bound > Interfaces.Unsigned_64 (Natural'Last) then
             Result := Capacity_Exceeded;
@@ -24765,19 +24241,15 @@ package body Flyology.DB is
             Body_Entered : Boolean := False;
 
             procedure Drive_Client_Checkpoint is
-               Set : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+               Set            : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
                --  Exactly one moved payload token exists in this serial wait.
                --  Capacity one is ownership geometry, not persisted DB policy.
-               Pool : aliased Flyology.Buffers.Pool
-                 (Block_Size => Positive (Maximum), Capacity => 1);
+               Pool           :
+                 aliased Flyology.Buffers.Pool (Block_Size => Positive (Maximum), Capacity => 1);
                Payload_Buffer : Flyology.Buffers.Unique_Buffer (Pool'Access);
-               Operation      : Flush_Operation
-                 (Set'Access,
-                  Item'Unchecked_Access,
-                  Storage,
-                  Storage.HTTP_Client,
-                  Pool'Access,
-                  Token);
+               Operation      :
+                 Flush_Operation
+                   (Set'Access, Item'Unchecked_Access, Storage, Storage.HTTP_Client, Pool'Access, Token);
                Started        : Boolean := False;
             begin
                Body_Entered := True;
@@ -24892,15 +24364,7 @@ package body Flyology.DB is
       Result        : out Outcome_Code) is
    begin
       Drive_Synchronous_Checkpoint
-        (Item,
-         Runs,
-         Manifest_ID,
-         Transition_ID,
-         False,
-         Timeout,
-         Token,
-         Receipt,
-         Result);
+        (Item, Runs, Manifest_ID, Transition_ID, False, Timeout, Token, Receipt, Result);
    end Flush;
 
    procedure Compact
@@ -24914,15 +24378,7 @@ package body Flyology.DB is
       Result        : out Outcome_Code) is
    begin
       Drive_Synchronous_Checkpoint
-        (Item,
-         Runs,
-         Manifest_ID,
-         Transition_ID,
-         True,
-         Timeout,
-         Token,
-         Receipt,
-         Result);
+        (Item, Runs, Manifest_ID, Transition_ID, True, Timeout, Token, Receipt, Result);
    end Compact;
 
    procedure Activate_Recovered_Flush
@@ -25017,26 +24473,24 @@ package body Flyology.DB is
         or else Receipt.Run_Total = 0
         or else Receipt.Database_ID = Zero_Database_ID
         or else Is_Zero (Receipt.Manifest_ID)
-        or else
-          (if Receipt.Merges_Adjacent_Runs
-           then
-             Receipt.Replaces_Current_Runs
-             or else Receipt.Run_Total /= 1
-             or else Is_Zero (Receipt.Older_Run_ID)
-             or else Is_Zero (Receipt.Newer_Run_ID)
-             or else Receipt.Older_Run_ID = Receipt.Newer_Run_ID
-             or else
-               (if Receipt.Merges_Three_Runs
-                then
-                  Is_Zero (Receipt.Middle_Run_ID)
-                  or else Receipt.Middle_Run_ID = Receipt.Older_Run_ID
-                  or else Receipt.Middle_Run_ID = Receipt.Newer_Run_ID
-                else not Is_Zero (Receipt.Middle_Run_ID))
-           else
-             Receipt.Merges_Three_Runs
-             or else not Is_Zero (Receipt.Older_Run_ID)
-             or else not Is_Zero (Receipt.Middle_Run_ID)
-             or else not Is_Zero (Receipt.Newer_Run_ID))
+        or else (if Receipt.Merges_Adjacent_Runs
+                 then
+                   Receipt.Replaces_Current_Runs
+                   or else Receipt.Run_Total /= 1
+                   or else Is_Zero (Receipt.Older_Run_ID)
+                   or else Is_Zero (Receipt.Newer_Run_ID)
+                   or else Receipt.Older_Run_ID = Receipt.Newer_Run_ID
+                   or else (if Receipt.Merges_Three_Runs
+                            then
+                              Is_Zero (Receipt.Middle_Run_ID)
+                              or else Receipt.Middle_Run_ID = Receipt.Older_Run_ID
+                              or else Receipt.Middle_Run_ID = Receipt.Newer_Run_ID
+                            else not Is_Zero (Receipt.Middle_Run_ID))
+                 else
+                   Receipt.Merges_Three_Runs
+                   or else not Is_Zero (Receipt.Older_Run_ID)
+                   or else not Is_Zero (Receipt.Middle_Run_ID)
+                   or else not Is_Zero (Receipt.Newer_Run_ID))
       then
          Result := Invalid_State;
          Receipt.Current_Outcome := Result;
@@ -25082,10 +24536,9 @@ package body Flyology.DB is
                      if Plan.SSTs (Index) /= null then
                         if Exact_Output
                           or else Receipt.Run_Total /= 1
-                          or else Receipt.Runs (1).Family_ID /=
-                            Column_Family_ID (Plan.Manifest.Base.Families (Index).ID)
-                          or else Receipt.Runs (1).Run_ID /=
-                            To_Identifier (Plan.SSTs (Index).Run_ID)
+                          or else Receipt.Runs (1).Family_ID
+                                  /= Column_Family_ID (Plan.Manifest.Base.Families (Index).ID)
+                          or else Receipt.Runs (1).Run_ID /= To_Identifier (Plan.SSTs (Index).Run_ID)
                         then
                            Result := Invalid_State;
                            exit;
@@ -25107,7 +24560,7 @@ package body Flyology.DB is
                Plan,
                Result,
                Replace_Current_Runs => Receipt.Replaces_Current_Runs,
-               Allow_Fenced => True);
+               Allow_Fenced         => True);
          end if;
          if Result = Success and then not Plan_Matches_Receipt (Plan, Current_Head, Receipt) then
             Result := Invalid_State;
@@ -25211,13 +24664,13 @@ package body Flyology.DB is
    end Flush_Receipt_Run;
 
    procedure Initialize_Column_Family_Receipt
-     (State          : not null Engine_State_Access;
-      Configuration  : Column_Family_Configuration;
-      Manifest_ID    : Identifier;
-      Transition_ID  : Identifier;
-      Plan           : Checkpoint_Plan;
-      Receipt        : out Column_Family_Receipt;
-      Result         : out Outcome_Code)
+     (State         : not null Engine_State_Access;
+      Configuration : Column_Family_Configuration;
+      Manifest_ID   : Identifier;
+      Transition_ID : Identifier;
+      Plan          : Checkpoint_Plan;
+      Receipt       : out Column_Family_Receipt;
+      Result        : out Outcome_Code)
    is
       Head          : Head_Snapshot;
       Generation    : Generation_Value;
@@ -25228,10 +24681,7 @@ package body Flyology.DB is
    begin
       Receipt := (others => <>);
       State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
-      if Plan.Manifest = null
-        or else Uncertain
-        or else Fenced
-        or else Generation /= Plan.Expected_Generation
+      if Plan.Manifest = null or else Uncertain or else Fenced or else Generation /= Plan.Expected_Generation
       then
          Result := (if Uncertain then Outcome_Unknown elsif Fenced then Stale_Writer else Invalid_State);
          return;
@@ -25285,7 +24735,8 @@ package body Flyology.DB is
             Actual.Memtable_Max_Bytes := LSM_Authority.Families (Index).State.Memtable_Max_Bytes;
             Actual.Memtable_Max_Entries := LSM_Authority.Families (Index).State.Memtable_Max_Entries;
             Actual.Maximum_L0_Runs := LSM_Authority.Families (Index).State.Maximum_L0_Runs;
-            return LSM_Authority.Families (Index).ID = Manifest.Families (Index).ID
+            return
+              LSM_Authority.Families (Index).ID = Manifest.Families (Index).ID
               and then Same_Configuration (Actual, Expected);
          end if;
       end loop;
@@ -25332,18 +24783,14 @@ package body Flyology.DB is
          Release_History (History, History_Count);
          Release_Checkpoint_Plan (Checkpoint);
          Result :=
-           (if Receipt.Phase = Family_Head_Confirmed
-            then Local_Activation_Failed
-            else Outcome_Unknown);
+           (if Receipt.Phase = Family_Head_Confirmed then Local_Activation_Failed else Outcome_Unknown);
          Receipt.Current_Outcome := Result;
          return;
       elsif Head.Transition_Number < Receipt.Attempted_Head.Transition_Number then
          Release_History (History, History_Count);
          Release_Checkpoint_Plan (Checkpoint);
          Result :=
-           (if Receipt.Phase = Family_Head_Confirmed
-            then Local_Activation_Failed
-            else Outcome_Unknown);
+           (if Receipt.Phase = Family_Head_Confirmed then Local_Activation_Failed else Outcome_Unknown);
          Receipt.Current_Outcome := Result;
          return;
       elsif not Sought_Found then
@@ -25463,6 +24910,10 @@ package body Flyology.DB is
       Release_Image (Owner);
       if Put_Result = Object_Published then
          Receipt.Phase := Family_Head_Confirmed;
+         --  Durable HEAD already names the successor. Keep the prior
+         --  coordinator fenced if recovery is cancelled or fails locally;
+         --  same-receipt resolution may still replace it after recovery.
+         Fence_Engine (State);
          Recover_Column_Family_Activation (Item, State, Deadline, Token, Receipt, Guard, Result);
       elsif Put_Result = Put_Precondition_Failed then
          Fence_Engine (State);
@@ -25510,8 +24961,7 @@ package body Flyology.DB is
       Token    : access Flyology.Cancellation.Token;
       Receipt  : in out Column_Family_Receipt;
       Guard    : in out Checkpoint_Guard;
-      Result   : out Outcome_Code)
-   is
+      Result   : out Outcome_Code) is
    begin
       Receipt.Phase := Family_Manifest_Unknown;
       Confirm_Immutable_Object
@@ -25556,13 +25006,13 @@ package body Flyology.DB is
       Receipt       : out Column_Family_Receipt;
       Result        : out Outcome_Code)
    is
-      Deadline : constant Ada.Real_Time.Time := Deadline_After (Timeout);
-      State    : Engine_State_Access := null;
-      Plan     : Checkpoint_Plan;
-      Guard    : Checkpoint_Guard;
-      Lease    : aliased Lifecycle_Lease;
-      Storage  : access Storage_Context;
-      Maximum  : Natural := 0;
+      Deadline                 : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      State                    : Engine_State_Access := null;
+      Plan                     : Checkpoint_Plan;
+      Guard                    : Checkpoint_Guard;
+      Lease                    : aliased Lifecycle_Lease;
+      Storage                  : access Storage_Context;
+      Maximum                  : Natural := 0;
       --  One DB parent, one Object Storage child, one HTTP exchange, and one
       --  transport child are the exact family-append owner stack. This is
       --  operation geometry, not a DB queue, connection, or public default.
@@ -25581,26 +25031,20 @@ package body Flyology.DB is
             Result := Invalid_State;
             return;
          end if;
-         Synchronous_Checkpoint_Buffer_Capacity
-           (Lease.State, Configuration.Name_Length, Maximum, Result);
+         Synchronous_Checkpoint_Buffer_Capacity (Lease.State, Configuration.Name_Length, Maximum, Result);
          if Result /= Success then
             Receipt.Current_Outcome := Result;
             return;
          end if;
          declare
-            Set : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+            Set            : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
             --  Exactly one moved payload token exists in this serial wait.
             --  Capacity one is ownership geometry, not persisted DB policy.
-            Pool : aliased Flyology.Buffers.Pool
-              (Block_Size => Positive (Maximum), Capacity => 1);
+            Pool           : aliased Flyology.Buffers.Pool (Block_Size => Positive (Maximum), Capacity => 1);
             Payload_Buffer : Flyology.Buffers.Unique_Buffer (Pool'Access);
-            Operation      : Flush_Operation
-              (Set'Access,
-               Item'Unchecked_Access,
-               Storage,
-               Storage.HTTP_Client,
-               Pool'Access,
-               Token);
+            Operation      :
+              Flush_Operation
+                (Set'Access, Item'Unchecked_Access, Storage, Storage.HTTP_Client, Pool'Access, Token);
             No_Runs        : Checkpoint_Run_Identity_Array (1 .. 0);
             Started        : Boolean := False;
          begin
@@ -25637,8 +25081,7 @@ package body Flyology.DB is
             when others =>
                Receipt := (if Started then Operation.Final_Family_Receipt else (others => <>));
                Result :=
-                 (if Started
-                    and then Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown
+                 (if Started and then Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown
                   then Outcome_Unknown
                   elsif Started and then Receipt.Phase = Family_Head_Confirmed
                   then Local_Activation_Failed
@@ -25656,14 +25099,7 @@ package body Flyology.DB is
       Guard.Life := Item.Life'Unchecked_Access;
       Guard.Active := True;
       Item.Life.Await_Quiescent;
-      Build_Column_Family_Plan
-        (State,
-         Configuration,
-         Manifest_ID,
-         Transition_ID,
-         False,
-         Plan,
-         Result);
+      Build_Column_Family_Plan (State, Configuration, Manifest_ID, Transition_ID, False, Plan, Result);
       if Result = Success then
          Initialize_Column_Family_Receipt
            (State, Configuration, Manifest_ID, Transition_ID, Plan, Receipt, Result);
@@ -25757,7 +25193,7 @@ package body Flyology.DB is
       then
          Result := Invalid_State;
       elsif Receipt.Phase = Family_Manifest_Unknown then
-         Confirm_Immutable_Object
+         Observe_Immutable_Object
            (State.Storage.all,
             Manifest_Key (State.Storage.all, Receipt.Manifest_ID),
             Manifest_Object,
@@ -25822,14 +25258,14 @@ package body Flyology.DB is
       Families         : out L0_Checkpoint_Family_Array_Access;
       Result           : out Outcome_Code)
    is
-      State          : Engine_State_Access;
-      Guard          : Checkpoint_Guard;
-      Head           : Head_Snapshot;
-      Generation     : Generation_Value;
-      Uncertain      : Boolean;
-      Fenced         : Boolean;
-      Family_Total   : Natural := 0;
-      Found_Gap      : Boolean := False;
+      State        : Engine_State_Access;
+      Guard        : Checkpoint_Guard;
+      Head         : Head_Snapshot;
+      Generation   : Generation_Value;
+      Uncertain    : Boolean;
+      Fenced       : Boolean;
+      Family_Total : Natural := 0;
+      Found_Gap    : Boolean := False;
    begin
       Action := No_L0_Checkpoint_Work;
       Families := null;
@@ -25939,16 +25375,20 @@ package body Flyology.DB is
                     Interfaces.Unsigned_64 (Head.Highest) > State.LSM_Authority.Replay_Boundary,
                     State.LSM_Authority.Maximum_Total_L0_Runs);
                case Selection is
-                  when Checkpoints.Invalid_Authority =>
+                  when Checkpoints.Invalid_Authority        =>
                      Result := Corrupt;
-                  when Checkpoints.No_Work =>
+
+                  when Checkpoints.No_Work                  =>
                      Action := No_L0_Checkpoint_Work;
-                  when Checkpoints.Additive_Flush =>
+
+                  when Checkpoints.Additive_Flush           =>
                      Action := Additive_Flush_Required;
                      Selected := Changed;
-                  when Checkpoints.Complete_Compaction =>
+
+                  when Checkpoints.Complete_Compaction      =>
                      Action := Complete_Compaction_Required;
                      Selected := Nonempty;
+
                   when Checkpoints.No_Admissible_Checkpoint =>
                      Result := Capacity_Exceeded;
                end case;
@@ -25995,9 +25435,7 @@ package body Flyology.DB is
    end Observe_L0_Checkpoint;
 
    procedure Required_L0_Checkpoint_Action
-     (Item   : in out Database;
-      Action : out L0_Checkpoint_Action;
-      Result : out Outcome_Code)
+     (Item : in out Database; Action : out L0_Checkpoint_Action; Result : out Outcome_Code)
    is
       Families : L0_Checkpoint_Family_Array_Access;
    begin
@@ -26006,9 +25444,7 @@ package body Flyology.DB is
    end Required_L0_Checkpoint_Action;
 
    procedure Observe_L0_Checkpoint_Requirement
-     (Item        : in out Database;
-      Requirement : in out L0_Checkpoint_Requirement;
-      Result      : out Outcome_Code)
+     (Item : in out Database; Requirement : in out L0_Checkpoint_Requirement; Result : out Outcome_Code)
    is
       Action   : L0_Checkpoint_Action;
       Families : L0_Checkpoint_Family_Array_Access;
@@ -26028,16 +25464,14 @@ package body Flyology.DB is
          raise;
    end Observe_L0_Checkpoint_Requirement;
 
-   function Checkpoint_Requirement_Action
-     (Item : L0_Checkpoint_Requirement) return L0_Checkpoint_Action
+   function Checkpoint_Requirement_Action (Item : L0_Checkpoint_Requirement) return L0_Checkpoint_Action
    is (Item.State.Action);
 
    function Checkpoint_Requirement_Family_Total (Item : L0_Checkpoint_Requirement) return Natural
    is (if Item.State.Families = null then 0 else Item.State.Families'Length);
 
    function Checkpoint_Requirement_Family
-     (Item : L0_Checkpoint_Requirement; Index : Positive) return Column_Family_ID
-   is
+     (Item : L0_Checkpoint_Requirement; Index : Positive) return Column_Family_ID is
    begin
       if Item.State.Families = null or else Index > Item.State.Families'Length then
          raise Constraint_Error with "checkpoint requirement family index is out of range";
@@ -26410,10 +25844,7 @@ package body Flyology.DB is
    end Rewrite_Test_Run_Family;
 
    procedure Convert_Test_Run_To_V1
-     (Item    : in out Storage_Context;
-      Run_ID  : Identifier;
-      Timeout : Duration;
-      Result  : out Outcome_Code)
+     (Item : in out Storage_Context; Run_ID : Identifier; Timeout : Duration; Result : out Outcome_Code)
    is
       --  This private compatibility witness replaces one already-published
       --  fixture object only. Production runs remain immutable. The retained
@@ -26470,10 +25901,7 @@ package body Flyology.DB is
       if Read_Result /= Object_Read
         or else Length < LSM_Runtime.SST_V2_Header_Length + LSM_Runtime.LSM.Object_Trailer_Length
       then
-         Result :=
-           (if Read_Result = Object_Read
-            then Corrupt
-            else Lazy_Read_Outcome (Read_Result));
+         Result := (if Read_Result = Object_Read then Corrupt else Lazy_Read_Outcome (Read_Result));
          return;
       end if;
 
@@ -27114,13 +26542,7 @@ package body Flyology.DB is
       Guard.Active := True;
       Item.Life.Await_Quiescent;
       Build_Checkpoint_Plan
-        (State,
-         Runs,
-         Manifest_ID,
-         Transition_ID,
-         Plan,
-         Result,
-         Replace_Current_Runs => True);
+        (State, Runs, Manifest_ID, Transition_ID, Plan, Result, Replace_Current_Runs => True);
       if Result = Success then
          LSM_Runtime.Encode_Checkpoint_Manifest (Plan.Manifest.all, Image, Encode_Result);
          if Encode_Result /= LSM_Runtime.Encoded then
@@ -27262,20 +26684,20 @@ package body Flyology.DB is
       --  reach structural/identity checks without an unrelated capacity result.
       --  This is permissive test policy, not a public or persisted default.
       Limits            : constant Database_Limits :=
-        (Maximum_Column_Families           => 2,
-         Maximum_Manifest_History          => 2,
-         Maximum_Batch_History             => 2,
-         Maximum_Transactions_Per_Batch    => 257,
-         Maximum_Mutations_Per_Transaction => 257,
-         Maximum_Mutations_Per_Batch       => 257,
-         Maximum_Live_Entries              => 257,
-         Maximum_Transaction_Payload_Bytes => 1_000_000,
-         Maximum_Batch_Payload_Bytes       => 1_000_000,
-         Maximum_Live_State_Bytes          => 1_000_000,
+        (Maximum_Column_Families             => 2,
+         Maximum_Manifest_History            => 2,
+         Maximum_Batch_History               => 2,
+         Maximum_Transactions_Per_Batch      => 257,
+         Maximum_Mutations_Per_Transaction   => 257,
+         Maximum_Mutations_Per_Batch         => 257,
+         Maximum_Live_Entries                => 257,
+         Maximum_Transaction_Payload_Bytes   => 1_000_000,
+         Maximum_Batch_Payload_Bytes         => 1_000_000,
+         Maximum_Live_State_Bytes            => 1_000_000,
          --  Unused by batch decoding; nonzero fixture values keep the public
          --  aggregate explicit without introducing runtime fallback policy.
-         Maximum_Total_L0_Runs             => 1,
-         Maximum_Checkpoint_Identities     => 1,
+         Maximum_Total_L0_Runs               => 1,
+         Maximum_Checkpoint_Identities       => 1,
          Maximum_Point_Reads_Per_Transaction => 1,
          Maximum_Scan_Ranges_Per_Transaction => 1);
    begin
