@@ -247,6 +247,19 @@ package Flyology.DB is
       Item         : not null access Database;
       Cancellation : access Flyology.Cancellation.Token) is
      new Flyology.Operations.Operation with private;
+   --  Caller-composable atomic group publication. Set, Item, and Cancellation
+   --  are retained borrows through terminal Finish or abandonment drain.
+   --  Members is the exact caller-supplied transaction-array length and
+   --  introduces no capacity: the established two-through-
+   --  Maximum_Group_Transactions validation is unchanged. No transaction-
+   --  array borrow survives Start; successful admission moves every member
+   --  arena atomically before return.
+   type Commit_Group_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Cancellation : access Flyology.Cancellation.Token;
+      Members      : Natural) is
+     new Flyology.Operations.Operation with private;
    --  Caller-composable initial database publication. The discriminants are
    --  retained borrows and must outlive terminal Finish or abandonment drain.
    --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
@@ -1462,8 +1475,58 @@ package Flyology.DB is
       Result    : out Outcome_Code)
    with Pre => Flyology.Operations.Is_Terminal (Operation);
 
+   --  Construct and start one atomic transaction group in the caller's
+   --  completion set. Members derives exactly from Transactions'Length.
+   --  @param Set Caller-owned completion set retained through terminal drain
+   --  @param Item Open database retained through terminal drain
+   --  @param Group_ID Caller-stable immutable batch identity
+   --  @param Transactions Group members moved only on successful atomic admission
+   --  @param Timeout Whole-publication monotonic timeout budget
+   --  @param Token Optional pre-admission cancellation source retained through drain
+   --  @return Started atomic group operation
+   --  @exception Capacity_Error Completion set has no reusable operation slot
+   function Commit_Group
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Group_ID     : Identifier;
+      Transactions : in out Transaction_Array;
+      Timeout      : Duration;
+      Token        : access Flyology.Cancellation.Token)
+      return Commit_Group_Operation'Class;
+
+   --  Start or restart one atomic group in an established owner-bound
+   --  operation. Transactions must have the structural length selected when
+   --  Operation was constructed. Pre-admission outcomes retain every member;
+   --  admission consumes every member and later cancellation drains the exact
+   --  immutable batch without replay.
+   --  @param Group_ID Caller-stable immutable batch identity
+   --  @param Transactions Exact operation-sized group member array
+   --  @param Timeout Whole-publication monotonic timeout budget
+   --  @param Operation Fresh or consumed database-bound group operation
+   --  @exception Capacity_Error Completion set has no reusable operation slot
+   procedure Commit_Group
+     (Group_ID     : Identifier;
+      Transactions : in out Transaction_Array;
+      Timeout      : Duration;
+      Operation    : in out Commit_Group_Operation)
+   with Pre => Transactions'Length = Operation.Members
+     and then not Flyology.Operations.Is_Active (Operation)
+     and then not Flyology.Operations.Is_Terminal (Operation);
+
+   --  Consume one terminal owner-driven group and move every retained receipt
+   --  to the caller's operation-sized array in the original member order.
+   --  @param Operation Terminal composable group operation
+   --  @param Receipts Exact member-ordered publication authorities
+   --  @param Result Shared atomic admission/publication outcome
+   procedure Finish
+     (Operation : in out Commit_Group_Operation;
+      Receipts  : out Commit_Receipt_Array;
+      Result    : out Outcome_Code)
+   with Pre => Flyology.Operations.Is_Terminal (Operation)
+     and then Receipts'Length = Operation.Members;
+
    --  Atomically admit and publish one explicit synchronous transaction group.
-   --  Transactions and Receipts must have matching ranges of two through
+   --  Transactions and Receipts must have matching lengths of two through
    --  Maximum_Group_Transactions members. The whole group shares one absolute
    --  deadline, immutable batch, HEAD transition, and terminal classification.
    --  All transactions remain active on pre-admission rejection and all are
@@ -2500,6 +2563,8 @@ private
    type Flush_Driver_State_Access is access Flush_Driver_State;
    type Commit_Driver_State;
    type Commit_Driver_State_Access is access Commit_Driver_State;
+   type Commit_Group_Driver_State;
+   type Commit_Group_Driver_State_Access is access Commit_Group_Driver_State;
    type Refresh_Driver_State;
    type Refresh_Driver_State_Access is access Refresh_Driver_State;
    type Refresh_Operation_Access is access Refresh_Operation;
@@ -2548,6 +2613,30 @@ private
    overriding procedure Request_Cancellation (Item : in out Commit_Operation);
    --  @exclude
    overriding procedure Finalize (Item : in out Commit_Operation);
+
+   --  @exclude
+   type Commit_Group_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Cancellation : access Flyology.Cancellation.Token;
+      Members      : Natural) is
+     new Flyology.Operations.Operation (Set) with record
+      Driver_State     : Commit_Group_Driver_State_Access := null;
+      Final_Receipts   : Commit_Receipt_Array (1 .. Maximum_Group_Transactions);
+      Final_Result     : Outcome_Code := Invalid_State;
+      Has_Final_Result : Boolean := False;
+      Has_Saved_Error  : Boolean := False;
+      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+   end record;
+
+   --  @exclude
+   overriding procedure Drive
+     (Item : in out Commit_Group_Operation;
+      Event : Flyology.Operations.Driver_Event);
+   --  @exclude
+   overriding procedure Request_Cancellation (Item : in out Commit_Group_Operation);
+   --  @exclude
+   overriding procedure Finalize (Item : in out Commit_Group_Operation);
 
    --  @exclude
    type Flush_Operation

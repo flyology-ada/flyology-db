@@ -154,7 +154,7 @@ procedure Flyology.DB.Client_Probe is
      (Maximum_Column_Families             => 3,
       Maximum_Manifest_History            => 9,
       Maximum_Batch_History               => 4,
-      Maximum_Transactions_Per_Batch      => 1,
+      Maximum_Transactions_Per_Batch      => 2,
       Maximum_Mutations_Per_Transaction   => 4,
       Maximum_Mutations_Per_Batch         => 4,
       Maximum_Live_Entries                => 4,
@@ -281,6 +281,15 @@ procedure Flyology.DB.Client_Probe is
      Database_Identifier (Numbered_ID (45));
    Conflicting_Manifest_ID      : constant Identifier := Numbered_ID (46);
    Conflicting_Transition_ID    : constant Identifier := Numbered_ID (47);
+   --  IDs 48 and 49 are the two member transactions in the final authenticated
+   --  composable group; 50 is their shared caller-selected batch identity.
+   --  They extend only this maintained fixture's persisted limits and are not
+   --  DB defaults or identity-generation policy.
+   Group_Primary_Transaction_ID : constant Transaction_Identifier :=
+     Transaction_Identifier (Numbered_ID (48));
+   Group_Audit_Transaction_ID   : constant Transaction_Identifier :=
+     Transaction_Identifier (Numbered_ID (49));
+   Group_Batch_ID               : constant Identifier := Numbered_ID (50);
    --  Arbitrary nonzero fixture metadata proves the moved token, rather than
    --  only a same-pool replacement token, returns through typed Finish.
    Flush_Token_Tag              : constant Interfaces.Unsigned_64 := 16#F105#;
@@ -3121,6 +3130,39 @@ begin
       end if;
       Rollback (Reader, Result);
       Expect (Result, Success, "refreshed replica reader rollback failed");
+   end;
+
+   --  The provider matrix reaches the owner-driven group path against every
+   --  authenticated backend. Both members rewrite established values so this
+   --  final suffix changes no later byte oracle, while its one completion wake
+   --  and member-ordered receipts prove the public composable boundary.
+   declare
+      Members  : Transaction_Array (1 .. 2);
+      Receipts : Commit_Receipt_Array (Members'Range);
+      Work     : Commit_Group_Operation
+        (Composable_Set'Access, Created'Access, null, Members'Length);
+   begin
+      Begin_Transaction (Created, Group_Primary_Transaction_ID, Members (1), Result);
+      Expect (Result, Success, "client-backed group primary begin failed");
+      Put (Created, Members (1), Family, Key_Data, Third_Value_Data, Result);
+      Expect (Result, Success, "client-backed group primary Put failed");
+      Begin_Transaction (Created, Group_Audit_Transaction_ID, Members (2), Result);
+      Expect (Result, Success, "client-backed group audit begin failed");
+      Put (Created, Members (2), Audit_Family, Audit_Key_Data, Audit_Value_Data, Result);
+      Expect (Result, Success, "client-backed group audit Put failed");
+      Commit_Group (Group_Batch_ID, Members, Test_Operation_Timeout, Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Work, Receipts, Result);
+      Flyology.Operations.Release (Work);
+      Expect (Result, Success, "client-backed composable group failed");
+      if Receipt_Transaction_ID (Receipts (1)) /= Group_Primary_Transaction_ID
+        or else Receipt_Transaction_ID (Receipts (2)) /= Group_Audit_Transaction_ID
+        or else Receipt_Batch_ID (Receipts (1)) /= Group_Batch_ID
+        or else Receipt_Batch_ID (Receipts (2)) /= Group_Batch_ID
+        or else Receipt_Sequence (Receipts (2)) /= Receipt_Sequence (Receipts (1)) + 1
+      then
+         raise Program_Error with "client-backed composable group lost exact order or identity";
+      end if;
    end;
 
    Close (Created, Close_Result);

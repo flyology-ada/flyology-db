@@ -21,14 +21,14 @@ accepted manifest-v1 encoding through operational HEAD version 2 for provider-ne
 Create requires an explicit root manifest identity, transition identity, database limits, and initial family table;
 Open resolves handles by stable ID or exact name and validates manifest authority before replaying batches. HEAD-v1
 images remain inspection-only and return `Unsupported_Format` operationally. The authenticated client binding now
-exercises synchronous and composable create, singleton commit, owner-driven ambiguous-commit reconciliation, synchronous and
-composable checkpoint Flush, composable replacement, and cacheless reopen through provider-owned Object Storage
-operations in `Client.Objects`.
-Client-bound synchronous Create and Flush are owner-driven waits over the same DB operations; singleton Commit uses
-the same coordinator-backed operation for every provider, while memory/files retain the backend-neutral synchronous
-Create and Flush fallbacks. The
-limited operation and caller-owned completion set express scoped lifetime; a separate `.Scoped` package would create
-a second vocabulary for the same provider state machine and is intentionally absent. Remote-provider qualification
+exercises synchronous and composable create, singleton and atomic group commit, owner-driven ambiguous-commit
+reconciliation, synchronous and composable checkpoint Flush, composable replacement, and cacheless reopen through
+provider-owned Object Storage operations in `Client.Objects`.
+Client-bound synchronous Create and Flush are owner-driven waits over the same DB operations; singleton Commit and
+Commit_Group use their coordinator-backed operations for every provider, while memory/files retain the
+backend-neutral synchronous Create and Flush fallbacks. The limited operation and caller-owned completion set
+express scoped lifetime; a separate `.Scoped` package would create a second vocabulary for the same provider state
+machine and is intentionally absent. Remote-provider qualification
 now includes the exact-checkpoint family append through both direct-composable and blocking-wait calls. Broader
 Milestone 2 acceptance remains pending. The pooled TLA+ and manifest-publication models remain abstract assurance
 lanes rather than a claimed refinement proof.

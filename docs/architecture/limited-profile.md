@@ -17,7 +17,7 @@ performance, replica, automatic-maintenance, or general-provider qualification.
   family in increasing-ID order without out-of-band names or IDs. These local snapshots perform no storage I/O,
   dynamic allocation, or policy selection.
 - Snapshot transactions with point `Get`, ordered bounded `Scan`, `Put`, `Delete`, synchronous or
-  caller-composable singleton `Commit`, and explicit synchronous atomic `Commit_Group`.
+  caller-composable singleton `Commit`, and synchronous or caller-composable atomic `Commit_Group`.
 - Explicit synchronous `Flush` into immutable SST and manifest objects, including a later suffix-delta Flush.
 - A synchronous `Required_L0_Checkpoint_Action` observation that selects no work, additive `Flush`, or complete
   `Compact` solely from the exact current view and persisted run ceilings; the caller still supplies every identity.
@@ -40,9 +40,12 @@ same DB operations and provider-owned Object Storage state machines as their cal
 boundary does not create a second transport or certainty implementation.
 Singleton `Commit` is provider-neutral at the DB layer: the limited root and operation-last forms retain the database
 and completion set, admit the transaction synchronously, and wait on the existing coordinator worker. The blocking
-overload is a one-slot wait on that same operation. Pre-admission cancellation, timeout, conflict, and capacity
-rejection preserve the caller transaction; admission consumes it, and later cancellation drains to the exact
-durable-certainty receipt without replay or a replacement identity.
+form is a one-slot wait over the same operation. Atomic `Commit_Group` follows that identical provider-neutral
+shape. Its structural `Members` discriminant must equal both Start and Finish array lengths; protected admission
+moves every member arena in one cut, and the coordinator emits one wake only after all members share a terminal
+classification. Pre-admission outcomes preserve every transaction. Post-admission cancellation and abandonment
+drain the exact immutable group without replay, retaining its existing two-through-eight bound and caller-selected
+batch identity.
 The buffer-owned client-backed `Create` overload likewise waits its reusable `Create_Operation`. Manifest and HEAD
 publication remain non-replaying, and an existing or ambiguously published HEAD is resolved through the shared
 cacheless recovery traversal before one complete engine is installed. The storage-neutral synchronous overload

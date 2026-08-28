@@ -2117,9 +2117,10 @@ package body Flyology.DB is
       Work       : Work_Item;
       Receipt    : Internal_Receipt;
       Result     : Outcome_Code := Invalid_State;
-      --  Borrowed from the admitted Commit_Operation's completion set. A
-      --  negative value denotes the blocking API. The operation's lifecycle
-      --  lease keeps this descriptor alive through result collection.
+      --  Borrowed from an admitted composable commit's completion set. Atomic
+      --  groups attach it only to member one. A negative value denotes no
+      --  external completion source; the operation's lifecycle lease keeps
+      --  the descriptor alive through result collection.
       Signal_Descriptor : Interfaces.C.int := -1;
    end record;
    type Completion_Array is array (Commit_Slot) of Completion_Slot;
@@ -2498,6 +2499,7 @@ package body Flyology.DB is
          Batch_ID     : Identifier;
          Deadline     : Ada.Real_Time.Time;
          Token        : access Flyology.Cancellation.Token;
+         Signal_Descriptor : Interfaces.C.int;
          Tokens       : out Token_Group;
          Count        : out Group_Count;
          Result       : out Outcome_Code);
@@ -3855,6 +3857,7 @@ package body Flyology.DB is
          Batch_ID     : Identifier;
          Deadline     : Ada.Real_Time.Time;
          Token        : access Flyology.Cancellation.Token;
+         Signal_Descriptor : Interfaces.C.int;
          Tokens       : out Token_Group;
          Count        : out Group_Count;
          Result       : out Outcome_Code)
@@ -4049,7 +4052,12 @@ package body Flyology.DB is
                Slots (Selected).Receipt.Transaction_ID := Item.Transaction_ID;
                Slots (Selected).Receipt.Batch_ID := Batch_ID;
                Slots (Selected).Receipt.Expected_Head := Current_Head;
-               Slots (Selected).Signal_Descriptor := -1;
+               --  Complete_Group publishes every member terminally in one
+               --  protected cut. Only member one owns the caller operation's
+               --  borrowed descriptor, yielding exactly one external wake
+               --  after the complete atomic group is ready for collection.
+               Slots (Selected).Signal_Descriptor :=
+                 (if Offset = 0 then Signal_Descriptor else -1);
                Slots (Selected).State := Queued;
                Tokens (Offset + 1) := (Index => Selected, Generation => Slots (Selected).Generation);
             end;
@@ -6349,6 +6357,22 @@ package body Flyology.DB is
 
    procedure Free_Commit_Driver_State is new
      Ada.Unchecked_Deallocation (Object => Commit_Driver_State, Name => Commit_Driver_State_Access);
+
+   --  One heap owner retains the exact group admission across caller-driven
+   --  completion. Tokens are fixed by the existing eight-member coordinator
+   --  bound; no caller array or transaction borrow survives Start.
+   type Commit_Group_Driver_State is record
+      Lease           : Lifecycle_Lease;
+      Tokens          : Token_Group;
+      Count           : Group_Count := 0;
+      Next            : Natural range 1 .. Maximum_Group_Transactions + 1 := 1;
+      Admitted        : Boolean := False;
+      Read_Descriptor : Interfaces.C.int := -1;
+   end record;
+
+   procedure Free_Commit_Group_Driver_State is new
+     Ada.Unchecked_Deallocation
+       (Object => Commit_Group_Driver_State, Name => Commit_Group_Driver_State_Access);
 
    procedure Acquire (Item : in out Database; Lease : in out Lifecycle_Lease; Result : out Outcome_Code) is
    begin
@@ -13519,6 +13543,318 @@ package body Flyology.DB is
       end;
    end Commit;
 
+   procedure Release_Commit_Group_Receipts (Item : in out Commit_Group_Operation) is
+   begin
+      for Receipt of Item.Final_Receipts loop
+         Release_Retained_Image (Receipt);
+         Receipt := (others => <>);
+      end loop;
+   end Release_Commit_Group_Receipts;
+
+   procedure Release_Commit_Group_Driver (Item : in out Commit_Group_Operation) is
+   begin
+      if Item.Driver_State /= null then
+         Release (Item.Driver_State.Lease);
+         Item.Driver_State.Admitted := False;
+         Free_Commit_Group_Driver_State (Item.Driver_State);
+      end if;
+   end Release_Commit_Group_Driver;
+
+   procedure Collect_Composable_Commit_Group
+     (Item     : in out Commit_Group_Operation;
+      Terminal : Flyology.Operations.Terminal_Outcome)
+   is
+      Internal       : Internal_Receipt;
+      Released_Arena : Transaction_Arena_Owner;
+      Member_Result  : Outcome_Code := Invalid_State;
+      Collected      : Boolean := False;
+   begin
+      --  Every Await_Result moves one raw arena and receipt image out of the
+      --  coordinator. Keep abort deferred across the complete atomic group,
+      --  controlled adoption, lease release, and terminal publication.
+      System.Soft_Links.Abort_Defer.all;
+      begin
+         while Item.Driver_State.Next <= Item.Driver_State.Count loop
+            declare
+               Index : constant Commit_Slot := Commit_Slot (Item.Driver_State.Next);
+            begin
+               Internal := (others => <>);
+               Released_Arena.Arena := null;
+               Item.Driver_State.Lease.State.Gate.Await_Result
+                 (Item.Driver_State.Tokens (Index).Index)
+                 (Item.Driver_State.Tokens (Index).Generation,
+                  Internal,
+                  Released_Arena.Arena,
+                  Member_Result);
+               Collected := True;
+               Item.Driver_State.Next := Natural (Index) + 1;
+               Adopt_Receipt (Item.Final_Receipts (Index), Internal);
+               Release_Arena (Released_Arena.Arena);
+               Collected := False;
+               if Index = 1 then
+                  Item.Final_Result := Member_Result;
+               elsif Member_Result /= Item.Final_Result then
+                  Item.Final_Result := Storage_Failure;
+               end if;
+            end;
+         end loop;
+         Item.Driver_State.Admitted := False;
+         Pause_Test_Commit_Handoff (After_Result_Collection);
+         Release (Item.Driver_State.Lease);
+         Item.Has_Final_Result := True;
+         Flyology.Operations.Drivers.Complete (Item, Terminal);
+      exception
+         when others =>
+            if Collected then
+               Release_Image (Internal.Image);
+               Release_Arena (Released_Arena.Arena);
+            end if;
+            System.Soft_Links.Abort_Undefer.all;
+            raise;
+      end;
+      System.Soft_Links.Abort_Undefer.all;
+   end Collect_Composable_Commit_Group;
+
+   procedure Complete_Composable_Commit_Group (Item : in out Commit_Group_Operation) is
+   begin
+      if Item.Driver_State = null
+        or else not Item.Driver_State.Admitted
+        or else Item.Driver_State.Count = 0
+        or else Item.Driver_State.Lease.State = null
+      then
+         raise Program_Error with "commit group operation has no admitted coordinator slots";
+      elsif not Item.Driver_State.Lease.State.Gate.Result_Ready (Item.Driver_State.Tokens (1)) then
+         Flyology.Operations.Drivers.Arm_Readiness
+           (Item, Item.Driver_State.Read_Descriptor, False);
+         return;
+      end if;
+
+      Collect_Composable_Commit_Group (Item, Flyology.Operations.Succeeded);
+   end Complete_Composable_Commit_Group;
+
+   overriding procedure Drive
+     (Item  : in out Commit_Group_Operation;
+      Event : Flyology.Operations.Driver_Event) is
+   begin
+      if Event in Flyology.Operations.Start_Operation | Flyology.Operations.Source_Ready then
+         Complete_Composable_Commit_Group (Item);
+      else
+         raise Program_Error with "commit group operation received an invalid driver event";
+      end if;
+   exception
+      when Error : others =>
+         if Flyology.Operations.Is_Active (Item) then
+            Ada.Exceptions.Save_Occurrence (Item.Saved_Error, Error);
+            Item.Has_Saved_Error := True;
+            if Item.Driver_State /= null and then Item.Driver_State.Admitted then
+               Collect_Composable_Commit_Group (Item, Flyology.Operations.Failed);
+            else
+               Release (Item.Driver_State.Lease);
+               Item.Has_Final_Result := True;
+               Flyology.Operations.Drivers.Complete (Item, Flyology.Operations.Failed);
+            end if;
+         end if;
+   end Drive;
+
+   overriding procedure Request_Cancellation (Item : in out Commit_Group_Operation) is
+      pragma Unreferenced (Item);
+   begin
+      --  Atomic admission is the mutation boundary. Once admitted, the exact
+      --  group drains to one shared certainty result without replay.
+      null;
+   end Request_Cancellation;
+
+   function Commit_Group
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Group_ID     : Identifier;
+      Transactions : in out Transaction_Array;
+      Timeout      : Duration;
+      Token        : access Flyology.Cancellation.Token)
+      return Commit_Group_Operation'Class is
+   begin
+      return Result : Commit_Group_Operation (Set, Item, Token, Transactions'Length) do
+         Commit_Group (Group_ID, Transactions, Timeout, Result);
+      end return;
+   end Commit_Group;
+
+   procedure Commit_Group
+     (Group_ID     : Identifier;
+      Transactions : in out Transaction_Array;
+      Timeout      : Duration;
+      Operation    : in out Commit_Group_Operation)
+   is
+      Deadline          : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      Head              : Head_Snapshot;
+      Generation        : Generation_Value;
+      Uncertain         : Boolean;
+      Fenced            : Boolean;
+      Signal_Descriptor : Interfaces.C.int;
+      Result            : Outcome_Code := Success;
+      Started           : Boolean := False;
+   begin
+      if Operation.Driver_State /= null
+        or else Operation.Has_Final_Result
+        or else Operation.Has_Saved_Error
+      then
+         raise Program_Error with "commit group operation retains unconsumed ownership";
+      end if;
+      for Receipt of Operation.Final_Receipts loop
+         if Receipt.Retained_Image.Image /= null then
+            raise Program_Error with "commit group operation retains an unconsumed receipt";
+         end if;
+      end loop;
+
+      Operation.Final_Receipts := [others => (others => <>)];
+      Operation.Final_Result := Invalid_State;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+      System.Soft_Links.Abort_Defer.all;
+      begin
+         Flyology.Operations.Drivers.Start (Operation);
+         Started := True;
+         if Transactions'Length /= Operation.Members or else Transactions'Length < 2 then
+            Operation.Final_Result := Invalid_State;
+            Operation.Has_Final_Result := True;
+            Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+         elsif Transactions'Length > Maximum_Group_Transactions then
+            Operation.Final_Result := Capacity_Exceeded;
+            Operation.Has_Final_Result := True;
+            Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+         else
+            begin
+               Allocation_Faults.Check (Commit_Driver_State_Allocation);
+               Operation.Driver_State := new Commit_Group_Driver_State;
+            exception
+               when Storage_Error =>
+                  null;
+            end;
+            if Operation.Driver_State = null then
+               Operation.Final_Result := Capacity_Exceeded;
+               Operation.Has_Final_Result := True;
+               Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+            else
+               Acquire (Operation.Item.all, Operation.Driver_State.Lease, Result);
+               if Result = Success then
+                  Operation.Driver_State.Lease.State.Gate.Snapshot
+                    (Head, Generation, Uncertain, Fenced);
+                  for Offset in Natural range 0 .. Transactions'Length - 1 loop
+                     if not Transactions (Transactions'First + Offset).Active
+                       or else Mutation_Count (Transactions (Transactions'First + Offset)) = 0
+                       or else Transactions (Transactions'First + Offset).Database_ID /= Head.Database_ID
+                       or else Transactions (Transactions'First + Offset).Incarnation
+                               /= Operation.Driver_State.Lease.State.Gate.Current_Incarnation
+                     then
+                        Result := Invalid_State;
+                        exit;
+                     end if;
+                  end loop;
+               end if;
+               if Result /= Success then
+                  Release (Operation.Driver_State.Lease);
+                  Operation.Final_Result := Result;
+                  Operation.Has_Final_Result := True;
+                  Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+               else
+                  Flyology.Operations.Drivers.Completion_Source
+                    (Operation, Operation.Driver_State.Read_Descriptor, Signal_Descriptor);
+                  Operation.Driver_State.Lease.State.Gate.Admit_Group
+                    (Transactions,
+                     Group_ID,
+                     Deadline,
+                     Operation.Cancellation,
+                     Signal_Descriptor,
+                     Operation.Driver_State.Tokens,
+                     Operation.Driver_State.Count,
+                     Result);
+                  if Result /= Success then
+                     Release (Operation.Driver_State.Lease);
+                     Operation.Final_Result := Result;
+                     Operation.Has_Final_Result := True;
+                     Flyology.Operations.Drivers.Complete
+                       (Operation, Flyology.Operations.Succeeded);
+                  else
+                     Operation.Driver_State.Admitted := True;
+                     Pause_Test_Commit_Handoff (After_Admission);
+                     for Offset in Natural range 0 .. Transactions'Length - 1 loop
+                        Reset_Transaction (Transactions (Transactions'First + Offset));
+                     end loop;
+                     Flyology.Operations.Drive
+                       (Flyology.Operations.Operation'Class (Operation),
+                        Flyology.Operations.Start_Operation);
+                  end if;
+               end if;
+            end if;
+         end if;
+      exception
+         when others =>
+            if Started and then Flyology.Operations.Is_Active (Operation) then
+               if Operation.Driver_State /= null and then Operation.Driver_State.Admitted then
+                  begin
+                     Flyology.Operations.Drivers.Arm_Readiness
+                       (Operation, Operation.Driver_State.Read_Descriptor, False);
+                  exception
+                     when others =>
+                        null;
+                  end;
+               else
+                  Release_Commit_Group_Driver (Operation);
+                  Flyology.Operations.Drivers.Rollback_Start (Operation);
+               end if;
+            end if;
+            System.Soft_Links.Abort_Undefer.all;
+            raise;
+      end;
+      System.Soft_Links.Abort_Undefer.all;
+   end Commit_Group;
+
+   procedure Finish
+     (Operation : in out Commit_Group_Operation;
+      Receipts  : out Commit_Receipt_Array;
+      Result    : out Outcome_Code) is
+   begin
+      Flyology.Operations.Consume (Operation);
+      Receipts := [others => <>];
+      if Operation.Members in 1 .. Maximum_Group_Transactions then
+         for Offset in Natural range 0 .. Operation.Members - 1 loop
+            declare
+               Source : constant Positive := Positive (Offset + 1);
+               Target : constant Positive := Receipts'First + Offset;
+            begin
+               Receipts (Target) := Operation.Final_Receipts (Source);
+            end;
+         end loop;
+      end if;
+      Release_Commit_Group_Receipts (Operation);
+      Release_Commit_Group_Driver (Operation);
+      if Operation.Has_Saved_Error then
+         Operation.Has_Saved_Error := False;
+         Operation.Final_Result := Invalid_State;
+         Operation.Has_Final_Result := False;
+         Ada.Exceptions.Raise_Exception
+           (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
+            Ada.Exceptions.Exception_Message (Operation.Saved_Error));
+      elsif not Operation.Has_Final_Result then
+         raise Program_Error with "composable commit group has no terminal result";
+      end if;
+      Result := Operation.Final_Result;
+      Operation.Final_Result := Invalid_State;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+   end Finish;
+
+   overriding procedure Finalize (Item : in out Commit_Group_Operation) is
+   begin
+      begin
+         Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
+      exception
+         when others =>
+            null;
+      end;
+      Release_Commit_Group_Receipts (Item);
+      Release_Commit_Group_Driver (Item);
+   end Finalize;
+
    procedure Commit_Group
      (Item         : in out Database;
       Group_ID     : Identifier;
@@ -13528,65 +13864,48 @@ package body Flyology.DB is
       Receipts     : out Commit_Receipt_Array;
       Result       : out Outcome_Code)
    is
-      --  The operation's sole absolute monotonic deadline is derived from the
-      --  caller-supplied Timeout; there is no hidden default or retry budget.
-      Deadline       : constant Ada.Real_Time.Time := Deadline_After (Timeout);
-      Lease          : Lifecycle_Lease;
-      Admission      : Admission_Guard;
-      Head           : Head_Snapshot;
-      Generation     : Generation_Value;
-      Uncertain      : Boolean;
-      Fenced         : Boolean;
-      Member_Result  : Outcome_Code := Invalid_State;
-      Internal       : Internal_Receipt;
-      Released_Arena : Transaction_Arena_Access;
+      Synchronous_Set_Capacity : constant := 1;
    begin
       Receipts := [others => <>];
-      if Transactions'Length /= Receipts'Length or else Transactions'Length < 2 then
+      if Transactions'Length /= Receipts'Length then
          Result := Invalid_State;
          return;
-      elsif Transactions'Length > Maximum_Group_Transactions then
-         Result := Capacity_Exceeded;
-         return;
       end if;
-      Acquire (Item, Lease, Result);
-      if Result /= Success then
-         return;
-      end if;
-      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
-      for Offset in Natural range 0 .. Transactions'Length - 1 loop
-         if not Transactions (Transactions'First + Offset).Active
-           or else Mutation_Count (Transactions (Transactions'First + Offset)) = 0
-           or else Transactions (Transactions'First + Offset).Database_ID /= Head.Database_ID
-           or else Transactions (Transactions'First + Offset).Incarnation
-                   /= Lease.State.Gate.Current_Incarnation
-         then
-            Result := Invalid_State;
-            return;
-         end if;
-      end loop;
-      Lease.State.Gate.Admit_Group
-        (Transactions, Group_ID, Deadline, Token, Admission.Tokens, Admission.Count, Result);
-      if Result /= Success then
-         return;
-      end if;
-      Admission.State := Lease.State;
-      Admission.Active := True;
-      for Offset in Natural range 0 .. Transactions'Length - 1 loop
-         Reset_Transaction (Transactions (Transactions'First + Offset));
-      end loop;
-      for Index in Commit_Slot range 1 .. Admission.Count loop
-         Lease.State.Gate.Await_Result (Admission.Tokens (Index).Index)
-           (Admission.Tokens (Index).Generation, Internal, Released_Arena, Member_Result);
-         Release_Arena (Released_Arena);
-         Adopt_Receipt (Receipts (Receipts'First + Natural (Index) - 1), Internal);
-         Admission.Next := Natural (Index) + 1;
-         if Index = 1 then
-            Result := Member_Result;
-         elsif Member_Result /= Result then
-            Result := Storage_Failure;
-         end if;
-      end loop;
+      declare
+         Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+         Operation : Commit_Group_Operation
+           (Set'Access, Item'Unchecked_Access, Token, Transactions'Length);
+         Started   : Boolean := False;
+      begin
+         Commit_Group (Group_ID, Transactions, Timeout, Operation);
+         Started := True;
+         Flyology.Operations.Wait_All (Set);
+         Finish (Operation, Receipts, Result);
+         Flyology.Operations.Release (Operation);
+      exception
+         when others =>
+            if Started then
+               if Flyology.Operations.Is_Active (Operation) then
+                  Flyology.Operations.Cancel (Operation);
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               if Flyology.Operations.Is_Terminal (Operation) then
+                  begin
+                     Finish (Operation, Receipts, Result);
+                  exception
+                     when others =>
+                        null;
+                  end;
+               end if;
+               begin
+                  Flyology.Operations.Release (Operation);
+               exception
+                  when others =>
+                     null;
+               end;
+            end if;
+            raise;
+      end;
    end Commit_Group;
 
    type Receipt_Resolution is (Receipt_Committed, Receipt_Rejected, Receipt_Unresolved);

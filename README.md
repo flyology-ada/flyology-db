@@ -42,6 +42,13 @@ leaves the transaction active, while successful admission consumes it before ret
 cancellation requests only drain the exact admitted publication to its existing receipt classification. The
 established blocking `Commit` is a one-slot wait over this state machine, so every form shares the same deadline,
 certainty, fencing, and no-replay semantics.
+Atomic group publication exposes the same caller-composable boundary without changing its existing policy.
+`Commit_Group_Operation`, limited root and operation-last `Commit_Group`, and member-ordered typed `Finish` retain
+one completion-set slot and emit one wake only after every admitted member is terminal. Start copies no transaction
+array: protected admission atomically moves every arena, so rejection preserves the complete caller group and
+success consumes it before returning. The established synchronous overload is a one-slot wait over that operation;
+both forms retain the existing two-through-eight member rule, fixed private storage, shared certainty, member order,
+deadline, fencing, cancellation-drain, and no-replay behavior.
 Receipt-driven `Resolve_Flush` likewise reuses `Flush_Operation`, its operation-last initiation, and typed `Finish`.
 It reconstructs only the original immutable plan or transfers the same checkpoint admission into bounded read-only
 recovery; the buffer-owned client adapter waits that state machine, while memory/files retain the established direct

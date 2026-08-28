@@ -35,6 +35,19 @@ collection, and abandonment drain remain executable integration boundaries; the 
 warning-strict GNATprove campaigns must remain green on the exact final tree and do not constitute an Ada-to-TLA
 refinement proof.
 
+The caller-composable atomic `Commit_Group` operation likewise changes only the runtime owner/wake adapter around
+the existing coordinator group action. It adds no persisted format, transition policy, capacity, deadline, retry,
+or maintained TLA+ action. Atomic arena transfer, the single borrowed completion descriptor, all-member terminal
+collection, abort-deferred adoption, and abandonment drain remain executable integration boundaries. The focused
+deterministic suite executes both abort-boundary regressions, and all 18 provider/repetition lanes execute the
+composable two-member suffix. Update-mode and ordinary TLA runs preserve all 39 canonical traces byte-for-byte;
+every maintained probe, witness, four-outcome Ada L0 replay, and intentional divergence is green, with 393/393
+TLAPS obligations proved. Warning-strict FSF GNATprove 16.1.0 proves 1,103/1,103 checks (172 flow and 931 prover),
+with zero failed, unproved, justified, warning, or actual `pragma Assume` findings and maximum successful effort
+6,522 steps. The preliminary partial representation-data event is retained only as an ordinary non-warning tool
+notice, and final resource and formal audits are clean. This evidence qualifies the exact maintained tree; it
+proves neither Object Storage behavior nor an Ada-to-TLA refinement.
+
 The caller-composable commit-receipt resolver reuses the runtime `Refresh_Operation` and complete authenticated
 recovery traversal without changing a selected SPARK unit or maintained TLA+ action system. Receipt/token transfer,
 exclusive lifecycle drain, exact immutable-history comparison, incarnation-preserving engine replacement, provider

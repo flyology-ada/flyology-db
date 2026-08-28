@@ -15,6 +15,13 @@ the operation retains one lifecycle admission until the exact receipt is collect
 a drain request, not authority to retract or replay publication. The blocking overload waits on this same operation
 with one private leaf slot and therefore does not implement a second certainty path.
 
+Atomic group publication has the same provider boundary through `Commit_Group_Operation`, limited root and reusable
+operation-last `Commit_Group`, and member-ordered typed `Finish`. Its structural member count introduces no new
+capacity policy: the existing public maximum and persisted limits still govern admission. Protected admission moves
+all transaction arenas before Start returns, only member one borrows the operation's completion descriptor, and
+`Complete_Group` publishes all members terminally before that one wake. Pre-admission failure preserves the whole
+array; cancellation, abort, or abandonment after admission drains the original group without replay.
+
 Every head transition has a fresh opaque ID, a strictly increasing transition ordinal, and its predecessor ID. The
 `(ordinal, ID)` pair is the exact transition identity, so reuse of an older opaque ID at another ordinal cannot
 confirm publication. A stale expected generation loses the conditional replacement. A stale writer that observes
@@ -193,7 +200,9 @@ task with bounded count and byte admission and generation-stamped completion slo
 transaction. `Commit` is an uncoupled singleton. `Commit_Group` intentionally gives at most eight transactions one
 absolute deadline, immutable batch, and HEAD transition. Queue cancellation and timeout apply before atomic
 admission. Once publication starts, every admitted caller waits for terminal classification under that same absolute
-storage deadline. The current authenticated client binding is the first composable-core step: Object Storage's
+storage deadline. Both publication forms expose limited root, reusable operation-last, and typed-Finish ownership;
+blocking calls are private one-slot waits over those same coordinator operations. The current authenticated client
+binding is the first composable-core step: Object Storage's
 `Client.Objects` provider owns the synchronous calls, limited constructors, reusable operation-last procedures,
 operation types, and typed `Finish` contracts for conditional Put and whole/range Get. The synchronous forms are
 literal waits over those same state machines, with one moved unique-buffer token per body operation, one absolute DB

@@ -1,5 +1,42 @@
 # Review record
 
+## Accepted caller-composable atomic Commit_Group
+
+- Parent: accepted caller-composable singleton Commit commit `bd35da5`.
+- Scope and API: add limited `Commit_Group_Operation`, limited root and reusable operation-last `Commit_Group`, and
+  member-ordered typed `Finish` directly in `Flyology.DB`. Its structural `Members` discriminant is exactly the
+  caller array length and introduces no constant, default, capacity, retry, helper task, provider policy, or new
+  publication identity. The established synchronous overload is a private one-slot wait over the same operation.
+- Admission and certainty: the existing protected group admission validates and moves every transaction arena in
+  one cut. Invalid, cancelled, expired, conflicting, fenced, and uncertain outcomes preserve every pre-admission
+  transaction under the existing classifications. Completion-set exhaustion raises `Capacity_Error` before DB
+  admission; driver-allocation and coordinator-capacity rejection return `Capacity_Exceeded`. Both preserve every
+  member and operation reuse. Successful admission consumes every member before Start returns. Cancellation after
+  admission drains the exact immutable group; member order, shared batch/transition identity, deadline, certainty,
+  and no-replay behavior are unchanged.
+- Ownership and scheduling: only member one borrows the operation completion descriptor. `Complete_Group` moves all
+  slots to terminal state atomically before the coordinator attempts that single wake. Typed collection adopts each
+  exact receipt and arena in original order before releasing the lifecycle lease and publishing terminal state.
+  Registration through admitted-and-armed Start and all-member collection through adoption, lease release, and
+  terminal publication are abort-deferred. Finalization drains admitted abandonment without borrowing the caller's
+  transaction array.
+- Executable and formal evidence: the maintained deterministic corpus passes pre-admission cancellation, driver and
+  completion-set capacity with operation/transaction reuse, one external wake, exact member receipt order, restart,
+  limited-root construction, post-admission drain, abandonment, and asynchronous-select abort at both ownership
+  handoffs. Existing synchronous group cases retain atomic publication, cross-kind identity collision, size bounds,
+  failure certainty, and no-replay coverage. All 18 provider/repetition lanes pass both maintained workflows, reach
+  the composable two-member suffix, and verify cacheless recovery. Update-mode and ordinary TLA runs preserve all 39
+  canonical traces byte-for-byte; every maintained probe, witness, four-outcome Ada L0 replay, and intentional
+  divergence is green, with 393/393 TLAPS obligations proved. Warning-strict FSF GNATprove 16.1.0 proves
+  1,103/1,103 checks (172 flow and 931 prover), with zero failed, unproved, justified, warning, or actual
+  `pragma Assume` findings and maximum successful effort 6,522 steps. The preliminary partial representation-data
+  event is an ordinary non-warning tool notice. Final resource and formal audits are clean. This exact-tree evidence
+  proves neither Object Storage behavior nor an Ada-to-TLA refinement.
+- Static review disposition: the exact-tree API/constants/defaults pass finds no new policy value or compatibility
+  break; the concurrency/abort/finalization pass finds no half-transfer, leaked borrow, second wake, or replay path;
+  and the focused test-evidence pass maps every reviewed ownership boundary to the maintained corpus above. The
+  final exact-tree review disposition is P0 none, P1 none, and P2 none.
+
 ## Caller-composable singleton Commit candidate
 
 - Parent: accepted caller-composable commit-receipt resolution commit `26277c5`.

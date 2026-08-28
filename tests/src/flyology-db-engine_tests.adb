@@ -6123,6 +6123,363 @@ package body Flyology.DB.Engine_Tests is
          Verify_Aborted_Publication (191, TX_ID (221), "result-collection abort");
       end;
 
+      --  Atomic groups use one completion-set slot and one external wake for
+      --  their complete terminal cut. Rejection before admission preserves
+      --  every transaction; cancellation after admission drains the exact
+      --  group and retains member order and receipt identity.
+      declare
+         Set            : aliased Flyology.Operations.Completion_Set (1);
+         Stop           : aliased Flyology.Cancellation.Token;
+         Cancelled_Work : Commit_Group_Operation (Set'Access, Item'Access, Stop'Access, 2);
+         Allocation_Work : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
+         Publish_Work   : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
+         Rejected_Work  : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
+         Transactions   : Transaction_Array (1 .. 2);
+         Rejected       : Transaction_Array (1 .. 2);
+         Receipts       : Commit_Receipt_Array (1 .. 2);
+
+         procedure Prepare
+           (Members : in out Transaction_Array;
+            First   : Byte;
+            Label   : String)
+         is
+         begin
+            for Offset in Natural range 0 .. Members'Length - 1 loop
+               Begin_Transaction
+                 (Item,
+                  TX_ID (First + Byte (Offset)),
+                  Members (Members'First + Offset),
+                  Result);
+               Expect (Result, Success, Label & " begin failed");
+               Put
+                 (Item,
+                  Members (Members'First + Offset),
+                  Column_Family_ID (Offset + 1),
+                  To_Key ([First + Byte (Offset)]),
+                  Item_Value,
+                  Result);
+               Expect (Result, Success, Label & " Put failed");
+            end loop;
+         end Prepare;
+
+         procedure Roll_Back_All (Members : in out Transaction_Array; Label : String) is
+         begin
+            for Member of Members loop
+               Rollback (Member, Result);
+               Expect (Result, Success, Label & " rollback failed");
+            end loop;
+         end Roll_Back_All;
+      begin
+         Prepare (Transactions, 222, "cancelled composable group");
+         Stop.Request;
+         Commit_Group (ID (240), Transactions, Test_Operation_Timeout, Cancelled_Work);
+         Flyology.Operations.Wait_All (Set);
+         Finish (Cancelled_Work, Receipts, Result);
+         Flyology.Operations.Release (Cancelled_Work);
+         Expect (Result, Cancelled, "composable group pre-admission cancellation was lost");
+         if Receipt_Batch_ID (Receipts (1)) /= Zero_Identifier
+           or else Receipt_Batch_ID (Receipts (2)) /= Zero_Identifier
+         then
+            raise Program_Error with "cancelled composable group exposed an admitted identity";
+         end if;
+         Roll_Back_All (Transactions, "cancelled composable group");
+
+         --  The group driver uses the existing commit-driver allocation fault
+         --  classification and leaves both caller transactions reusable.
+         Prepare (Transactions, 224, "allocation-rejected composable group");
+         Set_Test_Allocation_Fault (Commit_Driver_State_Allocation);
+         Commit_Group (ID (241), Transactions, Test_Operation_Timeout, Allocation_Work);
+         Flyology.Operations.Wait_All (Set);
+         Finish (Allocation_Work, Receipts, Result);
+         Flyology.Operations.Release (Allocation_Work);
+         Expect (Result, Capacity_Exceeded, "composable group allocation failure was not typed");
+         Roll_Back_All (Transactions, "allocation-rejected composable group");
+
+         Prepare (Transactions, 226, "admitted composable group");
+         Prepare (Rejected, 228, "completion-set rejected composable group");
+         Testing.Pause_Coordinator (Item, Result);
+         Expect (Result, Success, "composable group coordinator pause failed");
+         begin
+            Commit_Group (ID (242), Transactions, Test_Operation_Timeout, Publish_Work);
+            Wait_For_Queue (2);
+            begin
+               Commit_Group (ID (243), Rejected, Test_Operation_Timeout, Rejected_Work);
+               raise Program_Error with "composable group ignored completion-set capacity";
+            exception
+               when Flyology.Operations.Capacity_Error =>
+                  null;
+            end;
+            Flyology.Operations.Cancel (Publish_Work);
+         exception
+            when others =>
+               Testing.Resume_Coordinator (Item, Result);
+               raise;
+         end;
+         Testing.Resume_Coordinator (Item, Result);
+         Expect (Result, Success, "composable group coordinator resume failed");
+         Flyology.Operations.Wait_All (Set);
+         Finish (Publish_Work, Receipts, Result);
+         Expect (Result, Success, "admitted composable group cancellation replaced its outcome");
+         if Receipt_Transaction_ID (Receipts (1)) /= TX_ID (226)
+           or else Receipt_Transaction_ID (Receipts (2)) /= TX_ID (227)
+           or else Receipt_Batch_ID (Receipts (1)) /= ID (242)
+           or else Receipt_Batch_ID (Receipts (2)) /= ID (242)
+           or else Receipt_Sequence (Receipts (2)) /= Receipt_Sequence (Receipts (1)) + 1
+         then
+            raise Program_Error with "composable group lost exact member order or identity";
+         end if;
+         Flyology.Operations.Release (Publish_Work);
+         Roll_Back_All (Rejected, "completion-set rejected composable group");
+
+         --  The capacity-rejected operation itself remains fresh. After that
+         --  successful retry, its consumed state restarts in place.
+         Prepare (Rejected, 228, "capacity-retried composable group");
+         Commit_Group (ID (243), Rejected, Test_Operation_Timeout, Rejected_Work);
+         Flyology.Operations.Wait_All (Set);
+         Finish (Rejected_Work, Receipts, Result);
+         Expect (Result, Success, "capacity-rejected composable group did not retry");
+
+         Prepare (Rejected, 230, "restarted composable group");
+         Commit_Group (ID (244), Rejected, Test_Operation_Timeout, Rejected_Work);
+         Flyology.Operations.Wait_All (Set);
+         Finish (Rejected_Work, Receipts, Result);
+         Expect (Result, Success, "consumed composable group did not restart");
+         if Receipt_Transaction_ID (Receipts (1)) /= TX_ID (230)
+           or else Receipt_Transaction_ID (Receipts (2)) /= TX_ID (231)
+           or else Receipt_Batch_ID (Receipts (1)) /= ID (244)
+           or else Receipt_Batch_ID (Receipts (2)) /= ID (244)
+         then
+            raise Program_Error with "restarted composable group lost exact identity";
+         end if;
+         Flyology.Operations.Release (Rejected_Work);
+
+         --  The limited root constructor is only a one-expression form of
+         --  the same operation path.
+         Prepare (Transactions, 232, "limited-root composable group");
+         declare
+            Root_Work : Commit_Group_Operation'Class :=
+              Commit_Group
+                (Set'Access,
+                 Item'Access,
+                 ID (245),
+                 Transactions,
+                 Test_Operation_Timeout,
+                 null);
+         begin
+            Flyology.Operations.Wait_All (Set);
+            Finish (Root_Work, Receipts, Result);
+            Flyology.Operations.Release (Root_Work);
+         end;
+         Expect (Result, Success, "limited-root composable group failed");
+         if Receipt_Transaction_ID (Receipts (1)) /= TX_ID (232)
+           or else Receipt_Transaction_ID (Receipts (2)) /= TX_ID (233)
+           or else Receipt_Batch_ID (Receipts (1)) /= ID (245)
+           or else Receipt_Batch_ID (Receipts (2)) /= ID (245)
+         then
+            raise Program_Error with "limited-root composable group lost exact identity";
+         end if;
+      end;
+
+      --  Abandonment keeps the completion registration, lease, and all group
+      --  slots alive until the exact atomic publication terminalizes.
+      Testing.Pause_Coordinator (Item, Result);
+      Expect (Result, Success, "composable group abandonment pause failed");
+      declare
+         task Abandon_Composable_Group is
+            entry Finish (Call_Result : out Outcome_Code);
+         end Abandon_Composable_Group;
+
+         task body Abandon_Composable_Group is
+            Local_Result : Outcome_Code := Invalid_State;
+            Members      : Transaction_Array (1 .. 2);
+         begin
+            declare
+               Set  : aliased Flyology.Operations.Completion_Set (1);
+               Work : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
+            begin
+               for Offset in Natural range 0 .. Members'Length - 1 loop
+                  Begin_Transaction
+                    (Item, TX_ID (234 + Byte (Offset)), Members (Offset + 1), Local_Result);
+                  Put
+                    (Item,
+                     Members (Offset + 1),
+                     Column_Family_ID (Offset + 1),
+                     To_Key ([234 + Byte (Offset)]),
+                     Item_Value,
+                     Local_Result);
+               end loop;
+               Commit_Group (ID (246), Members, Test_Operation_Timeout, Work);
+               --  Work intentionally leaves scope active. Finalization owns
+               --  the full-group drain and exact coordinator cleanup.
+            end;
+            accept Finish (Call_Result : out Outcome_Code) do
+               Call_Result := Local_Result;
+            end Finish;
+         end Abandon_Composable_Group;
+
+         Call_Result : Outcome_Code;
+      begin
+         Wait_For_Queue (2);
+         Testing.Resume_Coordinator (Item, Result);
+         Expect (Result, Success, "composable group abandonment resume failed");
+         Abandon_Composable_Group.Finish (Call_Result);
+         Expect (Call_Result, Success, "composable group abandonment did not drain");
+      exception
+         when others =>
+            Testing.Resume_Coordinator (Item, Result);
+            raise;
+      end;
+
+      --  The same private handoff barriers apply to all members of an atomic
+      --  group. Each abort is requested at the exact ownership cut and must
+      --  leave both arenas released after the one terminal group wake.
+      declare
+         protected type Abort_Trigger is
+            entry Wait;
+            procedure Fire;
+         private
+            Fired : Boolean := False;
+         end Abort_Trigger;
+
+         protected body Abort_Trigger is
+            entry Wait when Fired is
+            begin
+               null;
+            end Wait;
+
+            procedure Fire is
+            begin
+               Fired := True;
+            end Fire;
+         end Abort_Trigger;
+
+         procedure Run_Group_Abort
+           (After_Admission_Cut : Boolean;
+            First_Member        : Byte;
+            Batch               : Byte;
+            Verification        : Byte;
+            Label               : String)
+         is
+            Trigger                 : Abort_Trigger;
+            Arenas_Allocated_Before : Interfaces.Unsigned_64;
+            Arenas_Released_Before  : Interfaces.Unsigned_64;
+            Arenas_Allocated_After  : Interfaces.Unsigned_64;
+            Arenas_Released_After   : Interfaces.Unsigned_64;
+
+            task type Abort_Group_Task is
+               pragma Task_Info (Flyology.Native_Task);
+               pragma Storage_Size (8 * 1024 * 1024);
+               entry Finish (Passed : out Boolean);
+            end Abort_Group_Task;
+
+            task body Abort_Group_Task is
+               Local_Passed   : Boolean := False;
+               Local_Result   : Outcome_Code := Invalid_State;
+               Local_Receipts : Commit_Receipt_Array (1 .. 2);
+            begin
+               begin
+                  select
+                     Trigger.Wait;
+                  then abort
+                     declare
+                        Set     : aliased Flyology.Operations.Completion_Set (1);
+                        Work    : Commit_Group_Operation (Set'Access, Item'Access, null, 2);
+                        Members : Transaction_Array (1 .. 2);
+                     begin
+                        for Offset in Natural range 0 .. Members'Length - 1 loop
+                           Begin_Transaction
+                             (Item,
+                              TX_ID (First_Member + Byte (Offset)),
+                              Members (Offset + 1),
+                              Local_Result);
+                           Put
+                             (Item,
+                              Members (Offset + 1),
+                              Column_Family_ID (Offset + 1),
+                              To_Key ([First_Member + Byte (Offset)]),
+                              Item_Value,
+                              Local_Result);
+                        end loop;
+                        Commit_Group
+                          (ID (Batch), Members, Test_Operation_Timeout, Work);
+                        Flyology.Operations.Wait_All (Set);
+                        Finish (Work, Local_Receipts, Local_Result);
+                        Flyology.Operations.Release (Work);
+                     end;
+                  end select;
+                  Local_Passed := True;
+               exception
+                  when others =>
+                     Local_Passed := False;
+               end;
+               accept Finish (Passed : out Boolean) do
+                  Passed := Local_Passed;
+               end Finish;
+            end Abort_Group_Task;
+
+            Passed   : Boolean;
+            Reader   : Transaction;
+            Observed : Value;
+         begin
+            Arena_Statistics (Arenas_Allocated_Before, Arenas_Released_Before);
+            if After_Admission_Cut then
+               Testing.Pause_Coordinator (Item, Result);
+               Expect (Result, Success, Label & " coordinator pause failed");
+               Testing.Pause_Next_Commit_After_Admission;
+            else
+               Testing.Pause_Next_Commit_After_Result_Collection;
+            end if;
+            declare
+               Abort_Group : Abort_Group_Task;
+            begin
+               Wait_For_Commit_Handoff;
+               Trigger.Fire;
+               Testing.Resume_Commit_Handoff;
+               if After_Admission_Cut then
+                  Testing.Resume_Coordinator (Item, Result);
+                  Expect (Result, Success, Label & " coordinator resume failed");
+               end if;
+               Abort_Group.Finish (Passed);
+            end;
+            if not Passed then
+               raise Program_Error with Label & " escaped as an exception";
+            end if;
+            Arena_Statistics (Arenas_Allocated_After, Arenas_Released_After);
+            if Arenas_Allocated_After /= Arenas_Allocated_Before + 2
+              or else Arenas_Released_After /= Arenas_Released_Before + 2
+            then
+               raise Program_Error with Label & " leaked a transaction arena";
+            end if;
+            Begin_Transaction (Item, TX_ID (Verification), Reader, Result);
+            Expect (Result, Success, Label & " verification begin failed");
+            for Offset in Natural range 0 .. 1 loop
+               Get
+                 (Item,
+                  Reader,
+                  Column_Family_ID (Offset + 1),
+                  To_Key ([First_Member + Byte (Offset)]),
+                  Observed,
+                  Result);
+               Expect (Result, Success, Label & " publication was not visible");
+               if Observed /= Item_Value then
+                  raise Program_Error with Label & " publication changed its bytes";
+               end if;
+            end loop;
+            Rollback (Reader, Result);
+            Expect (Result, Success, Label & " verification rollback failed");
+         exception
+            when others =>
+               Testing.Resume_Commit_Handoff;
+               if After_Admission_Cut then
+                  Testing.Resume_Coordinator (Item, Result);
+               end if;
+               raise;
+         end Run_Group_Abort;
+      begin
+         Run_Group_Abort (True, 236, 247, 249, "group admission-handoff abort");
+         Run_Group_Abort (False, 238, 248, 250, "group result-collection abort");
+      end;
+
       Begin_Transaction (Item, TX_ID (83), Txn, Result);
       Put (Item, Txn, 1, Item_Key, Item_Value, Result);
       Commit (Item, Txn, Expired_Operation_Timeout, Receipt => Receipt, Result => Result);
