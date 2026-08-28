@@ -1,0 +1,16 @@
+with "../flyology_db.gpr";
+
+project Files_Getting_Started is
+
+   for Source_Dirs use ("src");
+   for Object_Dir use "../obj/examples";
+   for Exec_Dir use "../obj/examples/bin";
+   for Main use ("flyology_db_files_getting_started.adb");
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      for Default_Switches ("Ada") use
+        ("-gnat2022", "-gnatW8", "-gnatw.e", "-gnatyM110");
+   end Compiler;
+
+end Files_Getting_Started;

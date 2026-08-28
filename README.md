@@ -10,6 +10,28 @@ transaction.
 
 This repository is under active development. The current acceptance state and remaining work are recorded in
 [the milestone plan](docs/architecture/milestones.md). No production qualification or performance claim is made.
+
+## Quick start: write and reopen one durable key
+
+The smallest runnable example uses the local Files object-storage backend. It creates one database and
+column family, commits one key, Flushes it, closes every owner, reconstructs the provider and database,
+and reads the value back. The final argument must be an absolute path that does not yet exist; the example
+retains it for inspection.
+
+```sh
+git clone https://github.com/flyology-ada/flyology-db.git
+cd flyology-db
+bash scripts/materialize-development-dependencies.sh
+alr build
+bash examples/run-files-getting-started.sh "$PWD/flyology-db-example-data"
+```
+
+The example prints `Flyology.DB Files getting started passed` on success. Its small deterministic identities
+are safe only because the runner requires a fresh, single-use directory; applications must allocate and
+persist their own never-reused identities. See the
+[getting-started guide](docs/guides/getting-started.md) for prerequisites, explicit limits, typed outcomes,
+receipt reconciliation, and retained-data ownership.
+
 The current usable boundary is the deliberately narrow
 [limited end-to-end profile](docs/architecture/limited-profile.md): one writer, one checkpoint-bound append-only
 family change, synchronous transactions, Flush, caller-selected adjacent and complete compaction, exact
@@ -197,11 +219,14 @@ the [workload contract](oracles/contract/README.md) and Ada/SPARK model define F
 
 ## Build and verification
 
-The ignored `.deps/flyology-object-storage` directory is a clean clone of the local Object Storage author checkout.
-The root manifest path-pins it for development while leaving its indexed HTTP dependency unchanged.
+The root manifest path-pins the ignored `.deps/flyology-object-storage` development clone while leaving its
+indexed HTTP dependency unchanged. Materialize the exact qualified Object Storage revision before the first
+build. The script accepts no revision override and refuses to alter a dirty or mismatched existing clone.
 
 ```sh
+bash scripts/materialize-development-dependencies.sh
 alr build
+bash examples/run-files-getting-started.sh "$PWD/flyology-db-example-data"
 ./showcases/run-limited-e2e.sh
 AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
   ./showcases/run-object-storage-e2e.sh \

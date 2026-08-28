@@ -1,0 +1,60 @@
+name: Getting started
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flyology-db-getting-started-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  files-example:
+    name: Clean checkout and Files example
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out sources
+        timeout-minutes: 5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Alire
+        timeout-minutes: 15
+        uses: alire-project/setup-alire@fc4c8ce471aa30b3af0d39ce15add1ee9eaf28f2 # v6.0.0
+        with:
+          version: 2.1.1
+          toolchain: >-
+            gnat_native=16.1.0
+            gprbuild=26.0.1
+          cache: true
+      - name: Configure Flyology index
+        timeout-minutes: 5
+        run: |
+          alr index --reset-community
+          alr index \
+            --add=git+https://github.com/flyology-ada/alire-index.git \
+            --name=flyology \
+            --before=community
+      - name: Materialize the qualified Object Storage dependency
+        timeout-minutes: 10
+        run: bash scripts/materialize-development-dependencies.sh
+      - name: Build Flyology.DB
+        timeout-minutes: 20
+        run: alr build
+      - name: Build and run the retained Files example
+        timeout-minutes: 10
+        run: |
+          example_root="$RUNNER_TEMP/flyology-db-files-getting-started"
+          example_log="$RUNNER_TEMP/flyology-db-files-getting-started.log"
+          test ! -e "$example_root"
+          bash examples/run-files-getting-started.sh "$example_root" | tee "$example_log"
+          grep -Fq 'Flyology.DB Files getting started passed' "$example_log"
+          test -d "$example_root"
+          test -z "$(git status --short)"
