@@ -50,6 +50,7 @@ jobs:
         run: alr build
       - name: Build and run the retained Files example
         timeout-minutes: 10
+        shell: bash
         run: |
           example_root="$RUNNER_TEMP/flyology-db-files-getting-started"
           example_log="$RUNNER_TEMP/flyology-db-files-getting-started.log"
@@ -57,4 +58,9 @@ jobs:
           bash examples/run-files-getting-started.sh "$example_root" | tee "$example_log"
           grep -Fq 'Flyology.DB Files getting started passed' "$example_log"
           test -d "$example_root"
-          test -z "$(git status --short)"
+          repository_status=$(git status --short --untracked-files=all)
+          if [ -n "$repository_status" ]; then
+            printf '%s\n' 'getting-started workflow changed the checkout:' >&2
+            printf '%s\n' "$repository_status" >&2
+            exit 1
+          fi
