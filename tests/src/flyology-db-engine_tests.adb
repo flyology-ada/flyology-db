@@ -18,6 +18,7 @@ with Flyology.Object_Storage.Backends;
 with Flyology.Object_Storage.Backends.Files;
 with Flyology.Object_Storage.Backends.Memory;
 with Flyology.Object_Storage.Client.Low_Level;
+with Flyology.Operations;
 
 package body Flyology.DB.Engine_Tests is
 
@@ -5617,6 +5618,39 @@ package body Flyology.DB.Engine_Tests is
             raise Program_Error with "coordinator queue did not reach expected depth";
          end if;
       end Wait_For_Queue;
+
+      procedure Wait_For_Commit_Handoff is
+      begin
+         --  Two seconds bounds only this deterministic test barrier. The
+         --  commit retains its independently supplied operation deadline.
+         for Attempt in 1 .. 2_000 loop
+            exit when Testing.Commit_Handoff_Waiting;
+            delay 0.001;
+         end loop;
+         if not Testing.Commit_Handoff_Waiting then
+            raise Program_Error with "composable commit did not reach its handoff barrier";
+         end if;
+      end Wait_For_Commit_Handoff;
+
+      procedure Arena_Statistics
+        (Allocated : out Interfaces.Unsigned_64;
+         Released  : out Interfaces.Unsigned_64)
+      is
+         Images_Allocated : Interfaces.Unsigned_64;
+         Images_Released  : Interfaces.Unsigned_64;
+         Transaction_Bytes : Interfaces.Unsigned_64;
+         Source_Bytes      : Interfaces.Unsigned_64;
+         Sink_Bytes        : Interfaces.Unsigned_64;
+      begin
+         Testing.Image_Statistics
+           (Images_Allocated,
+            Images_Released,
+            Allocated,
+            Released,
+            Transaction_Bytes,
+            Source_Bytes,
+            Sink_Bytes);
+      end Arena_Statistics;
    begin
       declare
          --  B7 is the test-only batch domain and C3 a distinct transition
@@ -5708,6 +5742,386 @@ package body Flyology.DB.Engine_Tests is
       end if;
       Rollback (Txn, Result);
       Expect (Result, Success, "pre-admission cancellation consumed transaction");
+
+      --  The owner-driven singleton overload preserves both sides of the
+      --  admission boundary: a pre-requested token leaves Txn active, while a
+      --  generic cancellation after admission only drains the exact queued
+      --  publication. Pausing the coordinator makes that second boundary
+      --  deterministic and exercises its external completion wake.
+      declare
+         Set            : aliased Flyology.Operations.Completion_Set (1);
+         Cancelled_Work : Commit_Operation (Set'Access, Item'Access, Stop'Access);
+         Publish_Work   : Commit_Operation (Set'Access, Item'Access, null);
+      begin
+         Begin_Transaction (Item, TX_ID (180), Txn, Result);
+         Put (Item, Txn, 1, To_Key ([180]), Item_Value, Result);
+         Commit (Txn, Test_Operation_Timeout, Cancelled_Work);
+         Flyology.Operations.Wait_All (Set);
+         Finish (Cancelled_Work, Receipt, Result);
+         Flyology.Operations.Release (Cancelled_Work);
+         Expect (Result, Cancelled, "composable pre-admission cancellation was not classified");
+         if Receipt_Transaction_ID (Receipt) /= Zero_Transaction_ID
+           or else Receipt_Batch_ID (Receipt) /= Zero_Identifier
+         then
+            raise Program_Error with "cancelled composable commit exposed an admitted identity";
+         end if;
+         Rollback (Txn, Result);
+         Expect (Result, Success, "cancelled composable admission consumed transaction");
+
+         Begin_Transaction (Item, TX_ID (181), Txn, Result);
+         Put (Item, Txn, 1, To_Key ([181]), Item_Value, Result);
+         Testing.Pause_Coordinator (Item, Result);
+         Expect (Result, Success, "composable commit coordinator pause failed");
+         Commit (Txn, Test_Operation_Timeout, Publish_Work);
+         Wait_For_Queue (1);
+         Flyology.Operations.Cancel (Publish_Work);
+         Testing.Resume_Coordinator (Item, Result);
+         Expect (Result, Success, "composable commit coordinator resume failed");
+         Flyology.Operations.Wait_All (Set);
+         Finish (Publish_Work, Receipt, Result);
+         Expect (Result, Success, "admitted composable commit cancellation replaced its outcome");
+         if Receipt_Transaction_ID (Receipt) /= TX_ID (181)
+           or else Receipt_Batch_ID (Receipt) /= ID (181)
+         then
+            raise Program_Error with "composable commit lost its exact admitted identity";
+         end if;
+         Rollback (Txn, Result);
+         Expect (Result, Invalid_State, "admitted composable commit retained transaction ownership");
+
+         --  A consumed operation restarts in place without reallocating a
+         --  completion-set slot or changing the provider state machine.
+         Begin_Transaction (Item, TX_ID (182), Txn, Result);
+         Put (Item, Txn, 1, To_Key ([182]), Item_Value, Result);
+         Commit (Txn, Test_Operation_Timeout, Publish_Work);
+         Flyology.Operations.Wait_All (Set);
+         Finish (Publish_Work, Receipt, Result);
+         Expect (Result, Success, "consumed composable commit did not restart");
+         if Receipt_Transaction_ID (Receipt) /= TX_ID (182)
+           or else Receipt_Batch_ID (Receipt) /= ID (182)
+         then
+            raise Program_Error with "restarted composable commit lost its exact admitted identity";
+         end if;
+         Flyology.Operations.Release (Publish_Work);
+
+         --  The limited root constructor is the one-expression form of the
+         --  same provider operation, not a separate publication path.
+         Begin_Transaction (Item, TX_ID (189), Txn, Result);
+         Put (Item, Txn, 1, To_Key ([189]), Item_Value, Result);
+         declare
+            Root_Work : Commit_Operation'Class :=
+              Commit (Set'Access, Item'Access, Txn, Test_Operation_Timeout);
+         begin
+            Flyology.Operations.Wait_All (Set);
+            Finish (Root_Work, Receipt, Result);
+            Flyology.Operations.Release (Root_Work);
+         end;
+         Expect (Result, Success, "limited-root composable commit failed");
+         if Receipt_Transaction_ID (Receipt) /= TX_ID (189)
+           or else Receipt_Batch_ID (Receipt) /= ID (189)
+         then
+            raise Program_Error with "limited-root composable commit lost its exact admitted identity";
+         end if;
+      end;
+
+      --  Completion-set backpressure happens before coordinator admission.
+      --  A failed Start must allocate no hidden driver state: the same
+      --  operation object and transaction remain reusable after the occupied
+      --  slot is released.
+      declare
+         Set             : aliased Flyology.Operations.Completion_Set (1);
+         Holding_Work    : Commit_Operation (Set'Access, Item'Access, null);
+         Rejected_Work   : Commit_Operation (Set'Access, Item'Access, null);
+         Rejected_Txn    : Transaction;
+         Capacity_Raised : Boolean := False;
+      begin
+         Begin_Transaction (Item, TX_ID (183), Txn, Result);
+         Expect (Result, Success, "completion-set holder begin failed");
+         Put (Item, Txn, 1, To_Key ([183]), Item_Value, Result);
+         Expect (Result, Success, "completion-set holder Put failed");
+         Begin_Transaction (Item, TX_ID (184), Rejected_Txn, Result);
+         Expect (Result, Success, "completion-set rejected begin failed");
+         Put (Item, Rejected_Txn, 1, To_Key ([184]), Item_Value, Result);
+         Expect (Result, Success, "completion-set rejected Put failed");
+         Testing.Pause_Coordinator (Item, Result);
+         Expect (Result, Success, "completion-set capacity pause failed");
+         begin
+            Commit (Txn, Test_Operation_Timeout, Holding_Work);
+            Wait_For_Queue (1);
+            begin
+               Commit (Rejected_Txn, Test_Operation_Timeout, Rejected_Work);
+            exception
+               when Flyology.Operations.Capacity_Error =>
+                  Capacity_Raised := True;
+            end;
+            if not Capacity_Raised then
+               raise Program_Error with "composable Commit ignored completion-set capacity";
+            end if;
+         exception
+            when others =>
+               Testing.Resume_Coordinator (Item, Result);
+               raise;
+         end;
+         Testing.Resume_Coordinator (Item, Result);
+         Expect (Result, Success, "completion-set capacity resume failed");
+         Flyology.Operations.Wait_All (Set);
+         Finish (Holding_Work, Receipt, Result);
+         Flyology.Operations.Release (Holding_Work);
+         Expect (Result, Success, "completion-set capacity holder failed");
+         Rollback (Rejected_Txn, Result);
+         Expect (Result, Success, "completion-set rejection consumed its transaction");
+
+         Begin_Transaction (Item, TX_ID (185), Rejected_Txn, Result);
+         Expect (Result, Success, "driver-allocation rejection begin failed");
+         Put (Item, Rejected_Txn, 1, To_Key ([185]), Item_Value, Result);
+         Expect (Result, Success, "driver-allocation rejection Put failed");
+         Set_Test_Allocation_Fault (Commit_Driver_State_Allocation);
+         Commit (Rejected_Txn, Test_Operation_Timeout, Rejected_Work);
+         Flyology.Operations.Wait_All (Set);
+         Finish (Rejected_Work, Receipt, Result);
+         Expect (Result, Capacity_Exceeded, "driver allocation failure was not typed");
+         Rollback (Rejected_Txn, Result);
+         Expect (Result, Success, "driver allocation failure consumed its transaction");
+
+         Begin_Transaction (Item, TX_ID (188), Rejected_Txn, Result);
+         Expect (Result, Success, "completion-set restart begin failed");
+         Put (Item, Rejected_Txn, 1, To_Key ([188]), Item_Value, Result);
+         Expect (Result, Success, "completion-set restart Put failed");
+         Commit (Rejected_Txn, Test_Operation_Timeout, Rejected_Work);
+         Flyology.Operations.Wait_All (Set);
+         Finish (Rejected_Work, Receipt, Result);
+         Flyology.Operations.Release (Rejected_Work);
+         Expect (Result, Success, "completion-set rejected operation did not restart");
+      end;
+
+      --  Abandoning an admitted operation requests the same drain-only
+      --  cancellation and keeps its completion set, coordinator slot, and
+      --  lifecycle lease alive until the exact publication has terminalized.
+      Testing.Pause_Coordinator (Item, Result);
+      Expect (Result, Success, "composable abandonment pause failed");
+      declare
+         task Abandon_Composable_Commit is
+            entry Finish (Call_Result : out Outcome_Code);
+         end Abandon_Composable_Commit;
+
+         task body Abandon_Composable_Commit is
+            Local_Result : Outcome_Code := Invalid_State;
+            Local_Txn    : Transaction;
+         begin
+            declare
+               Set  : aliased Flyology.Operations.Completion_Set (1);
+               Work : Commit_Operation (Set'Access, Item'Access, null);
+            begin
+               Begin_Transaction (Item, TX_ID (186), Local_Txn, Local_Result);
+               Put (Item, Local_Txn, 1, To_Key ([186]), Item_Value, Local_Result);
+               Commit (Local_Txn, Test_Operation_Timeout, Work);
+               --  Work intentionally leaves scope active. Its finalizer owns
+               --  the terminal wait and exact coordinator cleanup.
+            end;
+            accept Finish (Call_Result : out Outcome_Code) do
+               Call_Result := Local_Result;
+            end Finish;
+         end Abandon_Composable_Commit;
+
+         Call_Result : Outcome_Code;
+         Observed    : Value;
+      begin
+         Wait_For_Queue (1);
+         Testing.Resume_Coordinator (Item, Result);
+         Expect (Result, Success, "composable abandonment resume failed");
+         Abandon_Composable_Commit.Finish (Call_Result);
+         Expect (Call_Result, Success, "composable abandonment did not drain");
+         Begin_Transaction (Item, TX_ID (187), Txn, Result);
+         Get (Item, Txn, 1, To_Key ([186]), Observed, Result);
+         Expect (Result, Success, "abandoned composable commit was not published");
+         if Observed /= Item_Value then
+            raise Program_Error with "abandoned composable commit published the wrong value";
+         end if;
+         Rollback (Txn, Result);
+         Expect (Result, Success, "abandonment verification rollback failed");
+      end;
+
+      --  Coordinator admission and result collection each move raw ownership
+      --  across an abortable caller boundary. An asynchronous select requests
+      --  abort at the exact private barrier; abort deferral must carry the
+      --  operation to an armed or terminal state before finalization drains it.
+      declare
+         protected type Abort_Trigger is
+            entry Wait;
+            procedure Fire;
+         private
+            Fired : Boolean := False;
+         end Abort_Trigger;
+
+         protected body Abort_Trigger is
+            entry Wait when Fired is
+            begin
+               null;
+            end Wait;
+
+            procedure Fire is
+            begin
+               Fired := True;
+            end Fire;
+         end Abort_Trigger;
+
+         procedure Verify_Aborted_Publication
+           (Key_Byte        : Byte;
+            Verification_ID : Transaction_Identifier;
+            Label           : String)
+         is
+            Observed : Value;
+         begin
+            Begin_Transaction (Item, Verification_ID, Txn, Result);
+            Expect (Result, Success, Label & " verification begin failed");
+            Get (Item, Txn, 1, To_Key ([Key_Byte]), Observed, Result);
+            Expect (Result, Success, Label & " publication was not visible");
+            if Observed /= Item_Value then
+               raise Program_Error with Label & " publication changed its bytes";
+            end if;
+            Rollback (Txn, Result);
+            Expect (Result, Success, Label & " verification rollback failed");
+         end Verify_Aborted_Publication;
+
+         Arenas_Allocated_Before : Interfaces.Unsigned_64;
+         Arenas_Released_Before  : Interfaces.Unsigned_64;
+         Arenas_Allocated_After  : Interfaces.Unsigned_64;
+         Arenas_Released_After   : Interfaces.Unsigned_64;
+      begin
+         Arena_Statistics (Arenas_Allocated_Before, Arenas_Released_Before);
+         Testing.Pause_Coordinator (Item, Result);
+         Expect (Result, Success, "admission-abort coordinator pause failed");
+         Testing.Pause_Next_Commit_After_Admission;
+         declare
+            Trigger : Abort_Trigger;
+
+            task Abort_Admission is
+               pragma Task_Info (Flyology.Native_Task);
+               pragma Storage_Size (8 * 1024 * 1024);
+               entry Finish (Passed : out Boolean);
+            end Abort_Admission;
+
+            task body Abort_Admission is
+               Local_Passed  : Boolean := False;
+               Local_Result  : Outcome_Code := Invalid_State;
+               Local_Receipt : Commit_Receipt;
+            begin
+               begin
+                  select
+                     Trigger.Wait;
+                  then abort
+                     declare
+                        Set       : aliased Flyology.Operations.Completion_Set (1);
+                        Work      : Commit_Operation (Set'Access, Item'Access, null);
+                        Local_Txn : Transaction;
+                     begin
+                        Begin_Transaction (Item, TX_ID (190), Local_Txn, Local_Result);
+                        Put (Item, Local_Txn, 1, To_Key ([190]), Item_Value, Local_Result);
+                        Commit (Local_Txn, Test_Operation_Timeout, Work);
+                        Flyology.Operations.Wait_All (Set);
+                        Finish (Work, Local_Receipt, Local_Result);
+                        Flyology.Operations.Release (Work);
+                     end;
+                  end select;
+                  Local_Passed := True;
+               exception
+                  when others =>
+                     Local_Passed := False;
+               end;
+               accept Finish (Passed : out Boolean) do
+                  Passed := Local_Passed;
+               end Finish;
+            end Abort_Admission;
+
+            Passed : Boolean;
+         begin
+            Wait_For_Commit_Handoff;
+            Trigger.Fire;
+            Testing.Resume_Commit_Handoff;
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "admission-abort coordinator resume failed");
+            Abort_Admission.Finish (Passed);
+            if not Passed then
+               raise Program_Error with "admission-handoff abort escaped as an exception";
+            end if;
+         exception
+            when others =>
+               Testing.Resume_Commit_Handoff;
+               Testing.Resume_Coordinator (Item, Result);
+               raise;
+         end;
+         Arena_Statistics (Arenas_Allocated_After, Arenas_Released_After);
+         if Arenas_Allocated_After /= Arenas_Allocated_Before + 1
+           or else Arenas_Released_After /= Arenas_Released_Before + 1
+         then
+            raise Program_Error with "admission-handoff abort leaked its transaction arena";
+         end if;
+         Verify_Aborted_Publication (190, TX_ID (220), "admission-handoff abort");
+
+         Arena_Statistics (Arenas_Allocated_Before, Arenas_Released_Before);
+         Testing.Pause_Next_Commit_After_Result_Collection;
+         declare
+            Trigger : Abort_Trigger;
+
+            task Abort_Collection is
+               pragma Task_Info (Flyology.Native_Task);
+               pragma Storage_Size (8 * 1024 * 1024);
+               entry Finish (Passed : out Boolean);
+            end Abort_Collection;
+
+            task body Abort_Collection is
+               Local_Passed  : Boolean := False;
+               Local_Result  : Outcome_Code := Invalid_State;
+               Local_Receipt : Commit_Receipt;
+            begin
+               begin
+                  select
+                     Trigger.Wait;
+                  then abort
+                     declare
+                        Set       : aliased Flyology.Operations.Completion_Set (1);
+                        Work      : Commit_Operation (Set'Access, Item'Access, null);
+                        Local_Txn : Transaction;
+                     begin
+                        Begin_Transaction (Item, TX_ID (191), Local_Txn, Local_Result);
+                        Put (Item, Local_Txn, 1, To_Key ([191]), Item_Value, Local_Result);
+                        Commit (Local_Txn, Test_Operation_Timeout, Work);
+                        Flyology.Operations.Wait_All (Set);
+                        Finish (Work, Local_Receipt, Local_Result);
+                        Flyology.Operations.Release (Work);
+                     end;
+                  end select;
+                  Local_Passed := True;
+               exception
+                  when others =>
+                     Local_Passed := False;
+               end;
+               accept Finish (Passed : out Boolean) do
+                  Passed := Local_Passed;
+               end Finish;
+            end Abort_Collection;
+
+            Passed : Boolean;
+         begin
+            Wait_For_Commit_Handoff;
+            Trigger.Fire;
+            Testing.Resume_Commit_Handoff;
+            Abort_Collection.Finish (Passed);
+            if not Passed then
+               raise Program_Error with "result-collection abort escaped as an exception";
+            end if;
+         exception
+            when others =>
+               Testing.Resume_Commit_Handoff;
+               raise;
+         end;
+         Arena_Statistics (Arenas_Allocated_After, Arenas_Released_After);
+         if Arenas_Allocated_After /= Arenas_Allocated_Before + 1
+           or else Arenas_Released_After /= Arenas_Released_Before + 1
+         then
+            raise Program_Error with "result-collection abort leaked its transaction arena";
+         end if;
+         Verify_Aborted_Publication (191, TX_ID (221), "result-collection abort");
+      end;
 
       Begin_Transaction (Item, TX_ID (83), Txn, Result);
       Put (Item, Txn, 1, Item_Key, Item_Value, Result);

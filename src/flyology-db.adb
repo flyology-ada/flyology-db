@@ -12,6 +12,17 @@ with Flyology.DB.Manifest_Formats;
 with Flyology.Object_Storage;
 with Flyology.Object_Storage.S3.SigV4;
 with GNAT.SHA256;
+pragma Warnings
+  (Off,
+   """System.Soft_Links"" is an internal GNAT unit",
+   Reason => "GNAT abort deferral makes the ownership handoff abort-atomic");
+pragma Warnings
+  (Off,
+   "use of this unit is non-portable and version-dependent",
+   Reason => "GNAT abort deferral makes the ownership handoff abort-atomic");
+with System.Soft_Links;
+pragma Warnings (On, """System.Soft_Links"" is an internal GNAT unit");
+pragma Warnings (On, "use of this unit is non-portable and version-dependent");
 
 package body Flyology.DB is
 
@@ -66,6 +77,7 @@ package body Flyology.DB is
    use type OS.Range_Resolution_Kind;
    use type OS.Status;
    use type Flyology.Operations.Driver_Event;
+   use type Flyology.Wake_Sources.Signal_Attempt_Result;
 
    function Group_Mutation_Total_Fits_Wire (Value : Natural) return Boolean
    is (Natural'Size <= Interfaces.Unsigned_32'Size
@@ -170,6 +182,79 @@ package body Flyology.DB is
    begin
       Allocation_Faults.Arm (Point);
    end Set_Test_Allocation_Fault;
+
+   protected Commit_Handoff_Testing is
+      procedure Arm (Point : Commit_Handoff_Test_Point);
+      procedure Arrive (Point : Commit_Handoff_Test_Point; Pause : out Boolean);
+      entry Await_Release;
+      procedure Resume;
+      function Waiting return Boolean;
+   private
+      Armed    : Boolean := False;
+      Arrived  : Boolean := False;
+      Released : Boolean := False;
+      Target   : Commit_Handoff_Test_Point := After_Admission;
+   end Commit_Handoff_Testing;
+
+   protected body Commit_Handoff_Testing is
+      procedure Arm (Point : Commit_Handoff_Test_Point) is
+      begin
+         if Armed then
+            raise Program_Error with "composable commit handoff barrier is already armed";
+         end if;
+         Armed := True;
+         Arrived := False;
+         Released := False;
+         Target := Point;
+      end Arm;
+
+      procedure Arrive (Point : Commit_Handoff_Test_Point; Pause : out Boolean) is
+      begin
+         Pause := Armed and then Target = Point and then not Arrived;
+         if Pause then
+            Arrived := True;
+         end if;
+      end Arrive;
+
+      entry Await_Release when Released is
+      begin
+         Armed := False;
+         Arrived := False;
+         Released := False;
+      end Await_Release;
+
+      procedure Resume is
+      begin
+         if Armed then
+            Released := True;
+         end if;
+      end Resume;
+
+      function Waiting return Boolean
+      is (Arrived);
+   end Commit_Handoff_Testing;
+
+   procedure Arm_Test_Commit_Handoff (Point : Commit_Handoff_Test_Point) is
+   begin
+      Commit_Handoff_Testing.Arm (Point);
+   end Arm_Test_Commit_Handoff;
+
+   function Test_Commit_Handoff_Waiting return Boolean
+   is (Commit_Handoff_Testing.Waiting);
+
+   procedure Resume_Test_Commit_Handoff is
+   begin
+      Commit_Handoff_Testing.Resume;
+   end Resume_Test_Commit_Handoff;
+
+   procedure Pause_Test_Commit_Handoff (Point : Commit_Handoff_Test_Point) is
+      Pause : Boolean;
+   begin
+      Commit_Handoff_Testing.Arrive (Point, Pause);
+      if Pause then
+         Commit_Handoff_Testing.Await_Release;
+      end if;
+   end Pause_Test_Commit_Handoff;
 
    protected body Image_Accounting is
       procedure Add (Value : in out Interfaces.Unsigned_64; Amount : Natural) is
@@ -2032,6 +2117,10 @@ package body Flyology.DB is
       Work       : Work_Item;
       Receipt    : Internal_Receipt;
       Result     : Outcome_Code := Invalid_State;
+      --  Borrowed from the admitted Commit_Operation's completion set. A
+      --  negative value denotes the blocking API. The operation's lifecycle
+      --  lease keeps this descriptor alive through result collection.
+      Signal_Descriptor : Interfaces.C.int := -1;
    end record;
    type Completion_Array is array (Commit_Slot) of Completion_Slot;
 
@@ -2400,6 +2489,7 @@ package body Flyology.DB is
         (Txn      : in out Transaction;
          Deadline : Ada.Real_Time.Time;
          Token    : access Flyology.Cancellation.Token;
+         Signal_Descriptor : Interfaces.C.int;
          Slot     : out Slot_Token;
          Result   : out Outcome_Code);
 
@@ -2437,6 +2527,12 @@ package body Flyology.DB is
          Receipt    : out Internal_Receipt;
          Arena      : out Transaction_Arena_Access;
          Result     : out Outcome_Code);
+
+      function Result_Ready (Slot : Slot_Token) return Boolean;
+
+      procedure Signal_Next_Completion
+        (Found   : out Boolean;
+         Attempt : out Flyology.Wake_Sources.Signal_Attempt_Result);
 
       procedure Install_Published
         (Batch      : in out Runtime_Batch;
@@ -3643,6 +3739,7 @@ package body Flyology.DB is
         (Txn      : in out Transaction;
          Deadline : Ada.Real_Time.Time;
          Token    : access Flyology.Cancellation.Token;
+         Signal_Descriptor : Interfaces.C.int;
          Slot     : out Slot_Token;
          Result   : out Outcome_Code)
       is
@@ -3744,6 +3841,7 @@ package body Flyology.DB is
          Slots (Selected).Receipt.Transaction_ID := Txn.Transaction_ID;
          Slots (Selected).Receipt.Batch_ID := Candidate_Batch_ID;
          Slots (Selected).Receipt.Expected_Head := Current_Head;
+         Slots (Selected).Signal_Descriptor := Signal_Descriptor;
          Slots (Selected).State := Queued;
          In_Use_Count := In_Use_Count + 1;
          Queued_Count := Queued_Count + 1;
@@ -3951,6 +4049,7 @@ package body Flyology.DB is
                Slots (Selected).Receipt.Transaction_ID := Item.Transaction_ID;
                Slots (Selected).Receipt.Batch_ID := Batch_ID;
                Slots (Selected).Receipt.Expected_Head := Current_Head;
+               Slots (Selected).Signal_Descriptor := -1;
                Slots (Selected).State := Queued;
                Tokens (Offset + 1) := (Index => Selected, Generation => Slots (Selected).Generation);
             end;
@@ -4104,6 +4203,7 @@ package body Flyology.DB is
          Arena      : out Transaction_Arena_Access;
          Result     : out Outcome_Code)
         when Slots (Index).State = Completed
+          and then Slots (Index).Signal_Descriptor < 0
       is
       begin
          Arena := null;
@@ -4119,8 +4219,44 @@ package body Flyology.DB is
          end if;
          In_Use_Count := In_Use_Count - 1;
          In_Flight_Bytes := In_Flight_Bytes - Payload_Bytes (Slots (Index).Work);
+         Slots (Index).Signal_Descriptor := -1;
          Slots (Index).State := Free;
       end Await_Result;
+
+      function Result_Ready (Slot : Slot_Token) return Boolean is
+      begin
+         return
+           Slots (Slot.Index).Generation = Slot.Generation
+           and then Slots (Slot.Index).State = Completed
+           and then Slots (Slot.Index).Signal_Descriptor < 0;
+      end Result_Ready;
+
+      procedure Signal_Next_Completion
+        (Found   : out Boolean;
+         Attempt : out Flyology.Wake_Sources.Signal_Attempt_Result) is
+      begin
+         Found := False;
+         Attempt := Flyology.Wake_Sources.Signal_Delivered;
+         for Index in Commit_Slot loop
+            if Slots (Index).State = Completed
+              and then Slots (Index).Signal_Descriptor >= 0
+            then
+               Found := True;
+               --  Flyology fixes this call as one O_NONBLOCK write with no
+               --  retry or retained state, so it forms a bounded protected
+               --  cut. A delivered wake and result availability become one
+               --  atomic transition; an interrupted attempt retains the
+               --  descriptor for a later outside-lock retry.
+               Attempt :=
+                 Flyology.Wake_Sources.Try_Signal_Borrowed
+                   (Slots (Index).Signal_Descriptor);
+               if Attempt = Flyology.Wake_Sources.Signal_Delivered then
+                  Slots (Index).Signal_Descriptor := -1;
+               end if;
+               return;
+            end if;
+         end loop;
+      end Signal_Next_Completion;
 
       procedure Install_Published
         (Batch      : in out Runtime_Batch;
@@ -4929,6 +5065,51 @@ package body Flyology.DB is
       Checkpoint_Base   : State_Entry_Array_Access := null;
       Worker            : Commit_Worker_Access := null;
    end record;
+
+   procedure Signal_Ready_Completions (State : not null Engine_State_Access) is
+      Found   : Boolean;
+      Attempt : Flyology.Wake_Sources.Signal_Attempt_Result;
+   begin
+      loop
+         State.Gate.Signal_Next_Completion (Found, Attempt);
+         exit when not Found;
+         case Attempt is
+            when Flyology.Wake_Sources.Signal_Delivered =>
+               null;
+            when Flyology.Wake_Sources.Signal_Interrupted =>
+               --  The protected call retained the exact descriptor. Leave
+               --  the coordinator before retrying so repeated EINTR cannot
+               --  monopolize its bounded critical section.
+               null;
+            when Flyology.Wake_Sources.Signal_Failed =>
+               raise Program_Error with "commit completion signaling failed";
+         end case;
+      end loop;
+   end Signal_Ready_Completions;
+
+   procedure Fence_Engine (State : not null Engine_State_Access) is
+   begin
+      State.Gate.Fence;
+      Signal_Ready_Completions (State);
+   end Fence_Engine;
+
+   procedure Drain_Queued_For_Resolution (State : not null Engine_State_Access) is
+   begin
+      State.Gate.Drain_Queued_For_Resolution;
+      Signal_Ready_Completions (State);
+   end Drain_Queued_For_Resolution;
+
+   procedure Request_Engine_Close (State : not null Engine_State_Access) is
+   begin
+      State.Gate.Request_Close;
+      Signal_Ready_Completions (State);
+   end Request_Engine_Close;
+
+   procedure Mark_Engine_Stopped (State : not null Engine_State_Access) is
+   begin
+      State.Gate.Mark_Stopped;
+      Signal_Ready_Completions (State);
+   end Mark_Engine_Stopped;
 
    function Snapshot_Key_Less (Left, Right : Snapshot_Entry_Reference) return Boolean is
       Shared : constant Natural := Natural'Min (Left.Key_Length, Right.Key_Length);
@@ -6155,6 +6336,20 @@ package body Flyology.DB is
       end if;
    end Finalize;
 
+   --  Declared only after Lifecycle_Lease's overriding finalizer so using the
+   --  lease as a component cannot freeze the inherited no-op finalization
+   --  primitive. The heap owner then retains and releases the exact database
+   --  admission across asynchronous commit completion.
+   type Commit_Driver_State is record
+      Lease           : Lifecycle_Lease;
+      Slot            : Slot_Token;
+      Admitted        : Boolean := False;
+      Read_Descriptor : Interfaces.C.int := -1;
+   end record;
+
+   procedure Free_Commit_Driver_State is new
+     Ada.Unchecked_Deallocation (Object => Commit_Driver_State, Name => Commit_Driver_State_Access);
+
    procedure Acquire (Item : in out Database; Lease : in out Lifecycle_Lease; Result : out Outcome_Code) is
    begin
       Item.Life.Acquire (Lease.State, Result);
@@ -7155,6 +7350,7 @@ package body Flyology.DB is
          end if;
       end loop;
       State.Gate.Complete_Group (Tokens, Receipts, Count, Result, Mark_Uncertain, Mark_Fenced);
+      Signal_Ready_Completions (State);
    end Finish_Work;
 
    procedure Process_Group
@@ -7383,10 +7579,10 @@ package body Flyology.DB is
          exit when Stop;
          Process_Group (State, Items, Tokens, Count, Head, Generation);
       end loop;
-      State.Gate.Mark_Stopped;
+      Mark_Engine_Stopped (State);
    exception
       when others =>
-         State.Gate.Mark_Stopped;
+         Mark_Engine_Stopped (State);
    end Commit_Worker;
 
    procedure Release_History (History : in out Batch_History_Access; Count : in out Natural) is
@@ -9827,7 +10023,7 @@ package body Flyology.DB is
       when Storage_Error =>
          if State /= null then
             if State.Worker /= null then
-               State.Gate.Request_Close;
+               Request_Engine_Close (State);
                State.Gate.Join;
                Free_Worker (State.Worker);
             end if;
@@ -9842,7 +10038,7 @@ package body Flyology.DB is
       when others =>
          if State /= null then
             if State.Worker /= null then
-               State.Gate.Request_Close;
+               Request_Engine_Close (State);
                State.Gate.Join;
                Free_Worker (State.Worker);
             end if;
@@ -9887,7 +10083,7 @@ package body Flyology.DB is
       if Result = Success then
          Item.Life.Complete_Open (State, Head.Highest, Result);
          if Result /= Success then
-            State.Gate.Request_Close;
+            Request_Engine_Close (State);
             State.Gate.Join;
             Free_Worker (State.Worker);
             Release_State_Images (State);
@@ -10944,7 +11140,7 @@ package body Flyology.DB is
       if Result /= Success then
          return;
       end if;
-      State.Gate.Request_Close;
+      Request_Engine_Close (State);
       Item.Life.Await_Quiescent;
       State.Gate.Join;
       Free_Worker (State.Worker);
@@ -13008,6 +13204,271 @@ package body Flyology.DB is
       end if;
    end Rollback;
 
+   procedure Release_Commit_Driver (Item : in out Commit_Operation) is
+   begin
+      if Item.Driver_State /= null then
+         Release (Item.Driver_State.Lease);
+         Item.Driver_State.Admitted := False;
+         Free_Commit_Driver_State (Item.Driver_State);
+      end if;
+   end Release_Commit_Driver;
+
+   procedure Collect_Composable_Commit
+     (Item     : in out Commit_Operation;
+      Terminal : Flyology.Operations.Terminal_Outcome)
+   is
+      Internal       : Internal_Receipt;
+      Released_Arena : Transaction_Arena_Owner;
+      Receipt        : Commit_Receipt;
+      Collected      : Boolean := False;
+   begin
+      --  Await_Result transfers the raw arena and receipt image out of the
+      --  coordinator. Keep abort deferred until controlled owners hold both,
+      --  the lifecycle lease is released, and the operation is terminal.
+      System.Soft_Links.Abort_Defer.all;
+      begin
+         Item.Driver_State.Lease.State.Gate.Await_Result (Item.Driver_State.Slot.Index)
+           (Item.Driver_State.Slot.Generation, Internal, Released_Arena.Arena, Item.Final_Result);
+         Collected := True;
+         Item.Driver_State.Admitted := False;
+         Pause_Test_Commit_Handoff (After_Result_Collection);
+         Adopt_Receipt (Receipt, Internal);
+         Item.Final_Receipt := Receipt;
+         Release_Arena (Released_Arena.Arena);
+         Release (Item.Driver_State.Lease);
+         Item.Has_Final_Result := True;
+         Flyology.Operations.Drivers.Complete (Item, Terminal);
+      exception
+         when others =>
+            if Collected then
+               Item.Driver_State.Admitted := False;
+               Release_Image (Internal.Image);
+            end if;
+            System.Soft_Links.Abort_Undefer.all;
+            raise;
+      end;
+      System.Soft_Links.Abort_Undefer.all;
+   end Collect_Composable_Commit;
+
+   procedure Complete_Composable_Commit (Item : in out Commit_Operation) is
+   begin
+      if Item.Driver_State = null
+        or else not Item.Driver_State.Admitted
+        or else Item.Driver_State.Lease.State = null
+      then
+         raise Program_Error with "commit operation has no admitted coordinator slot";
+      elsif not Item.Driver_State.Lease.State.Gate.Result_Ready (Item.Driver_State.Slot) then
+         --  Every externally completed operation in one set shares its wake
+         --  descriptor. Another operation may therefore have produced this
+         --  readiness event; rearm the exact admitted slot without polling.
+         Flyology.Operations.Drivers.Arm_Readiness
+           (Item, Item.Driver_State.Read_Descriptor, False);
+         return;
+      end if;
+
+      Collect_Composable_Commit (Item, Flyology.Operations.Succeeded);
+   end Complete_Composable_Commit;
+
+   overriding procedure Drive
+     (Item  : in out Commit_Operation;
+      Event : Flyology.Operations.Driver_Event) is
+   begin
+      if Event in Flyology.Operations.Start_Operation | Flyology.Operations.Source_Ready then
+         Complete_Composable_Commit (Item);
+      else
+         raise Program_Error with "commit operation received an invalid driver event";
+      end if;
+   exception
+      when Error : others =>
+         if Flyology.Operations.Is_Active (Item) then
+            Ada.Exceptions.Save_Occurrence (Item.Saved_Error, Error);
+            Item.Has_Saved_Error := True;
+            if Item.Driver_State /= null and then Item.Driver_State.Admitted then
+               Collect_Composable_Commit (Item, Flyology.Operations.Failed);
+            else
+               Release (Item.Driver_State.Lease);
+               Item.Has_Final_Result := True;
+               Flyology.Operations.Drivers.Complete (Item, Flyology.Operations.Failed);
+            end if;
+         end if;
+   end Drive;
+
+   overriding procedure Request_Cancellation (Item : in out Commit_Operation) is
+      pragma Unreferenced (Item);
+   begin
+      --  Coordinator admission is the mutation boundary. The blocking API has
+      --  always ignored cancellation after that point and waited for exact
+      --  certainty; generic operation cancellation therefore requests only a
+      --  drain and deliberately leaves this admitted operation pending.
+      null;
+   end Request_Cancellation;
+
+   function Commit
+     (Set     : not null access Flyology.Operations.Completion_Set'Class;
+      Item    : not null access Database;
+      Txn     : in out Transaction;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null)
+      return Commit_Operation'Class is
+   begin
+      return Result : Commit_Operation (Set, Item, Token) do
+         Commit (Txn, Timeout, Result);
+      end return;
+   end Commit;
+
+   procedure Commit
+     (Txn       : in out Transaction;
+      Timeout   : Duration;
+      Operation : in out Commit_Operation)
+   is
+      Deadline          : constant Ada.Real_Time.Time := Deadline_After (Timeout);
+      Head              : Head_Snapshot;
+      Generation        : Generation_Value;
+      Uncertain         : Boolean;
+      Fenced            : Boolean;
+      Signal_Descriptor : Interfaces.C.int;
+      Result            : Outcome_Code := Success;
+      Started           : Boolean := False;
+   begin
+      if Operation.Driver_State /= null
+        or else Operation.Has_Final_Result
+        or else Operation.Has_Saved_Error
+        or else Operation.Final_Receipt.Retained_Image.Image /= null
+      then
+         raise Program_Error with "commit operation retains unconsumed ownership";
+      end if;
+
+      Operation.Final_Receipt := (others => <>);
+      Operation.Final_Result := Invalid_State;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+      --  Registration and coordinator admission form one ownership handoff.
+      --  An abort may become visible only after the operation is terminal or
+      --  the admitted slot has an armed owner-driven wait source.
+      System.Soft_Links.Abort_Defer.all;
+      begin
+         Flyology.Operations.Drivers.Start (Operation);
+         Started := True;
+         begin
+            Allocation_Faults.Check (Commit_Driver_State_Allocation);
+            Operation.Driver_State := new Commit_Driver_State;
+         exception
+            when Storage_Error =>
+               null;
+         end;
+
+         if Operation.Driver_State = null then
+            Operation.Final_Result := Capacity_Exceeded;
+            Operation.Has_Final_Result := True;
+            Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+         elsif not Txn.Active or else Mutation_Count (Txn) = 0 then
+            Operation.Final_Result := Invalid_State;
+            Operation.Has_Final_Result := True;
+            Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+         else
+            Acquire (Operation.Item.all, Operation.Driver_State.Lease, Result);
+            if Result = Success then
+               Operation.Driver_State.Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
+               if Txn.Database_ID /= Head.Database_ID
+                 or else Txn.Incarnation /= Operation.Driver_State.Lease.State.Gate.Current_Incarnation
+               then
+                  Result := Invalid_State;
+               end if;
+            end if;
+            if Result /= Success then
+               Release (Operation.Driver_State.Lease);
+               Operation.Final_Result := Result;
+               Operation.Has_Final_Result := True;
+               Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+            else
+               Flyology.Operations.Drivers.Completion_Source
+                 (Operation, Operation.Driver_State.Read_Descriptor, Signal_Descriptor);
+               Operation.Driver_State.Lease.State.Gate.Admit
+                 (Txn,
+                  Deadline,
+                  Operation.Cancellation,
+                  Signal_Descriptor,
+                  Operation.Driver_State.Slot,
+                  Result);
+               if Result /= Success then
+                  Release (Operation.Driver_State.Lease);
+                  Operation.Final_Result := Result;
+                  Operation.Has_Final_Result := True;
+                  Flyology.Operations.Drivers.Complete (Operation, Flyology.Operations.Succeeded);
+               else
+                  Operation.Driver_State.Admitted := True;
+                  Pause_Test_Commit_Handoff (After_Admission);
+                  Reset_Transaction (Txn);
+                  Flyology.Operations.Drive
+                    (Flyology.Operations.Operation'Class (Operation), Flyology.Operations.Start_Operation);
+               end if;
+            end if;
+         end if;
+      exception
+         when others =>
+            if Started and then Flyology.Operations.Is_Active (Operation) then
+               if Operation.Driver_State /= null and then Operation.Driver_State.Admitted then
+                  --  An admitted transaction cannot be rolled back or detached.
+                  --  Finalization of the operation will drain the exact slot.
+                  begin
+                     Flyology.Operations.Drivers.Arm_Readiness
+                       (Operation, Operation.Driver_State.Read_Descriptor, False);
+                  exception
+                     when others =>
+                        null;
+                  end;
+               else
+                  Release_Commit_Driver (Operation);
+                  Flyology.Operations.Drivers.Rollback_Start (Operation);
+               end if;
+            end if;
+            System.Soft_Links.Abort_Undefer.all;
+            raise;
+      end;
+      System.Soft_Links.Abort_Undefer.all;
+   end Commit;
+
+   procedure Finish
+     (Operation : in out Commit_Operation;
+      Receipt   : out Commit_Receipt;
+      Result    : out Outcome_Code) is
+   begin
+      Flyology.Operations.Consume (Operation);
+      Receipt := Operation.Final_Receipt;
+      Release_Retained_Image (Operation.Final_Receipt);
+      Operation.Final_Receipt := (others => <>);
+      Release_Commit_Driver (Operation);
+      if Operation.Has_Saved_Error then
+         --  Finish has consumed and released every operation-owned resource.
+         --  Clear the terminal markers before propagating the saved provider
+         --  failure so the same established operation may be started again.
+         Operation.Has_Saved_Error := False;
+         Operation.Final_Result := Invalid_State;
+         Operation.Has_Final_Result := False;
+         Ada.Exceptions.Raise_Exception
+           (Ada.Exceptions.Exception_Identity (Operation.Saved_Error),
+            Ada.Exceptions.Exception_Message (Operation.Saved_Error));
+      elsif not Operation.Has_Final_Result then
+         raise Program_Error with "composable commit has no terminal result";
+      end if;
+      Result := Operation.Final_Result;
+      Operation.Final_Result := Invalid_State;
+      Operation.Has_Final_Result := False;
+      Operation.Has_Saved_Error := False;
+   end Finish;
+
+   overriding procedure Finalize (Item : in out Commit_Operation) is
+   begin
+      begin
+         Flyology.Operations.Finalize (Flyology.Operations.Operation (Item));
+      exception
+         when others =>
+            null;
+      end;
+      Release_Retained_Image (Item.Final_Receipt);
+      Release_Commit_Driver (Item);
+   end Finalize;
+
    procedure Commit
      (Item    : in out Database;
       Txn     : in out Transaction;
@@ -13016,45 +13477,46 @@ package body Flyology.DB is
       Receipt : out Commit_Receipt;
       Result  : out Outcome_Code)
    is
-      --  The operation's sole absolute monotonic deadline is derived from the
-      --  caller-supplied Timeout; there is no hidden default or retry budget.
-      Deadline       : constant Ada.Real_Time.Time := Deadline_After (Timeout);
-      Lease          : Lifecycle_Lease;
-      Admission      : Admission_Guard;
-      Head           : Head_Snapshot;
-      Generation     : Generation_Value;
-      Uncertain      : Boolean;
-      Fenced         : Boolean;
-      Internal       : Internal_Receipt;
-      Released_Arena : Transaction_Arena_Access;
+      --  One is the exact owner stack for this leaf coordinator operation; it
+      --  has no child operation. This is private scheduling geometry, not a
+      --  queue, batch, provider, or transaction limit.
+      Synchronous_Set_Capacity : constant := 1;
    begin
       Receipt := (others => <>);
-      if not Txn.Active or else Mutation_Count (Txn) = 0 then
-         Result := Invalid_State;
-         return;
-      end if;
-      Acquire (Item, Lease, Result);
-      if Result /= Success then
-         return;
-      end if;
-      Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
-      if Txn.Database_ID /= Head.Database_ID or else Txn.Incarnation /= Lease.State.Gate.Current_Incarnation
-      then
-         Result := Invalid_State;
-         return;
-      end if;
-      Lease.State.Gate.Admit (Txn, Deadline, Token, Admission.Tokens (1), Result);
-      if Result = Success then
-         Admission.State := Lease.State;
-         Admission.Count := 1;
-         Admission.Active := True;
-         Reset_Transaction (Txn);
-         Lease.State.Gate.Await_Result (Admission.Tokens (1).Index)
-           (Admission.Tokens (1).Generation, Internal, Released_Arena, Result);
-         Release_Arena (Released_Arena);
-         Adopt_Receipt (Receipt, Internal);
-         Admission.Active := False;
-      end if;
+      declare
+         Set       : aliased Flyology.Operations.Completion_Set (Synchronous_Set_Capacity);
+         Operation : Commit_Operation (Set'Access, Item'Unchecked_Access, Token);
+         Started   : Boolean := False;
+      begin
+         Commit (Txn, Timeout, Operation);
+         Started := True;
+         Flyology.Operations.Wait_All (Set);
+         Finish (Operation, Receipt, Result);
+         Flyology.Operations.Release (Operation);
+      exception
+         when others =>
+            if Started then
+               if Flyology.Operations.Is_Active (Operation) then
+                  Flyology.Operations.Cancel (Operation);
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               if Flyology.Operations.Is_Terminal (Operation) then
+                  begin
+                     Finish (Operation, Receipt, Result);
+                  exception
+                     when others =>
+                        null;
+                  end;
+               end if;
+               begin
+                  Flyology.Operations.Release (Operation);
+               exception
+                  when others =>
+                     null;
+               end;
+            end if;
+            raise;
+      end;
    end Commit;
 
    procedure Commit_Group
@@ -13243,7 +13705,7 @@ package body Flyology.DB is
       end if;
       Guard.Life := Item.Life'Unchecked_Access;
       Guard.Active := True;
-      State.Gate.Drain_Queued_For_Resolution;
+      Drain_Queued_For_Resolution (State);
       Item.Life.Await_Quiescent;
       State.Gate.Snapshot (Current_Head, Generation, Uncertain, Fenced);
       if Current_Head.Database_ID /= Receipt.Expected_Head.Database_ID then
@@ -13287,7 +13749,7 @@ package body Flyology.DB is
          if Result /= Success then
             return;
          end if;
-         State.Gate.Request_Close;
+         Request_Engine_Close (State);
          State.Gate.Join;
          Free_Worker (State.Worker);
          Release_State_Images (State);
@@ -13299,7 +13761,7 @@ package body Flyology.DB is
          Receipt.Phase := Resolved;
          Result := Success;
       elsif Resolution = Receipt_Rejected then
-         State.Gate.Fence;
+         Fence_Engine (State);
          Item.Life.Cancel_Resolve;
          Guard.Active := False;
          Release_Retained_Image (Receipt);
@@ -13353,7 +13815,7 @@ package body Flyology.DB is
       end if;
       Guard.Life := Item.Life'Unchecked_Access;
       Guard.Active := True;
-      State.Gate.Drain_Queued_For_Resolution;
+      Drain_Queued_For_Resolution (State);
       Item.Life.Await_Quiescent;
       State.Gate.Snapshot (Current_Head, Current_Generation, Uncertain, Fenced);
       if Uncertain then
@@ -13826,7 +14288,7 @@ package body Flyology.DB is
             then
                Release_History (History, History_Count);
                Release_Checkpoint_Plan (Checkpoint);
-               State.Engine.Gate.Fence;
+               Fence_Engine (State.Engine);
                Item.Item.Life.Cancel_Resolve;
                State.Resolve_Admitted := False;
                Release_Retained_Image (Item.Final_Commit_Receipt);
@@ -13854,7 +14316,7 @@ package body Flyology.DB is
          elsif not State.Traversal.Found_Sought then
             Release_History (History, History_Count);
             Release_Checkpoint_Plan (Checkpoint);
-            State.Engine.Gate.Fence;
+            Fence_Engine (State.Engine);
             Complete_Composable_Refresh
               (Item,
                (if State.Expected_Family.Phase = Family_Head_Confirmed
@@ -13866,7 +14328,7 @@ package body Flyology.DB is
          then
             Release_History (History, History_Count);
             Release_Checkpoint_Plan (Checkpoint);
-            State.Engine.Gate.Fence;
+            Fence_Engine (State.Engine);
             Complete_Composable_Refresh (Item, Local_Activation_Failed);
          else
             Stamp := State.Expected_Family.Incarnation;
@@ -13955,7 +14417,7 @@ package body Flyology.DB is
          then
             Release_History (History, History_Count);
             Release_Checkpoint_Plan (Checkpoint);
-            State.Engine.Gate.Fence;
+            Fence_Engine (State.Engine);
             Complete_Composable_Refresh (Item, Stale_Writer);
          else
             Release_History (History, History_Count);
@@ -14751,7 +15213,7 @@ package body Flyology.DB is
                raise Program_Error with "recovery storage does not own the open database";
             elsif Result = Success then
                Operation.Driver_State.Resolve_Admitted := True;
-               Operation.Driver_State.Engine.Gate.Drain_Queued_For_Resolution;
+               Drain_Queued_For_Resolution (Operation.Driver_State.Engine);
             else
                Operation.Driver_State.Precheck_Result := Result;
             end if;
@@ -15449,24 +15911,24 @@ package body Flyology.DB is
         and then Item.Final_Family_Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown
       then
          if Item.Driver_State.Engine /= null then
-            Item.Driver_State.Engine.Gate.Fence;
+            Fence_Engine (Item.Driver_State.Engine);
          end if;
          Result := Outcome_Unknown;
       elsif Is_Family_Append (Item)
         and then Item.Final_Family_Receipt.Phase = Family_Head_Confirmed
       then
          if Item.Driver_State.Engine /= null then
-            Item.Driver_State.Engine.Gate.Fence;
+            Fence_Engine (Item.Driver_State.Engine);
          end if;
          Result := Local_Activation_Failed;
       elsif Item.Final_Receipt.Phase in Objects_Unknown | Flush_Head_Unknown then
          if Item.Driver_State /= null and then Item.Driver_State.Engine /= null then
-            Item.Driver_State.Engine.Gate.Fence;
+            Fence_Engine (Item.Driver_State.Engine);
          end if;
          Result := Outcome_Unknown;
       elsif Item.Final_Receipt.Phase = Flush_Head_Confirmed then
          if Item.Driver_State /= null and then Item.Driver_State.Engine /= null then
-            Item.Driver_State.Engine.Gate.Fence;
+            Fence_Engine (Item.Driver_State.Engine);
          end if;
          Result := Local_Activation_Failed;
       else
@@ -15546,7 +16008,7 @@ package body Flyology.DB is
             end if;
          end if;
          if State.Engine /= null then
-            State.Engine.Gate.Fence;
+            Fence_Engine (State.Engine);
          end if;
          Finish_Composable_Phase (Item, Outcome_Unknown);
          return;
@@ -15675,7 +16137,7 @@ package body Flyology.DB is
         or else Item.Deadline <= Ada.Real_Time.Clock
       then
          if State.Engine /= null then
-            State.Engine.Gate.Fence;
+            Fence_Engine (State.Engine);
          end if;
          Finish_Composable_Phase (Item, Outcome_Unknown);
          return;
@@ -15702,7 +16164,7 @@ package body Flyology.DB is
    exception
       when others =>
          if State.Engine /= null then
-            State.Engine.Gate.Fence;
+            Fence_Engine (State.Engine);
          end if;
          Finish_Composable_Phase (Item, Outcome_Unknown);
    end Start_Immutable_Read;
@@ -15737,7 +16199,7 @@ package body Flyology.DB is
                Flyology.Operations.Release (Item.Read_Child.all);
             end if;
             if Item.Driver_State.Engine /= null then
-               Item.Driver_State.Engine.Gate.Fence;
+               Fence_Engine (Item.Driver_State.Engine);
             end if;
             Finish_Composable_Phase (Item, Outcome_Unknown);
             return;
@@ -15766,13 +16228,13 @@ package body Flyology.DB is
               (Item, (if Is_Create (Item) then Already_Exists else Conflict));
          else
             if Item.Driver_State.Engine /= null then
-               Item.Driver_State.Engine.Gate.Fence;
+               Fence_Engine (Item.Driver_State.Engine);
             end if;
             Finish_Composable_Phase (Item, Outcome_Unknown);
          end if;
       else
          if Item.Driver_State.Engine /= null then
-            Item.Driver_State.Engine.Gate.Fence;
+            Fence_Engine (Item.Driver_State.Engine);
          end if;
          Finish_Composable_Phase (Item, Outcome_Unknown);
       end if;
@@ -16264,7 +16726,7 @@ package body Flyology.DB is
                if Is_Create (Item) then
                   Start_Create_Reconciliation (Item);
                else
-                  Item.Driver_State.Engine.Gate.Fence;
+                  Fence_Engine (Item.Driver_State.Engine);
                   Finish_Composable_Phase (Item, Outcome_Unknown);
                end if;
                return;
@@ -16302,7 +16764,7 @@ package body Flyology.DB is
                Start_Create_Reconciliation (Item);
                return;
             end if;
-            Item.Driver_State.Engine.Gate.Fence;
+            Fence_Engine (Item.Driver_State.Engine);
             if Is_Family_Append (Item) then
                Item.Final_Family_Receipt.Phase := Family_Resolved;
                Release_Retained_Manifest (Item.Final_Family_Receipt);
@@ -16333,7 +16795,7 @@ package body Flyology.DB is
             if Is_Create (Item) then
                Start_Create_Reconciliation (Item);
             else
-               Item.Driver_State.Engine.Gate.Fence;
+               Fence_Engine (Item.Driver_State.Engine);
                Complete_Composable_Flush (Item, Outcome_Unknown);
             end if;
       end case;
@@ -16386,7 +16848,7 @@ package body Flyology.DB is
                Flyology.Operations.Release (Item.Put_Child);
             end if;
             if Item.Driver_State.Engine /= null then
-               Item.Driver_State.Engine.Gate.Fence;
+               Fence_Engine (Item.Driver_State.Engine);
             end if;
             Finish_Composable_Phase (Item, Outcome_Unknown);
             return;
@@ -16402,7 +16864,7 @@ package body Flyology.DB is
             if Is_Create (Item) then
                Start_Create_Reconciliation (Item);
             else
-               Item.Driver_State.Engine.Gate.Fence;
+               Fence_Engine (Item.Driver_State.Engine);
                Complete_Composable_Flush (Item, Outcome_Unknown);
             end if;
          else
@@ -23204,7 +23666,7 @@ package body Flyology.DB is
 
    procedure Stop_Replaced_Engine (State : in out Engine_State_Access) is
    begin
-      State.Gate.Request_Close;
+      Request_Engine_Close (State);
       State.Gate.Join;
       Free_Worker (State.Worker);
       Release_State_Images (State);
@@ -23233,7 +23695,7 @@ package body Flyology.DB is
    begin
       Receipt.Phase := Flush_Head_Confirmed;
       Receipt.Current_Outcome := Success;
-      Old_State.Gate.Fence;
+      Fence_Engine (Old_State);
       Consume_Fault (Old_State.Storage.all, Before_Local_Activation, Activation_Fault);
       if Activation_Fault /= No_Fault then
          Result := Local_Activation_Failed;
@@ -23326,7 +23788,7 @@ package body Flyology.DB is
             if Result /= Success then
                Receipt.Current_Outcome := Result;
                if Result = Outcome_Unknown then
-                  State.Gate.Fence;
+                  Fence_Engine (State);
                else
                   Receipt.Phase := Flush_Resolved;
                end if;
@@ -23356,7 +23818,7 @@ package body Flyology.DB is
       if Result /= Success then
          Receipt.Current_Outcome := Result;
          if Result = Outcome_Unknown then
-            State.Gate.Fence;
+            Fence_Engine (State);
          else
             Receipt.Phase := Flush_Resolved;
          end if;
@@ -23388,12 +23850,12 @@ package body Flyology.DB is
       if Put_Result = Object_Published then
          Activate_Flush_Plan (Item, State, Plan, New_Generation, Receipt, Guard, Result);
       elsif Put_Result = Put_Precondition_Failed then
-         State.Gate.Fence;
+         Fence_Engine (State);
          Receipt.Phase := Flush_Resolved;
          Receipt.Current_Outcome := Stale_Writer;
          Result := Stale_Writer;
       elsif Put_Result = Put_Outcome_Unknown then
-         State.Gate.Fence;
+         Fence_Engine (State);
          Receipt.Current_Outcome := Outcome_Unknown;
          Result := Outcome_Unknown;
       elsif Put_Result = Put_Cancelled then
@@ -23414,7 +23876,7 @@ package body Flyology.DB is
          LSM_Runtime.Release (Encoded);
          Release_Image (Owner);
          if Receipt.Phase in Objects_Unknown | Flush_Head_Unknown then
-            State.Gate.Fence;
+            Fence_Engine (State);
             Result := Outcome_Unknown;
          else
             Result := Local_Activation_Failed;
@@ -23506,10 +23968,10 @@ package body Flyology.DB is
          Release_Checkpoint_Plan (Plan);
          if Guard.Active then
             if Receipt.Phase in Objects_Unknown | Flush_Head_Unknown then
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Outcome_Unknown;
             elsif Receipt.Phase = Flush_Head_Confirmed then
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Local_Activation_Failed;
             else
                Result := Storage_Failure;
@@ -23710,10 +24172,10 @@ package body Flyology.DB is
          Release_Checkpoint_Plan (Plan);
          if Guard.Active then
             if Receipt.Phase in Objects_Unknown | Flush_Head_Unknown then
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Outcome_Unknown;
             elsif Receipt.Phase = Flush_Head_Confirmed then
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Local_Activation_Failed;
             else
                Result := Storage_Failure;
@@ -24166,7 +24628,7 @@ package body Flyology.DB is
    begin
       Receipt.Phase := Flush_Head_Confirmed;
       Receipt.Current_Outcome := Success;
-      Old_State.Gate.Fence;
+      Fence_Engine (Old_State);
       Consume_Fault (Old_State.Storage.all, Before_Local_Activation, Activation_Fault);
       if Activation_Fault = No_Fault then
          Allocation_Faults.Check (Flush_Activation_State_Allocation);
@@ -24378,7 +24840,7 @@ package body Flyology.DB is
             Result := Corrupt;
          elsif Result = Success and then Head.Transition_Number >= Receipt.Attempted_Head.Transition_Number
          then
-            State.Gate.Fence;
+            Fence_Engine (State);
             Receipt.Phase := Flush_Resolved;
             Result := Stale_Writer;
          elsif Result = Success then
@@ -24397,7 +24859,7 @@ package body Flyology.DB is
          Release_History (History, History_Count);
          Release_Checkpoint_Plan (Plan);
          if Guard.Active then
-            State.Gate.Fence;
+            Fence_Engine (State);
             Item.Life.Finish_Checkpoint;
             Guard.Active := False;
          end if;
@@ -24568,7 +25030,7 @@ package body Flyology.DB is
       elsif not Sought_Found then
          Release_History (History, History_Count);
          Release_Checkpoint_Plan (Checkpoint);
-         State.Gate.Fence;
+         Fence_Engine (State);
          if Receipt.Phase = Family_Head_Confirmed then
             Receipt.Current_Outcome := Local_Activation_Failed;
             Result := Local_Activation_Failed;
@@ -24591,7 +25053,7 @@ package body Flyology.DB is
       then
          Release_History (History, History_Count);
          Release_Checkpoint_Plan (Checkpoint);
-         State.Gate.Fence;
+         Fence_Engine (State);
          Result := Local_Activation_Failed;
          Receipt.Current_Outcome := Result;
          return;
@@ -24684,13 +25146,13 @@ package body Flyology.DB is
          Receipt.Phase := Family_Head_Confirmed;
          Recover_Column_Family_Activation (Item, State, Deadline, Token, Receipt, Guard, Result);
       elsif Put_Result = Put_Precondition_Failed then
-         State.Gate.Fence;
+         Fence_Engine (State);
          Receipt.Phase := Family_Resolved;
          Receipt.Current_Outcome := Stale_Writer;
          Release_Retained_Manifest (Receipt);
          Result := Stale_Writer;
       elsif Put_Result = Put_Outcome_Unknown then
-         State.Gate.Fence;
+         Fence_Engine (State);
          Receipt.Current_Outcome := Outcome_Unknown;
          Result := Outcome_Unknown;
       elsif Put_Result = Put_Cancelled then
@@ -24713,10 +25175,10 @@ package body Flyology.DB is
       when others =>
          Release_Image (Owner);
          if Receipt.Phase = Family_Head_Confirmed then
-            State.Gate.Fence;
+            Fence_Engine (State);
             Result := Local_Activation_Failed;
          else
-            State.Gate.Fence;
+            Fence_Engine (State);
             Result := Outcome_Unknown;
          end if;
          Receipt.Current_Outcome := Result;
@@ -24744,7 +25206,7 @@ package body Flyology.DB is
       if Result = Success then
          Attempt_Column_Family_Head (Item, State, Deadline, Token, Receipt, Guard, Result);
       elsif Result = Outcome_Unknown then
-         State.Gate.Fence;
+         Fence_Engine (State);
          Receipt.Current_Outcome := Outcome_Unknown;
       else
          Receipt.Phase := Family_Resolved;
@@ -24754,10 +25216,10 @@ package body Flyology.DB is
    exception
       when others =>
          if Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown then
-            State.Gate.Fence;
+            Fence_Engine (State);
             Result := Outcome_Unknown;
          elsif Receipt.Phase = Family_Head_Confirmed then
-            State.Gate.Fence;
+            Fence_Engine (State);
             Result := Local_Activation_Failed;
          else
             Result := Storage_Failure;
@@ -24901,10 +25363,10 @@ package body Flyology.DB is
          Release_Checkpoint_Plan (Plan);
          if Guard.Active then
             if Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown then
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Outcome_Unknown;
             elsif Receipt.Phase = Family_Head_Confirmed then
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Local_Activation_Failed;
             else
                Result := Capacity_Exceeded;
@@ -24919,10 +25381,10 @@ package body Flyology.DB is
          Release_Checkpoint_Plan (Plan);
          if Guard.Active then
             if Receipt.Phase in Family_Manifest_Unknown | Family_Head_Unknown then
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Outcome_Unknown;
             elsif Receipt.Phase = Family_Head_Confirmed then
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Local_Activation_Failed;
             else
                Result := Storage_Failure;
@@ -25002,10 +25464,10 @@ package body Flyology.DB is
       when others =>
          if Guard.Active then
             if Receipt.Phase = Family_Head_Confirmed then
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Local_Activation_Failed;
             else
-               State.Gate.Fence;
+               Fence_Engine (State);
                Result := Outcome_Unknown;
             end if;
             Item.Life.Finish_Checkpoint;

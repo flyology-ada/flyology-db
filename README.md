@@ -35,6 +35,13 @@ confirmed immutable authority can admit its exact pending HEAD once, while possi
 through reads. Both the receipt and exact scratch token remain operation-owned until typed `Finish`; the client-
 backed synchronous overload is a wait over that operation, while the storage-neutral synchronous form remains direct
 and source-compatible.
+Singleton transaction publication now follows the same provider-centric convention directly in `Flyology.DB`.
+`Commit_Operation`, limited root and operation-last `Commit`, and typed `Finish` expose the existing bounded
+coordinator without a second namespace or worker. Start performs the existing admission synchronously: rejection
+leaves the transaction active, while successful admission consumes it before returning. After that boundary,
+cancellation requests only drain the exact admitted publication to its existing receipt classification. The
+established blocking `Commit` is a one-slot wait over this state machine, so every form shares the same deadline,
+certainty, fencing, and no-replay semantics.
 Receipt-driven `Resolve_Flush` likewise reuses `Flush_Operation`, its operation-last initiation, and typed `Finish`.
 It reconstructs only the original immutable plan or transfers the same checkpoint admission into bounded read-only
 recovery; the buffer-owned client adapter waits that state machine, while memory/files retain the established direct

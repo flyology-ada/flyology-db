@@ -28,6 +28,13 @@ carrying their green evidence forward.
 Object Storage I/O, lifecycle scheduling, publication certainty, dynamic allocation, and refinement of the Create
 driver to the maintained models remain executable integration boundaries rather than new SPARK claims.
 
+The caller-composable singleton `Commit` operation changes the runtime owner/wake adapter around the already-modeled
+coordinator publication machine. It does not change a persisted format, transition rule, or maintained TLA+ action.
+Transaction transfer at admission, borrowed completion-descriptor delivery, lifecycle-lease retention, typed receipt
+collection, and abandonment drain remain executable integration boundaries; the maintained TLA/TLAPS and
+warning-strict GNATprove campaigns must remain green on the exact final tree and do not constitute an Ada-to-TLA
+refinement proof.
+
 The caller-composable commit-receipt resolver reuses the runtime `Refresh_Operation` and complete authenticated
 recovery traversal without changing a selected SPARK unit or maintained TLA+ action system. Receipt/token transfer,
 exclusive lifecycle drain, exact immutable-history comparison, incarnation-preserving engine replacement, provider

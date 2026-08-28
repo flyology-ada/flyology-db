@@ -1972,9 +1972,36 @@ begin
    Expect (Result, Success, "client-backed family open failed");
    Put (Created, Txn, Family, Key_Data, Value_Data, Result);
    Expect (Result, Success, "client-backed put failed");
-   Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
-   Commit (Created, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
-   Expect (Result, Outcome_Unknown, "client-backed commit uncertainty was weakened");
+   declare
+      Stop         : aliased Flyology.Cancellation.Token;
+      Cancel_Work  : Commit_Operation (Composable_Set'Access, Created'Access, Stop'Access);
+      Publish_Work : Commit_Operation (Composable_Set'Access, Created'Access, null);
+      Rejected     : Commit_Receipt;
+   begin
+      --  Pre-admission cancellation is terminal but does not consume Txn; the
+      --  same transaction is admitted immediately afterward. Generic
+      --  cancellation after admission requests only a drain, so the exact
+      --  unknown publication receipt remains observable and is never replayed.
+      Stop.Request;
+      Commit (Txn, Test_Operation_Timeout, Cancel_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Cancel_Work, Rejected, Result);
+      Flyology.Operations.Release (Cancel_Work);
+      Expect (Result, Cancelled, "composable commit pre-admission cancellation was lost");
+      if Receipt_Batch_ID (Rejected) /= Zero_Identifier then
+         raise Program_Error with "rejected composable commit exposed an admitted identity";
+      end if;
+
+      Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
+      Commit (Txn, Test_Operation_Timeout, Publish_Work);
+      Rollback (Txn, Result);
+      Expect (Result, Invalid_State, "admitted composable commit retained caller transaction ownership");
+      Flyology.Operations.Cancel (Publish_Work);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Publish_Work, Commit_Info, Result);
+      Flyology.Operations.Release (Publish_Work);
+      Expect (Result, Outcome_Unknown, "composable commit uncertainty was weakened");
+   end;
    declare
       Resolve_Work         : Refresh_Operation
         (Composable_Set'Access,

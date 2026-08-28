@@ -235,6 +235,18 @@ package Flyology.DB is
    --  Dynamic storage is derived from the observed persisted registry and is
    --  reclaimed automatically; the type retains no Database borrow.
    type L0_Checkpoint_Requirement is limited private;
+   --  Caller-composable singleton commit publication. Set, Item, and
+   --  Cancellation are retained borrows and must outlive terminal Finish or
+   --  abandonment drain. Start performs the existing bounded coordinator
+   --  admission synchronously: rejection leaves the transaction active,
+   --  while admission consumes it before Start returns. The long-lived
+   --  coordinator remains the only worker; this operation adds no helper
+   --  task, queue, timeout default, retry, or replay path.
+   type Commit_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation with private;
    --  Caller-composable initial database publication. The discriminants are
    --  retained borrows and must outlive terminal Finish or abandonment drain.
    --  Storage must be bound to the exact HTTP client. Payload_Pool supplies
@@ -1403,6 +1415,53 @@ package Flyology.DB is
       Receipt : out Commit_Receipt;
       Result  : out Outcome_Code);
 
+   --  Construct and start one singleton commit in the caller's completion
+   --  set. Ownership, admission, cancellation, deadline, and certainty match
+   --  the established operation-last overload.
+   --  @param Set Caller-owned completion set retained through terminal drain
+   --  @param Item Open database retained through terminal drain
+   --  @param Txn Active transaction moved only on successful coordinator admission
+   --  @param Timeout Whole-publication monotonic timeout budget
+   --  @param Token Optional pre-admission cancellation source retained through drain
+   --  @return Started singleton commit operation whose dynamic type is Commit_Operation
+   --  @exception Capacity_Error Completion set has no reusable operation slot
+   function Commit
+     (Set     : not null access Flyology.Operations.Completion_Set'Class;
+      Item    : not null access Database;
+      Txn     : in out Transaction;
+      Timeout : Duration;
+      Token   : access Flyology.Cancellation.Token := null)
+      return Commit_Operation'Class;
+
+   --  Start or restart one singleton commit in an established owner-bound
+   --  operation. Txn is consumed exactly when the bounded coordinator admits
+   --  it; every pre-admission outcome leaves Txn active and rollbackable.
+   --  After admission, cancellation no longer applies and the operation drains
+   --  to the exact publication classification under the caller's one absolute
+   --  deadline. No caller transaction borrow remains after return.
+   --  @param Txn Active transaction moved only on successful coordinator admission
+   --  @param Timeout Whole-publication monotonic timeout budget
+   --  @param Operation Fresh or consumed database-bound commit operation
+   --  @exception Capacity_Error Completion set has no reusable operation slot
+   procedure Commit
+     (Txn       : in out Transaction;
+      Timeout   : Duration;
+      Operation : in out Commit_Operation)
+   with Pre => not Flyology.Operations.Is_Active (Operation)
+     and then not Flyology.Operations.Is_Terminal (Operation);
+
+   --  Consume one terminal owner-driven commit and move its exact retained
+   --  publication receipt to Receipt. Result preserves the same admitted and
+   --  pre-admission classifications as the blocking overload.
+   --  @param Operation Terminal composable commit operation
+   --  @param Receipt Exact publication or reconciliation authority
+   --  @param Result Exact coordinator admission/publication outcome
+   procedure Finish
+     (Operation : in out Commit_Operation;
+      Receipt   : out Commit_Receipt;
+      Result    : out Outcome_Code)
+   with Pre => Flyology.Operations.Is_Terminal (Operation);
+
    --  Atomically admit and publish one explicit synchronous transaction group.
    --  Transactions and Receipts must have matching ranges of two through
    --  Maximum_Group_Transactions members. The whole group shares one absolute
@@ -2019,6 +2078,9 @@ private
       --  Test-only owner-state failure before any recovery lifecycle
       --  admission is transferred. This is neither persisted nor policy.
       Recovery_Driver_State_Allocation,
+      --  Test-only singleton Commit owner-state failure before coordinator
+      --  admission. This is neither persisted nor public capacity policy.
+      Commit_Driver_State_Allocation,
       Engine_State_Allocation,
       Identity_Table_Allocation,
       Projection_Scratch_Allocation,
@@ -2053,6 +2115,10 @@ private
       Scan_Run_Entry_Allocation,
       Scan_Child_Operation_Allocation);
    procedure Set_Test_Allocation_Fault (Point : Internal_Allocation_Fault_Point);
+   type Commit_Handoff_Test_Point is (After_Admission, After_Result_Collection);
+   procedure Arm_Test_Commit_Handoff (Point : Commit_Handoff_Test_Point);
+   function Test_Commit_Handoff_Waiting return Boolean;
+   procedure Resume_Test_Commit_Handoff;
    procedure Decode_Runtime_Image_For_Test
      (Data : Byte_Array; Wrong_DB : Boolean; Wrong_Head : Boolean; Result : out Outcome_Code);
    procedure Check_Runtime_Reference_Parity (Result : out Outcome_Code);
@@ -2432,6 +2498,8 @@ private
 
    type Flush_Driver_State;
    type Flush_Driver_State_Access is access Flush_Driver_State;
+   type Commit_Driver_State;
+   type Commit_Driver_State_Access is access Commit_Driver_State;
    type Refresh_Driver_State;
    type Refresh_Driver_State_Access is access Refresh_Driver_State;
    type Refresh_Operation_Access is access Refresh_Operation;
@@ -2457,6 +2525,29 @@ private
    type Whole_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Whole_Get_Operation;
    type Range_Get_Operation_Access is access Flyology.Object_Storage.Client.Objects.Range_Get_Operation;
    type Head_Operation_Access is access Flyology.Object_Storage.Client.Objects.Head_Operation;
+
+   --  @exclude
+   type Commit_Operation
+     (Set          : not null access Flyology.Operations.Completion_Set'Class;
+      Item         : not null access Database;
+      Cancellation : access Flyology.Cancellation.Token) is
+     new Flyology.Operations.Operation (Set) with record
+      Driver_State     : Commit_Driver_State_Access := null;
+      Final_Receipt    : Commit_Receipt;
+      Final_Result     : Outcome_Code := Invalid_State;
+      Has_Final_Result : Boolean := False;
+      Has_Saved_Error  : Boolean := False;
+      Saved_Error      : Ada.Exceptions.Exception_Occurrence;
+   end record;
+
+   --  @exclude
+   overriding procedure Drive
+     (Item : in out Commit_Operation;
+      Event : Flyology.Operations.Driver_Event);
+   --  @exclude
+   overriding procedure Request_Cancellation (Item : in out Commit_Operation);
+   --  @exclude
+   overriding procedure Finalize (Item : in out Commit_Operation);
 
    --  @exclude
    type Flush_Operation

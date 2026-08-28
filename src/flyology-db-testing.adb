@@ -86,6 +86,24 @@ package body Flyology.DB.Testing is
    function Attempted_Transition_Number (Item : Commit_Receipt) return Interfaces.Unsigned_64
    is (Item.Attempted_Head.Transition_Number);
 
+   procedure Pause_Next_Commit_After_Admission is
+   begin
+      Arm_Test_Commit_Handoff (After_Admission);
+   end Pause_Next_Commit_After_Admission;
+
+   procedure Pause_Next_Commit_After_Result_Collection is
+   begin
+      Arm_Test_Commit_Handoff (After_Result_Collection);
+   end Pause_Next_Commit_After_Result_Collection;
+
+   function Commit_Handoff_Waiting return Boolean
+   is (Test_Commit_Handoff_Waiting);
+
+   procedure Resume_Commit_Handoff is
+   begin
+      Resume_Test_Commit_Handoff;
+   end Resume_Commit_Handoff;
+
    procedure Pause_Coordinator (Item : in out Database; Result : out Outcome_Code) is
    begin
       Set_Test_Paused (Item, True, Result);

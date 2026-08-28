@@ -1,5 +1,78 @@
 # Review record
 
+## Caller-composable singleton Commit candidate
+
+- Parent: accepted caller-composable commit-receipt resolution commit `26277c5`.
+- Scope and API: add limited `Commit_Operation`, limited root and operation-last `Commit`, and receipt-returning typed
+  `Finish` directly in `Flyology.DB`. The established blocking overload now waits on that same operation;
+  `Commit_Group` remains synchronous and unchanged. Provider ownership therefore stays colocated instead of creating
+  a `.Scoped` child, alias, wrapper tree, helper task, retry path, timeout default, public capacity, or new publication
+  identity.
+- Admission, certainty, and cancellation: Start performs the existing coordinator admission synchronously. Invalid,
+  cancelled, expired, conflicting, fenced, or uncertain calls leave the transaction active and return a zero-identity
+  receipt. Completion-set exhaustion raises `Capacity_Error` before DB ownership/admission and leaves the transaction
+  and operation reusable. Driver-allocation or coordinator capacity rejection returns typed `Capacity_Exceeded` with
+  a zero-identity receipt and likewise preserves transaction reuse. Successful admission moves the transaction arena
+  before Start returns. Generic cancellation after that boundary deliberately drains the exact attempt because
+  publication can no longer be retracted safely; every admitted terminal result retains the original
+  transaction/batch identity and existing certainty classification. No application mutation or conditional HEAD is
+  replayed.
+- Ownership and scheduling: the operation retains one database lifecycle lease and exact coordinator slot until
+  terminal collection. The existing long-lived commit worker signals the caller completion set after moving the
+  slot to Completed. The coordinator uses Flyology's single nonblocking borrowed-descriptor attempt as one bounded
+  protected cut: successful signaling and result availability are atomic, while an interrupted attempt is retried
+  only after releasing the coordinator. Blocking Commit's one-slot completion set is exact leaf-operation geometry,
+  not a queue or workload limit. Typed `Finish`, restart, cancellation, close/fence drains, unexpected exception,
+  and abandonment all preserve transaction/receipt and descriptor lifetime rules. Operation registration through
+  terminal-or-admitted-and-armed initiation is abort-deferred, as is coordinator result extraction through controlled
+  arena/image adoption, lease release, and terminal publication. An asynchronous task abort therefore cannot expose
+  either half of those ownership transfers to finalization.
+- Pre-constructor executable evidence: root and nested Alire builds are green. A focused memory-backend regression
+  covers pre-admission cancellation and rollback, deterministic paused-coordinator admission, generic post-admission
+  cancellation, external wake delivery, exact receipt identity, transaction consumption, and in-place operation
+  restart. Separate completion-set-capacity and driver-allocation regressions are added to prove failed initiation
+  leaves both the transaction and the same operation object reusable, with allocation failure typed as bounded
+  capacity. An active-scope-abandonment regression drains the admitted publication, verifies its bytes, and exercises
+  automatic completion-set, slot, and lifecycle-lease cleanup. The authenticated client probe applies a
+  lost-HEAD-response fault after composable admission, verifies that the caller transaction is already consumed, and
+  reconciles the exact receipt without mutation replay. The maintained
+  deterministic suite and 18-lane provider matrix passed on pre-constructor candidate
+  `fd3f138dd917d11c9cc417751a199a362ce31ed51354b4a8261b4920eec51914`; the limited-root addition deliberately
+  superseded that exact identity. Constructor-inclusive deterministic/provider and maintained TLA/TLAPS/GNATprove
+  gates then passed on normal-path candidate `d13470b253db331a8cd8b3d15292be44c33b04819e89c18932c5a22beaaacd95`.
+  Final abort-atomicity review superseded that candidate. Two focused asynchronous-select regressions request abort
+  at the exact post-admission and post-result-extraction barriers, require finalization to drain the exact
+  publication, and account for the moved transaction arena. On the repaired final tree, the maintained deterministic
+  suite executes both regressions, all 18 provider lanes pass, and update-mode plus ordinary TLA remain byte-stable
+  with 393/393 TLAPS obligations and every maintained probe, witness, Ada replay, and intentional divergence green.
+  Warning-strict GNATprove proves 1,103/1,103 checks with zero failed, unproved, justified, warning, or actual
+  `pragma Assume` findings; the preliminary partial representation-data event is retained only as an ordinary
+  non-warning tool notice. Final resource and formal audits are clean.
+- Findings cycle: the concurrency review first found a P1 descriptor-lifetime race in outside-lock signaling, then
+  the full deterministic suite exposed the P1 lost-wake interval in its two-phase claim/ack repair. Replacing both
+  with the core's bounded `Try_Signal_Borrowed` protected cut makes descriptor use and slot collectability atomic.
+  The focused lifecycle oracle found and fixed a separate P1 Ada freezing-order defect: embedding `Lifecycle_Lease`
+  before its overriding finalizer declaration caused ordinary calls to inherit no-op finalization. The driver-state
+  type now follows that declaration, and the existing close/admission race proves every lease drains. API review
+  found and fixed another P1: allocating driver state before completion-set registration leaked that allocation and
+  made the operation non-restartable when registration raised `Capacity_Error`; registration now precedes
+  allocation and the capacity regression covers both transaction and operation reuse. The same restart review found
+  and fixed a final P1: saved-exception Finish cleared its exception marker but retained its terminal-result marker,
+  so a fully consumed failed operation still rejected restart; Finish now clears both markers before re-raising.
+  The final vocabulary sweep found and fixed a P1 API completeness gap: the reusable start and typed Finish were
+  present, but the provider-centric convention also requires the limited root constructor so one-shot composition
+  does not need handwritten operation declarations. The final concurrency pass found one more release-blocking P1:
+  an asynchronous task abort between protected coordinator admission and local `Admitted`/readiness publication, or
+  between protected result extraction and local arena/image adoption, exposed a half-transferred coordinator slot
+  to operation finalization. The repair uses the core's established abort-deferred ownership-transition pattern and
+  private deterministic barriers at both cuts; no admission, certainty, deadline, cancellation, or replay policy is
+  changed. Static regression review also found and fixed two P2 test defects before execution: the verification
+  transactions now use IDs distinct from the later reuse checks, and the private barrier pauses only its first
+  matching arrival so unrelated concurrent commits cannot join the one-shot rendezvous.
+  Under the repository rubric (P0 durable authority/data loss/security, P1 public
+  contract/lifecycle/ownership/certainty, P2 test/documentation/maintenance), the final exact-tree review
+  disposition is P0 none, P1 none, and P2 none.
+
 ## Caller-composable commit-receipt resolution candidate
 
 - Parent: accepted caller-composable family-publication resolution commit `e9267ad`.

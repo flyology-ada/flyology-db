@@ -7,6 +7,14 @@ complete commit batch at `<prefix>/commits/<batch-id>`, then conditionally repla
 generation read by the writer. The head is the visibility, fencing, and recovery publication point. Unreachable
 uploaded objects are orphans and are never visible.
 
+Singleton publication is exposed directly by the database provider through synchronous `Commit`, the limited root
+and reusable operation-last `Commit`, `Commit_Operation`, and typed `Finish`. Start executes the bounded coordinator
+admission before returning, so callers retain a rejected transaction but lose access to an admitted one. The
+long-lived coordinator remains the only worker. A completion-set wake bridges its terminal slot to the owner loop;
+the operation retains one lifecycle admission until the exact receipt is collected. Cancellation after admission is
+a drain request, not authority to retract or replay publication. The blocking overload waits on this same operation
+with one private leaf slot and therefore does not implement a second certainty path.
+
 Every head transition has a fresh opaque ID, a strictly increasing transition ordinal, and its predecessor ID. The
 `(ordinal, ID)` pair is the exact transition identity, so reuse of an older opaque ID at another ordinal cannot
 confirm publication. A stale expected generation loses the conditional replacement. A stale writer that observes

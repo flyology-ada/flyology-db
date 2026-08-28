@@ -63,6 +63,11 @@ private package Flyology.DB.Testing is
 
    function Attempted_Transition_Number (Item : Commit_Receipt) return Interfaces.Unsigned_64;
 
+   procedure Pause_Next_Commit_After_Admission;
+   procedure Pause_Next_Commit_After_Result_Collection;
+   function Commit_Handoff_Waiting return Boolean;
+   procedure Resume_Commit_Handoff;
+
    procedure Pause_Coordinator (Item : in out Database; Result : out Outcome_Code);
    procedure Resume_Coordinator (Item : in out Database; Result : out Outcome_Code);
    procedure Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
