@@ -54,6 +54,9 @@ VARIABLES
     batchPublicationTransition,
     usedTransitionIdentities,
     receipt,
+    durableAuthority,
+    authorityLifecycle,
+    invalidImportAccepted,
     acknowledged,
     wasUnknown,
     visibleTxns,
@@ -95,6 +98,9 @@ vars == <<
     batchPublicationTransition,
     usedTransitionIdentities,
     receipt,
+    durableAuthority,
+    authorityLifecycle,
+    invalidImportAccepted,
     acknowledged,
     wasUnknown,
     visibleTxns,
@@ -115,7 +121,10 @@ OtherTxnFields == <<
     expectedOrdinal,
     expectedTransition,
     publicationOrdinal,
-    publicationTransition
+    publicationTransition,
+    durableAuthority,
+    authorityLifecycle,
+    invalidImportAccepted
 >>
 
 OtherBatchFields == <<
@@ -184,6 +193,9 @@ Init ==
     /\ batchPublicationTransition = [b \in BatchIds |-> NoTransition]
     /\ usedTransitionIdentities = {TransitionIdentity(1, Q0)}
     /\ receipt = [t \in Txns |-> "None"]
+    /\ durableAuthority = [t \in Txns |-> NoBatch]
+    /\ authorityLifecycle = [t \in Txns |-> "None"]
+    /\ invalidImportAccepted = FALSE
     /\ acknowledged = {}
     /\ wasUnknown = [t \in Txns |-> FALSE]
     /\ visibleTxns = {}
@@ -229,7 +241,8 @@ PrepareGroup(group, w, b, q, action) ==
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
         headPredecessor, generation, writerEpoch, remoteBatches,
-        OtherBatchFields, receipt, acknowledged, wasUnknown, visibleTxns, localBatches,
+        OtherBatchFields, receipt, durableAuthority, authorityLifecycle, invalidImportAccepted,
+        acknowledged, wasUnknown, visibleTxns, localBatches,
         recoveredBatches, recoveredTxns, recoveredSequence, crashObserved,
         stalePublicationObserved
        >>
@@ -409,7 +422,9 @@ ObservePreconditionFailure(b) ==
 
 ResolveCommitted(b) ==
     /\ batchTxns[b] # {}
-    /\ \A t \in batchTxns[b] : txnState[t] = "Unknown"
+    /\ \A t \in batchTxns[b] :
+        /\ txnState[t] = "Unknown"
+        /\ receipt[t] = "Unknown"
     /\ b \in ReachableBatches
     /\ txnState' =
         [t \in Txns |-> IF t \in batchTxns[b] THEN "Committed" ELSE txnState[t]]
@@ -429,7 +444,9 @@ ResolvePreconditionFailure(b) ==
     LET representative == BatchRepresentative(b)
     IN
     /\ batchTxns[b] # {}
-    /\ \A t \in batchTxns[b] : txnState[t] = "Unknown"
+    /\ \A t \in batchTxns[b] :
+        /\ txnState[t] = "Unknown"
+        /\ receipt[t] = "Unknown"
     /\ b \notin ReachableBatches
     /\ headOrdinal >= publicationOrdinal[representative]
     /\ txnState' =
@@ -444,6 +461,73 @@ ResolvePreconditionFailure(b) ==
         remoteBatches, OtherBatchFields, usedTransitionIdentities, acknowledged,
         wasUnknown, visibleTxns, localBatches, recoveredBatches, recoveredTxns,
         recoveredSequence, crashObserved, stalePublicationObserved
+       >>
+
+(***************************************************************************
+An exported authority is durable caller custody for exactly one unknown
+transaction and its immutable batch. This finite lane selects a singleton
+batch; the byte-format/runtime tests cover one member authority from a grouped
+batch. Crash discards only the volatile unknown receipt. Import restores that
+receipt only when the durable transaction/batch
+binding is exact; malformed or swapped input is an effect-free rejection.
+Neither export nor import publishes provider state.
+***************************************************************************)
+ExportAuthority(t) ==
+    /\ txnState[t] = "Unknown"
+    /\ receipt[t] = "Unknown"
+    /\ txnBatch[t] \in BatchIds
+    /\ batchTxns[txnBatch[t]] = {t}
+    /\ durableAuthority[t] = NoBatch
+    /\ durableAuthority' = [durableAuthority EXCEPT ![t] = txnBatch[t]]
+    /\ authorityLifecycle' = [authorityLifecycle EXCEPT ![t] = "Exported"]
+    /\ lastAction' = "ExportAuthority"
+    /\ UNCHANGED <<
+        epoch, sequence, latestBatch, headOrdinal, headTransition,
+        headPredecessor, generation, writerEpoch, txnState, txnWriter,
+        txnBatch, expectedGeneration, expectedEpoch, expectedOrdinal,
+        expectedTransition, publicationOrdinal, publicationTransition,
+        remoteBatches, OtherBatchFields, usedTransitionIdentities, receipt,
+        invalidImportAccepted, acknowledged, wasUnknown, visibleTxns,
+        localBatches, recoveredBatches, recoveredTxns, recoveredSequence,
+        crashObserved, stalePublicationObserved
+       >>
+
+ImportAuthority(t) ==
+    /\ txnState[t] = "Unknown"
+    /\ receipt[t] = "None"
+    /\ authorityLifecycle[t] = "Lost"
+    /\ durableAuthority[t] = txnBatch[t]
+    /\ durableAuthority[t] \in BatchIds
+    /\ batchTxns[durableAuthority[t]] = {t}
+    /\ receipt' = [receipt EXCEPT ![t] = "Unknown"]
+    /\ authorityLifecycle' = [authorityLifecycle EXCEPT ![t] = "Imported"]
+    /\ lastAction' = "ImportAuthority"
+    /\ UNCHANGED <<
+        epoch, sequence, latestBatch, headOrdinal, headTransition,
+        headPredecessor, generation, writerEpoch, txnState, txnWriter,
+        txnBatch, expectedGeneration, expectedEpoch, expectedOrdinal,
+        expectedTransition, publicationOrdinal, publicationTransition,
+        durableAuthority, invalidImportAccepted,
+        remoteBatches, OtherBatchFields, usedTransitionIdentities,
+        acknowledged, wasUnknown, visibleTxns, localBatches,
+        recoveredBatches, recoveredTxns, recoveredSequence, crashObserved,
+        stalePublicationObserved
+       >>
+
+RejectMalformedAuthority(t, b) ==
+    /\ txnState[t] = "Unknown"
+    /\ receipt[t] = "None"
+    /\ b \in BatchIds
+    /\ batchTxns[txnBatch[t]] = {t}
+    /\ (b # txnBatch[t] \/ t \notin batchTxns[b])
+    /\ lastAction' = "RejectMalformedAuthority"
+    /\ UNCHANGED <<
+        epoch, sequence, latestBatch, headOrdinal, headTransition,
+        headPredecessor, generation, writerEpoch, txnState, OtherTxnFields,
+        remoteBatches, OtherBatchFields, usedTransitionIdentities, receipt,
+        acknowledged, wasUnknown, visibleTxns, localBatches,
+        recoveredBatches, recoveredTxns, recoveredSequence, crashObserved,
+        stalePublicationObserved
        >>
 
 AdvanceWriterEpoch(w, q) ==
@@ -472,17 +556,27 @@ AcquireWriter(w, q) ==
 
 Crash ==
     /\ localBatches # {} \/ recoveredBatches # {} \/ recoveredTxns # {}
-        \/ recoveredSequence # 0
+        \/ recoveredSequence # 0 \/ \E t \in Txns : receipt[t] = "Unknown"
     /\ localBatches' = {}
     /\ recoveredBatches' = {}
     /\ recoveredTxns' = {}
     /\ recoveredSequence' = 0
+    /\ receipt' = [t \in Txns |-> IF receipt[t] = "Unknown" THEN "None" ELSE receipt[t]]
+    /\ authorityLifecycle' =
+        [t \in Txns |->
+            IF receipt[t] = "Unknown"
+                /\ authorityLifecycle[t] \in {"Exported", "Imported"}
+            THEN "Lost"
+            ELSE authorityLifecycle[t]]
     /\ crashObserved' = TRUE
     /\ lastAction' = "Crash"
     /\ UNCHANGED <<
         epoch, sequence, latestBatch, headOrdinal, headTransition,
-        headPredecessor, generation, writerEpoch, txnState, OtherTxnFields,
-        remoteBatches, OtherBatchFields, usedTransitionIdentities, receipt,
+        headPredecessor, generation, writerEpoch, txnState, txnWriter,
+        txnBatch, expectedGeneration, expectedEpoch, expectedOrdinal,
+        expectedTransition, publicationOrdinal, publicationTransition,
+        durableAuthority, invalidImportAccepted,
+        remoteBatches, OtherBatchFields, usedTransitionIdentities,
         acknowledged, wasUnknown, visibleTxns, stalePublicationObserved
        >>
 
@@ -514,6 +608,9 @@ Next ==
     \/ \E b \in BatchIds : ObservePreconditionFailure(b)
     \/ \E b \in BatchIds : ResolveCommitted(b)
     \/ \E b \in BatchIds : ResolvePreconditionFailure(b)
+    \/ \E t \in Txns : ExportAuthority(t)
+    \/ \E t \in Txns : ImportAuthority(t)
+    \/ \E t \in Txns, b \in BatchIds : RejectMalformedAuthority(t, b)
     \/ \E w \in Writers, q \in TransitionIds : AcquireWriter(w, q)
     \/ Crash
     \/ Recover
@@ -553,6 +650,10 @@ TypeOK ==
     /\ usedTransitionIdentities \subseteq
         [ordinal : Nat \ {0}, id : TransitionIds]
     /\ receipt \in [Txns -> ReceiptStates]
+    /\ durableAuthority \in [Txns -> BatchIds \cup {NoBatch}]
+    /\ authorityLifecycle \in
+        [Txns -> {"None", "Exported", "Lost", "Imported"}]
+    /\ invalidImportAccepted \in BOOLEAN
     /\ acknowledged \subseteq Txns
     /\ wasUnknown \in [Txns -> BOOLEAN]
     /\ visibleTxns \subseteq Txns
@@ -566,7 +667,8 @@ TypeOK ==
         "Init", "PrepareSingle", "PreparePooled", "StoreBatch", "PublishHead",
         "ObserveSuccess", "LoseAcceptedResponse", "LoseUnacceptedResponse",
         "ObservePreconditionFailure", "ResolveCommitted",
-        "ResolvePreconditionFailure", "AcquireWriter", "Crash", "Recover"
+        "ResolvePreconditionFailure", "ExportAuthority", "ImportAuthority",
+        "RejectMalformedAuthority", "AcquireWriter", "Crash", "Recover"
        }
 
 HeadShape ==
@@ -623,6 +725,20 @@ BatchOutcomesAgree ==
             /\ (t \in acknowledged) = (representative \in acknowledged)
             /\ wasUnknown[t] = wasUnknown[representative]
 
+DurableAuthorityIsExact ==
+    \A t \in Txns :
+        durableAuthority[t] # NoBatch =>
+            /\ durableAuthority[t] = txnBatch[t]
+            /\ t \in batchTxns[durableAuthority[t]]
+
+AuthorityLifecycleIsOrdered ==
+    \A t \in Txns :
+        /\ (authorityLifecycle[t] = "None") =
+            (durableAuthority[t] = NoBatch)
+        /\ authorityLifecycle[t] = "Lost" => receipt[t] = "None"
+
+MalformedImportIsNoOp == ~invalidImportAccepted
+
 UnknownIsTerminal ==
     \A t \in Txns :
         wasUnknown[t] => txnState[t] \notin {"Idle", "Prepared", "Stored", "Accepted"}
@@ -645,6 +761,8 @@ Safety ==
     TypeOK /\ HeadShape /\ ReachableChain /\ DurableAcknowledgement
         /\ PooledVisibilityIsAtomic /\ BatchTransactionsAreDisjoint
         /\ BatchOutcomesAgree
+        /\ DurableAuthorityIsExact /\ AuthorityLifecycleIsOrdered
+        /\ MalformedImportIsNoOp
         /\ UnknownIsTerminal /\ RecoveryIsPrefix
         /\ RecoveredBatchesAreAtomic /\ NoStaleWriterPublication
 

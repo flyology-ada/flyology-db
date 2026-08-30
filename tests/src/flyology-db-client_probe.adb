@@ -306,8 +306,7 @@ procedure Flyology.DB.Client_Probe is
    --  A full registered-family map remains accepted. The empty family entry
    --  is retained in the receipt but neither published nor identity-reserved.
    Compaction_Runs                : constant Checkpoint_Run_Identity_Array :=
-     [Configure_Checkpoint_Run (1, Compaction_Run_ID),
-      Configure_Checkpoint_Run (2, Audit_Run_ID)];
+     [Configure_Checkpoint_Run (1, Compaction_Run_ID), Configure_Checkpoint_Run (2, Audit_Run_ID)];
    Later_Runs                     : constant Checkpoint_Run_Identity_Array :=
      [Configure_Checkpoint_Run (1, Later_Run_ID), Configure_Checkpoint_Run (2, Audit_Run_ID)];
    Third_Runs                     : constant Checkpoint_Run_Identity_Array :=
@@ -1911,113 +1910,155 @@ begin
       Expect (Result, Outcome_Unknown, "composable commit uncertainty was weakened");
    end;
    declare
-      Resolve_Work         :
-        Refresh_Operation
-          (Composable_Set'Access, Created'Access, Context'Access, Client'Access, Flush_Pool'Access, null);
-      Batch_Puts_Before    : Natural;
-      Manifest_Puts_Before : Natural;
-      Head_Puts_Before     : Natural;
-      Batch_Puts_After     : Natural;
-      Manifest_Puts_After  : Natural;
-      Head_Puts_After      : Natural;
-      Wrong_Finish_Raised  : Boolean := False;
-      Stop                 : aliased Flyology.Cancellation.Token;
-      Cancel_Work          :
-        Refresh_Operation
-          (Composable_Set'Access,
-           Created'Access,
-           Context'Access,
-           Client'Access,
-           Flush_Pool'Access,
-           Stop'Access);
+      Authority_Length      : constant Natural := Commit_Resolution_Authority_Length (Commit_Info);
+      Authority             : Byte_Array (1 .. Authority_Length);
+      Exported_Length       : Natural;
+      Authority_Batch       : constant Identifier := Receipt_Batch_ID (Commit_Info);
+      Authority_Transaction : constant Transaction_Identifier := Receipt_Transaction_ID (Commit_Info);
+      Authority_Sequence    : constant Sequence_Number := Receipt_Sequence (Commit_Info);
+      Batch_Puts_Before     : Natural;
+      Manifest_Puts_Before  : Natural;
+      Head_Puts_Before      : Natural;
+      Batch_Puts_After      : Natural;
+      Manifest_Puts_After   : Natural;
+      Head_Puts_After       : Natural;
+      Import_Batch_After    : Natural;
+      Import_Manifest_After : Natural;
+      Import_Head_After     : Natural;
    begin
       Context.Test_Control.Publication_Counts (Batch_Puts_Before, Manifest_Puts_Before, Head_Puts_Before);
 
-      Set_Test_Allocation_Fault (Recovery_Driver_State_Allocation);
-      Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
-      Flyology.Operations.Wait_All (Composable_Set);
-      Finish (Resolve_Work, Commit_Info, Result, Restored_Buffer);
-      Flyology.Operations.Release (Resolve_Work);
-      Expect (Result, Capacity_Exceeded, "commit resolution allocation failure was weakened");
-      if Receipt_Batch_ID (Commit_Info) = Zero_Identifier
-        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
-        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
-      then
-         raise Program_Error with "commit resolution allocation failure lost caller ownership";
+      Export_Commit_Resolution_Authority (Commit_Info, Authority, Exported_Length, Result);
+      Expect (Result, Success, "client-backed commit authority export failed");
+      if Authority_Length = 0 or else Exported_Length /= Authority_Length then
+         raise Program_Error with "client-backed commit authority export lost its exact length";
       end if;
-      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+      Close (Created, Close_Result);
+      Expect (Close_Result, Success, "client-backed commit authority teardown failed");
+      Open
+        (Created, Context'Access, Probe_Database_ID, Flush_Buffer, Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "client-backed commit authority reopen failed");
+      Open_Column_Family (Created, 1, Family, Result);
+      Expect (Result, Success, "client-backed commit authority family reopen failed");
+      Import_Commit_Resolution_Authority (Created, Authority, Commit_Info, Result);
+      Expect (Result, Success, "client-backed commit authority import failed");
+      if Receipt_Batch_ID (Commit_Info) /= Authority_Batch
+        or else Receipt_Transaction_ID (Commit_Info) /= Authority_Transaction
+        or else Receipt_Sequence (Commit_Info) /= Authority_Sequence
+        or else Receipt_Outcome (Commit_Info) /= Outcome_Unknown
+      then
+         raise Program_Error with "client-backed commit authority import changed its receipt identity";
+      end if;
+      Context.Test_Control.Publication_Counts (Import_Batch_After, Import_Manifest_After, Import_Head_After);
+      if Import_Batch_After /= Batch_Puts_Before
+        or else Import_Manifest_After /= Manifest_Puts_Before
+        or else Import_Head_After /= Head_Puts_Before
+      then
+         raise Program_Error with "client-backed commit authority handoff touched the provider";
+      end if;
 
-      Stop.Request;
-      Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Cancel_Work);
-      Flyology.Operations.Wait_All (Composable_Set);
-      Finish (Cancel_Work, Commit_Info, Result, Restored_Buffer);
-      Flyology.Operations.Release (Cancel_Work);
-      Expect (Result, Cancelled, "pre-requested commit resolution cancellation was lost");
-      if Receipt_Batch_ID (Commit_Info) = Zero_Identifier
-        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
-        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
-      then
-         raise Program_Error with "cancelled commit resolution lost caller ownership";
-      end if;
-      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
-
-      Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
-      if Receipt_Batch_ID (Commit_Info) /= Zero_Identifier or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
-      then
-         raise Program_Error with "composable commit resolution retained caller ownership";
-      end if;
-      Flyology.Operations.Wait_All (Composable_Set);
+      declare
+         Resolve_Work        :
+           Refresh_Operation
+             (Composable_Set'Access, Created'Access, Context'Access, Client'Access, Flush_Pool'Access, null);
+         Wrong_Finish_Raised : Boolean := False;
+         Stop                : aliased Flyology.Cancellation.Token;
+         Cancel_Work         :
+           Refresh_Operation
+             (Composable_Set'Access,
+              Created'Access,
+              Context'Access,
+              Client'Access,
+              Flush_Pool'Access,
+              Stop'Access);
       begin
-         Finish (Resolve_Work, Result, Restored_Buffer);
-      exception
-         when Program_Error =>
-            Wrong_Finish_Raised := True;
-      end;
-      if not Wrong_Finish_Raised
-        or else Flyology.Buffers.Has_Buffer (Restored_Buffer)
-        or else not Flyology.Operations.Is_Terminal (Resolve_Work)
-      then
-         raise Program_Error with "commit resolution accepted the untyped refresh Finish";
-      end if;
-      Finish (Resolve_Work, Commit_Info, Result, Restored_Buffer);
-      Flyology.Operations.Release (Resolve_Work);
-      Expect (Result, Success, "client-backed composable commit resolution failed");
-      if Receipt_Batch_ID (Commit_Info) = Zero_Identifier
-        or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
-        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
-        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
-      then
-         raise Program_Error with "composable commit resolution lost receipt or exact token";
-      end if;
-      Context.Test_Control.Publication_Counts (Batch_Puts_After, Manifest_Puts_After, Head_Puts_After);
-      if Batch_Puts_After /= Batch_Puts_Before
-        or else Manifest_Puts_After /= Manifest_Puts_Before
-        or else Head_Puts_After /= Head_Puts_Before
-      then
-         raise Program_Error with "composable commit resolution replayed provider mutation";
-      end if;
-      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+         Set_Test_Allocation_Fault (Recovery_Driver_State_Allocation);
+         Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
+         Flyology.Operations.Wait_All (Composable_Set);
+         Finish (Resolve_Work, Commit_Info, Result, Restored_Buffer);
+         Flyology.Operations.Release (Resolve_Work);
+         Expect (Result, Capacity_Exceeded, "commit resolution allocation failure was weakened");
+         if Receipt_Batch_ID (Commit_Info) = Zero_Identifier
+           or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+           or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+         then
+            raise Program_Error with "commit resolution allocation failure lost caller ownership";
+         end if;
+         Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
 
-      --  A conclusive receipt still moves through the same reusable owner but
-      --  returns Invalid_State without provider I/O or substituting its token.
-      Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
-      Flyology.Operations.Wait_All (Composable_Set);
-      Finish (Resolve_Work, Commit_Info, Result, Restored_Buffer);
-      Flyology.Operations.Release (Resolve_Work);
-      Expect (Result, Invalid_State, "conclusive commit receipt restarted reconciliation");
-      if not Flyology.Buffers.Has_Buffer (Restored_Buffer)
-        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
-      then
-         raise Program_Error with "invalid commit resolution lost its exact token";
-      end if;
-      Context.Test_Control.Publication_Counts (Batch_Puts_After, Manifest_Puts_After, Head_Puts_After);
-      if Batch_Puts_After /= Batch_Puts_Before
-        or else Manifest_Puts_After /= Manifest_Puts_Before
-        or else Head_Puts_After /= Head_Puts_Before
-      then
-         raise Program_Error with "invalid commit resolution touched the provider";
-      end if;
-      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+         Stop.Request;
+         Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Cancel_Work);
+         Flyology.Operations.Wait_All (Composable_Set);
+         Finish (Cancel_Work, Commit_Info, Result, Restored_Buffer);
+         Flyology.Operations.Release (Cancel_Work);
+         Expect (Result, Cancelled, "pre-requested commit resolution cancellation was lost");
+         if Receipt_Batch_ID (Commit_Info) = Zero_Identifier
+           or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+           or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+         then
+            raise Program_Error with "cancelled commit resolution lost caller ownership";
+         end if;
+         Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+         Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
+         if Receipt_Batch_ID (Commit_Info) /= Zero_Identifier
+           or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
+         then
+            raise Program_Error with "composable commit resolution retained caller ownership";
+         end if;
+         Flyology.Operations.Wait_All (Composable_Set);
+         begin
+            Finish (Resolve_Work, Result, Restored_Buffer);
+         exception
+            when Program_Error =>
+               Wrong_Finish_Raised := True;
+         end;
+         if not Wrong_Finish_Raised
+           or else Flyology.Buffers.Has_Buffer (Restored_Buffer)
+           or else not Flyology.Operations.Is_Terminal (Resolve_Work)
+         then
+            raise Program_Error with "commit resolution accepted the untyped refresh Finish";
+         end if;
+         Finish (Resolve_Work, Commit_Info, Result, Restored_Buffer);
+         Flyology.Operations.Release (Resolve_Work);
+         Expect (Result, Success, "client-backed composable commit resolution failed");
+         if Receipt_Batch_ID (Commit_Info) = Zero_Identifier
+           or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
+           or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+           or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+         then
+            raise Program_Error with "composable commit resolution lost receipt or exact token";
+         end if;
+         Context.Test_Control.Publication_Counts (Batch_Puts_After, Manifest_Puts_After, Head_Puts_After);
+         if Batch_Puts_After /= Batch_Puts_Before
+           or else Manifest_Puts_After /= Manifest_Puts_Before
+           or else Head_Puts_After /= Head_Puts_Before
+         then
+            raise Program_Error with "composable commit resolution replayed provider mutation";
+         end if;
+         Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+         --  A conclusive receipt still moves through the same reusable owner but
+         --  returns Invalid_State without provider I/O or substituting its token.
+         Resolve (Commit_Info, Flush_Buffer, Test_Operation_Timeout, Resolve_Work);
+         Flyology.Operations.Wait_All (Composable_Set);
+         Finish (Resolve_Work, Commit_Info, Result, Restored_Buffer);
+         Flyology.Operations.Release (Resolve_Work);
+         Expect (Result, Invalid_State, "conclusive commit receipt restarted reconciliation");
+         if not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+           or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+         then
+            raise Program_Error with "invalid commit resolution lost its exact token";
+         end if;
+         Context.Test_Control.Publication_Counts (Batch_Puts_After, Manifest_Puts_After, Head_Puts_After);
+         if Batch_Puts_After /= Batch_Puts_Before
+           or else Manifest_Puts_After /= Manifest_Puts_Before
+           or else Head_Puts_After /= Head_Puts_Before
+         then
+            raise Program_Error with "invalid commit resolution touched the provider";
+         end if;
+         Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+      end;
    end;
    First_Sequence := Receipt_Sequence (Commit_Info);
    --  Before the first checkpoint, the public state machine resolves the
@@ -2371,8 +2412,7 @@ begin
    Flyology.Operations.Wait_All (Composable_Set);
    Finish (Flush_Work, Family_Info, Result, Restored_Buffer);
    Expect (Result, Outcome_Unknown, "family manifest resolution lost HEAD uncertainty");
-   Context.Test_Control.Publication_Counts
-     (Family_Batches_After, Family_Manifests_After, Family_Heads_After);
+   Context.Test_Control.Publication_Counts (Family_Batches_After, Family_Manifests_After, Family_Heads_After);
    if Family_Batches_After /= Family_Batches_Before
      or else Family_Manifests_After /= Family_Manifests_Before + 1
      or else Family_Heads_After /= Family_Heads_Before + 1
@@ -2481,8 +2521,8 @@ begin
    declare
       Before_Batches, Before_Manifests, Before_Heads : Natural;
       After_Batches, After_Manifests, After_Heads    : Natural;
-      Stop                                             : aliased Flyology.Cancellation.Token;
-      Cancelled_Work                                   :
+      Stop                                           : aliased Flyology.Cancellation.Token;
+      Cancelled_Work                                 :
         Flush_Operation
           (Composable_Set'Access,
            Created'Access,
@@ -2520,8 +2560,7 @@ begin
       Flyology.Operations.Wait_All (Composable_Set);
       Finish (Cancelled_Work, Family_Info, Result, Flush_Buffer);
       if Proxy_Enabled then
-         Refresh_Proxy_Testing.Wait_Blocked
-           (Refresh_Proxy_Testing.Whole_Get_Request, Test_Operation_Timeout);
+         Refresh_Proxy_Testing.Wait_Blocked (Refresh_Proxy_Testing.Whole_Get_Request, Test_Operation_Timeout);
          Refresh_Proxy_Testing.Release_Blocked;
       end if;
       Context.Test_Control.Publication_Counts (After_Batches, After_Manifests, After_Heads);
@@ -3122,11 +3161,12 @@ begin
       Expect (Result, Success, "client-backed group audit begin failed");
       Put (Created, Members (2), Audit_Family, Audit_Key_Data, Audit_Value_Data, Result);
       Expect (Result, Success, "client-backed group audit Put failed");
+      Context.Test_Control.Arm (After_Head_Put, Unknown_After_Entry, 1);
       Commit_Group (Group_Batch_ID, Members, Test_Operation_Timeout, Work);
       Flyology.Operations.Wait_All (Composable_Set);
       Finish (Work, Receipts, Result);
       Flyology.Operations.Release (Work);
-      Expect (Result, Success, "client-backed composable group failed");
+      Expect (Result, Outcome_Unknown, "client-backed composable group did not retain uncertainty");
       if Receipt_Transaction_ID (Receipts (1)) /= Group_Primary_Transaction_ID
         or else Receipt_Transaction_ID (Receipts (2)) /= Group_Audit_Transaction_ID
         or else Receipt_Batch_ID (Receipts (1)) /= Group_Batch_ID
@@ -3135,6 +3175,57 @@ begin
       then
          raise Program_Error with "client-backed composable group lost exact order or identity";
       end if;
+      declare
+         Length_1        : constant Natural := Commit_Resolution_Authority_Length (Receipts (1));
+         Length_2        : constant Natural := Commit_Resolution_Authority_Length (Receipts (2));
+         Authority_1     : Byte_Array (1 .. Length_1);
+         Authority_2     : Byte_Array (1 .. Length_2);
+         Exported_Length : Natural;
+         Batch_Before    : Natural;
+         Manifest_Before : Natural;
+         Head_Before     : Natural;
+         Batch_After     : Natural;
+         Manifest_After  : Natural;
+         Head_After      : Natural;
+      begin
+         Context.Test_Control.Publication_Counts (Batch_Before, Manifest_Before, Head_Before);
+         Export_Commit_Resolution_Authority (Receipts (1), Authority_1, Exported_Length, Result);
+         Expect (Result, Success, "client-backed group member one authority export failed");
+         if Exported_Length /= Length_1 then
+            raise Program_Error with "client-backed group member one authority length changed";
+         end if;
+         Export_Commit_Resolution_Authority (Receipts (2), Authority_2, Exported_Length, Result);
+         Expect (Result, Success, "client-backed group member two authority export failed");
+         if Exported_Length /= Length_2 or else Authority_1 = Authority_2 then
+            raise Program_Error with "client-backed group authorities were not member-specific";
+         end if;
+         Import_Commit_Resolution_Authority (Created, Authority_1, Receipts (1), Result);
+         Expect (Result, Success, "client-backed group member one authority import failed");
+         Import_Commit_Resolution_Authority (Created, Authority_2, Receipts (2), Result);
+         Expect (Result, Success, "client-backed group member two authority import failed");
+         if Receipt_Transaction_ID (Receipts (1)) /= Group_Primary_Transaction_ID
+           or else Receipt_Transaction_ID (Receipts (2)) /= Group_Audit_Transaction_ID
+           or else Receipt_Sequence (Receipts (2)) /= Receipt_Sequence (Receipts (1)) + 1
+         then
+            raise Program_Error with "client-backed imported group lost exact member order";
+         end if;
+         Resolve
+           (Created, Context'Access, Receipts (1), Flush_Buffer, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "client-backed imported group member one did not resolve");
+         if Receipt_Outcome (Receipts (2)) /= Outcome_Unknown then
+            raise Program_Error with "client-backed group member one consumed member two authority";
+         end if;
+         Resolve
+           (Created, Context'Access, Receipts (2), Flush_Buffer, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "client-backed imported group member two did not resolve");
+         Context.Test_Control.Publication_Counts (Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "client-backed group authority resolution replayed provider mutation";
+         end if;
+      end;
    end;
 
    Close (Created, Close_Result);

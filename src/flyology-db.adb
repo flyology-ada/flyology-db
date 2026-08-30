@@ -5,6 +5,7 @@ with Ada.Unchecked_Deallocation;
 with Flyology.Operations.Drivers;
 with Flyology.DB.Batch_Formats;
 with Flyology.DB.Checkpoint_Policy;
+with Flyology.DB.Commit_Authority_Formats;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
 with Flyology.DB.Identity_Partition_Policy;
@@ -36,6 +37,7 @@ package body Flyology.DB is
    package Client_Objects renames Flyology.Object_Storage.Client.Objects;
    package Batches renames Flyology.DB.Batch_Formats;
    package Checkpoints renames Flyology.DB.Checkpoint_Policy;
+   package Commit_Authorities renames Flyology.DB.Commit_Authority_Formats;
    package Heads renames Flyology.DB.Head_Policy;
    package LSM_Runtime renames Flyology.DB.LSM_Runtime_Formats;
    package Manifests renames Flyology.DB.Manifest_Formats;
@@ -48,6 +50,8 @@ package body Flyology.DB is
    use type Interfaces.C.int;
    use type Byte;
    use type Batches.Encode_Status;
+   use type Commit_Authorities.Decode_Status;
+   use type Commit_Authorities.Encode_Status;
    use type Interfaces.Unsigned_16;
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
@@ -63,6 +67,7 @@ package body Flyology.DB is
    use type Client_Objects.Range_Get_Result_Kind;
    use type Client_Objects.Whole_Get_Result_Kind;
    use type Flyology.DB.Formats.Decode_Status;
+   use type Heads.Commit_Sequence;
    use type Heads.Identifier;
    use type Manifests.Decode_Status;
    use type Manifests.Encode_Status;
@@ -15619,6 +15624,243 @@ package body Flyology.DB is
    function Receipt_Batch_ID (Item : Commit_Receipt) return Identifier
    is (Item.Batch_ID);
 
+   function Commit_Authority_Metadata (Receipt : Commit_Receipt) return Commit_Authorities.Authority_Metadata
+   is ((Transaction_ID    => To_Head_ID (Identifier (Receipt.Transaction_ID)),
+        Assigned_Sequence => Heads.Commit_Sequence (Receipt.Assigned_Sequence),
+        Batch_ID          => To_Head_ID (Receipt.Batch_ID),
+        Expected_Head     => To_Head (Receipt.Expected_Head),
+        Attempted_Head    => To_Head (Receipt.Attempted_Head)));
+
+   function Retained_Authority_Length (Source : Flyology.Bytes.Unbounded_Bytes) return Natural
+   is (Flyology.Bytes.Length (Source));
+
+   function Retained_Authority_Element (Source : Flyology.Bytes.Unbounded_Bytes; Index : Positive) return Byte
+   is (Byte (Flyology.Bytes.Element (Source, Index)));
+
+   function Retained_Batch_Member_Valid is new
+     Commit_Authorities.Source_Batch_Member_Valid
+       (Source_Type    => Flyology.Bytes.Unbounded_Bytes,
+        Source_Length  => Retained_Authority_Length,
+        Source_Element => Retained_Authority_Element);
+
+   function Exportable_Commit_Authority (Receipt : Commit_Receipt) return Boolean is
+      Metadata : constant Commit_Authorities.Authority_Metadata := Commit_Authority_Metadata (Receipt);
+   begin
+      return
+        Receipt.Current_Outcome = Outcome_Unknown
+        and then Receipt.Phase = Head_Publication_Unknown
+        and then Receipt.Retained_Image.Image /= null
+        and then Commit_Authorities.Structurally_Valid (Metadata)
+        and then Retained_Batch_Member_Valid (Metadata, Receipt.Retained_Image.Image.Data);
+   end Exportable_Commit_Authority;
+
+   function Commit_Resolution_Authority_Length (Receipt : Commit_Receipt) return Natural is
+   begin
+      if not Exportable_Commit_Authority (Receipt) then
+         return 0;
+      end if;
+      return Commit_Authorities.Encoded_Length (Flyology.Bytes.Length (Receipt.Retained_Image.Image.Data));
+   end Commit_Resolution_Authority_Length;
+
+   procedure Export_Commit_Resolution_Authority
+     (Receipt   : Commit_Receipt;
+      Authority : in out Byte_Array;
+      Length    : out Natural;
+      Result    : out Outcome_Code)
+   is
+      Metadata : constant Commit_Authorities.Authority_Metadata := Commit_Authority_Metadata (Receipt);
+      Required : constant Natural := Commit_Resolution_Authority_Length (Receipt);
+      Status   : Commit_Authorities.Encode_Status;
+   begin
+      Length := 0;
+      if not Exportable_Commit_Authority (Receipt) then
+         Result := Invalid_State;
+         return;
+      elsif Required = 0 then
+         Result := Capacity_Exceeded;
+         return;
+      elsif Authority'Length < Required then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      System.Soft_Links.Abort_Defer.all;
+      declare
+         Last  : constant Positive := Authority'First + (Required - 1);
+         Image : Byte_Array renames Authority (Authority'First .. Last);
+         First : Positive;
+      begin
+         Commit_Authorities.Encode_Header
+           (Metadata, Flyology.Bytes.Length (Receipt.Retained_Image.Image.Data), Image, Status);
+         if Status /= Commit_Authorities.Encoded then
+            raise Program_Error with "validated commit authority did not encode";
+         end if;
+         First := Commit_Authorities.Batch_First (Image);
+         for Offset in Natural range 0 .. Flyology.Bytes.Length (Receipt.Retained_Image.Image.Data) - 1 loop
+            Image (First + Offset) :=
+              Byte (Flyology.Bytes.Element (Receipt.Retained_Image.Image.Data, Offset + 1));
+         end loop;
+         Commit_Authorities.Seal (Image);
+         Length := Required;
+         Result := Success;
+      exception
+         when others =>
+            System.Soft_Links.Abort_Undefer.all;
+            raise;
+      end;
+      System.Soft_Links.Abort_Undefer.all;
+   end Export_Commit_Resolution_Authority;
+
+   procedure Import_Commit_Resolution_Authority
+     (Item      : in out Database;
+      Authority : Byte_Array;
+      Receipt   : in out Commit_Receipt;
+      Result    : out Outcome_Code)
+   is
+      Lease        : Lifecycle_Lease;
+      Metadata     : Commit_Authorities.Authority_Metadata;
+      Batch_Start  : Positive := Authority'First;
+      Batch_Length : Natural := 0;
+      Status       : Commit_Authorities.Decode_Status;
+      Data         : Flyology.Bytes.Unbounded_Bytes;
+      Batch        : Runtime_Batch;
+      Candidate    : Commit_Receipt;
+      Member_Total : Natural := 0;
+      Old_Image    : Shared_Image_Access := null;
+      Adopted      : Boolean := False;
+      Head         : Head_Snapshot;
+      Manifest     : Manifests.Manifest;
+      Ignored_Generation     : Generation_Value;
+      Ignored_Uncertain      : Boolean;
+      Ignored_Fenced         : Boolean;
+      Ignored_Identity_Total : Natural;
+   begin
+      Acquire (Item, Lease, Result);
+      if Result /= Success or else Lease.State = null then
+         Result := Invalid_State;
+         return;
+      end if;
+
+      Lease.State.Gate.Snapshot (Head, Ignored_Generation, Ignored_Uncertain, Ignored_Fenced);
+      Lease.State.Gate.Checkpoint_Metadata (Manifest, Ignored_Identity_Total, Result);
+      if Result /= Success then
+         return;
+      end if;
+
+      Commit_Authorities.Decode
+        (Authority, To_Head_ID (Head.Database_ID), Metadata, Batch_Start, Batch_Length, Status);
+      if Status /= Commit_Authorities.Decoded then
+         Result := (if Status = Commit_Authorities.Unsupported_Version then Unsupported_Format else Corrupt);
+         return;
+      elsif not Commit_Authorities.Batch_Member_Valid
+                  (Metadata, Authority (Batch_Start .. Batch_Start + Batch_Length - 1))
+      then
+         Result := Corrupt;
+         return;
+      elsif Batch_Length > Maximum_Runtime_Batch_Length (Manifest.Limits) then
+         Result := Capacity_Exceeded;
+         return;
+      end if;
+
+      begin
+         Flyology.Bytes.Reserve_Capacity (Data, Batch_Length);
+         for Offset in Natural range 0 .. Batch_Length - 1 loop
+            Flyology.Bytes.Append (Data, Ada.Streams.Stream_Element (Authority (Batch_Start + Offset)));
+         end loop;
+         Allocation_Faults.Check (Commit_Authority_Image_Allocation);
+         Decode_Runtime_Batch
+           (Data,
+            Head.Database_ID,
+            To_Public_Limits (Manifest.Limits, Lease.State.LSM_Authority),
+            Batch,
+            Result);
+      exception
+         when Storage_Error =>
+            Release_Runtime_Batch (Batch);
+            Result := Capacity_Exceeded;
+      end;
+      if Result /= Success then
+         Release_Runtime_Batch (Batch);
+         return;
+      end if;
+
+      for Transaction of Batch.Transactions (1 .. Batch.Transaction_Total) loop
+         if To_Head_ID (Identifier (Transaction.Transaction_ID)) = Metadata.Transaction_ID
+           and then Heads.Commit_Sequence (Transaction.Sequence) = Metadata.Assigned_Sequence
+         then
+            Member_Total := Member_Total + 1;
+         end if;
+      end loop;
+      if Batch.Database_ID /= To_Database_ID (Metadata.Expected_Head.Database_ID)
+        or else Batch.Batch_ID /= To_Identifier (Metadata.Batch_ID)
+        or else Batch.Previous_Batch_ID /= To_Identifier (Metadata.Expected_Head.Latest_Batch)
+        or else Batch.Expected_Transition_ID /= To_Identifier (Metadata.Expected_Head.Transition_ID)
+        or else Batch.Expected_Transition_Number
+                /= Interfaces.Unsigned_64 (Metadata.Expected_Head.Transition_Number)
+        or else Batch.Publication_Transition_ID /= To_Identifier (Metadata.Attempted_Head.Transition_ID)
+        or else Batch.Publication_Transition_Number
+                /= Interfaces.Unsigned_64 (Metadata.Attempted_Head.Transition_Number)
+        or else Batch.First_Sequence /= Sequence_Number (Metadata.Expected_Head.Highest_Visible) + 1
+        or else Batch.Last_Sequence /= Sequence_Number (Metadata.Attempted_Head.Highest_Visible)
+        or else not Runtime_Published_By (Batch, From_Head (Metadata.Attempted_Head))
+        or else Member_Total /= 1
+      then
+         Release_Runtime_Batch (Batch);
+         Result := Corrupt;
+         return;
+      end if;
+
+      Candidate.Current_Outcome := Outcome_Unknown;
+      Candidate.Phase := Head_Publication_Unknown;
+      Candidate.Transaction_ID := Transaction_Identifier (To_Identifier (Metadata.Transaction_ID));
+      Candidate.Assigned_Sequence := Sequence_Number (Metadata.Assigned_Sequence);
+      Candidate.Batch_ID := To_Identifier (Metadata.Batch_ID);
+      Candidate.Retained_Image.Image := Batch.Image;
+      Candidate.Expected_Head := From_Head (Metadata.Expected_Head);
+      Candidate.Attempted_Head := From_Head (Metadata.Attempted_Head);
+      Batch.Image := null;
+      Release_Runtime_Batch (Batch, Release_Data => False);
+
+      System.Soft_Links.Abort_Defer.all;
+      begin
+         --  Candidate is complete before this point. Direct owner transfer
+         --  avoids controlled assignment finalizing the old destination before
+         --  a replacement reference is established. Abort remains deferred
+         --  through scalar publication and release of the prior exact image.
+         Old_Image := Receipt.Retained_Image.Image;
+         Receipt.Current_Outcome := Candidate.Current_Outcome;
+         Receipt.Phase := Candidate.Phase;
+         Receipt.Transaction_ID := Candidate.Transaction_ID;
+         Receipt.Assigned_Sequence := Candidate.Assigned_Sequence;
+         Receipt.Batch_ID := Candidate.Batch_ID;
+         Receipt.Expected_Head := Candidate.Expected_Head;
+         Receipt.Attempted_Head := Candidate.Attempted_Head;
+         Receipt.Retained_Image.Image := Candidate.Retained_Image.Image;
+         Candidate.Retained_Image.Image := null;
+         Adopted := True;
+         Release_Image (Old_Image);
+         Result := Success;
+      exception
+         when others =>
+            System.Soft_Links.Abort_Undefer.all;
+            raise;
+      end;
+      System.Soft_Links.Abort_Undefer.all;
+   exception
+      when Storage_Error =>
+         Release_Runtime_Batch (Batch);
+         if Adopted then
+            raise;
+         end if;
+         Result := Capacity_Exceeded;
+      when others =>
+         Release_Runtime_Batch (Batch);
+         if Adopted then
+            raise;
+         end if;
+         Result := Corrupt;
+   end Import_Commit_Resolution_Authority;
+
    procedure Activate_Flush_Plan
      (Item       : in out Database;
       Old_State  : in out Engine_State_Access;
@@ -21679,9 +21921,7 @@ package body Flyology.DB is
          State.Current_Family_Slot := 0;
          if State.Resolving_Create then
             Start_Create_Manifest_Confirmation (Item);
-         elsif State.Resolving_Family
-           and then Item.Final_Family_Receipt.Phase = Family_Manifest_Unknown
-         then
+         elsif State.Resolving_Family and then Item.Final_Family_Receipt.Phase = Family_Manifest_Unknown then
             State.Current_Kind := Manifest_Object;
             Load_Payload (Item.Payload, State.Manifest_Image.Owner);
             Start_Immutable_Read (Item);

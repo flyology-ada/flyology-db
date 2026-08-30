@@ -6,6 +6,8 @@ with Interfaces.C;
 with Flyology.Cancellation;
 with Flyology.Bytes;
 with Flyology.DB.Batch_Format_Tests;
+with Flyology.DB.Batch_Formats;
+with Flyology.DB.Commit_Authority_Formats;
 with Flyology.DB.Formats;
 with Flyology.DB.Identity_Partition_Policy;
 with Flyology.DB.LSM_Formats;
@@ -27,6 +29,8 @@ package body Flyology.DB.Engine_Tests is
 
    package Binding renames Flyology.DB.Object_Storage;
    package Batch_Tests renames Flyology.DB.Batch_Format_Tests;
+   package Batch_Formats renames Flyology.DB.Batch_Formats;
+   package Commit_Authorities renames Flyology.DB.Commit_Authority_Formats;
    package Formats renames Flyology.DB.Formats;
    package LSM renames Flyology.DB.LSM_Formats;
    package LSM_Runtime renames Flyology.DB.LSM_Runtime_Formats;
@@ -5819,6 +5823,543 @@ package body Flyology.DB.Engine_Tests is
       Close (Item, Result);
    end Test_Faults;
 
+   procedure Test_Commit_Resolution_Authority (Backend : not null access Backends.Backend'Class) is
+      Context          : aliased Storage_Context;
+      Wrong_Context    : aliased Storage_Context;
+      Limited_Context  : aliased Storage_Context;
+      Item             : Database;
+      Wrong_Item       : Database;
+      Limited_Item     : Database;
+      Txn              : Transaction;
+      Receipt          : Commit_Receipt;
+      Result           : Outcome_Code;
+      Database_ID      : constant Database_Identifier := Database_Identifier (Numbered_ID (58_000));
+      Wrong_DB_ID      : constant Database_Identifier := Database_Identifier (Numbered_ID (58_100));
+      Key_A            : constant Key := To_Key ([16#A1#]);
+      Key_B            : constant Key := To_Key ([16#B1#]);
+      Value_A          : constant Value := To_Value ([16#A2#]);
+      Authority_Value  : constant Value := To_Value ([1 .. 32 => 16#A2#]);
+      Limited_Limits   : constant Database_Limits :=
+        (Default_Limits
+         with delta
+           Maximum_Column_Families           => 1,
+           Maximum_Transaction_Payload_Bytes => 2,
+           Maximum_Batch_Payload_Bytes       => 2,
+           Maximum_Live_Entries              => 1,
+           Maximum_Total_L0_Runs             => 1);
+      Limited_Families : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family (1, [Byte (Character'Pos ('l'))], 1, 1, 2, 1, 1)];
+      Create_Info      : Create_Receipt;
+   begin
+      Bind_Context (Context, Backend, "memory-commit-authority");
+      Bind_Context (Wrong_Context, Backend, "memory-commit-authority-wrong");
+      Bind_Context (Limited_Context, Backend, "memory-commit-authority-limited");
+      Create_DB (Item, Context'Access, Database_ID, Numbered_ID (58_001), Result);
+      Expect (Result, Success, "commit authority database create failed");
+      Create_DB (Wrong_Item, Wrong_Context'Access, Wrong_DB_ID, Numbered_ID (58_101), Result);
+      Expect (Result, Success, "commit authority wrong-database fixture create failed");
+      Create
+        (Limited_Item,
+         Limited_Context'Access,
+         Database_ID,
+         Manifest_ID_For (Numbered_ID (58_201)),
+         Numbered_ID (58_201),
+         Limited_Limits,
+         Limited_Families,
+         Test_Operation_Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      Expect (Result, Success, "commit authority limited-database fixture create failed");
+
+      --  A singleton accepted by HEAD is exported before teardown. Import is
+      --  failure-atomic for corrupt bytes, allocation rejection, and a wrong
+      --  authenticated database, then the exact imported receipt resolves
+      --  without any provider publication.
+      Begin_Transaction (Item, Numbered_TX_ID (58_002), Txn, Result);
+      Expect (Result, Success, "commit authority singleton begin failed");
+      Put (Item, Txn, 1, Key_A, Authority_Value, Result);
+      Expect (Result, Success, "commit authority singleton Put failed");
+      Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Outcome_Unknown, "commit authority singleton did not retain uncertainty");
+      declare
+         Authority_Length  : constant Natural := Commit_Resolution_Authority_Length (Receipt);
+         Authority         : Byte_Array (1 .. Authority_Length) := [others => 0];
+         Offset_Authority  : Byte_Array (7 .. Authority_Length + 6) := [others => 0];
+         Corrupt_Authority : Byte_Array (Authority'Range);
+         Unsupported       : Byte_Array (Authority'Range);
+         Relation_Corrupt  : Byte_Array (Authority'Range);
+         Member_Corrupt    : Byte_Array (Authority'Range);
+         Trailing          : Byte_Array (1 .. Authority_Length + 1) := [others => 0];
+         Short_Authority   : Byte_Array (1 .. Authority_Length - 1) := [others => 16#A5#];
+         Short_Expected    : constant Byte_Array (Short_Authority'Range) := Short_Authority;
+         Invalid_Expected  : constant Byte_Array (Short_Authority'Range) := [others => 16#5A#];
+         Golden_Prefix     : constant Byte_Array :=
+           [16#46#,
+            16#4C#,
+            16#59#,
+            16#43#,
+            16#41#,
+            16#55#,
+            16#54#,
+            16#31#,
+            0,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            16#E2#,
+            16#90#];
+         Imported          : Commit_Receipt;
+         Wrong_Receipt     : Commit_Receipt;
+         Exported_Length   : Natural;
+         Batch_Before      : Natural;
+         Manifest_Before   : Natural;
+         Head_Before       : Natural;
+         Batch_After       : Natural;
+         Manifest_After    : Natural;
+         Head_After        : Natural;
+         Imported_Batch    : Identifier;
+         Imported_Txn      : Transaction_Identifier;
+         Imported_Sequence : Sequence_Number;
+
+         procedure Put_U32 (Image : in out Byte_Array; Position : Positive; Value : Interfaces.Unsigned_32) is
+         begin
+            for Offset in Natural range 0 .. 3 loop
+               Image (Position + Offset) :=
+                 Byte (Interfaces.Shift_Right (Value, (3 - Offset) * 8) and 16#FF#);
+            end loop;
+         end Put_U32;
+
+         function Read_U64 (Image : Byte_Array; Position : Positive) return Interfaces.Unsigned_64 is
+            Value : Interfaces.Unsigned_64 := 0;
+         begin
+            for Offset in Natural range 0 .. 7 loop
+               Value :=
+                 Interfaces.Shift_Left (Value, 8) or Interfaces.Unsigned_64 (Image (Position + Offset));
+            end loop;
+            return Value;
+         end Read_U64;
+
+         procedure Repair_Header_And_Outer_Checksums (Image : in out Byte_Array) is
+            Header : Formats.Byte_Array (0 .. Commit_Authorities.Authority_Header_Length - 1);
+         begin
+            for Offset in Header'Range loop
+               Header (Offset) := Formats.Byte (Image (Image'First + Offset));
+            end loop;
+            Header (44 .. 47) := [others => 0];
+            Put_U32 (Image, Image'First + 44, Formats.CRC_32C (Header));
+            Commit_Authorities.Seal (Image);
+         end Repair_Header_And_Outer_Checksums;
+
+         procedure Repair_Embedded_Head (Image : in out Byte_Array; Head_Position : Positive) is
+            Head        : Formats.Head_Image;
+            Head_Header : Formats.Byte_Array (0 .. 43);
+         begin
+            for Offset in Formats.Head_Image_Index loop
+               Head (Offset) := Formats.Byte (Image (Head_Position + Offset));
+            end loop;
+            Head_Header := Head (0 .. 43);
+            Head_Header (40 .. 43) := [others => 0];
+            for Offset in Natural range 0 .. 3 loop
+               Head (40 + Offset) :=
+                 Formats.Byte
+                   (Interfaces.Shift_Right (Formats.CRC_32C (Head_Header), (3 - Offset) * 8) and 16#FF#);
+               Head (132 + Offset) := 0;
+            end loop;
+            declare
+               Checksum : constant Interfaces.Unsigned_32 := Formats.CRC_32C (Head (0 .. 131));
+            begin
+               for Offset in Natural range 0 .. 3 loop
+                  Head (132 + Offset) :=
+                    Formats.Byte (Interfaces.Shift_Right (Checksum, (3 - Offset) * 8) and 16#FF#);
+               end loop;
+            end;
+            for Offset in Formats.Head_Image_Index loop
+               Image (Head_Position + Offset) := Byte (Head (Offset));
+            end loop;
+            Repair_Header_And_Outer_Checksums (Image);
+         end Repair_Embedded_Head;
+
+         procedure Repair_Batch_And_Outer_Checksums (Image : in out Byte_Array) is
+            Batch_First  : constant Positive := Image'First + Commit_Authorities.Authority_Header_Length;
+            Batch_Length : constant Natural :=
+              Image'Length
+              - Commit_Authorities.Authority_Header_Length
+              - Commit_Authorities.Authority_Trailer_Length;
+            Whole        : Formats.Byte_Array (0 .. Batch_Length - Batch_Formats.Batch_Trailer_Length - 1);
+         begin
+            for Offset in Whole'Range loop
+               Whole (Offset) := Formats.Byte (Image (Batch_First + Offset));
+            end loop;
+            Put_U32
+              (Image,
+               Batch_First + Batch_Length - Batch_Formats.Batch_Trailer_Length,
+               Formats.CRC_32C (Whole));
+            Commit_Authorities.Seal (Image);
+         end Repair_Batch_And_Outer_Checksums;
+
+         procedure Expect_Imported_Unchanged (Context : String) is
+         begin
+            if Receipt_Batch_ID (Imported) /= Imported_Batch
+              or else Receipt_Transaction_ID (Imported) /= Imported_Txn
+              or else Receipt_Sequence (Imported) /= Imported_Sequence
+              or else Receipt_Outcome (Imported) /= Outcome_Unknown
+            then
+               raise Program_Error with Context;
+            end if;
+         end Expect_Imported_Unchanged;
+      begin
+         if Authority_Length <= 1 then
+            raise Program_Error with "commit authority singleton reported an invalid export extent";
+         end if;
+         Export_Commit_Resolution_Authority (Receipt, Short_Authority, Exported_Length, Result);
+         Expect (Result, Capacity_Exceeded, "short commit authority export was not rejected");
+         if Exported_Length /= 0 or else Short_Authority /= Short_Expected then
+            raise Program_Error with "short commit authority export changed its caller buffer";
+         end if;
+         Export_Commit_Resolution_Authority (Receipt, Authority, Exported_Length, Result);
+         Expect (Result, Success, "commit authority singleton export failed");
+         if Exported_Length /= Authority_Length
+           or else Receipt_Outcome (Receipt) /= Outcome_Unknown
+           or else Receipt_Transaction_ID (Receipt) /= Numbered_TX_ID (58_002)
+           or else Receipt_Batch_ID (Receipt) /= Numbered_ID (58_002)
+         then
+            raise Program_Error with "commit authority singleton export changed its receipt";
+         end if;
+         if Authority (Authority'First .. Authority'First + Golden_Prefix'Length - 1) /= Golden_Prefix
+           or else Read_U64 (Authority, Authority'First + 28) /= Interfaces.Unsigned_64 (Authority_Length)
+           or else Read_U64 (Authority, Authority'First + 36)
+                   /= Interfaces.Unsigned_64
+                        (Authority_Length
+                         - Commit_Authorities.Authority_Header_Length
+                         - Commit_Authorities.Authority_Trailer_Length)
+           or else Authority (Authority'First + 62) /= 16#E2#
+           or else Authority (Authority'First + 63) /= 16#92#
+           or else Read_U64 (Authority, Authority'First + 64) /= 1
+           or else Authority (Authority'First + 86) /= 16#E2#
+           or else Authority (Authority'First + 87) /= 16#92#
+         then
+            raise Program_Error with "commit authority singleton did not match its independent golden header";
+         end if;
+         Export_Commit_Resolution_Authority (Receipt, Offset_Authority, Exported_Length, Result);
+         Expect (Result, Success, "non-one-based commit authority export failed");
+         if Exported_Length /= Authority_Length then
+            raise Program_Error with "non-one-based commit authority length changed";
+         end if;
+         for Offset in Natural range 0 .. Authority_Length - 1 loop
+            if Offset_Authority (Offset_Authority'First + Offset) /= Authority (Authority'First + Offset) then
+               raise Program_Error with "commit authority golden bytes depended on caller lower bound";
+            end if;
+         end loop;
+
+         Close (Item, Result);
+         Expect (Result, Success, "commit authority singleton teardown failed");
+         Import_Commit_Resolution_Authority (Item, Authority, Wrong_Receipt, Result);
+         Expect (Result, Invalid_State, "closed database accepted commit authority import");
+         if Commit_Resolution_Authority_Length (Wrong_Receipt) /= 0
+           or else Receipt_Batch_ID (Wrong_Receipt) /= Zero_Identifier
+         then
+            raise Program_Error with "closed-database import changed its destination receipt";
+         end if;
+         Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "commit authority singleton reopen failed");
+
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Import_Commit_Resolution_Authority (Wrong_Item, Authority, Wrong_Receipt, Result);
+         Expect (Result, Corrupt, "commit authority import accepted the wrong database");
+         if Commit_Resolution_Authority_Length (Wrong_Receipt) /= 0
+           or else Receipt_Batch_ID (Wrong_Receipt) /= Zero_Identifier
+         then
+            raise Program_Error with "wrong-database import changed its destination receipt";
+         end if;
+
+         Import_Commit_Resolution_Authority (Item, Offset_Authority, Imported, Result);
+         Expect (Result, Success, "commit authority singleton import failed");
+         Imported_Batch := Receipt_Batch_ID (Imported);
+         Imported_Txn := Receipt_Transaction_ID (Imported);
+         Imported_Sequence := Receipt_Sequence (Imported);
+
+         declare
+            Receipt_Copy : constant Commit_Receipt := Imported;
+         begin
+            if Commit_Resolution_Authority_Length (Receipt_Copy) /= Authority_Length
+              or else Receipt_Transaction_ID (Receipt_Copy) /= Imported_Txn
+            then
+               raise Program_Error with "commit authority receipt copy lost its retained image";
+            end if;
+         end;
+         if Commit_Resolution_Authority_Length (Imported) /= Authority_Length then
+            raise Program_Error with "finalizing a receipt copy released the original authority";
+         end if;
+
+         declare
+            Limited_Receipt : Commit_Receipt := Imported;
+         begin
+            Import_Commit_Resolution_Authority (Limited_Item, Authority, Limited_Receipt, Result);
+            Expect (Result, Capacity_Exceeded, "persisted authority import limit was not enforced");
+            if Receipt_Batch_ID (Limited_Receipt) /= Imported_Batch
+              or else Receipt_Transaction_ID (Limited_Receipt) /= Imported_Txn
+              or else Receipt_Sequence (Limited_Receipt) /= Imported_Sequence
+              or else Receipt_Outcome (Limited_Receipt) /= Outcome_Unknown
+            then
+               raise Program_Error with "over-capacity import changed the old destination receipt";
+            end if;
+         end;
+         if Commit_Resolution_Authority_Length (Imported) /= Authority_Length then
+            raise Program_Error with "finalizing the capacity destination released the source authority";
+         end if;
+
+         declare
+            Truncated : constant Byte_Array (Authority'First .. Authority'Last - 1) :=
+              Authority (Authority'First .. Authority'Last - 1);
+         begin
+            Import_Commit_Resolution_Authority (Item, Truncated, Imported, Result);
+            Expect (Result, Corrupt, "truncated commit authority was not rejected");
+            Expect_Imported_Unchanged ("truncated authority changed the old destination receipt");
+         end;
+         Trailing (1 .. Authority_Length) := Authority;
+         Trailing (Trailing'Last) := 16#5A#;
+         Import_Commit_Resolution_Authority (Item, Trailing, Imported, Result);
+         Expect (Result, Corrupt, "commit authority trailing byte was accepted");
+         Expect_Imported_Unchanged ("trailing authority changed the old destination receipt");
+
+         Unsupported := Authority;
+         Unsupported (Unsupported'First + 9) := 2;
+         Import_Commit_Resolution_Authority (Item, Unsupported, Imported, Result);
+         Expect (Result, Unsupported_Format, "commit authority version mismatch was not typed");
+         Expect_Imported_Unchanged ("unsupported authority changed the old destination receipt");
+
+         Corrupt_Authority := Authority;
+         Corrupt_Authority (Corrupt_Authority'Last) := Corrupt_Authority (Corrupt_Authority'Last) xor 1;
+         Import_Commit_Resolution_Authority (Item, Corrupt_Authority, Imported, Result);
+         Expect (Result, Corrupt, "corrupt commit authority was not rejected");
+         Expect_Imported_Unchanged ("corrupt authority changed the old destination receipt");
+
+         Relation_Corrupt := Authority;
+         Relation_Corrupt (Relation_Corrupt'First + 48 + 15) :=
+           Relation_Corrupt (Relation_Corrupt'First + 48 + 15) xor 1;
+         Repair_Header_And_Outer_Checksums (Relation_Corrupt);
+         Import_Commit_Resolution_Authority (Item, Relation_Corrupt, Imported, Result);
+         Expect (Result, Corrupt, "CRC-valid commit authority relation corruption was accepted");
+         Expect_Imported_Unchanged ("relation corruption changed the old destination receipt");
+
+         Relation_Corrupt := Authority;
+         Relation_Corrupt (Relation_Corrupt'First + 224 + 108 + 15) :=
+           Relation_Corrupt (Relation_Corrupt'First + 224 + 108 + 15) xor 1;
+         Repair_Embedded_Head (Relation_Corrupt, Relation_Corrupt'First + 224);
+         Import_Commit_Resolution_Authority (Item, Relation_Corrupt, Imported, Result);
+         Expect (Result, Corrupt, "CRC-valid commit authority HEAD relation corruption was accepted");
+         Expect_Imported_Unchanged ("HEAD relation corruption changed the old destination receipt");
+
+         Member_Corrupt := Authority;
+         Member_Corrupt
+           (Member_Corrupt'First
+            + Commit_Authorities.Authority_Header_Length
+            + Batch_Formats.Batch_Header_Length
+            + 15) :=
+           Member_Corrupt
+             (Member_Corrupt'First
+              + Commit_Authorities.Authority_Header_Length
+              + Batch_Formats.Batch_Header_Length
+              + 15)
+           xor 1;
+         Repair_Batch_And_Outer_Checksums (Member_Corrupt);
+         Import_Commit_Resolution_Authority (Item, Member_Corrupt, Imported, Result);
+         Expect (Result, Corrupt, "CRC-valid commit authority member corruption was accepted");
+         Expect_Imported_Unchanged ("member corruption changed the old destination receipt");
+
+         Set_Test_Allocation_Fault (Commit_Authority_Image_Allocation);
+         Import_Commit_Resolution_Authority (Item, Authority, Imported, Result);
+         Expect (Result, Capacity_Exceeded, "commit authority allocation failure was not typed");
+         Expect_Imported_Unchanged ("authority allocation failure changed its destination");
+
+         Resolve (Item, Imported, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "imported singleton authority did not resolve accepted HEAD");
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "singleton authority import or resolution replayed publication";
+         end if;
+         if Commit_Resolution_Authority_Length (Imported) /= 0 then
+            raise Program_Error with "resolved singleton receipt remained exportable";
+         end if;
+         Short_Authority := [others => 16#5A#];
+         Export_Commit_Resolution_Authority (Imported, Short_Authority, Exported_Length, Result);
+         Expect (Result, Invalid_State, "resolved singleton receipt was exported");
+         if Exported_Length /= 0 or else Short_Authority /= Invalid_Expected then
+            raise Program_Error with "invalid singleton export changed its caller buffer";
+         end if;
+      end;
+
+      --  Each member of one accepted two-transaction group carries an
+      --  independent authority. Both survive teardown, import separately,
+      --  retain member order, and resolve without replaying the shared batch.
+      declare
+         Members  : Transaction_Array (1 .. 2);
+         Receipts : Commit_Receipt_Array (Members'Range);
+      begin
+         Begin_Transaction (Item, Numbered_TX_ID (58_010), Members (1), Result);
+         Expect (Result, Success, "commit authority group member one begin failed");
+         Put (Item, Members (1), 1, Key_A, Value_A, Result);
+         Expect (Result, Success, "commit authority group member one Put failed");
+         Begin_Transaction (Item, Numbered_TX_ID (58_011), Members (2), Result);
+         Expect (Result, Success, "commit authority group member two begin failed");
+         Put (Item, Members (2), 2, Key_B, Value_A, Result);
+         Expect (Result, Success, "commit authority group member two Put failed");
+         Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+         Commit_Group
+           (Item,
+            Numbered_ID (58_012),
+            Members,
+            Test_Operation_Timeout,
+            Receipts => Receipts,
+            Result   => Result);
+         Expect (Result, Outcome_Unknown, "commit authority group did not retain uncertainty");
+         declare
+            Length_1        : constant Natural := Commit_Resolution_Authority_Length (Receipts (1));
+            Length_2        : constant Natural := Commit_Resolution_Authority_Length (Receipts (2));
+            Authority_1     : Byte_Array (1 .. Length_1);
+            Authority_2     : Byte_Array (1 .. Length_2);
+            Corrupt_2       : Byte_Array (1 .. Length_2);
+            Imported        : Commit_Receipt_Array (Receipts'Range);
+            Exported        : Natural;
+            Batch_Before    : Natural;
+            Manifest_Before : Natural;
+            Head_Before     : Natural;
+            Batch_After     : Natural;
+            Manifest_After  : Natural;
+            Head_After      : Natural;
+         begin
+            Export_Commit_Resolution_Authority (Receipts (1), Authority_1, Exported, Result);
+            Expect (Result, Success, "group member one authority export failed");
+            if Exported /= Length_1 then
+               raise Program_Error with "group member one authority length changed";
+            end if;
+            Export_Commit_Resolution_Authority (Receipts (2), Authority_2, Exported, Result);
+            Expect (Result, Success, "group member two authority export failed");
+            if Exported /= Length_2 or else Authority_1 = Authority_2 then
+               raise Program_Error with "group member authorities were not member-specific";
+            end if;
+            Close (Item, Result);
+            Expect (Result, Success, "commit authority group teardown failed");
+            Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+            Expect (Result, Success, "commit authority group reopen failed");
+
+            Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+            Import_Commit_Resolution_Authority (Item, Authority_1, Imported (1), Result);
+            Expect (Result, Success, "group member one authority import failed");
+            Corrupt_2 := Authority_2;
+            Corrupt_2 (Corrupt_2'Last) := Corrupt_2 (Corrupt_2'Last) xor 1;
+            Import_Commit_Resolution_Authority (Item, Corrupt_2, Imported (1), Result);
+            Expect (Result, Corrupt, "corrupt group member authority was not rejected");
+            if Receipt_Transaction_ID (Imported (1)) /= Numbered_TX_ID (58_010)
+              or else Receipt_Batch_ID (Imported (1)) /= Numbered_ID (58_012)
+            then
+               raise Program_Error with "failed group import replaced the old destination member";
+            end if;
+            Import_Commit_Resolution_Authority (Item, Authority_2, Imported (2), Result);
+            Expect (Result, Success, "group member two authority import failed");
+            if Receipt_Transaction_ID (Imported (1)) /= Numbered_TX_ID (58_010)
+              or else Receipt_Transaction_ID (Imported (2)) /= Numbered_TX_ID (58_011)
+              or else Receipt_Batch_ID (Imported (1)) /= Numbered_ID (58_012)
+              or else Receipt_Batch_ID (Imported (2)) /= Numbered_ID (58_012)
+              or else Receipt_Sequence (Imported (2)) /= Receipt_Sequence (Imported (1)) + 1
+            then
+               raise Program_Error with "imported group authorities lost member identity or order";
+            end if;
+            Resolve (Item, Imported (1), Test_Operation_Timeout, Result => Result);
+            Expect (Result, Success, "imported group member one did not resolve");
+            if Receipt_Outcome (Imported (2)) /= Outcome_Unknown then
+               raise Program_Error with "resolving group member one consumed member two authority";
+            end if;
+            Resolve (Item, Imported (2), Test_Operation_Timeout, Result => Result);
+            Expect (Result, Success, "imported group member two did not resolve");
+            Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+            if Batch_After /= Batch_Before
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before
+            then
+               raise Program_Error with "group authority import or resolution replayed publication";
+            end if;
+         end;
+      end;
+
+      --  An attempt lost before its conditional HEAD can be transported, but
+      --  a later accepted successor makes the imported authority conclusively
+      --  stale without replaying the original attempt.
+      Begin_Transaction (Item, Numbered_TX_ID (58_020), Txn, Result);
+      Expect (Result, Success, "rejected commit authority begin failed");
+      Put (Item, Txn, 1, To_Key ([16#C1#]), Value_A, Result);
+      Expect (Result, Success, "rejected commit authority Put failed");
+      Testing.Arm (Context, Before_Head_Put, Unknown_After_Entry);
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Outcome_Unknown, "rejected commit authority did not retain uncertainty");
+      declare
+         Authority_Length : constant Natural := Commit_Resolution_Authority_Length (Receipt);
+         Authority        : Byte_Array (1 .. Authority_Length);
+         Imported         : Commit_Receipt;
+         Successor        : Commit_Receipt;
+         Exported_Length  : Natural;
+         Batch_Before     : Natural;
+         Manifest_Before  : Natural;
+         Head_Before      : Natural;
+         Batch_After      : Natural;
+         Manifest_After   : Natural;
+         Head_After       : Natural;
+      begin
+         Export_Commit_Resolution_Authority (Receipt, Authority, Exported_Length, Result);
+         Expect (Result, Success, "rejected commit authority export failed");
+         if Exported_Length /= Authority_Length then
+            raise Program_Error with "rejected commit authority length changed";
+         end if;
+         Close (Item, Result);
+         Expect (Result, Success, "rejected commit authority teardown failed");
+         Open (Item, Context'Access, Database_ID, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "rejected commit authority reopen failed");
+         Import_Commit_Resolution_Authority (Item, Authority, Imported, Result);
+         Expect (Result, Success, "rejected commit authority import failed");
+         Begin_Transaction (Item, Numbered_TX_ID (58_021), Txn, Result);
+         Expect (Result, Success, "rejected commit successor begin failed");
+         Put (Item, Txn, 1, To_Key ([16#C2#]), Value_A, Result);
+         Expect (Result, Success, "rejected commit successor Put failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Successor, Result => Result);
+         Expect (Result, Success, "rejected commit successor publication failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Resolve (Item, Imported, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Stale_Writer, "imported rejected authority ignored its successor");
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "rejected authority resolution replayed publication";
+         end if;
+      end;
+
+      Close (Wrong_Item, Result);
+      Expect (Result, Success, "commit authority wrong-database fixture close failed");
+      Close (Limited_Item, Result);
+      Expect (Result, Success, "commit authority limited-database fixture close failed");
+      Close (Item, Result);
+      Expect (Result, Success, "commit authority database close failed");
+   end Test_Commit_Resolution_Authority;
+
    procedure Test_Admission_Group_And_Lifecycle (Backend : not null access Backends.Backend'Class) is
       Context      : aliased Storage_Context;
       Item         : aliased Database;
@@ -9408,10 +9949,11 @@ package body Flyology.DB.Engine_Tests is
          Before_Source_Bytes,
          Before_Sink_Bytes);
       declare
-         --  Memory-backend test capacity: four buckets, 512 objects, and eight
-         --  million bytes cover the complete deterministic engine corpus while
-         --  retaining explicit backend backpressure.
-         Store : aliased Memory.Store (4, 512, 8_000_000);
+         --  Memory-backend test capacity: four buckets, the established 512-object
+         --  corpus plus ten exact durable-authority fixture keys, and eight million
+         --  bytes cover the complete deterministic engine corpus while retaining
+         --  explicit backend backpressure.
+         Store : aliased Memory.Store (4, 522, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then
@@ -9514,6 +10056,7 @@ package body Flyology.DB.Engine_Tests is
          Test_Lower_Live_Budgets (Store'Access);
          Test_Recovery_Format_Edges (Store'Access);
          Test_Faults (Store'Access, "memory-faults", 40);
+         Test_Commit_Resolution_Authority (Store'Access);
          Test_Admission_Group_And_Lifecycle (Store'Access);
          Test_Resolve_Drains_Queued (Store'Access);
          Test_Unaccepted_Resolve_Drains_Queued (Store'Access);

@@ -10,7 +10,11 @@ project Flyology_Db_Proof is
    for Source_Files use
      ("flyology-db-lsm_format_proof.ads",
       "flyology-db-identity_partition_proof.ads",
+      "flyology-db-commit_authority_proof.ads",
+      "flyology-db-commit_authority_proof.adb",
       "flyology-db.ads",
+      "flyology-db-commit_authority_formats.ads",
+      "flyology-db-commit_authority_formats.adb",
       "flyology-db-identity_partition_policy.ads",
       "flyology-db-identity_partition_policy.adb",
       "flyology-db-checkpoint_policy.ads",

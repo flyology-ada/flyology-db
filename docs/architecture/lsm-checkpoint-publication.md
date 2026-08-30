@@ -163,6 +163,32 @@ Later transaction commits preserve the published manifest ID. The checkpoint doe
 only replaces the authoritative representation of the committed prefix. No run or manifest is visible before the
 successful HEAD transition, and unreachable complete objects remain orphans.
 
+## Durable Commit resolution-authority handoff
+
+Only a complete Commit receipt classified `Outcome_Unknown` at `Head_Publication_Unknown` can be exported. The
+length query returns zero for every other receipt. Export writes one caller-owned buffer failure-atomically and
+retains the original database ID, member transaction ID and sequence, shared batch ID, complete expected and
+attempted HEAD fields, and exact batch-v1 bytes. Singleton Commit and every Commit_Group member are supported
+without assuming that transaction ID equals batch ID. No provider operation or publication occurs.
+
+The private authority-v1 envelope is explicit big-endian data with distinct magic, version, kind, and flags; exact
+total and batch lengths; a header CRC-32C; and an object CRC-32C. It never serializes Ada enum positions, addresses,
+access values, refcounts, generations, incarnations, cancellation tokens, deadlines, or provider credentials.
+Import treats the bytes as untrusted, borrows them only for the call, validates the envelope and embedded batch under
+the open database's authenticated persisted limits, and requires exactly one matching member identity and sequence.
+Wrong database, malformed relation, checksum, truncation, trailing bytes, unsupported version, closed lifecycle,
+capacity, and allocation failures leave both the database and destination receipt unchanged. Success adopts one
+independently owned unknown receipt only after the complete candidate is decoded and validated.
+
+The imported receipt grants only the existing bounded read-only Commit `Resolve`; it does not authorize a second
+batch or HEAD publication, a replacement identity, or an application retry. Accepted and conclusive-rejected
+successors retain the original certainty rules. The envelope contains application keys and values and is bearer
+authority. CRC-32C is accidental-corruption detection, not authentication: callers must use authenticated,
+confidential durable storage and bind the blob to the intended higher-level request. The restart boundary begins
+only after Commit returned `Outcome_Unknown`; it does not cover an arbitrary kill inside Commit, nor Create,
+Add_Column_Family, Flush, or compaction receipts. The format is experimental and carries no production or stable
+compatibility promise.
+
 ## Additive L0 accumulation
 
 The operational algorithm follows the previously frozen model. A later Flush snapshots only the committed batch

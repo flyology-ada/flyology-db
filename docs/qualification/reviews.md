@@ -1,5 +1,41 @@
 # Review record
 
+## Accepted durable Commit resolution-authority handoff
+
+- Parent and scope: add an experimental caller-buffered handoff for only a complete `Outcome_Unknown` /
+  `Head_Publication_Unknown` Commit receipt over corrective public base
+  `749d52b2c24ec877ee91ab05efa6f5a996cf5877`. The additive length, export, and import operations preserve all
+  existing Commit, Commit_Group, Resolve, receipt accessor, capacity, deadline, retry, provider, and identity policy.
+  No other receipt family is exportable.
+- API, ownership, and security: export is failure-atomic and leaves an undersized or invalid destination unchanged.
+  Import borrows untrusted bytes, validates the exact database, persisted limits, batch, HEAD attempt, and singleton
+  or group-member identity before abort-deferred adoption of one independent unknown receipt. Every failure leaves
+  the open database and prior destination receipt unchanged. The imported receipt can call only the existing
+  read-only Resolve, and import or resolution adds zero batch, manifest, or HEAD writes. The blob contains
+  application keys and values and is bearer authority; CRC-32C detects accidental corruption only, so authenticated,
+  confidential durable storage and higher-level request binding remain caller obligations. Arbitrary termination
+  inside Commit and Create, family, Flush, and compaction receipts remain outside this boundary.
+- Format and executable evidence: authority-v1 is an explicit big-endian envelope around exact retained batch-v1
+  bytes, with distinct magic/version/kind/flags, exact lengths and identities, and independent header/object CRCs.
+  Deterministic cases cover singleton and two-member export/import after teardown and reopen, exact accessors,
+  independent member resolution, accepted and conclusive-rejected successors, wrong database and closed lifecycle,
+  corruption, truncation, trailing bytes, unsupported fields, header/batch/member relations, capacity, non-one lower
+  bounds, allocation failure, destination replacement, and zero publication. The maintained deterministic suite and
+  all 18 RustFS, SeaweedFS, MinIO, and Flyology memory/files/SQLite provider lanes pass on the final runtime bytes.
+- Formal evidence: pinned update and ordinary TLA modes preserve all 41 canonical traces byte-for-byte. The focused
+  CommitPublication campaign generates 2,988,725 states, finds 446,309 distinct states at depth 19, retains all 16
+  exact positive action counts, reaches accepted/rejected authority witnesses, rejects malformed swaps at
+  `MalformedImportIsNoOp`, proves 10/10 focused authority obligations, and retains Publication 23/23. It creates no
+  authority trace or Ada replay. The finite witnesses select a singleton batch; grouped member authority is covered
+  by executable format/runtime cases and the abstract kernel, not a finite grouped crash/import witness.
+  Warning-strict FSF GNATprove 16.1.0 proves 1,400/1,400 checks: 235 by flow and 1,165 by provers, an exact +281 over
+  1,119 (+59 flow and +222 prover), with zero failed, unproved, justified, warning, or actual `pragma Assume` findings
+  and maximum successful effort 6,522 steps.
+- Disposition: final API/compatibility, ownership/failure-atomicity/security, persisted-format/corruption,
+  concurrency/lifecycle, executable-evidence, TLA/SPARK-boundary, documentation, and unnecessary-surface reviews find
+  P0 none, P1 none, and P2 none. This evidence makes no production, stable-format, portability, performance,
+  provider-proof, confidentiality-enforcement, or Ada-to-TLA refinement claim.
+
 ## Accepted retained-checkpoint live-suffix column-family append and recovery
 
 - Parent and scope: integrate the qualified slice over public base `ea9971927d59aaa41eccb6f4f637a9f7c42a6dfe`.

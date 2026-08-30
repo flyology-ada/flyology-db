@@ -19,6 +19,9 @@ cd "$project_root/proof"
 if ! "$alr" gnatprove -P flyology_db_proof.gpr --mode=all --level=1 -j0 \
   --output=oneline --output-header --report=all --warnings=error -f -u \
   flyology-db-identity_partition_proof.ads \
+  flyology-db-commit_authority_proof.ads \
+  flyology-db-commit_authority_proof.adb \
+  flyology-db-commit_authority_formats.adb \
   flyology-db-checkpoint_policy.adb flyology-db-head_policy.adb \
   flyology-db-formats.adb flyology-db-batch_formats.adb \
   flyology-db-manifest_formats.adb flyology-db-reference_model.adb \

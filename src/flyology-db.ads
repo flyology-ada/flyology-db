@@ -1654,6 +1654,55 @@ package Flyology.DB is
    --  Immutable batch identity retained by the receipt.
    function Receipt_Batch_ID (Item : Commit_Receipt) return Identifier;
 
+   --  Exact caller-buffer extent required to export one unresolved Commit
+   --  reconciliation authority, or zero when Receipt is not a complete
+   --  Outcome_Unknown authority. The exported bearer record contains the
+   --  original batch bytes, including application keys and values. It must be
+   --  stored in caller-provided authenticated, confidential durable storage
+   --  and bound to the intended higher-level request. Its CRC detects accidental
+   --  corruption only. This handoff begins after Commit returned
+   --  Outcome_Unknown; it does not cover interruption inside Commit and does
+   --  not apply to Create, Add_Column_Family, or Flush receipts.
+   --  @param Receipt Candidate unresolved commit receipt
+   --  @return Exact export extent, or zero when Receipt is not exportable
+   function Commit_Resolution_Authority_Length (Receipt : Commit_Receipt) return Natural;
+
+   --  Export one exact unresolved Commit authority into caller-owned bytes.
+   --  Authority is unchanged on failure. Length is the exact meaningful
+   --  prefix on Success and zero otherwise. The operation performs no storage
+   --  request, changes no receipt, and introduces no retry or replacement
+   --  identity. Individual Commit_Group member receipts are supported and
+   --  retain their member-specific transaction identity and sequence.
+   --  @param Receipt Complete unresolved commit authority
+   --  @param Authority Caller-owned destination retained by the caller
+   --  @param Length Exact meaningful prefix on Success, zero on failure
+   --  @param Result Success, Invalid_State, or Capacity_Exceeded
+   procedure Export_Commit_Resolution_Authority
+     (Receipt   : Commit_Receipt;
+      Authority : in out Byte_Array;
+      Length    : out Natural;
+      Result    : out Outcome_Code);
+
+   --  Import one untrusted bearer record into an independently owned
+   --  unresolved Commit receipt bound to the open Item. Decoding uses Item's
+   --  authenticated persisted limits and validates the exact database, batch,
+   --  HEAD transition, member transaction, and member sequence before the
+   --  receipt is replaced. Authority is borrowed only for this call. Item and
+   --  Receipt are unchanged on every failure. Success performs no storage
+   --  request; the resulting receipt is usable only by the existing read-only
+   --  Resolve operation. CRC validation detects corruption, not a malicious
+   --  bearer substitution, so callers remain responsible for authenticated,
+   --  confidential durable storage and higher-level request binding.
+   --  @param Item Open database whose authenticated identity and limits bind the import
+   --  @param Authority Exact exported bearer bytes borrowed for this call
+   --  @param Receipt Destination replaced atomically only on Success
+   --  @param Result Success, Invalid_State, Unsupported_Format, Capacity_Exceeded, or Corrupt
+   procedure Import_Commit_Resolution_Authority
+     (Item      : in out Database;
+      Authority : Byte_Array;
+      Receipt   : in out Commit_Receipt;
+      Result    : out Outcome_Code);
+
    --  Start checkpoint publication in an established operation. All
    --  initiating owner and request-shape validation, pool compatibility,
    --  completion-slot reservation, and lifecycle admission precede ownership
@@ -2177,6 +2226,10 @@ private
       --  Test-only singleton Commit owner-state failure before coordinator
       --  admission. This is neither persisted nor public capacity policy.
       Commit_Driver_State_Allocation,
+      --  Test-only failure before importing one independently owned exact
+      --  commit-resolution image. This is neither persisted nor a public
+      --  authority-size policy.
+      Commit_Authority_Image_Allocation,
       Engine_State_Allocation,
       Identity_Table_Allocation,
       Projection_Scratch_Allocation,

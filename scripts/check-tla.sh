@@ -10,7 +10,17 @@ trace_update_mode=${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}
 
 test -x "$tla_cli"
 "$tla_cli" toolchain verify "$toolchain_root"
-eval "$("$tla_cli" toolchain env "$toolchain_root")"
+set +e
+toolchain_environment=$("$tla_cli" toolchain env "$toolchain_root")
+toolchain_environment_status=$?
+set -e
+if test "$toolchain_environment_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA toolchain environment exited $toolchain_environment_status" >&2
+  exit "$toolchain_environment_status"
+fi
+eval "$toolchain_environment"
 java_command=$FLYOLOGY_TLA_JAVA
 tlc_jar=$FLYOLOGY_TLA_TLC_JAR
 tlapm=$FLYOLOGY_TLAPM
@@ -141,22 +151,165 @@ trace_path() {
 }
 
 cd "$model_root"
+set +e
 "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
   -workers 1 -coverage 1 -metadir "$temporary_root/tlc-safety-states" \
   -config CommitPublication.cfg CommitPublication \
   >"$temporary_root/tlc-safety.log" 2>&1
+commit_publication_tlc_status=$?
+set -e
+if test "$commit_publication_tlc_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA CommitPublication positive TLC exited $commit_publication_tlc_status" \
+    >&2
+  cat "$temporary_root/tlc-safety.log" >&2
+  exit "$commit_publication_tlc_status"
+fi
 grep -q 'Model checking completed. No error has been found.' \
   "$temporary_root/tlc-safety.log"
 ! grep -q '^Warning:' "$temporary_root/tlc-safety.log"
-grep -q '112031 distinct states found' "$temporary_root/tlc-safety.log"
-grep -q 'The depth of the complete state graph search is 14.' \
-  "$temporary_root/tlc-safety.log"
+commit_publication_state_lines=$(grep -E \
+  '^[1-9][0-9]* states generated, [1-9][0-9]* distinct states found, 0 states left on queue[.]$' \
+  "$temporary_root/tlc-safety.log" || :)
+test "$(printf '%s\n' "$commit_publication_state_lines" | wc -l | tr -d ' ')" -eq 1
+commit_publication_generated=$(printf '%s\n' "$commit_publication_state_lines" | awk '{print $1}')
+commit_publication_states=$(printf '%s\n' "$commit_publication_state_lines" | awk '{print $4}')
+commit_publication_depth_lines=$(grep -E \
+  '^The depth of the complete state graph search is [1-9][0-9]*[.]$' \
+  "$temporary_root/tlc-safety.log" || :)
+test "$(printf '%s\n' "$commit_publication_depth_lines" | wc -l | tr -d ' ')" -eq 1
+commit_publication_depth=$(printf '%s\n' "$commit_publication_depth_lines" | \
+  sed 's/^The depth of the complete state graph search is \([1-9][0-9]*\)[.]$/\1/')
+if test "$commit_publication_generated/$commit_publication_states/$commit_publication_depth" \
+  != '2988725/446309/19'
+then
+  printf '%s\n' \
+    'Flyology.DB TLA CommitPublication state geometry changed:' \
+    "$commit_publication_state_lines" \
+    "$commit_publication_depth_lines" >&2
+  exit 1
+fi
+commit_publication_final_coverage="$temporary_root/commit-publication-final-coverage.txt"
+if ! awk '
+  /^Model checking completed\. No error has been found\.$/ {
+    completed++
+    next
+  }
+  /^The coverage statistics at / {
+    if (completed == 0) {
+      next
+    }
+    if (completed != 1 || capture || reports != 0) {
+      invalid = 1
+      next
+    }
+    block = ""
+    capture = 1
+    reports++
+  }
+  capture {
+    block = block $0 ORS
+  }
+  capture && /^End of statistics/ {
+    final = block
+    capture = 0
+  }
+  END {
+    if (invalid || completed != 1 || reports != 1 || capture || final == "") {
+      exit 1
+    }
+    printf "%s", final
+  }
+' "$temporary_root/tlc-safety.log" >"$commit_publication_final_coverage"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA CommitPublication final coverage report missing or incomplete' >&2
+  exit 1
+fi
+commit_publication_action_report="$temporary_root/commit-publication-action-coverage.txt"
+: >"$commit_publication_action_report"
 for action in PrepareGroup PreparePooled StoreBatch PublishHead ObserveSuccess \
   LoseAcceptedResponse LoseUnacceptedResponse ObservePreconditionFailure \
-  ResolveCommitted ResolvePreconditionFailure AcquireWriter Crash Recover
+  ResolveCommitted ResolvePreconditionFailure ExportAuthority ImportAuthority \
+  RejectMalformedAuthority AcquireWriter Crash Recover
 do
-  grep -Eq "^<$action .*: [1-9]" "$temporary_root/tlc-safety.log"
+  commit_publication_action_lines=$(grep -E "^<$action " \
+    "$commit_publication_final_coverage" || :)
+  if test -z "$commit_publication_action_lines"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA CommitPublication action $action failed: missing" >&2
+    exit 1
+  fi
+  commit_publication_action_unique_lines=$(
+    printf '%s\n' "$commit_publication_action_lines" |
+      LC_ALL=C sort -u
+  )
+  if test "$(printf '%s\n' "$commit_publication_action_unique_lines" | \
+    wc -l | tr -d ' ')" -ne 1
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA CommitPublication action $action failed: duplicate or ambiguous" \
+      >&2
+    printf '%s\n' "$commit_publication_action_lines" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$commit_publication_action_unique_lines" |
+    grep -Eq "^<$action .*: [0-9][0-9]*(:[0-9]+)?$"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA CommitPublication action $action failed: malformed or nonnumeric" \
+      >&2
+    printf '%s\n' "$commit_publication_action_lines" >&2
+    exit 1
+  fi
+  commit_publication_action_counts=${commit_publication_action_unique_lines##*: }
+  commit_publication_action_count=${commit_publication_action_counts%%:*}
+  case "$commit_publication_action_count" in
+    ''|*[!0-9]*)
+      printf '%s\n' \
+        "Flyology.DB TLA CommitPublication action $action failed: malformed or nonnumeric" \
+        >&2
+      printf '%s\n' "$commit_publication_action_lines" >&2
+      exit 1
+      ;;
+    0*)
+      printf '%s\n' \
+        "Flyology.DB TLA CommitPublication action $action failed: zero coverage" >&2
+      printf '%s\n' "$commit_publication_action_lines" >&2
+      exit 1
+      ;;
+  esac
+  printf '    %s %s\n' "$action" "$commit_publication_action_count" \
+    >>"$commit_publication_action_report"
 done
+commit_publication_expected_action_report="$temporary_root/commit-publication-action-coverage.expected.txt"
+cat >"$commit_publication_expected_action_report" <<'EOF'
+    PrepareGroup 3510
+    PreparePooled 10
+    StoreBatch 7080
+    PublishHead 6012
+    ObserveSuccess 29112
+    LoseAcceptedResponse 29112
+    LoseUnacceptedResponse 16076
+    ObservePreconditionFailure 10216
+    ResolveCommitted 68488
+    ResolvePreconditionFailure 25172
+    ExportAuthority 43352
+    ImportAuthority 21402
+    RejectMalformedAuthority 41152
+    AcquireWriter 50346
+    Crash 19698
+    Recover 75570
+EOF
+if ! cmp "$commit_publication_expected_action_report" \
+  "$commit_publication_action_report"
+then
+  printf '%s\n' 'Flyology.DB TLA CommitPublication action coverage changed:' >&2
+  cat "$commit_publication_action_report" >&2
+  exit 1
+fi
 
 set +e
 "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
@@ -223,6 +376,77 @@ grep -q 'Invariant WitnessPending is violated.' "$temporary_root/tlc-witness.log
 ! grep -q '^Warning:' "$temporary_root/tlc-witness.log"
 
 check_trace "$temporary_root/witness.json" CommitPublicationWitness
+
+for resolution in accepted rejected
+do
+  if test "$resolution" = accepted
+  then
+    authority_witness_module=CommitResolutionAuthorityAcceptedWitness
+    authority_witness_invariant=AcceptedImportPending
+  else
+    authority_witness_module=CommitResolutionAuthorityRejectedWitness
+    authority_witness_invariant=RejectedImportPending
+  fi
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-commit-authority-$resolution-states" \
+    -config "$authority_witness_module.cfg" "$authority_witness_module" \
+    >"$temporary_root/tlc-commit-authority-$resolution.log" 2>&1
+  authority_witness_status=$?
+  set -e
+  test "$authority_witness_status" -eq 12
+  grep -q "Invariant $authority_witness_invariant is violated." \
+    "$temporary_root/tlc-commit-authority-$resolution.log"
+  ! grep -q '^Warning:' "$temporary_root/tlc-commit-authority-$resolution.log"
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-commit-authority-swap-states" \
+  -config CommitResolutionAuthoritySwapProbe.cfg \
+  CommitResolutionAuthoritySwapProbe \
+  >"$temporary_root/tlc-commit-authority-swap.log" 2>&1
+authority_swap_status=$?
+set -e
+test "$authority_swap_status" -eq 12
+grep -q 'Invariant MalformedImportIsNoOp is violated.' \
+  "$temporary_root/tlc-commit-authority-swap.log"
+! grep -q '^Warning:' "$temporary_root/tlc-commit-authority-swap.log"
+
+set +e
+"$tlapm" --cache-dir "$temporary_root/tlapm-commit-authority-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/CommitResolutionAuthoritySafetyProof.tla" \
+  >"$temporary_root/tlaps-commit-authority.log" 2>&1
+commit_authority_tlaps_status=$?
+set -e
+if test "$commit_authority_tlaps_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA durable commit authority TLAPS exited $commit_authority_tlaps_status" \
+    >&2
+  cat "$temporary_root/tlaps-commit-authority.log" >&2
+  exit "$commit_authority_tlaps_status"
+fi
+commit_authority_tlaps_summary=$(grep -E \
+  '^(\[INFO\]: )?All [0-9][0-9]* obligations proved[.]$' \
+  "$temporary_root/tlaps-commit-authority.log" || :)
+if test "$commit_authority_tlaps_summary" != 'All 10 obligations proved.' && \
+  test "$commit_authority_tlaps_summary" != '[INFO]: All 10 obligations proved.'
+then
+  printf '%s\n' \
+    'Flyology.DB TLA durable commit authority TLAPS summary missing or malformed' >&2
+  cat "$temporary_root/tlaps-commit-authority.log" >&2
+  exit 1
+fi
+if grep -q '^Warning:' "$temporary_root/tlaps-commit-authority.log"
+then
+  printf '%s\n' 'Flyology.DB TLA durable commit authority TLAPS warning emitted' >&2
+  cat "$temporary_root/tlaps-commit-authority.log" >&2
+  exit 1
+fi
 
 "$tlapm" --cache-dir "$temporary_root/tlapm-cache" --cleanfp --nofp \
   --strict --method smt "$model_root/PublicationSafetyProof.tla" \
@@ -2129,7 +2353,14 @@ then
 fi
 
 printf '%s\n' "Flyology.DB TLA+ checks passed"
-printf '%s\n' "  TLC   112031 distinct states, depth 14"
+printf '%s\n' \
+  "  TLC   $commit_publication_generated generated," \
+  "        $commit_publication_states distinct, depth $commit_publication_depth"
+printf '%s\n' "  CommitPublication action coverage"
+cat "$commit_publication_action_report"
+printf '%s\n' "  Durable commit authority accepted/rejected crash-import witnesses reached"
+printf '%s\n' "  Durable commit authority malformed-swap probe detected"
+printf '%s\n' "  Durable commit authority TLAPS 10/10 obligations"
 printf '%s\n' "  TLAPS 23/23 obligations"
 printf '%s\n' "  Negative stale-publication probe detected"
 printf '%s\n' "  Negative overlapping-transaction ownership probe detected"

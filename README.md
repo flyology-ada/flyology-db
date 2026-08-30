@@ -83,6 +83,14 @@ authenticates one complete recovery graph, and accepts only the retained exact b
 transition. Successful replacement preserves the live engine incarnation, so existing family handles remain valid.
 The storage-neutral resolver remains direct, and neither path republishes a batch or HEAD, retries application work,
 or selects a replacement identity.
+An additive durable handoff lets a caller export only a complete `Outcome_Unknown` Commit receipt into its own
+buffer and later import it against the same open database after process teardown or restart. The versioned private
+envelope retains the exact original batch, HEAD attempt, and singleton or group-member identity; import validates
+the authenticated database limits and creates an independent receipt usable only by the existing read-only
+`Resolve`. Export and import are failure-atomic and publish no object. The blob contains application keys and values
+and is bearer authority: its CRC detects accidental corruption, not substitution, so callers must keep it in
+authenticated, confidential durable storage and bind it to the intended higher-level request. This boundary begins
+after Commit returned `Outcome_Unknown`; it does not cover interruption inside Commit or any other receipt family.
 A
 checkpoint-carried `Add_Column_Family` operation now appends one caller-configured higher-ID family, publishes one
 immutable manifest and conditional HEAD, and retains exact same-identity reconciliation authority. Its additive

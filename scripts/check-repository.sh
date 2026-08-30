@@ -115,12 +115,15 @@ grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' alire.toml
 grep -q '^flyology_tla = "=0[.]1[.]0-dev"$' tests/alire.toml
 ! grep -Eq '^flyology_tla = \{ (path|url)=' alire.toml
 ! grep -Eq '^flyology_tla = \{ (path|url)=' tests/alire.toml
+test -f formal/tla/traces/LiveSuffixRegistryRecoveryWitness.trace.json
+test -f formal/tla/traces/LiveSuffixRegistryCancellationWitness.trace.json
 # The canonical trace/2 inventory is the established 36-artifact harness plus
 # the LazySSTNextEntry historical-tombstone, AuthenticatedScanInitialization
-# accumulated-source, and StorageBackedPagedScan continuation witnesses.
-# Thirty-nine is therefore a derived
-# fail-closed repository-shape oracle, not a trace, state, or product limit.
-test "$(find formal/tla/traces -type f -name '*.trace.json' | wc -l | tr -d ' ')" -eq 39
+# accumulated-source, and StorageBackedPagedScan continuation witnesses, plus
+# the authenticated live-suffix recovery and cancellation witnesses. Forty-one
+# is a fail-closed repository-shape oracle, not model or product policy and not
+# a trace, state, or provider limit.
+test "$(find formal/tla/traces -type f -name '*.trace.json' | wc -l | tr -d ' ')" -eq 41
 for trace in formal/tla/traces/*.trace.json
 do
   grep -q '"format":"flyology[.]tla[.]trace/2"' "$trace"

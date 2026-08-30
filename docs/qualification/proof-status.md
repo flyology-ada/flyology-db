@@ -188,6 +188,15 @@ findings, and maximum successful effort remains 6,522 steps. The preliminary par
 ordinary non-warning tool notice. Runtime allocation and summary derivation, provider I/O, ownership handoffs, and an
 Ada-to-TLA refinement remain outside this selected SPARK boundary.
 
+The durable Commit resolution-authority final tree adds the private authority-v1 format body and its focused proof
+instance to that maintained boundary. Warning-strict FSF GNATprove 16.1.0 proves 1,400/1,400 selected checks: 135
+initialization, 677 run-time, 101 assertion, 386 functional-contract, and 101 termination checks. Flow analysis
+discharges 235 and provers discharge 1,165, with zero failed, unproved, justified, warning, or actual `pragma Assume`
+findings and maximum successful effort 6,522 steps. The exact additive delta from 1,119 is 281 checks: 59 flow and
+222 prover. All 21 authority-format subprograms/packages and all 13 authority-proof units are analyzed. Dynamic
+allocation, controlled receipt adoption, database lifecycle serialization, provider behavior, confidentiality, and
+Ada-to-TLA refinement remain executable or caller-trust boundaries rather than SPARK-proved claims.
+
 The provider-centric Object Storage migration at source
 `3455cde3158fd589480281beac39bea51305bb5e` reruns this maintained gate without changing the selected SPARK
 algorithms or their proof boundary. The exact campaign proves 1,090/1,090 selected checks: 166 by flow analysis and
@@ -540,6 +549,18 @@ remain executable boundaries rather than newly selected proof units.
   successive checkpoint kernel remains 24/24 and the focused live-suffix kernel proves 25/25 strict TLAPS obligations.
   The existing Ada L0 traces and intentional divergence remain unchanged; neither live-suffix witness is a new
   Ada replay or a refinement proof.
+- The durable Commit authority extension to `CommitPublication` generates 2,988,725 states, finds 446,309 distinct
+  states, and reaches depth 19. Its pinned ordered action counts are: `PrepareGroup` 3,510, `PreparePooled` 10,
+  `StoreBatch` 7,080, `PublishHead` 6,012, `ObserveSuccess` 29,112, `LoseAcceptedResponse` 29,112,
+  `LoseUnacceptedResponse` 16,076, `ObservePreconditionFailure` 10,216, `ResolveCommitted` 68,488,
+  `ResolvePreconditionFailure` 25,172, `ExportAuthority` 43,352, `ImportAuthority` 21,402,
+  `RejectMalformedAuthority` 41,152, `AcquireWriter` 50,346, `Crash` 19,698, and `Recover` 75,570. Accepted and
+  conclusive-rejected crash/export/import witnesses reach their intended invariants, and the malformed/swap probe
+  violates `MalformedImportIsNoOp`. The focused authority kernel proves 10/10 strict TLAPS obligations and the
+  existing publication kernel remains 23/23. Update and ordinary modes preserve the same 41 canonical traces
+  byte-for-byte. The finite witness lane selects a singleton batch; grouped member authority is executable-format
+  evidence plus an abstract-kernel property, not a finite grouped crash/import witness. This extension adds no
+  canonical authority trace and no Ada replay or refinement claim.
 - The L0 checkpoint-selection model exhausts 2,240 distinct states at depth 2 with nonzero coverage of no work,
   additive flush, complete compaction, and no admissible action. It checks the exact persisted per-family and
   database-wide run-ceiling decision without mutating authority or reserving identity. Four canonical traces cover
