@@ -37,7 +37,18 @@
     </header>
 
     <section class="benchmark-status" aria-labelledby="campaign-status">
-      <div class="page-shell benchmark-status-inner"><div><span class="eyebrow">Directional campaign · 30 August 2026</span><h2 id="campaign-status">Validated numbers, measured in AC low-power mode.</h2></div><p>Every measured participant passed close, reopen, and full-state verification. All samples ran on one Apple M3 Max under the same detected profile. Use this campaign to compare these exact configurations, not to predict another host or a high-power run.</p></div>
+      <div class="page-shell benchmark-status-inner"><div><span class="eyebrow">Directional campaign · 30 August 2026</span><h2 id="campaign-status">Validated numbers, measured on AC power.</h2></div><p>Every measured participant passed close, reopen, and full-state verification. All samples ran on one Apple M3 Max with High Power configured. The retained detector metadata conflicts with that configuration, so compare only these exact participants within this campaign.</p></div>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="participants-title">
+      <div class="db-section-heading"><div><span class="eyebrow">Participants and infrastructure</span><h2 id="participants-title">What each name means.</h2></div><p>An embedded database or storage engine runs as a library inside the application process. Flyology.DB is a database; SlateDB and TidesDB are storage engines. Flyology Object Storage and RustFS provide storage beneath them.</p></div>
+      <dl class="benchmark-provenance">
+        <div><dt>Flyology.DB</dt><dd>An experimental embedded transactional key-value database for Ada. It maintains the transaction log, column families, snapshots, and log-structured merge-tree (LSM) checkpoints. This campaign connects the same engine to either local Files or remote S3-compatible object storage.</dd></div>
+        <div><dt><a href="https://github.com/slatedb/slatedb">SlateDB</a></dt><dd>An embedded Rust LSM storage engine designed around object storage. It batches writes into immutable sorted tables. The campaign uses its local-filesystem adapter with fsync for the local lane and its AWS object-storage client for RustFS.</dd></div>
+        <div><dt><a href="https://tidesdb.com/getting-started/how-does-tidesdb-work/">TidesDB</a></dt><dd>An embedded C key-value engine with transactions, column families, a write-ahead log, and an LSM tree. The local lane uses full WAL synchronization. The pinned remote path is excluded because it does not preserve the same failure contract.</dd></div>
+        <div><dt><a href="https://github.com/flyology-ada/flyology-object-storage">Flyology Object Storage</a></dt><dd>The provider library beneath Flyology.DB, not another database. It gives the engine one object API for local Files and authenticated S3-compatible storage while Flyology.DB retains transaction and publication policy.</dd></div>
+        <div><dt><a href="https://docs.rustfs.com/en/developer/sdk">RustFS</a></dt><dd>The S3-compatible object-storage server used as the common remote backend, not a database engine. Both eligible remote participants talk to the same pinned RustFS container over loopback.</dd></div>
+      </dl>
     </section>
 
     <section class="db-section page-shell" aria-labelledby="local-lane">
@@ -59,7 +70,7 @@
 
     <section class="db-section page-shell" aria-labelledby="workload-title">
       <div class="db-section-heading"><div><span class="eyebrow">Shared workload</span><h2 id="workload-title">One durable mutation, measured the same way.</h2></div><p>Each operation begins one transaction, writes one unique 16-byte key and 1,024-byte value, and waits for the lane's durable commit result. Creation and full close, reopen, read, and SHA-256 verification stay outside the timer.</p></div>
-      <dl class="benchmark-provenance"><div><dt>Writer geometry</dt><dd>One writer, one mutation per transaction, one fresh database per repetition</dd></div><div><dt>Timed region</dt><dd>Begin, put, and durable commit</dd></div><div><dt>Campaign geometry</dt><dd>5 warmups, 30 measured commits, and 5 fresh-database repetitions per participant</dd></div><div><dt>Verification</dt><dd>Close, reopen, read all 35 keys, and require checksum <code>5dc2cc54…ed326482</code></dd></div><div><dt>Host profile</dt><dd>Apple M3 Max, 48 GiB, macOS 26.6.2, AC Power, detected low-power profile</dd></div></dl>
+      <dl class="benchmark-provenance"><div><dt>Writer geometry</dt><dd>One writer, one mutation per transaction, one fresh database per repetition</dd></div><div><dt>Timed region</dt><dd>Begin, put, and durable commit</dd></div><div><dt>Campaign geometry</dt><dd>5 warmups, 30 measured commits, and 5 fresh-database repetitions per participant</dd></div><div><dt>Verification</dt><dd>Close, reopen, read all 35 keys, and require checksum <code>5dc2cc54…ed326482</code></dd></div><div><dt>Host profile</dt><dd>Apple M3 Max, 48 GiB, macOS 26.6.2, AC Power, High Power configured; retained <code>system_profiler</code> indicators conflicted</dd></div></dl>
     </section>
 
     <section class="db-section page-shell" aria-labelledby="provenance-title">
