@@ -20,6 +20,8 @@ tests/**/*-test_data-tests.ads
 proof/obj/
 oracles/adapters/*/upstream/
 oracles/adapters/slatedb/target/
+benchmarks/comparison/bin/
+benchmarks/comparison/slatedb/target/
 benchmarks/results/
 formal/tla/*_TTrace_*
 formal/tla/states/

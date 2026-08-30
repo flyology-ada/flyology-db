@@ -381,6 +381,8 @@
 .benchmark-table thead th { color: var(--ink-soft); font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase; }
 .benchmark-table tbody th { color: var(--ink); font-size: 1rem; }
 .benchmark-table td { color: var(--ink-soft); }
+.benchmark-number { display: block; color: var(--ink); font-family: var(--font-mono); font-size: 1.15rem; }
+.benchmark-range { display: block; margin-top: 0.2rem; font-size: 0.75rem; white-space: nowrap; }
 
 .benchmark-state {
   display: inline-block;

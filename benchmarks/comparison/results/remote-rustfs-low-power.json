@@ -1,0 +1,187 @@
+{
+  "schema_version": "flyology.db.benchmark.result.v1",
+  "contract_sha256": "182c701fea9bdebe47de7c14c26a908a3d5d47b969ea47b920a60662142fb918",
+  "campaign": {
+    "id": "remote-rustfs-20260830T201245Z",
+    "classification": "directional",
+    "started_at_utc": "2026-08-30T20:12:45.648271Z"
+  },
+  "host": {
+    "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "architecture": "arm64",
+    "cpu": "Apple M3 Max",
+    "memory_bytes": 51539607552,
+    "power": {
+      "detector": "system_profiler",
+      "os": "macos",
+      "power_source": "AC Power",
+      "profile": "low-power"
+    }
+  },
+  "workload": {
+    "id": "durable-single-writer-v1",
+    "sha256": "52c415be6badb3835a3237df8320247463b381cef3289072c216137aac95a490",
+    "seed": 0,
+    "key_bytes": 16,
+    "value_bytes": 1024,
+    "key_count": 35,
+    "transaction_mutations": 1,
+    "concurrency": 1,
+    "warmup_operations": 5,
+    "measured_operations": 30,
+    "repetitions": 5
+  },
+  "results": [
+    {
+      "lane": "remote_durable_rustfs",
+      "participant": "flyology-db-rustfs",
+      "storage_revision": "ghcr.io/rustfs/rustfs@sha256:800cf3f352a0a27e3275ca854a51f0027975d7acc7a0d52089a35bcc9fcbf0b5",
+      "storage_configuration": {
+        "provider": "RustFS",
+        "endpoint": "loopback HTTP",
+        "addressing": "path-style",
+        "region": "us-east-1"
+      },
+      "correctness_gate": "benchmark close/reopen/read-every-key preflight on the same RustFS instance",
+      "correctness_evidence": "4de9bbbf0d19adf6694e8226c3be18cf1d69ac251046b048db42cf247005719c",
+      "power": {
+        "detector": "system_profiler",
+        "os": "macos",
+        "power_source": "AC Power",
+        "profile": "low-power"
+      },
+      "samples": [
+        {
+          "repetition": 1,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 83544666,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 2,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 87788209,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 3,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 88499375,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 4,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 82306084,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 5,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 80194125,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        }
+      ],
+      "median_operations_per_second": 359.08935227534454,
+      "engine_source": "git:fca74780297c63ee5ce8517c4dd561488287ecd9",
+      "adapter_source": "sha256:f960ac54d3285ef24c36b01789c27e55c8fd16727d06dd3a7bfaa4701ed0cb47",
+      "compiler": "GNATLS 16.1.0",
+      "build_flags": [
+        "-O3",
+        "-gnat2022",
+        "-gnatW8",
+        "-gnatw.e",
+        "-gnatyM110"
+      ],
+      "dependency_sources": {
+        "flyology_db": "fca74780297c63ee5ce8517c4dd561488287ecd9",
+        "flyology_object_storage": "5eaf79cf12358c1402b5b7d7ed0a6ec74df6a628",
+        "flyology_object_storage_manifest": "c4f8e27e76bf4a2f584df7844cfbdcf6d6010586c91e25d7c49c0ebda3a5abd4",
+        "flyology_alire_index": "122abd7e6a9fd88a451e2224a8aae2192d226321"
+      }
+    },
+    {
+      "lane": "remote_durable_rustfs",
+      "participant": "slatedb-rustfs",
+      "storage_revision": "ghcr.io/rustfs/rustfs@sha256:800cf3f352a0a27e3275ca854a51f0027975d7acc7a0d52089a35bcc9fcbf0b5",
+      "storage_configuration": {
+        "provider": "RustFS",
+        "endpoint": "loopback HTTP",
+        "addressing": "path-style",
+        "region": "us-east-1"
+      },
+      "correctness_gate": "benchmark close/reopen/read-every-key preflight on the same RustFS instance",
+      "correctness_evidence": "b2cbd4a06aa39cd3067a469b2bdeca58e69a72ff01266ecee7586199e663ac35",
+      "power": {
+        "detector": "system_profiler",
+        "os": "macos",
+        "power_source": "AC Power",
+        "profile": "low-power"
+      },
+      "samples": [
+        {
+          "repetition": 1,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3058168125,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 2,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3056191209,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 3,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3055385167,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 4,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3056210250,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 5,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3053286167,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        }
+      ],
+      "median_operations_per_second": 9.816139746641094,
+      "engine_source": "e0161973d8d7ffdede7c44725729838811674e99",
+      "adapter_source": "sha256:210ca65ca3ac409a6a962a64a6933ca9c0a23cf7114068b2605c878cbb07ccc0",
+      "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "build_flags": [
+        "cargo build --release --locked",
+        "slatedb feature aws"
+      ],
+      "dependency_sources": {
+        "slatedb": "e0161973d8d7ffdede7c44725729838811674e99",
+        "cargo_lock": "9c65328aaf9e71c9434ce2a35915140f13ddf2abb63e30e197dd3dd3c38c82d2"
+      }
+    }
+  ]
+}

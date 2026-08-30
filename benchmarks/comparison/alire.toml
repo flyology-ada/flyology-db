@@ -1,0 +1,17 @@
+name = "flyology_db_benchmark"
+description = "Reproducible cross-engine benchmark harness for Flyology.DB"
+version = "0.1.0-dev"
+licenses = "Apache-2.0 WITH LLVM-exception"
+authors = ["Flyology Project"]
+maintainers = ["Flyology Project <flyology.project@gmail.com>"]
+maintainers-logins = ["flyology-ada"]
+project-files = ["flyology_db_benchmark.gpr"]
+executables = ["flyology_db_benchmark"]
+
+[[depends-on]]
+flyology_db = "*"
+flyology_object_storage = "=0.1.0-dev"
+
+[[pins]]
+flyology_db = { path = ".deps/flyology_db-fca74780" }
+flyology_object_storage = { path = ".deps/flyology_object_storage_0.1.0_5eaf79cf" }

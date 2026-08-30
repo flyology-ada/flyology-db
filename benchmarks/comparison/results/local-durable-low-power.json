@@ -1,0 +1,258 @@
+{
+  "schema_version": "flyology.db.benchmark.result.v1",
+  "contract_sha256": "182c701fea9bdebe47de7c14c26a908a3d5d47b969ea47b920a60662142fb918",
+  "campaign": {
+    "id": "local-durable-20260830T201204Z",
+    "classification": "directional",
+    "started_at_utc": "2026-08-30T20:12:04.200790Z"
+  },
+  "host": {
+    "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "architecture": "arm64",
+    "cpu": "Apple M3 Max",
+    "memory_bytes": 51539607552,
+    "power": {
+      "os": "macos",
+      "power_source": "AC Power",
+      "detector": "system_profiler",
+      "profile": "low-power"
+    }
+  },
+  "workload": {
+    "id": "durable-single-writer-v1",
+    "sha256": "52c415be6badb3835a3237df8320247463b381cef3289072c216137aac95a490",
+    "seed": 0,
+    "key_bytes": 16,
+    "value_bytes": 1024,
+    "key_count": 35,
+    "transaction_mutations": 1,
+    "concurrency": 1,
+    "warmup_operations": 5,
+    "measured_operations": 30,
+    "repetitions": 5
+  },
+  "results": [
+    {
+      "lane": "local_durable",
+      "participant": "flyology-db-files",
+      "power": {
+        "os": "macos",
+        "power_source": "AC Power",
+        "detector": "system_profiler",
+        "profile": "low-power"
+      },
+      "samples": [
+        {
+          "repetition": 1,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 26302541,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 2,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 29256500,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 3,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 28118917,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 4,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 25272500,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 5,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 25780041,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        }
+      ],
+      "median_operations_per_second": 1140.5742129629225,
+      "correctness_evidence": "0a510a763e5949ece3adc40c099e0487e11d8ca83a6d82d3bf9d036c43e19117",
+      "engine_source": "git:fca74780297c63ee5ce8517c4dd561488287ecd9",
+      "adapter_source": "sha256:f960ac54d3285ef24c36b01789c27e55c8fd16727d06dd3a7bfaa4701ed0cb47",
+      "compiler": "GNATLS 16.1.0",
+      "build_flags": [
+        "-O3",
+        "-gnat2022",
+        "-gnatW8",
+        "-gnatw.e",
+        "-gnatyM110"
+      ],
+      "storage_revision": "Flyology Object Storage Files at the pinned Alire dependency source",
+      "storage_configuration": {
+        "backend": "Files",
+        "commit_policy": "Power_Loss_Durable"
+      },
+      "correctness_gate": "benchmark close/reopen/read-every-key preflight",
+      "dependency_sources": {
+        "flyology_db": "fca74780297c63ee5ce8517c4dd561488287ecd9",
+        "flyology_object_storage": "5eaf79cf12358c1402b5b7d7ed0a6ec74df6a628",
+        "flyology_object_storage_manifest": "c4f8e27e76bf4a2f584df7844cfbdcf6d6010586c91e25d7c49c0ebda3a5abd4",
+        "flyology_alire_index": "122abd7e6a9fd88a451e2224a8aae2192d226321"
+      }
+    },
+    {
+      "lane": "local_durable",
+      "participant": "slatedb-local-fsync",
+      "power": {
+        "os": "macos",
+        "power_source": "AC Power",
+        "detector": "system_profiler",
+        "profile": "low-power"
+      },
+      "samples": [
+        {
+          "repetition": 1,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3054122625,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 2,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3054076167,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 3,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3055642334,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 4,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3057118417,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 5,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 3058788542,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        }
+      ],
+      "median_operations_per_second": 9.817902987594882,
+      "correctness_evidence": "be7a6c6002f7cb2f5f7c9a6d559ca3bd6dca13ceee3f2471ddcb486f9fa514f7",
+      "engine_source": "e0161973d8d7ffdede7c44725729838811674e99",
+      "adapter_source": "sha256:210ca65ca3ac409a6a962a64a6933ca9c0a23cf7114068b2605c878cbb07ccc0",
+      "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "build_flags": [
+        "cargo build --release --locked"
+      ],
+      "storage_revision": "object_store 0.14.0",
+      "storage_configuration": {
+        "backend": "LocalFileSystem",
+        "fsync": "true",
+        "wal_enabled": "true",
+        "durability_wait": "WriteHandle.await_durable"
+      },
+      "correctness_gate": "benchmark close/reopen/read-every-key preflight",
+      "dependency_sources": {
+        "slatedb": "e0161973d8d7ffdede7c44725729838811674e99",
+        "cargo_lock": "9c65328aaf9e71c9434ce2a35915140f13ddf2abb63e30e197dd3dd3c38c82d2"
+      }
+    },
+    {
+      "lane": "local_durable",
+      "participant": "tidesdb-unified-full-sync",
+      "power": {
+        "os": "macos",
+        "power_source": "AC Power",
+        "detector": "system_profiler",
+        "profile": "low-power"
+      },
+      "samples": [
+        {
+          "repetition": 1,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 120050708,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 2,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 122045833,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 3,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 121011750,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 4,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 130078375,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        },
+        {
+          "repetition": 5,
+          "operations": 30,
+          "bytes": 31200,
+          "elapsed_nanoseconds": 132096041,
+          "errors": 0,
+          "checksum": "5dc2cc5433f9c7651d9c04d683b31d65a4d2946cad4eeb0f9192b923ed326482"
+        }
+      ],
+      "median_operations_per_second": 245.80929362823883,
+      "correctness_evidence": "7815e668c0783f3f0176a2ed8e47604a8bed68c6cfed221d3621415fefb600da",
+      "engine_source": "23a67a6531bc6c0b537d3696758c7879586dcfce",
+      "adapter_source": "sha256:fe4330b0220c099bfb071d98ad890437b85370b8922399477b645fe1e1321c84",
+      "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101); Python 3.14.6",
+      "build_flags": [
+        "CMAKE_BUILD_TYPE=Release",
+        "TIDESDB_WITH_S3=OFF",
+        "ctypes direct API"
+      ],
+      "storage_revision": "TidesDB 23a67a6531bc6c0b537d3696758c7879586dcfce",
+      "storage_configuration": {
+        "memtable": "unified",
+        "unified_wal_sync": "TDB_SYNC_FULL",
+        "column_family_sync": "TDB_SYNC_FULL",
+        "compression": "none"
+      },
+      "correctness_gate": "benchmark close/reopen/read-every-key preflight",
+      "dependency_sources": {
+        "tidesdb": "23a67a6531bc6c0b537d3696758c7879586dcfce",
+        "oracle_shim": "9690ce5ac7a5cef36a771b0cca6af3470ce666e99031191c87b81e5fe7351ab3"
+      }
+    }
+  ]
+}
