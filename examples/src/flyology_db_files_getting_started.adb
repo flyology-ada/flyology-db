@@ -90,6 +90,7 @@ procedure Flyology_DB_Files_Getting_Started is
 
    Root : constant String := Root_Argument;
 
+   --  website-example:start database-configuration
    --  This walkthrough makes each operational choice explicit. The values
    --  below size only one fresh demonstration and are not library defaults or
    --  recommendations for another workload.
@@ -123,6 +124,7 @@ procedure Flyology_DB_Files_Getting_Started is
          Memtable_Max_Bytes   => 1_024,
          Memtable_Max_Entries => 4,
          Maximum_L0_Runs      => 2)];
+   --  website-example:end database-configuration
 
    Audit_Family_Configuration : constant DB.Column_Family_Configuration :=
      DB.Configure_Column_Family
@@ -191,6 +193,7 @@ procedure Flyology_DB_Files_Getting_Started is
       Data   : Flyology.Bytes.Unbounded_Bytes;
       Result : DB.Outcome_Code;
    begin
+      --  website-example:start read-first-value
       DB.Begin_Transaction (Item, Reader_ID, DB.Snapshot, Reader, Result);
       Expect (Result, DB.Success, Context & " reader begin failed");
       DB.Open_Column_Family (Item, 1, Family, Result);
@@ -200,6 +203,7 @@ procedure Flyology_DB_Files_Getting_Started is
       Require
         (Same (Data, Checkpoint_Value),
          Context & " checkpoint value bytes differ");
+      --  website-example:end read-first-value
       if With_Suffix then
          DB.Get (Item, Reader, Family, Suffix_Key, Data, Result);
          Expect (Result, DB.Success, Context & " suffix get failed");
@@ -259,6 +263,7 @@ procedure Flyology_DB_Files_Getting_Started is
       Result      : DB.Outcome_Code;
       Cleanup     : DB.Outcome_Code;
    begin
+      --  website-example:start create-database
       Binding.Bind (Storage, Store'Access, Bucket, Prefix);
       DB.Create
         (Item,
@@ -277,6 +282,7 @@ procedure Flyology_DB_Files_Getting_Started is
       end if;
       Expect
         (Result, DB.Success, "database create did not resolve conclusively");
+      --  website-example:end create-database
       Require
         (DB.Create_Receipt_Outcome (Create_Info) = DB.Success
          and then DB.Create_Receipt_Manifest_ID (Create_Info)
@@ -285,6 +291,7 @@ procedure Flyology_DB_Files_Getting_Started is
                   = Create_Transition_ID,
          "create receipt lost its exact publication identities");
 
+      --  website-example:start write-first-value
       DB.Begin_Transaction
         (Item, Checkpoint_Transaction_ID, DB.Snapshot, Writer, Result);
       Expect (Result, DB.Success, "writer begin failed");
@@ -303,6 +310,7 @@ procedure Flyology_DB_Files_Getting_Started is
          DB.Resolve (Item, Commit_Info, Timeout, Result => Result);
       end if;
       Expect (Result, DB.Success, "commit did not resolve conclusively");
+      --  website-example:end write-first-value
       Require
         (DB.Receipt_Outcome (Commit_Info) = DB.Success
          and then DB.Receipt_Transaction_ID (Commit_Info)
@@ -314,6 +322,7 @@ procedure Flyology_DB_Files_Getting_Started is
 
       Read_And_Require
         (Item, First_Read_ID, False, False, "before first Flush");
+      --  website-example:start first-checkpoint
       DB.Flush
         (Item,
          Initial_Runs,
@@ -326,6 +335,7 @@ procedure Flyology_DB_Files_Getting_Started is
          DB.Resolve_Flush (Item, Flush_Info, Timeout, Result => Result);
       end if;
       Expect (Result, DB.Success, "Flush did not resolve conclusively");
+      --  website-example:end first-checkpoint
       Require
         (DB.Flush_Receipt_Outcome (Flush_Info) = DB.Success
          and then DB.Flush_Receipt_Manifest_ID (Flush_Info)
@@ -388,13 +398,16 @@ procedure Flyology_DB_Files_Getting_Started is
       Result      : DB.Outcome_Code;
       Cleanup     : DB.Outcome_Code;
    begin
+      --  website-example:start reopen-database
       Binding.Bind (Storage, Store'Access, Bucket, Prefix);
       DB.Open
         (Item, Storage'Access, Demo_Database_ID, Timeout, Result => Result);
       Expect (Result, DB.Success, "database reopen failed");
       Read_And_Require
         (Item, Reopened_Read_ID, True, False, "after suffix reopen");
+      --  website-example:end reopen-database
 
+      --  website-example:start add-column-family
       DB.Add_Column_Family
         (Item,
          Audit_Family_Configuration,
@@ -409,6 +422,7 @@ procedure Flyology_DB_Files_Getting_Started is
       end if;
       Expect
         (Result, DB.Success, "family append did not resolve conclusively");
+      --  website-example:end add-column-family
       Require
         (DB.Column_Family_Receipt_Outcome (Family_Info) = DB.Success
          and then DB.Column_Family_Receipt_Family_ID (Family_Info) = 2
@@ -447,6 +461,7 @@ procedure Flyology_DB_Files_Getting_Started is
 
       Read_And_Require
         (Item, Extended_Read_ID, True, True, "before two-family Flush");
+      --  website-example:start two-family-checkpoint
       DB.Flush
         (Item,
          Extended_Runs,
@@ -460,6 +475,7 @@ procedure Flyology_DB_Files_Getting_Started is
       end if;
       Expect
         (Result, DB.Success, "two-family Flush did not resolve conclusively");
+      --  website-example:end two-family-checkpoint
       Require
         (DB.Flush_Receipt_Outcome (Flush_Info) = DB.Success
          and then DB.Flush_Receipt_Manifest_ID (Flush_Info)

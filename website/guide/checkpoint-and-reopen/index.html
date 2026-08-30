@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Checkpoint a Flyology.DB database, close every owner, and reopen one authenticated view from object storage.">
+  <title>Checkpoint and reopen · Flyology.DB guide</title>
+  <link rel="canonical" href="https://db.flyology.org/guide/checkpoint-and-reopen/">
+  <link rel="icon" href="../../assets/brand/flyology-primary-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles/site.css"><link rel="stylesheet" href="../../assets/styles/db.css">
+  <script src="../../assets/scripts/ada-highlight.js"></script><script src="../../assets/scripts/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary navigation"><a class="brand" href="../../"><img src="../../assets/brand/flyology-mark-transparent.svg" alt=""><span>Flyology.DB</span></a><ul class="nav-links" data-nav-links><li><a href="../../">Overview</a></li><li><details class="nav-dropdown" data-nav-dropdown><summary aria-current="location">Guide <svg aria-hidden="true" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m2.5 4.5 3 3 3.5-3"/></svg></summary><ul class="nav-dropdown-menu"><li><a href="../">Guide overview</a></li><li><a href="../getting-started/">Getting started</a></li><li><a href="../checkpoint-and-reopen/" aria-current="page">Checkpoint and reopen</a></li><li><a href="../families-and-maintenance/">Families and maintenance</a></li><li><a href="../certainty-and-authority/">Certainty and authority</a></li><li><a href="../storage-limits-and-ownership/">Storage, limits, and ownership</a></li></ul></details></li><li><a href="../../architecture/">Architecture</a></li><li><a href="../../support/">Support</a></li><li><a href="../../api/">API</a></li><li><a href="https://github.com/flyology-ada/flyology-db">GitHub</a></li><li><a href="https://flyology.org/">Flyology</a></li></ul><div class="nav-tools"><button class="icon-button" type="button" data-theme-toggle><span class="visually-hidden" data-theme-label>Change theme</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.64 5.64 7.2 7.2M16.8 16.8l1.56 1.56M18.36 5.64 16.8 7.2M7.2 16.8l-1.56 1.56"/><circle cx="12" cy="12" r="4"/></svg></button><button class="menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Toggle navigation"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></nav></header>
+  <main id="main" class="page-shell">
+    <header class="doc-hero"><div><ol class="breadcrumb" aria-label="Breadcrumb"><li><a href="../../">Flyology.DB</a></li><li><a href="../">Guide</a></li><li aria-current="page">Checkpoint and reopen</li></ol><h1>Checkpoint, close, and rebuild the view.</h1></div><p class="doc-hero-copy">After Commit succeeds conclusively, the transaction is durable without a checkpoint. A checkpoint changes recovery geometry: it moves an accepted prefix into immutable family runs and leaves only later commits in the log suffix.</p></header>
+    <div class="docs-layout">
+      <nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ol><li><a href="#why">Why checkpoint</a></li><li><a href="#flush">Publish a checkpoint</a></li><li><a href="#close">Close owners</a></li><li><a href="#open">Reopen</a></li><li><a href="#next">Continue</a></li></ol></nav>
+      <article class="prose">
+        <section id="why"><h2>Use a checkpoint to bound recovery work</h2><p>The transaction log is the database-wide order of accepted commits. A checkpoint records one exact replay boundary and immutable runs for the affected families.</p><p>The library does not start checkpoint work automatically. The application observes its workload, chooses the timing, and supplies every publication identity.</p></section>
+        <section id="flush"><h2>Publish one explicit checkpoint</h2><p><a data-api="Flyology.DB.Flush"><code>Flush</code></a> accepts a family-to-run identity map, a manifest ID, a transition ID, and one deadline. The example maps family 1 to <code>Checkpoint_Run_ID</code> through <code>Initial_Runs</code>.</p><pre class="maintained-example" data-example-region="first-checkpoint"><code class="language-ada" data-example-source="examples/src/flyology_db_files_getting_started.adb" data-example-region="first-checkpoint">      DB.Flush
+        (Item,
+         Initial_Runs,
+         First_Flush_Manifest_ID,
+         First_Flush_Transition_ID,
+         Timeout,
+         Receipt => Flush_Info,
+         Result  => Result);
+      if Result = DB.Outcome_Unknown then
+         DB.Resolve_Flush (Item, Flush_Info, Timeout, Result => Result);
+      end if;
+      Expect (Result, DB.Success, "Flush did not resolve conclusively");</code></pre><p>The call follows four rules:</p><ol><li>Supply one fresh run ID for every nonempty family that needs a complete or suffix snapshot.</li><li>Supply fresh manifest and transition IDs.</li><li>Retain the receipt when the outcome is unknown.</li><li>Resolve the same receipt instead of starting another Flush.</li></ol><p>The first Flush writes complete nonempty-family runs. A later Flush appends one suffix-delta run for each affected family and retains earlier runs.</p></section>
+        <section id="close"><h2>Finish work before you close</h2><p>Finish or roll back every transaction and operation before <a data-api="Flyology.DB.Close"><code>Close</code></a>. Keep the storage binding and its borrowed owners alive until the database closes.</p><p>After Close succeeds, discard every family handle and process-local database value. Do not carry a handle into the next database owner.</p></section>
+        <section id="open"><h2>Reopen from object storage</h2><p>Create fresh provider, binding, and database owners. Bind the new storage owner, then call <code>Open</code> with the persisted database ID.</p><pre class="maintained-example" data-example-region="reopen-database"><code class="language-ada" data-example-source="examples/src/flyology_db_files_getting_started.adb" data-example-region="reopen-database">      Binding.Bind (Storage, Store'Access, Bucket, Prefix);
+      DB.Open
+        (Item, Storage'Access, Demo_Database_ID, Timeout, Result => Result);
+      Expect (Result, DB.Success, "database reopen failed");
+      Read_And_Require
+        (Item, Reopened_Read_ID, True, False, "after suffix reopen");</code></pre><p>Open reads the current metadata pointer and validates the persisted limits and manifest. Open authenticates each referenced immutable object. It then replays only the commits after the checkpoint boundary and installs one complete view.</p><div class="boundary-note"><strong>Listing does not establish the current database.</strong><p>Recovery follows authenticated references from the metadata pointer. A cache or object listing can help discovery or garbage collection, but neither one selects visible state.</p></div></section>
+        <section id="next"><h2>Extend the recovered database</h2><p>The next chapter adds a second family while the reopened database still has a retained checkpoint and a later live suffix.</p><div class="next-links"><a href="../families-and-maintenance/"><span>Next</span>Add a family and maintain runs</a><a href="../../architecture/#recovery"><span>Deep dive</span>Recovery architecture</a></div></section>
+      </article>
+    </div>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><span>Object storage remains the authority across process teardown.</span><div class="footer-links"><a href="../">Guide</a><a href="../getting-started/">Previous</a><a href="../families-and-maintenance/">Next</a><a href="../../api/">API</a></div></div></footer>
+</body>
+</html>

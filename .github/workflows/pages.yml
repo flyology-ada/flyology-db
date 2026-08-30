@@ -1,0 +1,93 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: flyology-db-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build guide and API reference
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out sources and pinned website kit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: source
+          submodules: recursive
+      - name: Install Alire and exact Ada toolchain
+        uses: alire-project/setup-alire@fc4c8ce471aa30b3af0d39ce15add1ee9eaf28f2 # v6.0.0
+        with:
+          version: 2.1.1
+          toolchain: >-
+            gnat_native=16.1.0
+            gprbuild=26.0.1
+          cache: true
+      - name: Select exact Ada toolchain
+        run: |
+          alr --non-interactive toolchain --select \
+            gnat_native=16.1.0 \
+            gprbuild=26.0.1
+      - name: Configure Flyology index
+        run: |
+          alr index --reset-community
+          alr index \
+            --add=git+https://github.com/flyology-ada/alire-index.git \
+            --name=flyology \
+            --before=community
+      - name: Materialize the qualified Object Storage dependency
+        run: bash scripts/materialize-development-dependencies.sh
+        working-directory: source
+      - name: Install Node 24.19.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.19.0
+      - name: Verify Node version
+        run: test "$(node --version)" = v24.19.0
+      - name: Install GNATdoc 26.0.0
+        run: |
+          printf 'ALIRE_INSTALL_PREFIX=%s\n' "$RUNNER_TEMP/alire-prefix" >> "$GITHUB_ENV"
+          alr install --prefix="$RUNNER_TEMP/alire-prefix" gnatdoc_bin=26.0.0
+          "$RUNNER_TEMP/alire-prefix/bin/gnatdoc" --version 2>&1 | \
+            sed -n '1{s/\r$//;p;}' | \
+            grep -Fx 'GNATdoc 26.0.0 (20260415)'
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+        with:
+          enablement: true
+      - name: Build and verify site
+        run: ./scripts/build-site.sh
+        working-directory: source
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: source/build/site
+
+  deploy:
+    name: Publish site
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Verify custom-domain publication
+        run: |
+          curl --fail --silent --show-error --location \
+            --retry 10 --retry-delay 15 --retry-all-errors \
+            https://db.flyology.org/ > "$RUNNER_TEMP/flyology-db-home.html"
+          grep -q '<title>Flyology.DB' "$RUNNER_TEMP/flyology-db-home.html"

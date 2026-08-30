@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Learn Flyology.DB from one transaction through checkpoint recovery, family evolution, publication certainty, and application-owned policy.">
+  <title>Guide · Flyology.DB</title>
+  <link rel="canonical" href="https://db.flyology.org/guide/">
+  <link rel="icon" href="../assets/brand/flyology-primary-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/styles/site.css"><link rel="stylesheet" href="../assets/styles/db.css">
+  <script src="../assets/scripts/ada-highlight.js"></script><script src="../assets/scripts/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary navigation"><a class="brand" href="../"><img src="../assets/brand/flyology-mark-transparent.svg" alt=""><span>Flyology.DB</span></a><ul class="nav-links" data-nav-links><li><a href="../">Overview</a></li><li><details class="nav-dropdown" data-nav-dropdown><summary aria-current="location">Guide <svg aria-hidden="true" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m2.5 4.5 3 3 3.5-3"/></svg></summary><ul class="nav-dropdown-menu"><li><a href="./" aria-current="page">Guide overview</a></li><li><a href="getting-started/">Getting started</a></li><li><a href="checkpoint-and-reopen/">Checkpoint and reopen</a></li><li><a href="families-and-maintenance/">Families and maintenance</a></li><li><a href="certainty-and-authority/">Certainty and authority</a></li><li><a href="storage-limits-and-ownership/">Storage, limits, and ownership</a></li></ul></details></li><li><a href="../architecture/">Architecture</a></li><li><a href="../support/">Support</a></li><li><a href="../api/">API</a></li><li><a href="https://github.com/flyology-ada/flyology-db">GitHub</a></li><li><a href="https://flyology.org/">Flyology</a></li></ul><div class="nav-tools"><button class="icon-button" type="button" data-theme-toggle><span class="visually-hidden" data-theme-label>Change theme</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.64 5.64 7.2 7.2M16.8 16.8l1.56 1.56M18.36 5.64 16.8 7.2M7.2 16.8l-1.56 1.56"/><circle cx="12" cy="12" r="4"/></svg></button><button class="menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Toggle navigation"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></nav></header>
+  <main id="main">
+    <section class="guide-hero page-shell"><span class="eyebrow">Start with one value</span><h1>Learn the database in working increments.</h1><p>Begin with one transaction. Then add a checkpoint, process teardown, a second family, and publication recovery. Each step keeps the earlier behavior and introduces one new responsibility.</p></section>
+    <section class="db-section page-shell" aria-labelledby="learning-path-title">
+      <div class="db-section-heading"><div><span class="eyebrow">Learning path</span><h2 id="learning-path-title">Build from a write to a recovered database.</h2></div><p>The maintained Files walkthrough executes the complete path. These chapters explain the same path in the order an application encounters it.</p></div>
+      <ol class="guide-sequence">
+        <li><div><a href="getting-started/">Create, write, and read one value</a><p>Build the source, run the maintained example, and understand the smallest transaction lifecycle.</p></div></li>
+        <li><div><a href="checkpoint-and-reopen/">Checkpoint and reopen</a><p>Publish an explicit checkpoint, close every owner, and recover from the authoritative object graph.</p></div></li>
+        <li><div><a href="families-and-maintenance/">Add a family and maintain runs</a><p>Extend a recovered registry, write to the new family, checkpoint changed families, and select compaction deliberately.</p></div></li>
+        <li><div><a href="certainty-and-authority/">Resolve an unknown commit</a><p>Keep the original receipt, reconcile through reads, and carry Commit resolution authority across process teardown.</p></div></li>
+      </ol>
+    </section>
+    <section class="db-section page-shell" aria-labelledby="deep-dives-title">
+      <div class="db-section-heading"><div><span class="eyebrow">Deep dives</span><h2 id="deep-dives-title">Apply the database boundary to your system.</h2></div><p>Use these sections after the learning path. They collect the limits and ownership rules that remain application policy.</p></div>
+      <div class="guide-deep-dives">
+        <a href="storage-limits-and-ownership/"><span>Configuration</span><strong>Storage, limits, identities, and owner lifetimes</strong><p>Choose persisted bounds, bind a provider, preserve borrowed owners, and select synchronous or composable operations.</p></a>
+        <a href="../architecture/"><span>Architecture</span><strong>Publication, isolation, LSM state, and recovery</strong><p>Follow the immutable object graph and the exact metadata transition that makes a complete history visible.</p></a>
+        <a href="../support/"><span>Support boundary</span><strong>Evidence, providers, omissions, and current status</strong><p>Separate executed evidence from product policy and from capabilities that the experimental profile does not provide.</p></a>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><span>Start with one value, then add only the database behavior you need.</span><div class="footer-links"><a href="getting-started/">Start</a><a href="../architecture/">Architecture</a><a href="../support/">Support</a><a href="../api/">API</a></div></div></footer>
+</body>
+</html>

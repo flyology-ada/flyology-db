@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Flyology.DB is an embedded transactional key-value database for Ada that keeps durable state in Files or S3-compatible object storage.">
+  <meta name="theme-color" content="#10172b">
+  <title>Flyology.DB · An embedded database for Ada</title>
+  <link rel="canonical" href="https://db.flyology.org/">
+  <link rel="icon" href="assets/brand/flyology-primary-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles/site.css">
+  <link rel="stylesheet" href="assets/styles/db.css">
+  <script src="assets/scripts/ada-highlight.js"></script>
+  <script src="assets/scripts/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a class="brand" href="./" aria-label="Flyology.DB home"><img src="assets/brand/flyology-mark-transparent.svg" alt=""><span>Flyology.DB</span></a>
+      <ul class="nav-links" data-nav-links>
+        <li><a href="./" aria-current="page">Overview</a></li>
+        <li><a href="guide/">Guide</a></li>
+        <li><a href="architecture/">Architecture</a></li>
+        <li><a href="support/">Support</a></li>
+        <li><a href="api/">API</a></li>
+        <li><a href="https://github.com/flyology-ada/flyology-db">GitHub</a></li>
+        <li><a href="https://flyology.org/">Flyology<svg class="external-link-icon" aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 2h5v5M8 8l6-6M12 9v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3"/></svg><span class="visually-hidden"> (external site)</span></a></li>
+      </ul>
+      <div class="nav-tools"><button class="icon-button" type="button" data-theme-toggle><span class="visually-hidden" data-theme-label>Change theme</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.64 5.64 7.2 7.2M16.8 16.8l1.56 1.56M18.36 5.64 16.8 7.2M7.2 16.8l-1.56 1.56"/><circle cx="12" cy="12" r="4"/></svg></button><button class="menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Toggle navigation"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="db-hero page-shell">
+      <div>
+        <h1>An embedded database for Ada applications.</h1>
+        <p class="hero-lede">Flyology.DB is a transactional key-value store that runs in your process. Read and write byte keys and values with snapshot or serializable isolation. The library persists its commit log and checkpoints to local Files or S3-compatible object storage, so a new process can reopen the same database.</p>
+        <div class="actions"><a class="button button-primary" href="guide/getting-started/">Create your first database</a><a class="button button-secondary" href="support/">See the supported profile</a></div>
+      </div>
+      <figure class="product-map">
+        <figcaption><span>How it fits</span><span>No separate Flyology.DB server</span></figcaption>
+        <div class="product-node application"><strong>Ada application</strong><span>opens transactions · reads · writes</span></div>
+        <div class="product-connector"><span>calls</span></div>
+        <div class="product-node database"><strong>Flyology.DB</strong><span>isolation · commit log · checkpoints</span></div>
+        <div class="product-connector"><span>persists to</span></div>
+        <div class="product-node storage"><strong>Object storage</strong><span>local Files or a caller-owned S3 client</span></div>
+        <div class="reopen-note">A new process can reopen from the same durable objects.</div>
+      </figure>
+    </section>
+
+    <section class="db-status" aria-label="Current design boundary">
+      <div class="db-status-inner page-shell">
+        <div class="db-status-item"><strong>Data model</strong><span>Byte keys and values, organized into column families.</span></div>
+        <div class="db-status-item"><strong>Storage</strong><span>Local Files or a caller-owned S3-compatible client.</span></div>
+        <div class="db-status-item"><strong>Deployment</strong><span>Embedded library, one writer, optional read-only replicas.</span></div>
+        <div class="db-status-item"><strong>Status</strong><span>0.1.0-dev, experimental, no production qualification.</span></div>
+      </div>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="workflow-title">
+      <div class="db-section-heading"><div><span class="eyebrow">Using the database</span><h2 id="workflow-title">Create, transact, checkpoint, reopen.</h2></div><p>The public API follows an explicit lifecycle. Your application supplies storage, identities, and limits; Flyology.DB owns transactional state and persisted database objects.</p></div>
+      <ol class="publication-flow">
+        <li class="publication-step"><h3>Create or open</h3><p>Bind a Files or S3-compatible storage client, define persisted limits and column families, then create a database or open its existing durable state.</p></li>
+        <li class="publication-step"><h3>Read and write</h3><p>Begin a snapshot or serializable transaction, get and scan keys, stage mutations, and commit one transaction or an atomic group.</p></li>
+        <li class="publication-step"><h3>Checkpoint and reopen</h3><p>Flush changed families into immutable runs, close every owner, and reconstruct the database from object storage in a new process.</p></li>
+      </ol>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="capabilities-title">
+      <div class="db-section-heading"><div><span class="eyebrow">Current profile</span><h2 id="capabilities-title">The database path that works today.</h2></div><p>The experimental profile joins transactions, column families, checkpointing, compaction, recovery, and provider-neutral storage. It leaves scheduling, identities, retention, and infrastructure policy with the application.</p></div>
+      <div class="capability-grid">
+        <article class="capability-card"><b>TRANSACTIONS</b><h3>Read and write exact bytes</h3><p>Use snapshot or serializable isolation, point reads, bounded scans, mutations, singleton commits, and atomic commit groups.</p></article>
+        <article class="capability-card"><b>LSM STATE</b><h3>Checkpoint deliberately</h3><p>Flush changed families and compact exact caller-selected runs. Current operations retain predecessors and choose no deletion policy.</p></article>
+        <article class="capability-card"><b>RECOVERY</b><h3>Reopen from authority</h3><p>Discard process-local state, construct fresh owners, and rebuild one complete authenticated view from object storage.</p></article>
+        <article class="capability-card"><b>FAMILIES</b><h3>Append stable namespaces</h3><p>Add a higher never-reused family ID over a retained checkpoint, including a later authenticated commit suffix.</p></article>
+        <article class="capability-card"><b>COMPOSITION</b><h3>Drive bounded operations</h3><p>Choose synchronous calls or caller-owned completion sets and buffers without changing publication certainty.</p></article>
+        <article class="capability-card"><b>PROVIDERS</b><h3>Keep transport outside DB</h3><p>Bind provider-neutral Files storage or caller-owned authenticated S3-compatible clients. The database adds no endpoint or retry policy.</p></article>
+      </div>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="publication-title">
+      <div class="db-section-heading"><div><span class="eyebrow">How durability works</span><h2 id="publication-title">A commit becomes visible in one controlled step.</h2></div><p>Flyology.DB first stores a complete immutable commit object. Flyology.DB then uses compare-and-swap to replace the exact metadata version that the transaction read. If another writer has already changed that metadata version, the stale writer cannot replace the current database state.</p></div>
+      <ol class="publication-flow">
+        <li class="publication-step"><h3>Store the complete commit</h3><p>Write the transaction identities, mutations, lengths, and integrity data as one immutable object before the commit becomes visible.</p></li>
+        <li class="publication-step"><h3>Publish from the version read</h3><p>Replace metadata only when the stored version still matches the transaction's predecessor. This is the compare-and-swap publication step.</p></li>
+        <li class="publication-step"><h3>Resolve an uncertain response</h3><p>If the storage response is lost, read the durable state using the original receipt. Never submit the application transaction again under a new identity.</p></li>
+      </ol>
+    </section>
+
+    <section class="evidence-band" aria-labelledby="evidence-title">
+      <div class="evidence-inner page-shell"><div><span class="eyebrow">Assurance boundary</span><h2 id="evidence-title">Tests, models, and proofs cover different questions.</h2><p>Executed evidence supports the exact reviewed source and dependency tree. It does not convert the experimental profile into a production or performance claim.</p><p><a href="support/">Review current support and limits →</a></p></div><ul class="evidence-list"><li><strong>Deterministic workflow</strong><span>Repository, engine, client, crash-recovery, Files, showcase, and TidesDB gates.</span></li><li><strong>Six-provider matrix</strong><span>RustFS, SeaweedFS, MinIO, Flyology memory, Files, and SQLite across three repetitions.</span></li><li><strong>TLA+ and TLAPS</strong><span>Bounded state exploration, negative probes, recovery witnesses, proofs, and four maintained Ada trace replays.</span></li><li><strong>SPARK</strong><span>Selected format, policy, bounds, and transition units prove without assumptions or justified checks.</span></li></ul></div>
+    </section>
+
+    <section class="final-cta page-shell" aria-labelledby="cta-title"><span class="eyebrow">Start with one value</span><h2 id="cta-title">Create a local database, then reopen it.</h2><p>The maintained Files example begins with one transaction and grows into checkpoint recovery and a second column family. It leaves the durable root in your custody for inspection.</p><div class="actions"><a class="button button-primary" href="guide/getting-started/">Open the walkthrough</a><a class="button button-secondary" href="api/">Browse the API</a></div></section>
+  </main>
+
+  <footer class="site-footer"><div class="footer-inner"><span>Flyology.DB is experimental and dual-licensed under MIT or Apache-2.0.</span><div class="footer-links"><a href="guide/">Guide</a><a href="architecture/">Architecture</a><a href="support/">Support</a><a href="api/">API</a><a href="https://github.com/flyology-ada/flyology-db">Source</a></div></div></footer>
+</body>
+</html>

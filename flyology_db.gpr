@@ -38,4 +38,9 @@ project Flyology_Db is
       for Charset ("Ada") use "utf-8";
    end Format;
 
+   package Documentation is
+      for Output_Dir ("html") use "docs/api";
+      for Resources_Dir ("html") use "docs/gnatdoc/html";
+   end Documentation;
+
 end Flyology_Db;

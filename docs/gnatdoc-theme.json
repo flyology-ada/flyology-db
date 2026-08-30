@@ -1,0 +1,10 @@
+{
+  "pageTitle": "Flyology.DB API reference",
+  "indexDescription": "Generated public API reference for flyology_db.",
+  "indexTitle": "API reference · Flyology.DB",
+  "canonicalUrl": "https://db.flyology.org/api/",
+  "brandLabel": "Flyology.DB API",
+  "navigationHtml": "<a href='../'>Overview</a><a href='../guide/'>Guide</a><a href='../architecture/'>Architecture</a><a href='../support/'>Support</a><a href='https://github.com/flyology-ada/flyology-db'>GitHub</a><a href='https://flyology.org/'>Flyology</a>",
+  "indexIntroduction": "Generated contracts for bounded transactions, publication, reconciliation, checkpointing, compaction, recovery, and Object Storage binding.",
+  "footerNote": "Generated with GNATdoc from the flyology_db public units."
+}

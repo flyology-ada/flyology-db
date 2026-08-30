@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Build Flyology.DB, run the maintained Files example, and follow the first create, transaction, commit, and read lifecycle.">
+  <title>Getting started · Flyology.DB</title>
+  <link rel="canonical" href="https://db.flyology.org/guide/getting-started/">
+  <link rel="icon" href="../../assets/brand/flyology-primary-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles/site.css"><link rel="stylesheet" href="../../assets/styles/db.css">
+  <script src="../../assets/scripts/ada-highlight.js"></script><script src="../../assets/scripts/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary navigation"><a class="brand" href="../../"><img src="../../assets/brand/flyology-mark-transparent.svg" alt=""><span>Flyology.DB</span></a><ul class="nav-links" data-nav-links><li><a href="../../">Overview</a></li><li><details class="nav-dropdown" data-nav-dropdown><summary aria-current="location">Guide <svg aria-hidden="true" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m2.5 4.5 3 3 3.5-3"/></svg></summary><ul class="nav-dropdown-menu"><li><a href="../">Guide overview</a></li><li><a href="../getting-started/" aria-current="page">Getting started</a></li><li><a href="../checkpoint-and-reopen/">Checkpoint and reopen</a></li><li><a href="../families-and-maintenance/">Families and maintenance</a></li><li><a href="../certainty-and-authority/">Certainty and authority</a></li><li><a href="../storage-limits-and-ownership/">Storage, limits, and ownership</a></li></ul></details></li><li><a href="../../architecture/">Architecture</a></li><li><a href="../../support/">Support</a></li><li><a href="../../api/">API</a></li><li><a href="https://github.com/flyology-ada/flyology-db">GitHub</a></li><li><a href="https://flyology.org/">Flyology</a></li></ul><div class="nav-tools"><button class="icon-button" type="button" data-theme-toggle><span class="visually-hidden" data-theme-label>Change theme</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.64 5.64 7.2 7.2M16.8 16.8l1.56 1.56M18.36 5.64 16.8 7.2M7.2 16.8l-1.56 1.56"/><circle cx="12" cy="12" r="4"/></svg></button><button class="menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Toggle navigation"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></nav></header>
+  <main id="main" class="page-shell">
+    <header class="doc-hero"><div><ol class="breadcrumb" aria-label="Breadcrumb"><li><a href="../../">Flyology.DB</a></li><li><a href="../">Guide</a></li><li aria-current="page">Getting started</li></ol><h1>Create, write, and read one value.</h1></div><p class="doc-hero-copy">Run the maintained Files-backed example first. Then follow its exact source through configuration, creation, one committed write, and one read.</p></header>
+    <div class="docs-layout">
+      <nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ol><li><a href="#requirements">Requirements</a></li><li><a href="#build">Build the source</a></li><li><a href="#run">Run the example</a></li><li><a href="#configure">Configure the database</a></li><li><a href="#create">Create the database</a></li><li><a href="#write">Write and commit</a></li><li><a href="#read">Read the value</a></li><li><a href="#ownership">Retain ownership</a></li><li><a href="#next">Continue</a></li></ol></nav>
+      <article class="prose">
+        <section id="requirements"><h2>Prepare a public source checkout</h2><p>The walkthrough uses <a data-api="Flyology.DB"><code>Flyology.DB</code></a>, the local Files object-storage backend, Alire 2.1.1, and an Ada 2022 toolchain. It needs network access only when it clones the source and materializes the exact qualified Object Storage dependency.</p><div class="boundary-note"><strong>Use a disposable demonstration identity space.</strong><p>The example uses compact fixed IDs only because the runner requires one fresh root. An application must allocate and persist never-reused IDs in every applicable namespace.</p></div></section>
+        <section id="build"><h2>Build the source and exact dependency</h2><p>Clone the public repository. The maintained materializer checks out the reviewed Object Storage revision under the ignored development directory.</p><pre><code>git clone https://github.com/flyology-ada/flyology-db.git
+cd flyology-db
+bash scripts/materialize-development-dependencies.sh
+alr build</code></pre><p>The materializer refuses a conflicting or dirty dependency. It does not select a newer dependency revision.</p></section>
+        <section id="run"><h2>Run one database before reading the implementation</h2><p>Pass one absolute Files root that does not exist. Its physical parent must already exist. The path must contain no symbolic-link ambiguity, empty component, dot component, or parent component.</p><pre><code>bash examples/run-files-getting-started.sh \
+  "$PWD/flyology-db-example-data"</code></pre><p>The command creates a database, commits and reads values, publishes checkpoints, and closes every owner. It then reopens the database twice. On success, it prints this line before the general success lines:</p><pre><code>Flyology.DB Files retained-checkpoint live-suffix family reopen: OK</code></pre><p>Keep the generated root. The runner never deletes it. The remaining sections explain the opening create, write, and read stage from the <a href="https://github.com/flyology-ada/flyology-db/blob/main/examples/src/flyology_db_files_getting_started.adb">maintained Ada source</a>.</p></section>
+        <section id="configure"><h2>Choose explicit limits and one family</h2><p>The example configures one <code>records</code> family. It also persists bounds for histories, transactions, mutations, live state, runs, and read tracking.</p><pre class="maintained-example" data-example-region="database-configuration"><code class="language-ada" data-example-source="examples/src/flyology_db_files_getting_started.adb" data-example-region="database-configuration">   --  This walkthrough makes each operational choice explicit. The values
+   --  below size only one fresh demonstration and are not library defaults or
+   --  recommendations for another workload.
+   Maximum_Object_Size : constant OS.Byte_Count := 65_536;
+   Timeout             : constant Duration := 10.0;
+   Bucket              : constant String := "flyology-db-getting-started";
+   Prefix              : constant String := "database";
+
+   Limits : constant DB.Database_Limits :=
+     (Maximum_Column_Families             => 2,
+      Maximum_Manifest_History            => 7,
+      Maximum_Batch_History               => 4,
+      Maximum_Transactions_Per_Batch      => 2,
+      Maximum_Mutations_Per_Transaction   => 2,
+      Maximum_Mutations_Per_Batch         => 2,
+      Maximum_Live_Entries                => 4,
+      Maximum_Transaction_Payload_Bytes   => 256,
+      Maximum_Batch_Payload_Bytes         => 512,
+      Maximum_Live_State_Bytes            => 4_096,
+      Maximum_Total_L0_Runs               => 3,
+      Maximum_Checkpoint_Identities       => 9,
+      Maximum_Point_Reads_Per_Transaction => 4,
+      Maximum_Scan_Ranges_Per_Transaction => 1);
+
+   Families : constant DB.Column_Family_Configuration_Array :=
+     [DB.Configure_Column_Family
+        (ID                   => 1,
+         Name                 => Bytes ("records"),
+         Max_Key_Bytes        => 32,
+         Max_Value_Bytes      => 64,
+         Memtable_Max_Bytes   => 1_024,
+         Memtable_Max_Entries => 4,
+         Maximum_L0_Runs      => 2)];</code></pre><p>The local <code>Bytes</code> helper converts each demonstration string into a byte array. The application must choose limits from its workload. These values are fixtures, not library defaults.</p></section>
+        <section id="create"><h2>Bind storage and create the database</h2><p>The storage binding borrows the Files store. Keep both owners alive while the database uses them. <code>Create</code> receives the database ID, publication IDs, persisted limits, family configuration, and deadline.</p><pre class="maintained-example" data-example-region="create-database"><code class="language-ada" data-example-source="examples/src/flyology_db_files_getting_started.adb" data-example-region="create-database">      Binding.Bind (Storage, Store'Access, Bucket, Prefix);
+      DB.Create
+        (Item,
+         Storage'Access,
+         Demo_Database_ID,
+         Create_Manifest_ID,
+         Create_Transition_ID,
+         Limits,
+         Families,
+         Timeout,
+         Receipt => Create_Info,
+         Result  => Result);
+      if Result = DB.Outcome_Unknown then
+         DB.Resolve_Create
+           (Item, Storage'Access, Create_Info, Timeout, Result => Result);
+      end if;
+      Expect
+        (Result, DB.Success, "database create did not resolve conclusively");</code></pre><p>The binding borrows the Files store, so the store must outlive the database. If <code>Create</code> sets <code>Result</code> to <a data-api="Flyology.DB.Outcome_Code.Outcome_Unknown"><code>Outcome_Unknown</code></a>, the example resolves the original receipt. It does not start <code>Create</code> again with replacement IDs.</p></section>
+        <section id="write"><h2>Write and commit one value</h2><p>Begin one snapshot transaction. Open the configured family, <a data-api="Flyology.DB.Put"><code>Put</code></a> the key and value, then commit the transaction.</p><pre class="maintained-example" data-example-region="write-first-value"><code class="language-ada" data-example-source="examples/src/flyology_db_files_getting_started.adb" data-example-region="write-first-value">      DB.Begin_Transaction
+        (Item, Checkpoint_Transaction_ID, DB.Snapshot, Writer, Result);
+      Expect (Result, DB.Success, "writer begin failed");
+      declare
+         Family : DB.Column_Family;
+      begin
+         DB.Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, DB.Success, "family open failed");
+         DB.Put
+           (Item, Writer, Family, Checkpoint_Key, Checkpoint_Value, Result);
+         Expect (Result, DB.Success, "put failed");
+      end;
+      DB.Commit
+        (Item, Writer, Timeout, Receipt => Commit_Info, Result => Result);
+      if Result = DB.Outcome_Unknown then
+         DB.Resolve (Item, Commit_Info, Timeout, Result => Result);
+      end if;
+      Expect (Result, DB.Success, "commit did not resolve conclusively");</code></pre><p>A successful <code>Commit</code> consumes the transaction. If <code>Commit</code> sets <code>Result</code> to <code>Outcome_Unknown</code>, call <code>Resolve</code> with the same receipt. Do not submit the application transaction again.</p></section>
+        <section id="read"><h2>Read the committed value in a new transaction</h2><p>The example begins a separate read transaction at a fixed snapshot. It opens the same family, calls <a data-api="Flyology.DB.Get" data-api-signature="Family : Column_Family; Item_Key : Byte_Array; Data : out"><code>Get</code></a>, and checks the returned bytes.</p><pre class="maintained-example" data-example-region="read-first-value"><code class="language-ada" data-example-source="examples/src/flyology_db_files_getting_started.adb" data-example-region="read-first-value">      DB.Begin_Transaction (Item, Reader_ID, DB.Snapshot, Reader, Result);
+      Expect (Result, DB.Success, Context &amp; " reader begin failed");
+      DB.Open_Column_Family (Item, 1, Family, Result);
+      Expect (Result, DB.Success, Context &amp; " records family open failed");
+      DB.Get (Item, Reader, Family, Checkpoint_Key, Data, Result);
+      Expect (Result, DB.Success, Context &amp; " checkpoint get failed");
+      Require
+        (Same (Data, Checkpoint_Value),
+         Context &amp; " checkpoint value bytes differ");</code></pre><p><code>Expect</code>, <code>Require</code>, and <code>Same</code> are checks in the maintained example, not Flyology.DB operations. The helper calls <a data-api="Flyology.DB.Rollback"><code>Rollback</code></a> after the reads because the transaction has no mutations to commit.</p></section>
+        <section id="ownership"><h2>Keep custody of the retained root</h2><p>The command prints the root again from its exit trap. Inspect or archive the files after every process exits. Remove them only through your own explicit cleanup policy.</p><p>This example proves a functional path on one exact source and dependency tree. It does not provide automatic backup, retention, garbage collection, migration, or production qualification.</p></section>
+        <section id="next"><h2>Add checkpoint recovery next</h2><p>The first transaction proves the basic call lifecycle. The next chapter explains why and when the example publishes a checkpoint before it closes the database.</p><div class="next-links"><a href="../checkpoint-and-reopen/"><span>Next</span>Checkpoint and reopen</a><a href="../storage-limits-and-ownership/"><span>Deep dive</span>Choose storage and limits</a></div></section>
+      </article>
+    </div>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><span>The runner retains the Files root in caller custody.</span><div class="footer-links"><a href="../">Guide</a><a href="../../architecture/">Architecture</a><a href="../../support/">Support</a><a href="../../api/">API</a></div></div></footer>
+</body>
+</html>

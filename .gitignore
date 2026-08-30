@@ -11,6 +11,7 @@ obj/
 lib/
 build/
 docs/api/
+docs/gnatdoc/
 tests/bin/
 tests/obj/
 showcases/bin/

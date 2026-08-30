@@ -1,0 +1,30 @@
+# Flyology.DB
+
+> Experimental object-native transactional key-value database for Ada.
+
+Flyology.DB 0.1.0-dev uses object storage as the sole authority for acknowledged durable state. The current topology has one fenced writer, one global commit sequence, one database-wide transaction log, stable never-reused column-family IDs, and caller-managed read-only replicas. Memory, local files, and listing are not visibility authority.
+
+## Documentation
+
+- [Overview](/): project boundary and publication summary
+- [Guide](/guide/): task-oriented entry points and application responsibilities
+- [Getting started](/guide/getting-started/): build the source and follow the first create, transaction, commit, and read lifecycle
+- [Checkpoint and reopen](/guide/checkpoint-and-reopen/): publish a checkpoint, close every owner, and recover one authenticated view
+- [Families and maintenance](/guide/families-and-maintenance/): append a family, Flush changed families, and compact selected runs
+- [Certainty and authority](/guide/certainty-and-authority/): resolve unknown Commit outcomes and preserve authority across process teardown
+- [Storage, limits, and ownership](/guide/storage-limits-and-ownership/): choose persisted bounds, IDs, provider bindings, and owner lifetimes
+- [Architecture](/architecture/): immutable objects, compare-and-swap metadata publication, transactions, LSM state, and recovery
+- [Support](/support/): current evidence, security boundary, and exclusions
+- [API reference](/api/): generated GNATdoc contracts
+
+## Current boundary
+
+- A durable commit requires a complete immutable batch, replacement of the exact metadata generation that the writer read, and confirmation or same identity reconciliation.
+- An unknown publication result remains unknown until the attempted transition or a conclusive successor is observed. Application work is not replayed under a replacement identity.
+- Snapshot and serializable transactions support exact byte keys and values, point reads, bounded scans, mutations, singleton commits, and atomic groups.
+- Explicit Flush and caller-selected compaction publish checkpoints. There is no automatic maintenance, compaction selection, garbage collection, cleanup, or retention policy.
+- Cacheless open reconstructs one complete authenticated graph from object storage.
+- Files and the maintained S3-compatible matrix provide commit-specific evidence, not general cloud or production qualification.
+- Durable Commit authority can cross process teardown only after Commit returned Outcome_Unknown. The bearer blob contains application keys and values and requires authenticated, confidential storage and request binding.
+- Durable authority does not cover termination inside Commit or another receipt family.
+- Flyology.DB has no production qualification, stable-format promise, automatic writer promotion, performance claim, or supported-platform matrix.

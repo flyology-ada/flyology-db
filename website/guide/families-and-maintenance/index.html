@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Add a Flyology.DB column family over recovered state, Flush changed families, and compact caller-selected runs.">
+  <title>Families and maintenance · Flyology.DB guide</title>
+  <link rel="canonical" href="https://db.flyology.org/guide/families-and-maintenance/">
+  <link rel="icon" href="../../assets/brand/flyology-primary-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles/site.css"><link rel="stylesheet" href="../../assets/styles/db.css">
+  <script src="../../assets/scripts/ada-highlight.js"></script><script src="../../assets/scripts/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary navigation"><a class="brand" href="../../"><img src="../../assets/brand/flyology-mark-transparent.svg" alt=""><span>Flyology.DB</span></a><ul class="nav-links" data-nav-links><li><a href="../../">Overview</a></li><li><details class="nav-dropdown" data-nav-dropdown><summary aria-current="location">Guide <svg aria-hidden="true" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m2.5 4.5 3 3 3.5-3"/></svg></summary><ul class="nav-dropdown-menu"><li><a href="../">Guide overview</a></li><li><a href="../getting-started/">Getting started</a></li><li><a href="../checkpoint-and-reopen/">Checkpoint and reopen</a></li><li><a href="../families-and-maintenance/" aria-current="page">Families and maintenance</a></li><li><a href="../certainty-and-authority/">Certainty and authority</a></li><li><a href="../storage-limits-and-ownership/">Storage, limits, and ownership</a></li></ul></details></li><li><a href="../../architecture/">Architecture</a></li><li><a href="../../support/">Support</a></li><li><a href="../../api/">API</a></li><li><a href="https://github.com/flyology-ada/flyology-db">GitHub</a></li><li><a href="https://flyology.org/">Flyology</a></li></ul><div class="nav-tools"><button class="icon-button" type="button" data-theme-toggle><span class="visually-hidden" data-theme-label>Change theme</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.64 5.64 7.2 7.2M16.8 16.8l1.56 1.56M18.36 5.64 16.8 7.2M7.2 16.8l-1.56 1.56"/><circle cx="12" cy="12" r="4"/></svg></button><button class="menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Toggle navigation"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></nav></header>
+  <main id="main" class="page-shell">
+    <header class="doc-hero"><div><ol class="breadcrumb" aria-label="Breadcrumb"><li><a href="../../">Flyology.DB</a></li><li><a href="../">Guide</a></li><li aria-current="page">Families and maintenance</li></ol><h1>Extend the registry without hiding maintenance policy.</h1></div><p class="doc-hero-copy">Add one stable family to a recovered database, write through a fresh family handle, and choose each later checkpoint or compaction explicitly.</p></header>
+    <div class="docs-layout">
+      <nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ol><li><a href="#add">Add a family</a></li><li><a href="#use">Use the family</a></li><li><a href="#flush">Flush changed families</a></li><li><a href="#compact">Compact selected runs</a></li><li><a href="#limits">Current limits</a></li><li><a href="#next">Continue</a></li></ol></nav>
+      <article class="prose">
+        <section id="add"><h2>Add one immutable family configuration</h2><p>The <a data-api="Flyology.DB"><code>Flyology.DB</code></a> family append requires a retained durable checkpoint. A fresh database without a checkpoint returns <a data-api="Flyology.DB.Outcome_Code.Invalid_State"><code>Invalid_State</code></a>.</p><p>Supply a family ID that is higher than every installed family ID. Supply a unique name, complete <a data-api="Flyology.DB.Column_Family_Configuration"><code>Column_Family_Configuration</code></a>, fresh manifest ID, fresh transition ID, and one deadline. The example supplies those values through <code>Audit_Family_Configuration</code> and IDs 11 and 12.</p><pre class="maintained-example" data-example-region="add-column-family"><code class="language-ada" data-example-source="examples/src/flyology_db_files_getting_started.adb" data-example-region="add-column-family">      DB.Add_Column_Family
+        (Item,
+         Audit_Family_Configuration,
+         Family_Manifest_ID,
+         Family_Transition_ID,
+         Timeout,
+         Receipt => Family_Info,
+         Result  => Result);
+      if Result = DB.Outcome_Unknown then
+         DB.Resolve_Add_Column_Family
+           (Item, Family_Info, Timeout, Result => Result);
+      end if;
+      Expect
+        (Result, DB.Success, "family append did not resolve conclusively");</code></pre><p>If the result is <a data-api="Flyology.DB.Outcome_Code.Outcome_Unknown"><code>Outcome_Unknown</code></a>, call <code>Resolve_Add_Column_Family</code> with the same receipt. Do not submit the append under replacement identities.</p></section>
+        <section id="use"><h2>Open a fresh family handle</h2><p>After the append succeeds, open the new family by ID or name. Do not reuse a family handle from before the registry changed.</p><p>A transaction can now write to the old and new families. Both families share the same database-wide commit sequence and transaction log.</p></section>
+        <section id="flush"><h2>Flush every changed family in one boundary</h2><p>Map each family that needs a snapshot to one fresh run ID. The example maps family 1 to <code>Suffix_Run_ID</code> and family 2 to <code>Audit_Run_ID</code> through <code>Extended_Runs</code>.</p><pre class="maintained-example" data-example-region="two-family-checkpoint"><code class="language-ada" data-example-source="examples/src/flyology_db_files_getting_started.adb" data-example-region="two-family-checkpoint">      DB.Flush
+        (Item,
+         Extended_Runs,
+         Second_Flush_Manifest_ID,
+         Second_Flush_Transition_ID,
+         Timeout,
+         Receipt => Flush_Info,
+         Result  => Result);
+      if Result = DB.Outcome_Unknown then
+         DB.Resolve_Flush (Item, Flush_Info, Timeout, Result => Result);
+      end if;
+      Expect
+        (Result, DB.Success, "two-family Flush did not resolve conclusively");</code></pre><p>A changed family gets a new suffix-delta run. An empty or unchanged family consumes no new run object or identity. Flush publishes one successor manifest and one metadata transition for the complete checkpoint boundary. It does not select a schedule, retry policy, or deletion policy.</p></section>
+        <section id="compact"><h2>Compact an exact current view</h2><p>Choose one of the current public compaction shapes:</p><ul><li>replace the complete live state with one fresh run per nonempty family;</li><li>replace two adjacent runs with one fresh run; or</li><li>replace three consecutive runs with one fresh run.</li></ul><p>Supply every selected run and every new publication identity. All forms retain predecessor objects and any later commit suffix. The adjacent-run forms also retain every version, tombstone, and surrounding run.</p></section>
+        <section id="limits"><h2>Keep unsupported mutation out of the plan</h2><p>The current API can append a family. It cannot rename, drop, reorder, or reconfigure an installed family.</p><p>The library also provides no automatic compaction, retention horizon, pruning, deletion, or garbage-collection service. The application owns those decisions.</p></section>
+        <section id="next"><h2>Handle uncertainty before retry logic</h2><p>Family append and Flush use receipts, but durable cross-process authority currently applies only to Commit. The next chapter explains the exact Commit boundary.</p><div class="next-links"><a href="../certainty-and-authority/"><span>Next</span>Resolve an unknown commit</a><a href="../../support/#maintenance"><span>Boundary</span>Current maintenance support</a></div></section>
+      </article>
+    </div>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><span>Families are stable; maintenance remains caller-selected.</span><div class="footer-links"><a href="../">Guide</a><a href="../checkpoint-and-reopen/">Previous</a><a href="../certainty-and-authority/">Next</a><a href="../../api/">API</a></div></div></footer>
+</body>
+</html>
