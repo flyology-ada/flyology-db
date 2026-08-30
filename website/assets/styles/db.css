@@ -352,10 +352,88 @@
 .final-cta h2 { max-width: 17ch; margin-inline: auto; }
 .final-cta .actions { justify-content: center; }
 
+.benchmark-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(18rem, 0.85fr);
+  align-items: end;
+  padding-block: clamp(4.5rem, 9vw, 8rem);
+  gap: clamp(2rem, 8vw, 8rem);
+}
+
+.benchmark-hero h1 { max-width: 13ch; margin-bottom: 0; font-size: clamp(3.2rem, 6vw, 6rem); }
+.benchmark-hero > p { max-width: 48ch; margin: 0; color: var(--ink-soft); font-size: 1.15rem; }
+
+.benchmark-status { border-block: 1px solid var(--line); background: var(--surface); }
+.benchmark-status-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  align-items: center;
+  padding-block: 2rem;
+  gap: clamp(2rem, 7vw, 7rem);
+}
+.benchmark-status h2 { max-width: 18ch; margin: 0; font-size: clamp(1.6rem, 2.8vw, 2.4rem); }
+.benchmark-status p { max-width: 62ch; margin: 0; color: var(--ink-soft); }
+
+.benchmark-table-wrap { overflow-x: auto; }
+.benchmark-table { width: 100%; min-width: 48rem; border-collapse: collapse; }
+.benchmark-table th,
+.benchmark-table td { padding: 1.1rem 1rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.benchmark-table thead th { color: var(--ink-soft); font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase; }
+.benchmark-table tbody th { color: var(--ink); font-size: 1rem; }
+.benchmark-table td { color: var(--ink-soft); }
+
+.benchmark-state {
+  display: inline-block;
+  padding: 0.28rem 0.58rem;
+  border: 1px solid var(--line);
+  border-radius: 99rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+.benchmark-state.eligible { border-color: color-mix(in oklch, var(--db-green) 55%, var(--line)); color: var(--db-green); }
+.benchmark-state.unsupported { border-color: color-mix(in oklch, var(--db-amber) 55%, var(--line)); color: color-mix(in oklch, var(--db-amber) 82%, var(--ink)); }
+.benchmark-exclusion { max-width: 74ch; margin: 2rem 0 0; color: var(--ink-soft); }
+.benchmark-exclusion strong { color: var(--ink); }
+
+.benchmark-method { background: var(--db-night); color: oklch(94% 0.018 260); }
+.benchmark-method-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr);
+  padding-block: clamp(4.5rem, 9vw, 7rem);
+  gap: clamp(3rem, 8vw, 8rem);
+}
+.benchmark-method h2 { color: oklch(96% 0.012 260); }
+.benchmark-method p { color: oklch(76% 0.03 255); }
+.benchmark-method ol { margin: 0; padding: 0; list-style: none; counter-reset: benchmark-method; }
+.benchmark-method li {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(10rem, 0.34fr) minmax(0, 0.66fr);
+  align-items: baseline;
+  padding: 1rem 0;
+  border-bottom: 1px solid oklch(42% 0.04 260);
+  counter-increment: benchmark-method;
+  gap: 1rem;
+}
+.benchmark-method li:first-child { border-top: 1px solid oklch(42% 0.04 260); }
+.benchmark-method li::before { color: var(--db-cyan); content: counter(benchmark-method, decimal-leading-zero); font-family: var(--font-mono); font-size: 0.72rem; }
+.benchmark-method li strong { color: var(--db-green); font-size: 0.82rem; }
+.benchmark-method li span { color: oklch(78% 0.025 255); font-size: 0.84rem; }
+
+.benchmark-provenance { margin: 0; border-top: 1px solid var(--line); }
+.benchmark-provenance > div { display: grid; grid-template-columns: minmax(10rem, 0.3fr) minmax(0, 0.7fr); padding: 1rem 0; border-bottom: 1px solid var(--line); gap: 1.5rem; }
+.benchmark-provenance dt { color: var(--ink); font-weight: 650; }
+.benchmark-provenance dd { min-width: 0; margin: 0; color: var(--ink-soft); overflow-wrap: anywhere; }
+.benchmark-source-links { display: flex; flex-wrap: wrap; margin-top: 2rem; gap: 1.5rem; }
+.benchmark-source-links a { font-weight: 650; }
+
 @media (max-width: 920px) {
   .db-hero,
   .db-section-heading,
-  .evidence-inner { grid-template-columns: 1fr; }
+  .evidence-inner,
+  .benchmark-hero,
+  .benchmark-status-inner,
+  .benchmark-method-inner { grid-template-columns: 1fr; }
   .db-hero { padding-top: 3.5rem; }
   .db-status-inner { grid-template-columns: repeat(2, 1fr); }
   .db-status-item:nth-child(2) { border-right: 0; }
@@ -378,4 +456,7 @@
   .docs-layout .toc { position: static; }
   .decision-row { grid-template-columns: 1fr; gap: 0.35rem; }
   .product-node { grid-template-columns: 1fr; gap: 0.25rem; }
+  .benchmark-method li { grid-template-columns: 2rem minmax(0, 1fr); }
+  .benchmark-method li span { grid-column: 2; }
+  .benchmark-provenance > div { grid-template-columns: 1fr; gap: 0.35rem; }
 }

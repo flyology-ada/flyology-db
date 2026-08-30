@@ -15,6 +15,7 @@ Flyology.DB 0.1.0-dev uses object storage as the sole authority for acknowledged
 - [Storage, limits, and ownership](/guide/storage-limits-and-ownership/): choose persisted bounds, IDs, provider bindings, and owner lifetimes
 - [Architecture](/architecture/): immutable objects, compare-and-swap metadata publication, transactions, LSM state, and recovery
 - [Support](/support/): current evidence, security boundary, and exclusions
+- [Benchmarks](/benchmarks/): comparable local and RustFS durability lanes, eligibility, and retained-result rules
 - [API reference](/api/): generated GNATdoc contracts
 
 ## Current boundary

@@ -1,0 +1,13 @@
+{
+  "schema_version": "flyology.db.benchmark.workload.v1",
+  "id": "durable-single-writer-v1",
+  "seed": 0,
+  "key_bytes": 16,
+  "value_bytes": 1024,
+  "transaction_mutations": 1,
+  "concurrency": 1,
+  "key_selection": "sequential_unique",
+  "timed_operation": "begin_put_durable_commit",
+  "verification": "close_reopen_read_every_key_sha256",
+  "repetition_isolation": "fresh_database"
+}

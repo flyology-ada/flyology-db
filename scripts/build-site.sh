@@ -38,6 +38,7 @@ test -s "$site/guide/certainty-and-authority/index.html"
 test -s "$site/guide/storage-limits-and-ownership/index.html"
 test -s "$site/architecture/index.html"
 test -s "$site/support/index.html"
+test -s "$site/benchmarks/index.html"
 test -s "$site/api/index.html"
 test "$(cat "$site/CNAME")" = "db.flyology.org"
 

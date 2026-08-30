@@ -1,0 +1,65 @@
+{
+  "schema_version": "flyology.db.benchmark.panel.v1",
+  "participants": [
+    {
+      "id": "flyology-db-files",
+      "engine": "Flyology.DB",
+      "storage": "Flyology Object Storage Files",
+      "role": "candidate"
+    },
+    {
+      "id": "slatedb-local-fsync",
+      "engine": "SlateDB",
+      "storage": "object_store LocalFileSystem with fsync",
+      "role": "comparative"
+    },
+    {
+      "id": "tidesdb-unified-full-sync",
+      "engine": "TidesDB",
+      "storage": "unified WAL and memtable with full sync",
+      "role": "comparative"
+    },
+    {
+      "id": "flyology-db-rustfs",
+      "engine": "Flyology.DB",
+      "storage": "indexed Flyology Object Storage client to RustFS",
+      "role": "candidate"
+    },
+    {
+      "id": "slatedb-rustfs",
+      "engine": "SlateDB",
+      "storage": "object_store AWS client to RustFS",
+      "role": "comparative"
+    },
+    {
+      "id": "tidesdb-rustfs",
+      "engine": "TidesDB",
+      "storage": "TidesDB S3 path to RustFS",
+      "role": "comparative"
+    }
+  ],
+  "lanes": [
+    {
+      "id": "local_durable",
+      "durability": "local_power_loss",
+      "participants": [
+        {"id": "flyology-db-files", "status": "eligible"},
+        {"id": "slatedb-local-fsync", "status": "eligible"},
+        {"id": "tidesdb-unified-full-sync", "status": "eligible"}
+      ]
+    },
+    {
+      "id": "remote_durable_rustfs",
+      "durability": "remote_durable",
+      "participants": [
+        {"id": "flyology-db-rustfs", "status": "eligible"},
+        {"id": "slatedb-rustfs", "status": "eligible"},
+        {
+          "id": "tidesdb-rustfs",
+          "status": "unsupported",
+          "reason": "The pinned TidesDB commit can ignore object-store WAL upload failures."
+        }
+      ]
+    }
+  ]
+}

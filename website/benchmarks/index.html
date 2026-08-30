@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A capability-aware Flyology.DB benchmark panel for local durability and remote durability on RustFS.">
+  <title>Benchmarks · Flyology.DB</title>
+  <link rel="canonical" href="https://db.flyology.org/benchmarks/">
+  <link rel="icon" href="../assets/brand/flyology-primary-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/styles/site.css">
+  <link rel="stylesheet" href="../assets/styles/db.css">
+  <script src="../assets/scripts/ada-highlight.js"></script>
+  <script src="../assets/scripts/site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a class="brand" href="../"><img src="../assets/brand/flyology-mark-transparent.svg" alt=""><span>Flyology.DB</span></a>
+      <ul class="nav-links" data-nav-links>
+        <li><a href="../">Overview</a></li>
+        <li><a href="../guide/">Guide</a></li>
+        <li><a href="../architecture/">Architecture</a></li>
+        <li><a href="../support/">Support</a></li>
+        <li><a href="./" aria-current="page">Benchmarks</a></li>
+        <li><a href="../api/">API</a></li>
+        <li><a href="https://github.com/flyology-ada/flyology-db">GitHub</a></li>
+        <li><a href="https://flyology.org/">Flyology</a></li>
+      </ul>
+      <div class="nav-tools"><button class="icon-button" type="button" data-theme-toggle><span class="visually-hidden" data-theme-label>Change theme</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.64 5.64 7.2 7.2M16.8 16.8l1.56 1.56M18.36 5.64 16.8 7.2M7.2 16.8l-1.56 1.56"/><circle cx="12" cy="12" r="4"/></svg></button><button class="menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Toggle navigation"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div>
+    </nav>
+  </header>
+  <main id="main">
+    <header class="benchmark-hero page-shell">
+      <div><ol class="breadcrumb" aria-label="Breadcrumb"><li><a href="../">Flyology.DB</a></li><li aria-current="page">Benchmarks</li></ol><h1>Compare the guarantee before the speed.</h1></div>
+      <p>One panel measures local power-loss durability. The other measures remote durability on the same RustFS server. Results from these lanes are never pooled.</p>
+    </header>
+
+    <section class="benchmark-status" aria-labelledby="campaign-status">
+      <div class="page-shell benchmark-status-inner"><div><span class="eyebrow">Campaign status</span><h2 id="campaign-status">No validated measurements are published yet.</h2></div><p>The participant contract and strict artifact validator are present. A number will appear only after correctness preflight, matched host and power metadata, retained raw samples, and artifact validation.</p></div>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="local-lane">
+      <div class="db-section-heading"><div><span class="eyebrow">Panel 1</span><h2 id="local-lane">Local durable commit</h2></div><p>This lane compares one mutation per transaction on one writer. Each success includes the participant's qualified local durability barrier. A later reopen verifies every value outside the timed region.</p></div>
+      <div class="benchmark-table-wrap"><table class="benchmark-table"><thead><tr><th>Engine</th><th>Storage profile</th><th>Eligibility</th><th>Current result</th></tr></thead><tbody><tr><th scope="row">Flyology.DB</th><td>Flyology Object Storage Files with power-loss-durable commit policy</td><td><span class="benchmark-state eligible">Eligible</span></td><td>Awaiting campaign</td></tr><tr><th scope="row">SlateDB</th><td><code>object_store</code> LocalFileSystem with fsync enabled</td><td><span class="benchmark-state eligible">Eligible</span></td><td>Awaiting campaign</td></tr><tr><th scope="row">TidesDB</th><td>Unified WAL and memtable with full sync and no compression</td><td><span class="benchmark-state eligible">Eligible</span></td><td>Awaiting campaign</td></tr></tbody></table></div>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="remote-lane">
+      <div class="db-section-heading"><div><span class="eyebrow">Panel 2</span><h2 id="remote-lane">Remote durable commit on RustFS</h2></div><p>Every eligible participant uses the same pinned RustFS image on loopback. A successful sample must include the engine's documented remote-durability barrier, not only submission or immediate visibility.</p></div>
+      <div class="benchmark-table-wrap"><table class="benchmark-table"><thead><tr><th>Engine</th><th>Client path</th><th>Eligibility</th><th>Current result</th></tr></thead><tbody><tr><th scope="row">Flyology.DB</th><td>Indexed <code>flyology_object_storage=0.1.0-dev</code> client</td><td><span class="benchmark-state eligible">Eligible</span></td><td>Awaiting campaign</td></tr><tr><th scope="row">SlateDB</th><td><code>object_store</code> AWS client with awaited durable writes and WAL enabled</td><td><span class="benchmark-state eligible">Eligible</span></td><td>Awaiting campaign</td></tr><tr><th scope="row">TidesDB</th><td>Pinned TidesDB S3 path</td><td><span class="benchmark-state unsupported">Unsupported</span></td><td>Not ranked</td></tr></tbody></table></div>
+      <p class="benchmark-exclusion"><strong>Why TidesDB is not ranked remotely:</strong> the pinned TidesDB implementation can ignore object-store WAL upload failures. A throughput number from that path would not represent the same durable outcome.</p>
+    </section>
+
+    <section class="benchmark-method" aria-labelledby="method-title">
+      <div class="page-shell benchmark-method-inner"><div><span class="eyebrow">Measurement contract</span><h2 id="method-title">A result must carry its evidence.</h2><p>The panel accepts a campaign only when the retained artifact names exact engine, adapter, compiler, build flags, dependency source, storage revision, workload, host, power profile, raw samples, errors, and checksum.</p></div><ol><li><strong>Prove eligibility</strong><span>Run the participant's maintained correctness gate before timing.</span></li><li><strong>Match the environment</strong><span>Measure every comparison on one host and one detectable power profile.</span></li><li><strong>Retain raw work</strong><span>Keep every repetition, elapsed time, byte count, error count, and state checksum.</span></li><li><strong>Validate the artifact</strong><span>Reject unsupported cells, incomplete provenance, or summaries that do not match samples.</span></li></ol></div>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="workload-title">
+      <div class="db-section-heading"><div><span class="eyebrow">Shared workload</span><h2 id="workload-title">One durable mutation, measured the same way.</h2></div><p>Each operation begins one transaction, writes one unique 16-byte key and 1,024-byte value, and waits for the lane's durable commit result. Creation and full close, reopen, read, and SHA-256 verification stay outside the timer.</p></div>
+      <dl class="benchmark-provenance"><div><dt>Writer geometry</dt><dd>One writer, one mutation per transaction, one fresh database per repetition</dd></div><div><dt>Timed region</dt><dd>Begin, put, and durable commit</dd></div><div><dt>Verification</dt><dd>Close, reopen, read every key, and compare the same state checksum across participants</dd></div><div><dt>Campaign geometry</dt><dd>Warmup, operation count, and repetitions are retained inputs, never hidden defaults</dd></div></dl>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="provenance-title">
+      <div class="db-section-heading"><div><span class="eyebrow">Pinned inputs</span><h2 id="provenance-title">Source identities stay visible.</h2></div><p>The first campaign will resolve Flyology Object Storage from the Flyology Alire index without a Git or filesystem pin. Each result will record both the resolved source commit and the exact Alire-index commit.</p></div>
+      <dl class="benchmark-provenance"><div><dt>Flyology Object Storage</dt><dd><code>0.1.0-dev</code> resolved fresh from the Flyology Alire index; each campaign records its exact source and index commits</dd></div><div><dt>SlateDB</dt><dd><code>e0161973d8d7ffdede7c44725729838811674e99</code></dd></div><div><dt>TidesDB</dt><dd><code>23a67a6531bc6c0b537d3696758c7879586dcfce</code></dd></div><div><dt>RustFS</dt><dd><code>ghcr.io/rustfs/rustfs@sha256:800cf3f352a0a27e3275ca854a51f0027975d7acc7a0d52089a35bcc9fcbf0b5</code></dd></div></dl>
+      <p class="benchmark-source-links"><a href="https://github.com/flyology-ada/flyology-db/tree/main/benchmarks/comparison">Read the workload, contract, and validator</a><a href="../support/">Review support boundaries</a></p>
+    </section>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><span>Benchmark results describe one retained campaign, not portable product performance.</span><div class="footer-links"><a href="../guide/">Guide</a><a href="../architecture/">Architecture</a><a href="../support/">Support</a><a href="./">Benchmarks</a><a href="../api/">API</a></div></div></footer>
+</body>
+</html>
