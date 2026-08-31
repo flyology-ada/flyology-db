@@ -3237,15 +3237,8 @@ package body Flyology.DB is
          is
          begin
             Comparison := 0;
-            Valid := False;
-            if Batch.Image = null
-              or else State_Item.Image = null
-              or else not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
-              or else not Valid_Slice
-                            (State_Item.Image, State_Item.Key_Offset, State_Item.Key_Length)
-            then
-               return;
-            elsif Mutation.Family /= State_Item.Family then
+            Valid := True;
+            if Mutation.Family /= State_Item.Family then
                Comparison := (if Mutation.Family < State_Item.Family then -1 else 1);
             elsif Mutation.Key_Hash /= State_Item.Key_Hash then
                Comparison := (if Mutation.Key_Hash < State_Item.Key_Hash then -1 else 1);
@@ -3591,6 +3584,15 @@ package body Flyology.DB is
                Lookup_Position : Natural := 0;
                Valid           : Boolean;
             begin
+               if Entries (Existing).Image = null
+                 or else not Valid_Slice
+                               (Entries (Existing).Image,
+                                Entries (Existing).Key_Offset,
+                                Entries (Existing).Key_Length)
+               then
+                  Result := Policy_Failure;
+                  return;
+               end if;
                Find_Latest_Mutation (Entries (Existing), Lookup_Position, Valid);
                if not Valid then
                   Result := Policy_Failure;
