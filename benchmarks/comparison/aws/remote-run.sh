@@ -203,7 +203,9 @@ rustc --version | grep -F 'rustc 1.91.1 '
 gcc --version | sed -n '1p'
 
 git clone "$input_root/flyology-db.bundle" "$repository"
-git -C "$repository" apply --binary "$input_root/flyology-db.patch"
+if [ -s "$input_root/flyology-db.patch" ]; then
+  git -C "$repository" apply --binary "$input_root/flyology-db.patch"
+fi
 
 observed_untracked=$(
   sha256sum "$input_root/flyology-db-untracked.tar.gz" | cut -d ' ' -f 1
@@ -311,7 +313,9 @@ cmp -s "$input_root/flyology-db-untracked.json" \
   "$input_root/flyology-db-post-test-untracked.json" ||
   fail "untracked source changed during tests"
 git clone "$input_root/flyology-db.bundle" "$benchmark_db"
-git -C "$benchmark_db" apply --binary "$input_root/flyology-db.patch"
+if [ -s "$input_root/flyology-db.patch" ]; then
+  git -C "$benchmark_db" apply --binary "$input_root/flyology-db.patch"
+fi
 tar -C "$benchmark_db" -xzf "$input_root/flyology-db-untracked.tar.gz"
 benchmark_power_detector=$benchmark_db/.agents/skills/performance-testing/scripts/check-power-profile.sh
 mkdir -p "$(dirname -- "$benchmark_power_detector")"

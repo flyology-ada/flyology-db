@@ -641,8 +641,10 @@ rerun_kept_host()
   rerun_power_detector_sha=$(shasum -a 256 "$power_detector" | cut -d ' ' -f 1)
   git clone --quiet "$rerun_temporary/flyology-db.bundle" \
     "$rerun_temporary/authenticated-source"
-  git -C "$rerun_temporary/authenticated-source" apply --binary \
-    "$rerun_temporary/flyology-db.patch"
+  if [ -s "$rerun_temporary/flyology-db.patch" ]; then
+    git -C "$rerun_temporary/authenticated-source" apply --binary \
+      "$rerun_temporary/flyology-db.patch"
+  fi
   tar -C "$rerun_temporary/authenticated-source" -xzf \
     "$rerun_temporary/flyology-db-untracked.tar.gz"
   [ "$(git -C "$rerun_temporary/authenticated-source" rev-parse HEAD)" = \
@@ -1013,7 +1015,9 @@ untracked_manifest_sha=$(
 )
 power_detector_sha=$(shasum -a 256 "$power_detector" | cut -d ' ' -f 1)
 git clone --quiet "$temporary/flyology-db.bundle" "$temporary/authenticated-source"
-git -C "$temporary/authenticated-source" apply --binary "$temporary/flyology-db.patch"
+if [ -s "$temporary/flyology-db.patch" ]; then
+  git -C "$temporary/authenticated-source" apply --binary "$temporary/flyology-db.patch"
+fi
 tar -C "$temporary/authenticated-source" -xzf "$temporary/flyology-db-untracked.tar.gz"
 [ "$(git -C "$temporary/authenticated-source" rev-parse HEAD)" = "$source_head" ] ||
   fail "source HEAD changed while constructing the authenticated snapshot"
