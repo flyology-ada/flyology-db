@@ -117,8 +117,11 @@ benchmarks/comparison/run-aws-nitro-campaign.sh yrashk-inferal i4i.xlarge
 ```
 
 The AWS profile and instance type are mandatory. The wrapper defaults to
-`us-west-2`, accepts `--region` and `--output`, uses Ubuntu 24.04 x86-64, and
-requires a Nitro instance with exactly one local NVMe instance-store device.
+`us-west-2`, accepts `--region` and `--output`, uses native Ubuntu 24.04
+x86-64 or ARM64 images, and requires a Nitro instance with exactly one local
+NVMe instance-store device. For example, `i4i.xlarge` and `i4g.xlarge` provide
+matching 4-vCPU, 32-GiB, single-937-GB-instance-store shapes on x86-64 and
+ARM64 respectively.
 Dirty tracked bytes are authenticated automatically. Each intentional
 untracked source path must be named with a separate `--include-untracked`;
 unexpected untracked work fails closed and result directories are never sent.

@@ -14,7 +14,7 @@ Usage: run-aws-nitro-campaign.sh AWS_PROFILE INSTANCE_TYPE [options]
 
 Required:
   AWS_PROFILE       Configured AWS CLI profile
-  INSTANCE_TYPE     x86-64 Nitro type with exactly one instance-store disk
+  INSTANCE_TYPE     x86-64 or ARM64 Nitro type with exactly one instance-store disk
 
 Options:
   --region REGION   AWS region (default: us-west-2)
@@ -1049,13 +1049,21 @@ instance_json=$("${aws[@]}" ec2 describe-instance-types \
 printf '%s\n' "$instance_json" > "$output/instance-type.json"
 [ "$(jq -r '.InstanceTypes[0].Hypervisor' <<<"$instance_json")" = nitro ] ||
   fail "$instance_type is not a Nitro instance"
-[ "$(jq -r '.InstanceTypes[0].ProcessorInfo.SupportedArchitectures[0]' \
-  <<<"$instance_json")" = x86_64 ] || fail "$instance_type is not x86-64"
+[ "$(jq '.InstanceTypes[0].ProcessorInfo.SupportedArchitectures | length' \
+  <<<"$instance_json")" -eq 1 ] || fail "$instance_type has ambiguous processor architecture"
+processor_architecture=$(jq -r \
+  '.InstanceTypes[0].ProcessorInfo.SupportedArchitectures[0]' <<<"$instance_json")
+case "$processor_architecture" in
+  x86_64) ubuntu_architecture=amd64 ;;
+  arm64) ubuntu_architecture=arm64 ;;
+  *) fail "$instance_type has unsupported processor architecture: $processor_architecture" ;;
+esac
 [ "$(jq -r '.InstanceTypes[0].InstanceStorageInfo.Disks | length' \
   <<<"$instance_json")" -eq 1 ] || fail "$instance_type must have exactly one instance-store disk"
 
 ami_id=$("${aws[@]}" ssm get-parameter \
-  --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
+  --name \
+  "/aws/service/canonical/ubuntu/server/24.04/stable/current/$ubuntu_architecture/hvm/ebs-gp3/ami-id" \
   --query Parameter.Value --output text)
 vpc_id=$("${aws[@]}" ec2 describe-vpcs \
   --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)

@@ -126,7 +126,7 @@ observed_untracked_manifest=$(
 [ "$observed_untracked_manifest" = "$SOURCE_UNTRACKED_MANIFEST_SHA256" ] ||
   fail "untracked source manifest mismatch"
 
-export PATH=/root/.cargo/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+export PATH=/root/.cargo/bin:/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
 if [ "$campaign_mode" = launch ]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
@@ -166,17 +166,31 @@ if [ "$campaign_mode" = launch ]; then
   mkdir -p /mnt/flyology-bench
   mount -o noatime "$benchmark_disk" /mnt/flyology-bench
 
+  case "$(uname -m)" in
+    x86_64)
+      alire_archive_arch=x86_64
+      alire_sha=09c66bcd8c35dd4b97b72c3d9b76e44caa6964a2db35aba069f396f00f1f64c7
+      rust_target=x86_64-unknown-linux-gnu
+      rustup_sha=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
+      ;;
+    aarch64)
+      alire_archive_arch=aarch64
+      alire_sha=d76c93ad3dc631826144e10bdabc6b3bf98783805bebfd5e4a0e852dd524d812
+      rust_target=aarch64-unknown-linux-gnu
+      rustup_sha=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c
+      ;;
+    *) fail "unsupported benchmark host architecture: $(uname -m)" ;;
+  esac
+
   alire_url=https://github.com/alire-project/alire/releases/download/v2.1.1/\
-alr-2.1.1-bin-x86_64-linux.zip
-  alire_sha=09c66bcd8c35dd4b97b72c3d9b76e44caa6964a2db35aba069f396f00f1f64c7
+alr-2.1.1-bin-$alire_archive_arch-linux.zip
   curl -fsSL "$alire_url" -o /tmp/alire.zip
   printf '%s  %s\n' "$alire_sha" /tmp/alire.zip | sha256sum -c -
   unzip -q /tmp/alire.zip -d /tmp/alire
   install -m 0755 /tmp/alire/bin/alr /usr/local/bin/alr
 
   rustup_url=https://static.rust-lang.org/rustup/archive/1.28.2/\
-x86_64-unknown-linux-gnu/rustup-init
-  rustup_sha=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
+$rust_target/rustup-init
   curl --proto '=https' --tlsv1.2 -fsSL "$rustup_url" -o /tmp/rustup-init
   printf '%s  %s\n' "$rustup_sha" /tmp/rustup-init | sha256sum -c -
   chmod 0755 /tmp/rustup-init
