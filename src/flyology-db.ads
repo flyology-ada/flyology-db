@@ -2315,6 +2315,9 @@ private
    type Owned_Mutation is record
       Family       : Column_Family_ID := Column_Family_ID'First;
       Operation    : Mutation_Kind := Put_Mutation;
+      --  This transient hash only screens transaction-local candidates;
+      --  exact payload bytes remain authoritative for key identity.
+      Key_Hash     : Interfaces.Unsigned_64 := 0;
       Key_Length   : Natural := 0;
       Value_Length : Natural := 0;
       Payload      : Flyology.Bytes.Unbounded_Bytes;

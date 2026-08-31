@@ -8395,16 +8395,18 @@ package body Flyology.DB.Engine_Tests is
       Data                      : Value;
       Before_Batch, Before_Head : Natural;
       After_Batch, After_Head   : Natural;
+      Collision_Hash            : Interfaces.Unsigned_64;
       --  These byte-distinct keys isolate same-key, tombstone, queued-race,
       --  disjoint, and empty-key authority paths. They are semantic test
       --  witnesses only and establish no application key policy. IDs 160..179
-      --  and payload bytes 1..13 uniquely label these deterministic operations;
+      --  and payload bytes 1..15 uniquely label these deterministic operations;
       --  family 1 is the persisted root-family fixture, not a new default.
       Same_Key                  : constant Key := To_Key ([16#A0#]);
       Delete_Key                : constant Key := To_Key ([16#A1#]);
       Queued_Key                : constant Key := To_Key ([16#A2#]);
       Disjoint_Key              : constant Key := To_Key ([16#A3#]);
       Future_Key                : constant Key := To_Key ([16#A4#]);
+      Collision_Key             : constant Key := To_Key ([16#A5#]);
       Empty_History_Key         : constant Key := To_Key ([]);
    begin
       Bind_Context (Context, Backend, "snapshot-write-validation");
@@ -8447,6 +8449,28 @@ package body Flyology.DB.Engine_Tests is
       Get (Item, Reader, 1, Same_Key, Data, Result);
       if Result /= Not_Found or else Data.Length /= 0 then
          raise Program_Error with "buffered Delete did not override the committed snapshot";
+      end if;
+      if Reader.Owner.Arena.Count /= 1 then
+         raise Program_Error with "same-key Put/Delete did not reuse one mutation slot";
+      end if;
+      Put (Item, Reader, 1, Collision_Key, To_Value ([14]), Result);
+      Expect (Result, Success, "collision fixture Put failed");
+      Collision_Hash := Reader.Owner.Arena.Mutations (2).Key_Hash;
+      Reader.Owner.Arena.Mutations (2).Key_Hash := Reader.Owner.Arena.Mutations (1).Key_Hash;
+      Get (Item, Reader, 1, Same_Key, Data, Result);
+      if Result /= Not_Found or else Data.Length /= 0 then
+         raise Program_Error with "equal cached hash bypassed exact-key Get comparison";
+      end if;
+      Reader.Owner.Arena.Mutations (2).Key_Hash := Collision_Hash;
+      Reader.Owner.Arena.Mutations (1).Key_Hash := Collision_Hash;
+      Put (Item, Reader, 1, Collision_Key, To_Value ([15]), Result);
+      Expect (Result, Success, "collision fixture replacement failed");
+      if Reader.Owner.Arena.Count /= 2 then
+         raise Program_Error with "equal cached hash changed exact-key replacement geometry";
+      end if;
+      Get (Item, Reader, 1, Collision_Key, Data, Result);
+      if Result /= Success or else Data /= To_Value ([15]) then
+         raise Program_Error with "equal cached hash changed replacement value authority";
       end if;
       Rollback (Reader, Result);
       Expect (Result, Success, "fixed-snapshot reader rollback failed");

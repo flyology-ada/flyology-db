@@ -386,6 +386,9 @@ procedure Flyology.DB.Client_Probe is
       Read_Data       : Flyology.Bytes.Unbounded_Bytes;
       Local_Key       : constant Byte_Array := Bytes ("local-key");
       Local_Value     : constant Byte_Array := Bytes ("local-value");
+      Collision_Key   : constant Byte_Array := Bytes ("collision-key");
+      Collision_Value : constant Byte_Array := Bytes ("collision-value");
+      Collision_Hash  : Interfaces.Unsigned_64;
       --  Arbitrary nonzero metadata proves the exact moved token returns from
       --  both composable and synchronous waits.
       Read_Tag        : constant Interfaces.Unsigned_64 := 16#6E71#;
@@ -510,6 +513,10 @@ procedure Flyology.DB.Client_Probe is
 
       Put (Created, Read_Txn, Family, Local_Key, Local_Value, Result);
       Expect (Result, Success, "public Get local fixture Put failed");
+      Put (Created, Read_Txn, Family, Collision_Key, Collision_Value, Result);
+      Expect (Result, Success, "public Get collision fixture Put failed");
+      Collision_Hash := Read_Txn.Owner.Arena.Mutations (2).Key_Hash;
+      Read_Txn.Owner.Arena.Mutations (2).Key_Hash := Read_Txn.Owner.Arena.Mutations (1).Key_Hash;
       Get (Family, Local_Key, Restored, Test_Operation_Timeout, Read_Work);
       Flyology.Operations.Wait_All (Read_Set);
       Finish (Read_Work, Read_Data, Result, Read_Buffer);
@@ -520,6 +527,7 @@ procedure Flyology.DB.Client_Probe is
       then
          raise Program_Error with "public Get treated its own mutation as an external observation";
       end if;
+      Read_Txn.Owner.Arena.Mutations (2).Key_Hash := Collision_Hash;
 
       Get
         (Created,

@@ -11844,9 +11844,10 @@ package body Flyology.DB is
       end if;
    end Read_Configuration;
 
-   function Same_Owned_Key (Mutation : Owned_Mutation; Item_Key : Byte_Array) return Boolean is
+   function Same_Owned_Key
+     (Mutation : Owned_Mutation; Item_Key : Byte_Array; Item_Hash : Interfaces.Unsigned_64) return Boolean is
    begin
-      if Mutation.Key_Length /= Item_Key'Length then
+      if Mutation.Key_Hash /= Item_Hash or else Mutation.Key_Length /= Item_Key'Length then
          return False;
       end if;
       for Offset in Natural range 0 .. Item_Key'Length - 1 loop
@@ -12254,6 +12255,7 @@ package body Flyology.DB is
       Existing      : Natural := 0;
       Old_Bytes     : Interfaces.Unsigned_64 := 0;
       New_Bytes     : Interfaces.Unsigned_64;
+      Item_Hash     : Interfaces.Unsigned_64;
       Candidate     : Flyology.Bytes.Unbounded_Bytes;
       Configuration : Column_Family_Configuration;
    begin
@@ -12299,9 +12301,10 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
          return;
       end if;
+      Item_Hash := Runtime_Key_Hash (Item_Key);
       for Index in Positive range 1 .. Txn.Owner.Arena.Count loop
          if Txn.Owner.Arena.Mutations (Index).Family = Family.Configuration.ID
-           and then Same_Owned_Key (Txn.Owner.Arena.Mutations (Index), Item_Key)
+           and then Same_Owned_Key (Txn.Owner.Arena.Mutations (Index), Item_Key, Item_Hash)
          then
             Existing := Index;
             Old_Bytes :=
@@ -12350,6 +12353,7 @@ package body Flyology.DB is
       begin
          Mutation.Family := Family.Configuration.ID;
          Mutation.Operation := Operation;
+         Mutation.Key_Hash := Item_Hash;
          Mutation.Key_Length := Item_Key'Length;
          Mutation.Value_Length := (if Operation = Put_Mutation then Data'Length else 0);
          Flyology.Bytes.Move (Mutation.Payload, Candidate);
@@ -12381,6 +12385,7 @@ package body Flyology.DB is
       Value_Offset  : Natural;
       Value_Length  : Natural;
       Matched       : Boolean;
+      Item_Hash     : Interfaces.Unsigned_64 := 0;
    begin
       Flyology.Bytes.Clear (Data);
       if not Txn.Active or else Txn.Owner.Arena = null then
@@ -12410,11 +12415,16 @@ package body Flyology.DB is
          Result := Capacity_Exceeded;
          return;
       end if;
+      if Txn.Owner.Arena.Count > 0 then
+         Item_Hash := Runtime_Key_Hash (Item_Key);
+      end if;
       for Index in reverse Positive range 1 .. Txn.Owner.Arena.Count loop
          declare
             Mutation : Owned_Mutation renames Txn.Owner.Arena.Mutations (Index);
          begin
-            if Mutation.Family = Family.Configuration.ID and then Same_Owned_Key (Mutation, Item_Key) then
+            if Mutation.Family = Family.Configuration.ID
+              and then Same_Owned_Key (Mutation, Item_Key, Item_Hash)
+            then
                if Mutation.Operation = Delete_Mutation then
                   Result := Not_Found;
                else
@@ -19436,6 +19446,7 @@ package body Flyology.DB is
       Value_Length  : Natural;
       Matched       : Boolean;
       Lookup_Result : Outcome_Code;
+      Item_Hash     : Interfaces.Unsigned_64 := 0;
    begin
       Operation.Item.Life.Acquire (Operation.Retained_State, State.Precheck_Result);
       if State.Precheck_Result /= Success then
@@ -19479,6 +19490,9 @@ package body Flyology.DB is
          State.Precheck_Result := Capacity_Exceeded;
          return;
       end if;
+      if Operation.Txn.Owner.Arena.Count > 0 then
+         Item_Hash := Runtime_Key_Hash (Item_Key);
+      end if;
       Flyology.Bytes.Reserve_Capacity (State.Item_Key, Item_Key'Length);
       for Value of Item_Key loop
          Flyology.Bytes.Append (State.Item_Key, Ada.Streams.Stream_Element (Value));
@@ -19488,7 +19502,9 @@ package body Flyology.DB is
          declare
             Mutation : Owned_Mutation renames Operation.Txn.Owner.Arena.Mutations (Index);
          begin
-            if Mutation.Family = State.Family.ID and then Same_Owned_Key (Mutation, Item_Key) then
+            if Mutation.Family = State.Family.ID
+              and then Same_Owned_Key (Mutation, Item_Key, Item_Hash)
+            then
                State.Has_Local_Result := True;
                State.Local_Result := (if Mutation.Operation = Delete_Mutation then Not_Found else Success);
                if State.Local_Result = Success then
