@@ -2218,8 +2218,10 @@ private
       Scan_Cursor_Entry_Allocation,
       Scan_Cursor_Owned_Bytes_Allocation,
       Batch_Descriptor_Allocation,
+      Runtime_Mutation_Lookup_Allocation,
       Storage_Sink_Allocation,
       Recovery_History_Allocation,
+      Recovery_History_Lookup_Allocation,
       --  Test-only owner-state failure before any recovery lifecycle
       --  admission is transferred. This is neither persisted nor policy.
       Recovery_Driver_State_Allocation,

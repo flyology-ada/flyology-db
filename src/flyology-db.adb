@@ -1983,15 +1983,26 @@ package body Flyology.DB is
    type Runtime_Transaction_Array_Access is access Runtime_Transaction_Array;
 
    type Runtime_Mutation is record
-      Family       : Column_Family_ID := Column_Family_ID'First;
-      Operation    : Mutation_Kind := Put_Mutation;
-      Key_Offset   : Natural := 0;
-      Key_Length   : Natural := 0;
-      Value_Offset : Natural := 0;
-      Value_Length : Natural := 0;
+      Family             : Column_Family_ID := Column_Family_ID'First;
+      Operation          : Mutation_Kind := Put_Mutation;
+      Key_Hash           : Interfaces.Unsigned_64 := 0;
+      Key_Offset         : Natural := 0;
+      Key_Length         : Natural := 0;
+      Value_Offset       : Natural := 0;
+      Value_Length       : Natural := 0;
+      --  Transient projection fact populated while applying one batch. Exact
+      --  family, hash, length, and key bytes remain authoritative.
+      Matched_Live_Entry : Boolean := False;
    end record;
    type Runtime_Mutation_Array is array (Positive range <>) of Runtime_Mutation;
    type Runtime_Mutation_Array_Access is access Runtime_Mutation_Array;
+
+   type Runtime_Mutation_Lookup_Entry is record
+      Mutation_Index : Positive := Positive'First;
+      Sequence       : Sequence_Number := 0;
+   end record;
+   type Runtime_Mutation_Lookup_Array is array (Positive range <>) of Runtime_Mutation_Lookup_Entry;
+   type Runtime_Mutation_Lookup_Array_Access is access Runtime_Mutation_Lookup_Array;
 
    type Runtime_Batch is record
       Database_ID                   : Database_Identifier := Zero_Database_ID;
@@ -2008,6 +2019,7 @@ package body Flyology.DB is
       Mutation_Total                : Natural := 0;
       Transactions                  : Runtime_Transaction_Array_Access := null;
       Mutations                     : Runtime_Mutation_Array_Access := null;
+      Lookup                        : Runtime_Mutation_Lookup_Array_Access := null;
       Image                         : Shared_Image_Access := null;
    end record;
    type Runtime_Batch_Array is array (Positive range <>) of Runtime_Batch;
@@ -2020,6 +2032,8 @@ package body Flyology.DB is
      Ada.Unchecked_Deallocation (Runtime_Transaction_Array, Runtime_Transaction_Array_Access);
    procedure Free_Runtime_Mutations is new
      Ada.Unchecked_Deallocation (Runtime_Mutation_Array, Runtime_Mutation_Array_Access);
+   procedure Free_Runtime_Mutation_Lookup is new
+     Ada.Unchecked_Deallocation (Runtime_Mutation_Lookup_Array, Runtime_Mutation_Lookup_Array_Access);
    procedure Free_Batch_History is new Ada.Unchecked_Deallocation (Batch_History, Batch_History_Access);
 
    procedure Release_Image (Image : in out Shared_Image_Access) is
@@ -2039,6 +2053,7 @@ package body Flyology.DB is
    begin
       Free_Runtime_Transactions (Batch.Transactions);
       Free_Runtime_Mutations (Batch.Mutations);
+      Free_Runtime_Mutation_Lookup (Batch.Lookup);
       if Release_Data then
          Release_Image (Batch.Image);
       else
@@ -2132,6 +2147,7 @@ package body Flyology.DB is
    type State_Entry is record
       Family       : Column_Family_ID := Column_Family_ID'First;
       Image        : Shared_Image_Access := null;
+      Key_Hash     : Interfaces.Unsigned_64 := 0;
       Key_Offset   : Natural := 0;
       Key_Length   : Natural := 0;
       Value_Offset : Natural := 0;
@@ -2145,6 +2161,35 @@ package body Flyology.DB is
    type State_Entry_Array_Access is access State_Entry_Array;
    procedure Free_State_Entries is new
      Ada.Unchecked_Deallocation (Object => State_Entry_Array, Name => State_Entry_Array_Access);
+
+   function Runtime_Key_Hash
+     (Image : not null Shared_Image_Access; Offset, Length : Natural) return Interfaces.Unsigned_64
+   is
+      --  Private FNV-1a is only a transient comparison accelerator. Exact
+      --  bytes remain authoritative, so collisions cannot establish identity
+      --  and changing this implementation does not change a persisted format.
+      Prime  : constant Interfaces.Unsigned_64 := 1_099_511_628_211;
+      Result : Interfaces.Unsigned_64 := 14_695_981_039_346_656_037;
+   begin
+      if Length > 0 then
+         for Index in Natural range 0 .. Length - 1 loop
+            Result :=
+              (Result xor Interfaces.Unsigned_64 (Flyology.Bytes.Element (Image.Data, Offset + Index + 1)))
+              * Prime;
+         end loop;
+      end if;
+      return Result;
+   end Runtime_Key_Hash;
+
+   function Runtime_Key_Hash (Data : Byte_Array) return Interfaces.Unsigned_64 is
+      Prime  : constant Interfaces.Unsigned_64 := 1_099_511_628_211;
+      Result : Interfaces.Unsigned_64 := 14_695_981_039_346_656_037;
+   begin
+      for Value of Data loop
+         Result := (Result xor Interfaces.Unsigned_64 (Value)) * Prime;
+      end loop;
+      return Result;
+   end Runtime_Key_Hash;
 
    --  Transient scan sources borrow immutable engine images while one
    --  lifecycle lease prevents close/checkpoint reclamation. Arena_Index zero
@@ -2439,8 +2484,14 @@ package body Flyology.DB is
       Right_Image : not null Shared_Image_Access;
       Right       : Runtime_Mutation) return Boolean is
    begin
-      if Left.Family /= Right.Family or else Left.Key_Length /= Right.Key_Length then
+      if Left.Family /= Right.Family
+        or else Left.Key_Hash /= Right.Key_Hash
+        or else Left.Key_Length /= Right.Key_Length
+      then
          return False;
+      end if;
+      if Left.Key_Length = 0 then
+         return True;
       end if;
       for Offset in Natural range 0 .. Left.Key_Length - 1 loop
          if Flyology.Bytes.Element (Left_Image.Data, Left.Key_Offset + Offset + 1)
@@ -2467,6 +2518,160 @@ package body Flyology.DB is
       end loop;
       return 0;
    end Runtime_Mutation_Sequence;
+
+   procedure Build_Runtime_Mutation_Lookup (Batch : in out Runtime_Batch; Result : out Outcome_Code) is
+      Indexed_Total : Natural := 0;
+
+      function Valid_Slice (Offset, Length : Natural) return Boolean is
+         Image_Length : constant Natural :=
+           (if Batch.Image = null then 0 else Flyology.Bytes.Length (Batch.Image.Data));
+      begin
+         return Batch.Image /= null and then Offset <= Image_Length and then Length <= Image_Length - Offset;
+      end Valid_Slice;
+
+      function Precedes (Left, Right : Runtime_Mutation_Lookup_Entry) return Boolean is
+         Left_Mutation  : Runtime_Mutation renames Batch.Mutations (Left.Mutation_Index);
+         Right_Mutation : Runtime_Mutation renames Batch.Mutations (Right.Mutation_Index);
+      begin
+         if Left_Mutation.Family /= Right_Mutation.Family then
+            return Left_Mutation.Family < Right_Mutation.Family;
+         elsif Left_Mutation.Key_Hash /= Right_Mutation.Key_Hash then
+            return Left_Mutation.Key_Hash < Right_Mutation.Key_Hash;
+         elsif Left_Mutation.Key_Length /= Right_Mutation.Key_Length then
+            return Left_Mutation.Key_Length < Right_Mutation.Key_Length;
+         end if;
+         if Left_Mutation.Key_Length > 0 then
+            for Offset in Natural range 0 .. Left_Mutation.Key_Length - 1 loop
+               declare
+                  Left_Byte  : constant Ada.Streams.Stream_Element :=
+                    Flyology.Bytes.Element (Batch.Image.Data, Left_Mutation.Key_Offset + Offset + 1);
+                  Right_Byte : constant Ada.Streams.Stream_Element :=
+                    Flyology.Bytes.Element (Batch.Image.Data, Right_Mutation.Key_Offset + Offset + 1);
+               begin
+                  if Left_Byte /= Right_Byte then
+                     return Left_Byte < Right_Byte;
+                  end if;
+               end;
+            end loop;
+         end if;
+         if Left.Sequence /= Right.Sequence then
+            return Left.Sequence > Right.Sequence;
+         end if;
+         return Left.Mutation_Index > Right.Mutation_Index;
+      end Precedes;
+
+      procedure Swap (Left, Right : Positive) is
+         Item : constant Runtime_Mutation_Lookup_Entry := Batch.Lookup (Left);
+      begin
+         Batch.Lookup (Left) := Batch.Lookup (Right);
+         Batch.Lookup (Right) := Item;
+      end Swap;
+
+      procedure Sift_Down (First, Last : Positive) is
+         Root  : Positive := First;
+         Child : Natural;
+      begin
+         while Root <= Last / 2 loop
+            Child := Root * 2;
+            if Child < Last and then Precedes (Batch.Lookup (Child), Batch.Lookup (Child + 1)) then
+               Child := Child + 1;
+            end if;
+            exit when not Precedes (Batch.Lookup (Root), Batch.Lookup (Child));
+            Swap (Root, Child);
+            Root := Child;
+         end loop;
+      end Sift_Down;
+
+      Root : Natural;
+      Last : Natural;
+   begin
+      if Batch.Image = null
+        or else Batch.Transactions = null
+        or else Batch.Mutations = null
+        or else Batch.Lookup /= null
+        or else Batch.Transaction_Total = 0
+        or else Batch.Mutation_Total = 0
+        or else Batch.Transactions'First /= 1
+        or else Batch.Mutations'First /= 1
+        or else Batch.Transaction_Total > Batch.Transactions'Length
+        or else Batch.Mutation_Total > Batch.Mutations'Length
+      then
+         Result := Corrupt;
+         return;
+      end if;
+
+      Allocation_Faults.Check (Runtime_Mutation_Lookup_Allocation);
+      Batch.Lookup := new Runtime_Mutation_Lookup_Array (1 .. Batch.Mutation_Total);
+      for Mutation_Index in Positive range 1 .. Batch.Mutation_Total loop
+         Batch.Lookup (Mutation_Index) := (Mutation_Index => Mutation_Index, Sequence => 0);
+         if not Valid_Slice
+                  (Batch.Mutations (Mutation_Index).Key_Offset, Batch.Mutations (Mutation_Index).Key_Length)
+           or else (Batch.Mutations (Mutation_Index).Operation = Put_Mutation
+                    and then not Valid_Slice
+                                   (Batch.Mutations (Mutation_Index).Value_Offset,
+                                    Batch.Mutations (Mutation_Index).Value_Length))
+         then
+            Free_Runtime_Mutation_Lookup (Batch.Lookup);
+            Result := Corrupt;
+            return;
+         end if;
+      end loop;
+
+      for Transaction_Index in Positive range 1 .. Batch.Transaction_Total loop
+         declare
+            Transaction : Runtime_Transaction renames Batch.Transactions (Transaction_Index);
+         begin
+            if Transaction.Sequence = 0
+              or else Transaction.Mutation_Count = 0
+              or else Transaction.First_Mutation = 0
+              or else Transaction.Mutation_Count > Batch.Mutation_Total
+              or else Transaction.First_Mutation > Batch.Mutation_Total - Transaction.Mutation_Count + 1
+            then
+               Free_Runtime_Mutation_Lookup (Batch.Lookup);
+               Result := Corrupt;
+               return;
+            end if;
+            for Mutation_Index in
+              Positive
+                range Transaction.First_Mutation
+                      .. Transaction.First_Mutation + Transaction.Mutation_Count - 1
+            loop
+               if Batch.Lookup (Mutation_Index).Sequence /= 0 then
+                  Free_Runtime_Mutation_Lookup (Batch.Lookup);
+                  Result := Corrupt;
+                  return;
+               end if;
+               Batch.Lookup (Mutation_Index).Sequence := Transaction.Sequence;
+               Indexed_Total := Indexed_Total + 1;
+            end loop;
+         end;
+      end loop;
+      if Indexed_Total /= Batch.Mutation_Total then
+         Free_Runtime_Mutation_Lookup (Batch.Lookup);
+         Result := Corrupt;
+         return;
+      end if;
+
+      Root := Batch.Mutation_Total / 2;
+      while Root > 0 loop
+         Sift_Down (Positive (Root), Positive (Batch.Mutation_Total));
+         Root := Root - 1;
+      end loop;
+      Last := Batch.Mutation_Total;
+      while Last > 1 loop
+         Swap (1, Positive (Last));
+         Last := Last - 1;
+         Sift_Down (1, Positive (Last));
+      end loop;
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Free_Runtime_Mutation_Lookup (Batch.Lookup);
+         Result := Capacity_Exceeded;
+      when others =>
+         Free_Runtime_Mutation_Lookup (Batch.Lookup);
+         Result := Corrupt;
+   end Build_Runtime_Mutation_Lookup;
 
    protected type Coordinator
      (Entry_Capacity    : Positive;
@@ -3008,6 +3213,7 @@ package body Flyology.DB is
          Candidate_Count       : Natural range 0 .. Entry_Capacity := 0;
          Candidate_Bytes       : Interfaces.Unsigned_64 := 0;
          Batch_Payload         : Interfaces.Unsigned_64 := 0;
+         Checked_Mutations     : Natural := 0;
          Identity_Found        : Boolean;
          --  Certainty classification derives from admission state: reserved
          --  caller work exhausts declared capacity; recovered malformed work is
@@ -3015,71 +3221,131 @@ package body Flyology.DB is
          Policy_Failure        : constant Outcome_Code :=
            (if Identities_Reserved then Capacity_Exceeded else Corrupt);
 
-         function Same_Bytes
-           (Left_Image  : not null Shared_Image_Access;
-            Left_Start  : Natural;
-            Right_Image : not null Shared_Image_Access;
-            Right_Start : Natural;
-            Length      : Natural) return Boolean is
+         function Valid_Slice
+           (Image : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
+         is
+            Image_Length : constant Natural := Flyology.Bytes.Length (Image.Data);
          begin
-            for Offset in Natural range 0 .. Length - 1 loop
-               if Flyology.Bytes.Element (Left_Image.Data, Left_Start + Offset + 1)
-                 /= Flyology.Bytes.Element (Right_Image.Data, Right_Start + Offset + 1)
-               then
-                  return False;
-               end if;
-            end loop;
-            return True;
-         end Same_Bytes;
+            return Offset <= Image_Length and then Length <= Image_Length - Offset;
+         end Valid_Slice;
 
-         function Same_Key (Left, Right : Runtime_Mutation) return Boolean
-         is (Left.Family = Right.Family
-             and then Left.Key_Length = Right.Key_Length
-             and then Same_Bytes
-                        (Batch.Image, Left.Key_Offset, Batch.Image, Right.Key_Offset, Left.Key_Length));
-
-         function Matches_Entry (Mutation : Runtime_Mutation; State_Item : State_Entry) return Boolean
-         is (Mutation.Family = State_Item.Family
-             and then Mutation.Key_Length = State_Item.Key_Length
-             and then State_Item.Image /= null
-             and then Same_Bytes
-                        (Batch.Image,
-                         Mutation.Key_Offset,
-                         State_Item.Image,
-                         State_Item.Key_Offset,
-                         Mutation.Key_Length));
-
-         function Last_For_Key (Index : Positive) return Boolean is
+         procedure Compare_Key
+           (Mutation   : Runtime_Mutation;
+            State_Item : State_Entry;
+            Comparison : out Integer;
+            Valid      : out Boolean)
+         is
          begin
-            for Later in Positive range Index + 1 .. Batch.Mutation_Total loop
-               if Same_Key (Batch.Mutations (Index), Batch.Mutations (Later)) then
-                  return False;
-               end if;
-            end loop;
-            return True;
-         end Last_For_Key;
+            Comparison := 0;
+            Valid := False;
+            if Batch.Image = null
+              or else State_Item.Image = null
+              or else not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
+              or else not Valid_Slice
+                            (State_Item.Image, State_Item.Key_Offset, State_Item.Key_Length)
+            then
+               return;
+            elsif Mutation.Family /= State_Item.Family then
+               Comparison := (if Mutation.Family < State_Item.Family then -1 else 1);
+            elsif Mutation.Key_Hash /= State_Item.Key_Hash then
+               Comparison := (if Mutation.Key_Hash < State_Item.Key_Hash then -1 else 1);
+            elsif Mutation.Key_Length /= State_Item.Key_Length then
+               Comparison := (if Mutation.Key_Length < State_Item.Key_Length then -1 else 1);
+            elsif Mutation.Key_Length > 0 then
+               for Offset in Natural range 0 .. Mutation.Key_Length - 1 loop
+                  declare
+                     Mutation_Byte : constant Ada.Streams.Stream_Element :=
+                       Flyology.Bytes.Element (Batch.Image.Data, Mutation.Key_Offset + Offset + 1);
+                     State_Byte    : constant Ada.Streams.Stream_Element :=
+                       Flyology.Bytes.Element
+                         (State_Item.Image.Data, State_Item.Key_Offset + Offset + 1);
+                  begin
+                     if Mutation_Byte /= State_Byte then
+                        Comparison := (if Mutation_Byte < State_Byte then -1 else 1);
+                        exit;
+                     end if;
+                  end;
+               end loop;
+            end if;
+            Valid := True;
+         end Compare_Key;
 
-         function Existing_Key (Mutation : Runtime_Mutation) return Boolean is
+         function Key_Precedes (Left, Right : Runtime_Mutation) return Boolean is
          begin
-            for Existing in Positive range 1 .. Entry_Count loop
-               if Matches_Entry (Mutation, Entries (Existing)) then
-                  return True;
-               end if;
-            end loop;
+            if Left.Family /= Right.Family then
+               return Left.Family < Right.Family;
+            elsif Left.Key_Hash /= Right.Key_Hash then
+               return Left.Key_Hash < Right.Key_Hash;
+            elsif Left.Key_Length /= Right.Key_Length then
+               return Left.Key_Length < Right.Key_Length;
+            end if;
+            if Left.Key_Length > 0 then
+               for Offset in Natural range 0 .. Left.Key_Length - 1 loop
+                  declare
+                     Left_Byte  : constant Ada.Streams.Stream_Element :=
+                       Flyology.Bytes.Element (Batch.Image.Data, Left.Key_Offset + Offset + 1);
+                     Right_Byte : constant Ada.Streams.Stream_Element :=
+                       Flyology.Bytes.Element (Batch.Image.Data, Right.Key_Offset + Offset + 1);
+                  begin
+                     if Left_Byte /= Right_Byte then
+                        return Left_Byte < Right_Byte;
+                     end if;
+                  end;
+               end loop;
+            end if;
             return False;
-         end Existing_Key;
+         end Key_Precedes;
 
-         function Sequence_For_Mutation (Index : Positive) return Sequence_Number is
+         procedure Find_Latest_Mutation
+           (State_Item      : State_Entry;
+            Lookup_Position : out Natural;
+            Valid           : out Boolean)
+         is
+            Low        : Natural := 0;
+            Remaining  : Natural := Batch.Mutation_Total;
+            Comparison : Integer;
          begin
-            for Transaction of Batch.Transactions (1 .. Batch.Transaction_Total) loop
-               if Index >= Transaction.First_Mutation
-                 and then Index - Transaction.First_Mutation < Transaction.Mutation_Count
-               then
-                  return Transaction.Sequence;
-               end if;
+            Lookup_Position := 0;
+            Valid := True;
+            while Remaining > 0 loop
+               declare
+                  Step     : constant Natural := Remaining / 2;
+                  Position : constant Positive := Positive (Low + Step + 1);
+                  Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+               begin
+                  if Indexed.Mutation_Index > Batch.Mutation_Total then
+                     Valid := False;
+                     return;
+                  end if;
+                  Compare_Key
+                    (Batch.Mutations (Indexed.Mutation_Index), State_Item, Comparison, Valid);
+                  if not Valid then
+                     return;
+                  elsif Comparison < 0 then
+                     Low := Low + Step + 1;
+                     Remaining := Remaining - Step - 1;
+                  else
+                     Remaining := Step;
+                  end if;
+               end;
             end loop;
-            return 0;
-         end Sequence_For_Mutation;
+            if Low < Batch.Mutation_Total then
+               declare
+                  Position : constant Positive := Positive (Low + 1);
+                  Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+               begin
+                  if Indexed.Mutation_Index > Batch.Mutation_Total then
+                     Valid := False;
+                     return;
+                  end if;
+                  Compare_Key
+                    (Batch.Mutations (Indexed.Mutation_Index), State_Item, Comparison, Valid);
+                  if Valid and then Comparison = 0 then
+                     Lookup_Position := Position;
+                  end if;
+               end;
+            end if;
+         end Find_Latest_Mutation;
 
          procedure Add_Bytes (Amount : Interfaces.Unsigned_64; Valid : out Boolean) is
          begin
@@ -3092,7 +3358,19 @@ package body Flyology.DB is
          if Batch.Image = null
            or else Batch.Transactions = null
            or else Batch.Mutations = null
+           or else Batch.Lookup = null
            or else Batch.Transaction_Total = 0
+           or else Batch.Mutation_Total = 0
+           or else Batch.Transactions'First /= 1
+           or else Batch.Mutations'First /= 1
+           or else Batch.Lookup'First /= 1
+           or else Batch.Transaction_Total > Batch.Transactions'Length
+           or else Batch.Mutation_Total > Batch.Mutations'Length
+           or else Batch.Lookup'Length /= Batch.Mutation_Total
+           or else Batch.First_Sequence = 0
+           or else Batch.Last_Sequence < Batch.First_Sequence
+           or else Interfaces.Unsigned_64 (Batch.Last_Sequence - Batch.First_Sequence) + 1
+                   /= Interfaces.Unsigned_64 (Batch.Transaction_Total)
            or else Interfaces.Unsigned_64 (Batch.Transaction_Total)
                    > Interfaces.Unsigned_64 (Current_Manifest.Limits.Maximum_Transactions_Per_Batch)
            or else Interfaces.Unsigned_64 (Batch.Mutation_Total)
@@ -3113,6 +3391,9 @@ package body Flyology.DB is
             Result := Capacity_Exceeded;
             return;
          end if;
+         for Index in Positive range 1 .. Batch.Mutation_Total loop
+            Batch.Mutations (Index).Matched_Live_Entry := False;
+         end loop;
          for Existing in Positive range 1 .. History_Count loop
             if Used_Batches (Existing) = Batch_ID then
                Result := Corrupt;
@@ -3139,8 +3420,11 @@ package body Flyology.DB is
                Transaction         : Runtime_Transaction renames Batch.Transactions (Transaction_Index);
                Transaction_Payload : Interfaces.Unsigned_64 := 0;
             begin
-               if Transaction.Mutation_Count = 0
-                 or else Transaction.First_Mutation = 0
+               if Transaction.Sequence
+                    /= Batch.First_Sequence + Sequence_Number (Transaction_Index - 1)
+                 or else Transaction.Mutation_Count = 0
+                 or else Transaction.First_Mutation /= Checked_Mutations + 1
+                 or else Transaction.Mutation_Count > Batch.Mutation_Total
                  or else Transaction.First_Mutation > Batch.Mutation_Total - Transaction.Mutation_Count + 1
                  or else Interfaces.Unsigned_64 (Transaction.Mutation_Count)
                          > Interfaces.Unsigned_64 (Current_Manifest.Limits.Maximum_Mutations_Per_Transaction)
@@ -3148,6 +3432,7 @@ package body Flyology.DB is
                   Result := Policy_Failure;
                   return;
                end if;
+               Checked_Mutations := Checked_Mutations + Transaction.Mutation_Count;
                for Mutation_Index in
                  Positive
                    range Transaction.First_Mutation
@@ -3203,6 +3488,10 @@ package body Flyology.DB is
                end if;
             end;
          end loop;
+         if Checked_Mutations /= Batch.Mutation_Total then
+            Result := Policy_Failure;
+            return;
+         end if;
 
          for Mutation_Index in Positive range 1 .. Batch.Mutation_Total loop
             declare
@@ -3228,17 +3517,85 @@ package body Flyology.DB is
             end;
          end loop;
 
+         for Position in Positive range 1 .. Batch.Mutation_Total loop
+            declare
+               Indexed     : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+               Previous    : Runtime_Mutation_Lookup_Entry;
+               Transaction : Runtime_Transaction;
+            begin
+               if Indexed.Mutation_Index > Batch.Mutation_Total
+                 or else Indexed.Sequence < Batch.First_Sequence
+                 or else Indexed.Sequence > Batch.Last_Sequence
+               then
+                  Result := Policy_Failure;
+                  return;
+               end if;
+               Transaction :=
+                 Batch.Transactions
+                   (Positive (Indexed.Sequence - Batch.First_Sequence + 1));
+               if Indexed.Mutation_Index < Transaction.First_Mutation
+                 or else Indexed.Mutation_Index - Transaction.First_Mutation
+                         >= Transaction.Mutation_Count
+               then
+                  Result := Policy_Failure;
+                  return;
+               end if;
+               declare
+                  Mutation : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
+               begin
+                  if Mutation.Matched_Live_Entry
+                    or else not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
+                    or else (Mutation.Operation = Put_Mutation
+                             and then not Valid_Slice
+                                            (Batch.Image,
+                                             Mutation.Value_Offset,
+                                             Mutation.Value_Length))
+                  then
+                     Result := Policy_Failure;
+                     return;
+                  end if;
+                  Mutation.Matched_Live_Entry := True;
+                  if Position > 1 then
+                     Previous := Batch.Lookup (Position - 1);
+                     if Previous.Mutation_Index > Batch.Mutation_Total then
+                        Result := Policy_Failure;
+                        return;
+                     end if;
+                     declare
+                        Previous_Mutation : Runtime_Mutation renames
+                          Batch.Mutations (Previous.Mutation_Index);
+                     begin
+                        if Key_Precedes (Mutation, Previous_Mutation)
+                          or else
+                            (Same_Runtime_Key
+                               (Batch.Image, Previous_Mutation, Batch.Image, Mutation)
+                             and then (Previous.Sequence < Indexed.Sequence
+                                       or else (Previous.Sequence = Indexed.Sequence
+                                                and then Previous.Mutation_Index
+                                                         < Indexed.Mutation_Index)))
+                        then
+                           Result := Policy_Failure;
+                           return;
+                        end if;
+                     end;
+                  end if;
+               end;
+            end;
+         end loop;
+         for Mutation_Index in Positive range 1 .. Batch.Mutation_Total loop
+            Batch.Mutations (Mutation_Index).Matched_Live_Entry := False;
+         end loop;
+
          for Existing in Positive range 1 .. Entry_Count loop
             declare
-               Last_Mutation : Natural := 0;
-               Valid         : Boolean;
+               Lookup_Position : Natural := 0;
+               Valid           : Boolean;
             begin
-               for Index in Positive range 1 .. Batch.Mutation_Total loop
-                  if Matches_Entry (Batch.Mutations (Index), Entries (Existing)) then
-                     Last_Mutation := Index;
-                  end if;
-               end loop;
-               if Last_Mutation = 0 then
+               Find_Latest_Mutation (Entries (Existing), Lookup_Position, Valid);
+               if not Valid then
+                  Result := Policy_Failure;
+                  return;
+               elsif Lookup_Position = 0 then
                   Add_Bytes
                     (Interfaces.Unsigned_64 (Entries (Existing).Key_Length)
                      + Interfaces.Unsigned_64 (Entries (Existing).Value_Length),
@@ -3249,12 +3606,57 @@ package body Flyology.DB is
                   end if;
                   Candidate_Count := Candidate_Count + 1;
                   Projected_Entries (Candidate_Count) := Entries (Existing);
-               elsif Batch.Mutations (Last_Mutation).Operation = Put_Mutation then
+               else
                   declare
-                     Mutation : Runtime_Mutation renames Batch.Mutations (Last_Mutation);
-                     Sequence : constant Sequence_Number := Sequence_For_Mutation (Last_Mutation);
+                     Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Lookup_Position);
+                     Mutation : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
                   begin
-                     if Sequence = 0 then
+                     Mutation.Matched_Live_Entry := True;
+                     if Mutation.Operation = Put_Mutation then
+                        Add_Bytes
+                          (Interfaces.Unsigned_64 (Mutation.Key_Length)
+                           + Interfaces.Unsigned_64 (Mutation.Value_Length),
+                           Valid);
+                        if not Valid then
+                           Result := Policy_Failure;
+                           return;
+                        end if;
+                        Candidate_Count := Candidate_Count + 1;
+                        Projected_Entries (Candidate_Count) :=
+                          (Family       => Mutation.Family,
+                           Image        => Batch.Image,
+                           Key_Hash     => Mutation.Key_Hash,
+                           Key_Offset   => Mutation.Key_Offset,
+                           Key_Length   => Mutation.Key_Length,
+                           Value_Offset => Mutation.Value_Offset,
+                           Value_Length => Mutation.Value_Length,
+                           Sequence     => Indexed.Sequence);
+                     end if;
+                  end;
+               end if;
+            end;
+         end loop;
+
+         for Position in Positive range 1 .. Batch.Mutation_Total loop
+            declare
+               Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+               Mutation : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
+               First_For_Key : constant Boolean :=
+                 Position = 1
+                 or else not Same_Runtime_Key
+                               (Batch.Image,
+                                Batch.Mutations (Batch.Lookup (Position - 1).Mutation_Index),
+                                Batch.Image,
+                                Mutation);
+            begin
+               if First_For_Key
+                 and then Mutation.Operation = Put_Mutation
+                 and then not Mutation.Matched_Live_Entry
+               then
+                  declare
+                     Valid : Boolean;
+                  begin
+                     if Candidate_Count = Entry_Capacity then
                         Result := Policy_Failure;
                         return;
                      end if;
@@ -3270,52 +3672,15 @@ package body Flyology.DB is
                      Projected_Entries (Candidate_Count) :=
                        (Family       => Mutation.Family,
                         Image        => Batch.Image,
+                        Key_Hash     => Mutation.Key_Hash,
                         Key_Offset   => Mutation.Key_Offset,
                         Key_Length   => Mutation.Key_Length,
                         Value_Offset => Mutation.Value_Offset,
                         Value_Length => Mutation.Value_Length,
-                        Sequence     => Sequence);
+                        Sequence     => Indexed.Sequence);
                   end;
                end if;
             end;
-         end loop;
-
-         for Index in Positive range 1 .. Batch.Mutation_Total loop
-            if Last_For_Key (Index)
-              and then Batch.Mutations (Index).Operation = Put_Mutation
-              and then not Existing_Key (Batch.Mutations (Index))
-            then
-               declare
-                  Mutation : Runtime_Mutation renames Batch.Mutations (Index);
-                  Valid    : Boolean;
-                  Sequence : constant Sequence_Number := Sequence_For_Mutation (Index);
-               begin
-                  if Sequence = 0 then
-                     Result := Policy_Failure;
-                     return;
-                  elsif Candidate_Count = Entry_Capacity then
-                     Result := Policy_Failure;
-                     return;
-                  end if;
-                  Add_Bytes
-                    (Interfaces.Unsigned_64 (Mutation.Key_Length)
-                     + Interfaces.Unsigned_64 (Mutation.Value_Length),
-                     Valid);
-                  if not Valid then
-                     Result := Policy_Failure;
-                     return;
-                  end if;
-                  Candidate_Count := Candidate_Count + 1;
-                  Projected_Entries (Candidate_Count) :=
-                    (Family       => Mutation.Family,
-                     Image        => Batch.Image,
-                     Key_Offset   => Mutation.Key_Offset,
-                     Key_Length   => Mutation.Key_Length,
-                     Value_Offset => Mutation.Value_Offset,
-                     Value_Length => Mutation.Value_Length,
-                     Sequence     => Sequence);
-               end;
-            end if;
          end loop;
          if Interfaces.Unsigned_64 (Candidate_Count)
            > Interfaces.Unsigned_64 (Current_Manifest.Limits.Maximum_Live_Entries)
@@ -3374,10 +3739,12 @@ package body Flyology.DB is
          end Valid_Slice;
 
          function Same_Key
-           (Left : State_Entry; Right_Image : not null Shared_Image_Access; Right : LSM_Runtime.SST_Entry)
-            return Boolean is
+           (Left        : State_Entry;
+            Right_Image : not null Shared_Image_Access;
+            Right       : LSM_Runtime.SST_Entry;
+            Right_Hash  : Interfaces.Unsigned_64) return Boolean is
          begin
-            if Left.Key_Length /= Right.Key_Byte_Total then
+            if Left.Key_Hash /= Right_Hash or else Left.Key_Length /= Right.Key_Byte_Total then
                return False;
             end if;
             for Offset in Natural range 0 .. Left.Key_Length - 1 loop
@@ -3392,11 +3759,14 @@ package body Flyology.DB is
 
          function Find_Key
            (Family : Column_Family_ID; Image : not null Shared_Image_Access; Item : LSM_Runtime.SST_Entry)
-            return Natural is
+            return Natural
+         is
+            Item_Hash : constant Interfaces.Unsigned_64 :=
+              Runtime_Key_Hash (Image, Item.Key_Offset - 1, Item.Key_Byte_Total);
          begin
             for Index in Positive range 1 .. Candidate_Count loop
                if Projected_Entries (Index).Family = Family
-                 and then Same_Key (Projected_Entries (Index), Image, Item)
+                 and then Same_Key (Projected_Entries (Index), Image, Item, Item_Hash)
                then
                   return Index;
                end if;
@@ -3440,6 +3810,7 @@ package body Flyology.DB is
             Projected_Entries (Candidate_Count) :=
               (Family       => Family,
                Image        => Image,
+               Key_Hash     => Runtime_Key_Hash (Image, Item.Key_Offset - 1, Item.Key_Byte_Total),
                Key_Offset   => Item.Key_Offset - 1,
                Key_Length   => Item.Key_Byte_Total,
                Value_Offset => Item.Value_Offset - 1,
@@ -4280,6 +4651,8 @@ package body Flyology.DB is
          Matched         : out Boolean;
          Result          : out Outcome_Code)
       is
+         Item_Hash : constant Interfaces.Unsigned_64 := Runtime_Key_Hash (Item_Key);
+
          function Valid_Slice (Source : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
          is
             Image_Length : constant Natural := Flyology.Bytes.Length (Source.Data);
@@ -4301,6 +4674,42 @@ package body Flyology.DB is
             end loop;
             return True;
          end Same_Key;
+
+         procedure Compare_Key
+           (Batch       : Runtime_Batch;
+            Mutation    : Runtime_Mutation;
+            Comparison  : out Integer;
+            Valid       : out Boolean)
+         is
+         begin
+            Comparison := 0;
+            Valid := False;
+            if Batch.Image = null
+              or else not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
+            then
+               return;
+            elsif Mutation.Family /= Family then
+               Comparison := (if Mutation.Family < Family then -1 else 1);
+            elsif Mutation.Key_Hash /= Item_Hash then
+               Comparison := (if Mutation.Key_Hash < Item_Hash then -1 else 1);
+            elsif Mutation.Key_Length /= Item_Key'Length then
+               Comparison := (if Mutation.Key_Length < Item_Key'Length then -1 else 1);
+            elsif Mutation.Key_Length > 0 then
+               for Offset in Natural range 0 .. Mutation.Key_Length - 1 loop
+                  declare
+                     Stored : constant Byte :=
+                       Byte (Flyology.Bytes.Element (Batch.Image.Data, Mutation.Key_Offset + Offset + 1));
+                     Sought : constant Byte := Item_Key (Item_Key'First + Offset);
+                  begin
+                     if Stored /= Sought then
+                        Comparison := (if Stored < Sought then -1 else 1);
+                        exit;
+                     end if;
+                  end;
+               end loop;
+            end if;
+            Valid := True;
+         end Compare_Key;
       begin
          Image := null;
          Value_Offset := 0;
@@ -4317,64 +4726,106 @@ package body Flyology.DB is
                if Batch.Image = null
                  or else Batch.Transactions = null
                  or else Batch.Mutations = null
+                 or else Batch.Lookup = null
                  or else Batch.Transactions'First /= 1
                  or else Batch.Mutations'First /= 1
+                 or else Batch.Lookup'First /= 1
                  or else Batch.Transaction_Total > Batch.Transactions'Length
                  or else Batch.Mutation_Total > Batch.Mutations'Length
+                 or else Batch.Mutation_Total /= Batch.Lookup'Length
                then
                   Result := Corrupt;
                   return;
                end if;
-               for Transaction_Index in reverse Positive range 1 .. Batch.Transaction_Total loop
-                  declare
-                     Batch_Transaction : Runtime_Transaction renames Batch.Transactions (Transaction_Index);
-                  begin
-                     if Batch_Transaction.Sequence <= Snapshot_At then
-                        if Batch_Transaction.Mutation_Count = 0
-                          or else Batch_Transaction.First_Mutation = 0
-                          or else Batch_Transaction.Mutation_Count > Batch.Mutation_Total
-                          or else Batch_Transaction.First_Mutation
-                                  > Batch.Mutation_Total - Batch_Transaction.Mutation_Count + 1
-                        then
+               declare
+                  Low        : Natural := 0;
+                  Remaining  : Natural := Batch.Mutation_Total;
+                  Comparison : Integer;
+                  Valid      : Boolean;
+               begin
+                  while Remaining > 0 loop
+                     declare
+                        Step     : constant Natural := Remaining / 2;
+                        Position : constant Positive := Positive (Low + Step + 1);
+                        Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+                     begin
+                        if Indexed.Mutation_Index > Batch.Mutation_Total then
                            Result := Corrupt;
                            return;
                         end if;
-                        for Mutation_Index in reverse
-                          Positive
-                            range Batch_Transaction.First_Mutation
-                                  .. Batch_Transaction.First_Mutation + Batch_Transaction.Mutation_Count - 1
+                        Compare_Key
+                          (Batch, Batch.Mutations (Indexed.Mutation_Index), Comparison, Valid);
+                        if not Valid then
+                           Result := Corrupt;
+                           return;
+                        elsif Comparison < 0 then
+                           Low := Low + Step + 1;
+                           Remaining := Remaining - Step - 1;
+                        else
+                           Remaining := Step;
+                        end if;
+                     end;
+                  end loop;
+
+                  if Low < Batch.Mutation_Total then
+                     declare
+                        Position : Positive := Positive (Low + 1);
+                     begin
                         loop
                            declare
-                              Mutation : Runtime_Mutation renames Batch.Mutations (Mutation_Index);
+                              Indexed : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
                            begin
-                              if not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
-                                or else (Mutation.Operation = Put_Mutation
-                                         and then not Valid_Slice
-                                                        (Batch.Image,
-                                                         Mutation.Value_Offset,
-                                                         Mutation.Value_Length))
-                              then
+                              if Indexed.Mutation_Index > Batch.Mutation_Total then
                                  Result := Corrupt;
                                  return;
-                              elsif Mutation.Family = Family
-                                and then Same_Key (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
-                              then
-                                 Matched := True;
-                                 if Mutation.Operation = Delete_Mutation then
-                                    Result := Not_Found;
-                                 else
-                                    Image := Batch.Image;
-                                    Value_Offset := Mutation.Value_Offset;
-                                    Value_Length := Mutation.Value_Length;
-                                    Result := Success;
-                                 end if;
-                                 return;
                               end if;
+                              declare
+                                 Mutation : Runtime_Mutation renames
+                                   Batch.Mutations (Indexed.Mutation_Index);
+                              begin
+                                 Compare_Key (Batch, Mutation, Comparison, Valid);
+                                 if not Valid then
+                                    Result := Corrupt;
+                                    return;
+                                 elsif Comparison /= 0 then
+                                    exit;
+                                 elsif Indexed.Sequence = 0
+                                   or else Indexed.Sequence
+                                           /= Runtime_Mutation_Sequence
+                                                (Batch, Indexed.Mutation_Index)
+                                 then
+                                    Result := Corrupt;
+                                    return;
+                                 elsif Indexed.Sequence <= Snapshot_At then
+                                    if Mutation.Operation not in Put_Mutation | Delete_Mutation
+                                      or else (Mutation.Operation = Put_Mutation
+                                               and then not Valid_Slice
+                                                              (Batch.Image,
+                                                               Mutation.Value_Offset,
+                                                               Mutation.Value_Length))
+                                    then
+                                       Result := Corrupt;
+                                       return;
+                                    end if;
+                                    Matched := True;
+                                    if Mutation.Operation = Delete_Mutation then
+                                       Result := Not_Found;
+                                    else
+                                       Image := Batch.Image;
+                                       Value_Offset := Mutation.Value_Offset;
+                                       Value_Length := Mutation.Value_Length;
+                                       Result := Success;
+                                    end if;
+                                    return;
+                                 end if;
+                              end;
                            end;
+                           exit when Position = Batch.Mutation_Total;
+                           Position := Position + 1;
                         end loop;
-                     end if;
-                  end;
-               end loop;
+                     end;
+                  end if;
+               end;
             end;
          end loop;
          if Checkpoint_Base /= null then
@@ -4393,6 +4844,7 @@ package body Flyology.DB is
                   return;
                elsif Checkpoint_Base (Index).Family = Family
                  and then Checkpoint_Base (Index).Image /= null
+                 and then Checkpoint_Base (Index).Key_Hash = Item_Hash
                  and then Same_Key
                             (Checkpoint_Base (Index).Image,
                              Checkpoint_Base (Index).Key_Offset,
@@ -4611,10 +5063,12 @@ package body Flyology.DB is
             if Batch.Image = null
               or else Batch.Transactions = null
               or else Batch.Mutations = null
+              or else Batch.Lookup = null
               or else Batch.Transaction_Total = 0
               or else Batch.Mutation_Total = 0
               or else Batch.Transaction_Total > Batch.Transactions'Length
               or else Batch.Mutation_Total > Batch.Mutations'Length
+              or else Batch.Lookup'Length /= Batch.Mutation_Total
             then
                return False;
             end if;
@@ -4971,11 +5425,13 @@ package body Flyology.DB is
          if Index > History_Count
            or else History_Batches (Index).Transactions = null
            or else History_Batches (Index).Mutations = null
+           or else History_Batches (Index).Lookup = null
            or else History_Batches (Index).Image = null
            or else History_Batches (Index).Transaction_Total = 0
            or else History_Batches (Index).Mutation_Total = 0
            or else History_Batches (Index).Transactions'Length /= History_Batches (Index).Transaction_Total
            or else History_Batches (Index).Mutations'Length /= History_Batches (Index).Mutation_Total
+           or else History_Batches (Index).Lookup'Length /= History_Batches (Index).Mutation_Total
          then
             Result := Corrupt;
          else
@@ -4997,16 +5453,20 @@ package body Flyology.DB is
          begin
             if Source.Transactions = null
               or else Source.Mutations = null
+              or else Source.Lookup = null
               or else Source.Image = null
               or else Source.Transaction_Total = 0
               or else Source.Mutation_Total = 0
               or else Source.Transactions'Length /= Source.Transaction_Total
               or else Source.Mutations'Length /= Source.Mutation_Total
+              or else Source.Lookup'Length /= Source.Mutation_Total
               or else Batch.Transactions = null
               or else Batch.Mutations = null
+              or else Batch.Lookup = null
               or else Batch.Image /= null
               or else Batch.Transactions'Length /= Source.Transaction_Total
               or else Batch.Mutations'Length /= Source.Mutation_Total
+              or else Batch.Lookup'Length /= Source.Mutation_Total
             then
                Result := Corrupt;
                return;
@@ -5025,6 +5485,7 @@ package body Flyology.DB is
             Batch.Mutation_Total := Source.Mutation_Total;
             Batch.Transactions.all := Source.Transactions.all;
             Batch.Mutations.all := Source.Mutations.all;
+            Batch.Lookup.all := Source.Lookup.all;
             Source.Image.References.Retain;
             Batch.Image := Source.Image;
             Result := Success;
@@ -5392,6 +5853,8 @@ package body Flyology.DB is
                Plan.Base (Next) :=
                  (Family       => Column_Family_ID (Plan.Manifest.Base.Families (Family_Index).ID),
                   Image        => Reference.Image,
+                  Key_Hash     =>
+                    Runtime_Key_Hash (Reference.Image, Reference.Key_Offset, Reference.Key_Length),
                   Key_Offset   => Reference.Key_Offset,
                   Key_Length   => Reference.Key_Length,
                   Value_Offset => Reference.Value_Offset,
@@ -6561,22 +7024,45 @@ package body Flyology.DB is
       end loop;
    end Append_U32;
 
-   function CRC_32C (Data : Flyology.Bytes.Unbounded_Bytes; Count : Natural) return Interfaces.Unsigned_32 is
-      --  Externally fixed reflected Castagnoli polynomial with all-ones initial
-      --  state and final complement, matching the persisted-format CRC-32C.
+   type Runtime_CRC_32C_Table is array (Byte) of Interfaces.Unsigned_32;
+
+   function Build_Runtime_CRC_32C_Table return Runtime_CRC_32C_Table is
+      --  Persisted-format authority: derive the table from the exact reflected
+      --  Castagnoli polynomial rather than storing an independently chosen
+      --  table or selecting a platform-specific checksum.
       Polynomial : constant Interfaces.Unsigned_32 := 16#82F6_3B78#;
-      Result     : Interfaces.Unsigned_32 := 16#FFFF_FFFF#;
+      Result     : Runtime_CRC_32C_Table;
    begin
-      for Index in Positive range 1 .. Count loop
-         Result := Result xor Interfaces.Unsigned_32 (Flyology.Bytes.Element (Data, Index));
+      for Value in Byte loop
+         Result (Value) := Interfaces.Unsigned_32 (Value);
          for Bit in Natural range 0 .. 7 loop
             pragma Unreferenced (Bit);
-            if (Result and 1) = 1 then
-               Result := Interfaces.Shift_Right (Result, 1) xor Polynomial;
+            if (Result (Value) and 1) = 1 then
+               Result (Value) := Interfaces.Shift_Right (Result (Value), 1) xor Polynomial;
             else
-               Result := Interfaces.Shift_Right (Result, 1);
+               Result (Value) := Interfaces.Shift_Right (Result (Value), 1);
             end if;
          end loop;
+      end loop;
+      return Result;
+   end Build_Runtime_CRC_32C_Table;
+
+   Runtime_CRC_32C : constant Runtime_CRC_32C_Table := Build_Runtime_CRC_32C_Table;
+
+   function CRC_32C (Data : Flyology.Bytes.Unbounded_Bytes; Count : Natural) return Interfaces.Unsigned_32 is
+      --  Externally fixed all-ones initial state and final complement complete
+      --  the persisted-format CRC-32C contract implemented by the table above.
+      Result : Interfaces.Unsigned_32 := 16#FFFF_FFFF#;
+   begin
+      for Index in Positive range 1 .. Count loop
+         declare
+            Table_Index : constant Byte :=
+              Byte
+                ((Result xor Interfaces.Unsigned_32 (Flyology.Bytes.Element (Data, Index)))
+                 and 16#FF#);
+         begin
+            Result := Interfaces.Shift_Right (Result, 8) xor Runtime_CRC_32C (Table_Index);
+         end;
       end loop;
       return not Result;
    end CRC_32C;
@@ -6890,16 +7376,19 @@ package body Flyology.DB is
                   Put_U32 (Mutation_Head, 10, Interfaces.Unsigned_32 (Source.Value_Length));
                   Append_Array (Batch.Image.Data, Mutation_Head);
                   Target :=
-                    (Family       => Source.Family,
-                     Operation    => Source.Operation,
-                     Key_Offset   => Cursor + Mutation_Frame_Header_Length,
-                     Key_Length   => Source.Key_Length,
-                     Value_Offset => Cursor + Mutation_Frame_Header_Length + Source.Key_Length,
-                     Value_Length => Source.Value_Length);
+                    (Family             => Source.Family,
+                     Operation          => Source.Operation,
+                     Key_Hash           => 0,
+                     Key_Offset         => Cursor + Mutation_Frame_Header_Length,
+                     Key_Length         => Source.Key_Length,
+                     Value_Offset       => Cursor + Mutation_Frame_Header_Length + Source.Key_Length,
+                     Value_Length       => Source.Value_Length,
+                     Matched_Live_Entry => False);
                   for Byte_Index in Positive range 1 .. Flyology.Bytes.Length (Source.Payload) loop
                      Flyology.Bytes.Append
                        (Batch.Image.Data, Flyology.Bytes.Element (Source.Payload, Byte_Index));
                   end loop;
+                  Target.Key_Hash := Runtime_Key_Hash (Batch.Image, Target.Key_Offset, Target.Key_Length);
                   Cursor := Cursor + Mutation_Frame_Header_Length + Source.Key_Length + Source.Value_Length;
                   Next_Mutation := Next_Mutation + 1;
                end;
@@ -6911,7 +7400,10 @@ package body Flyology.DB is
          Release_Runtime_Batch (Batch);
          Result := Invalid_State;
       else
-         Result := Success;
+         Build_Runtime_Mutation_Lookup (Batch, Result);
+         if Result /= Success then
+            Release_Runtime_Batch (Batch);
+         end if;
       end if;
    exception
       when Storage_Error =>
@@ -6967,7 +7459,10 @@ package body Flyology.DB is
    function Same_Runtime_Key
      (Image : not null Shared_Image_Access; Left, Right : Runtime_Mutation) return Boolean is
    begin
-      if Left.Family /= Right.Family or else Left.Key_Length /= Right.Key_Length then
+      if Left.Family /= Right.Family
+        or else Left.Key_Hash /= Right.Key_Hash
+        or else Left.Key_Length /= Right.Key_Length
+      then
          return False;
       end if;
       for Offset in Natural range 0 .. Left.Key_Length - 1 loop
@@ -7201,13 +7696,16 @@ package body Flyology.DB is
                      return;
                   end if;
                   Batch.Mutations (Index) :=
-                    (Family       => Column_Family_ID (Family_Wire),
-                     Operation    =>
+                    (Family             => Column_Family_ID (Family_Wire),
+                     Operation          =>
                        (if Operation = Put_Operation_Code then Put_Mutation else Delete_Mutation),
-                     Key_Offset   => Cursor + Mutation_Frame_Header_Length,
-                     Key_Length   => Key_Length,
-                     Value_Offset => Cursor + Mutation_Frame_Header_Length + Key_Length,
-                     Value_Length => Value_Length);
+                     Key_Hash           =>
+                       Runtime_Key_Hash (Batch.Image, Cursor + Mutation_Frame_Header_Length, Key_Length),
+                     Key_Offset         => Cursor + Mutation_Frame_Header_Length,
+                     Key_Length         => Key_Length,
+                     Value_Offset       => Cursor + Mutation_Frame_Header_Length + Key_Length,
+                     Value_Length       => Value_Length,
+                     Matched_Live_Entry => False);
                   for Earlier in Positive range First .. Index - 1 loop
                      if Same_Runtime_Key (Batch.Image, Batch.Mutations (Earlier), Batch.Mutations (Index))
                      then
@@ -7231,7 +7729,10 @@ package body Flyology.DB is
          Release_Runtime_Batch (Batch);
          Result := Corrupt;
       else
-         Result := Success;
+         Build_Runtime_Mutation_Lookup (Batch, Result);
+         if Result /= Success then
+            Release_Runtime_Batch (Batch);
+         end if;
       end if;
    exception
       when Storage_Error =>
@@ -7668,6 +8169,8 @@ package body Flyology.DB is
             History (Target_Index).Transactions := new Runtime_Transaction_Array (1 .. Transaction_Total);
             Allocation_Faults.Check (Recovery_History_Allocation);
             History (Target_Index).Mutations := new Runtime_Mutation_Array (1 .. Mutation_Total);
+            Allocation_Faults.Check (Recovery_History_Lookup_Allocation);
+            History (Target_Index).Lookup := new Runtime_Mutation_Lookup_Array (1 .. Mutation_Total);
             State.Gate.Copy_History_Batch (Source_Index, History (Target_Index), Result);
             if Result /= Success then
                Release_History (History, Count);
@@ -26976,6 +27479,8 @@ package body Flyology.DB is
       Image     : Batches.Batch_Image;
       Length    : Natural;
       Status    : Batches.Encode_Status;
+      CRC_Data  : Flyology.Bytes.Unbounded_Bytes;
+      CRC_Bytes : Formats.Byte_Array (0 .. 255);
 
       procedure Release_Items is
       begin
@@ -26984,6 +27489,20 @@ package body Flyology.DB is
          end loop;
       end Release_Items;
    begin
+      for Value in Byte loop
+         CRC_Bytes (Natural (Value)) := Value;
+         Flyology.Bytes.Append (CRC_Data, Ada.Streams.Stream_Element (Value));
+      end loop;
+      if CRC_32C (CRC_Data, 0) /= 0 then
+         Result := Corrupt;
+         return;
+      end if;
+      for Count in Positive range 1 .. CRC_Bytes'Length loop
+         if CRC_32C (CRC_Data, Count) /= Formats.CRC_32C (CRC_Bytes (0 .. Count - 1)) then
+            Result := Corrupt;
+            return;
+         end if;
+      end loop;
       --  Cases 1..4 cover every supported group cardinality used by this
       --  parity witness; the range is a bounded test dimension.
       for Case_Number in Group_Count range 1 .. 4 loop

@@ -1304,6 +1304,22 @@ package body Flyology.DB.Engine_Tests is
          raise Program_Error with "encoder allocation failure reached storage publication";
       end if;
 
+      Begin_Transaction (Item, TX_ID (30), Txn, Result);
+      Put (Item, Txn, 1, To_Key ([4]), To_Value ([4]), Result);
+      Testing.Publication_Counts (Context, Before_Batch, Before_Head);
+      Testing.Fail_Next_Allocation (Testing.Runtime_Mutation_Lookup);
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Capacity_Exceeded, "runtime lookup allocation failure was not typed capacity");
+      if Receipt_Transaction_ID (Receipt) /= TX_ID (30) or else Receipt_Batch_ID (Receipt) /= ID (30) then
+         raise Program_Error with "runtime lookup allocation failure lost stable receipt identity";
+      end if;
+      Rollback (Txn, Result);
+      Expect (Result, Invalid_State, "runtime lookup allocation failure left transaction active");
+      Testing.Publication_Counts (Context, After_Batch, After_Head);
+      if After_Batch /= Before_Batch or else After_Head /= Before_Head then
+         raise Program_Error with "runtime lookup allocation failure reached storage publication";
+      end if;
+
       Begin_Transaction (Item, TX_ID (29), Txn, Result);
       Put (Item, Txn, 1, To_Key ([3]), To_Value ([3]), Result);
       Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
@@ -3879,6 +3895,25 @@ package body Flyology.DB.Engine_Tests is
       then
          raise Program_Error with "suffix-history allocation failure published an object";
       end if;
+      Testing.Fail_Next_Allocation (Testing.Recovery_History_Lookup);
+      Testing.Publish_Adjacent_Merge
+        (Item,
+         Merged_Run,
+         Third_Run,
+         Numbered_ID (Identity_Base + 66),
+         Numbered_ID (Identity_Base + 67),
+         Numbered_ID (Identity_Base + 68),
+         Flush_Info,
+         Result);
+      Expect (Result, Capacity_Exceeded, "suffix-history lookup allocation failure reached publication");
+      Testing.Publication_Counts (Context, After_Batches, After_Runs, After_Manifests, After_Heads);
+      if After_Batches /= Before_Batches
+        or else After_Runs /= Before_Runs
+        or else After_Manifests /= Before_Manifests
+        or else After_Heads /= Before_Heads
+      then
+         raise Program_Error with "suffix-history lookup allocation failure published an object";
+      end if;
       Testing.Publish_Adjacent_Merge
         (Item,
          Merged_Run,
@@ -5210,6 +5245,7 @@ package body Flyology.DB.Engine_Tests is
            [Configure_Test_Family (1, [16#61#], 2, 3)];
          Old_Key                                    : constant Key := To_Key ([16#00#, 16#FF#]);
          New_Key                                    : constant Key := To_Key ([16#80#, 16#81#]);
+         Empty_Key                                  : constant Key := To_Key ([]);
       begin
          Bind_Context (Context, Backend, "live-cap-projection");
          Create
@@ -5231,87 +5267,138 @@ package body Flyology.DB.Engine_Tests is
          Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
          Expect (Result, Success, "live-cap initial exact state failed");
 
-         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
-         Begin_Transaction (Item, TX_ID (173), Txn, Result);
-         Put (Item, Txn, Family, Old_Key, To_Value ([3, 2, 1]), Result);
-         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
-         Expect (Result, Success, "overwrite at exact entry and byte cap was rejected");
-         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
-         if Batch_After /= Batch_Before + 1
-           or else Manifest_After /= Manifest_Before
-           or else Head_After /= Head_Before + 1
-         then
-            raise Program_Error with "exact-cap overwrite publication counters were inconsistent";
-         end if;
-
-         Begin_Transaction (Item, TX_ID (174), Group (1), Result);
-         Delete (Item, Group (1), Family, Old_Key, Result);
-         Begin_Transaction (Item, TX_ID (175), Group (2), Result);
-         Put (Item, Group (2), Family, New_Key, To_Value ([4, 5, 6]), Result);
-         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
-         Commit_Group (Item, ID (176), Group, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
-         Expect (Result, Success, "delete-plus-put group at exact live caps was rejected");
-         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
-         if Batch_After /= Batch_Before + 1
-           or else Manifest_After /= Manifest_Before
-           or else Head_After /= Head_Before + 1
-         then
-            raise Program_Error with "exact-cap group publication counters were inconsistent";
-         end if;
-         if Visible (Item) /= 4 then
-            raise Program_Error with "exact-cap group assigned an inconsistent sequence range";
-         end if;
-
-         Begin_Transaction (Item, TX_ID (177), Reader, Result);
+         Begin_Transaction (Item, TX_ID (185), Reader, Result);
          Get (Item, Reader, Family, Old_Key, Data, Result);
-         Expect (Result, Not_Found, "exact-cap group retained its deleted key");
-         Get (Item, Reader, Family, New_Key, Data, Result);
-         Expect (Result, Success, "exact-cap group lost its replacement key");
-         if Data /= To_Value ([4, 5, 6]) then
-            raise Program_Error with "exact-cap group installed the wrong replacement value";
+         Expect (Result, Success, "pre-group fixed snapshot lost its initial key");
+         if Data /= To_Value ([1, 2, 3]) then
+            raise Program_Error with "pre-group fixed snapshot changed its initial value";
+         end if;
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Begin_Transaction (Item, TX_ID (173), Group (1), Result);
+         Put (Item, Group (1), Family, Old_Key, To_Value ([3, 2, 1]), Result);
+         Begin_Transaction (Item, TX_ID (174), Group (2), Result);
+         Put (Item, Group (2), Family, Old_Key, To_Value ([3, 3, 1]), Result);
+         Commit_Group (Item, ID (175), Group, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
+         Expect (Result, Success, "same-key put/put group at exact caps was rejected");
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 1
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 1
+         then
+            raise Program_Error with "same-key put/put publication counters were inconsistent";
+         end if;
+         Get (Item, Reader, Family, Old_Key, Data, Result);
+         Expect (Result, Success, "fixed snapshot lost its key across same-key group");
+         if Data /= To_Value ([1, 2, 3]) then
+            raise Program_Error with "fixed snapshot observed a newer same-key group member";
+         end if;
+         Rollback (Reader, Result);
+         Begin_Transaction (Item, TX_ID (186), Reader, Result);
+         Get (Item, Reader, Family, Old_Key, Data, Result);
+         Expect (Result, Success, "same-key put/put group lost its current key");
+         if Data /= To_Value ([3, 3, 1]) then
+            raise Program_Error with "same-key put/put group did not select its later member";
          end if;
          Rollback (Reader, Result);
 
-         Begin_Transaction (Item, TX_ID (179), Group (1), Result);
-         Put (Item, Group (1), Family, Old_Key, To_Value ([7, 8, 9]), Result);
-         Begin_Transaction (Item, TX_ID (180), Group (2), Result);
-         Delete (Item, Group (2), Family, New_Key, Result);
+         Begin_Transaction (Item, TX_ID (176), Group (1), Result);
+         Delete (Item, Group (1), Family, Old_Key, Result);
+         Begin_Transaction (Item, TX_ID (177), Group (2), Result);
+         Put (Item, Group (2), Family, Old_Key, To_Value ([4, 5, 6]), Result);
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
-         Commit_Group (Item, ID (181), Group, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
-         Expect (Result, Success, "put-before-delete group at exact live caps was rejected");
+         Commit_Group (Item, ID (178), Group, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
+         Expect (Result, Success, "same-key delete/put group at exact live caps was rejected");
          Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
          if Batch_After /= Batch_Before + 1
            or else Manifest_After /= Manifest_Before
            or else Head_After /= Head_Before + 1
          then
-            raise Program_Error with "put-before-delete publication counters were inconsistent";
+            raise Program_Error with "same-key delete/put publication counters were inconsistent";
          end if;
-         if Visible (Item) /= 6 then
-            raise Program_Error with "put-before-delete group assigned an inconsistent sequence range";
+         if Visible (Item) /= 5 then
+            raise Program_Error with "same-key delete/put group assigned an inconsistent sequence range";
          end if;
+
          Begin_Transaction (Item, TX_ID (182), Reader, Result);
          Get (Item, Reader, Family, Old_Key, Data, Result);
-         Expect (Result, Success, "put-before-delete group lost its replacement key");
-         if Data /= To_Value ([7, 8, 9]) then
-            raise Program_Error with "put-before-delete group installed the wrong value";
+         Expect (Result, Success, "same-key delete/put group lost its replacement key");
+         if Data /= To_Value ([4, 5, 6]) then
+            raise Program_Error with "same-key delete/put group installed the wrong replacement value";
          end if;
          Get (Item, Reader, Family, New_Key, Data, Result);
-         Expect (Result, Not_Found, "put-before-delete group retained its deleted key");
+         Expect (Result, Not_Found, "same-key delete/put group invented a second key");
+         Rollback (Reader, Result);
+
+         Begin_Transaction (Item, TX_ID (179), Group (1), Result);
+         Delete (Item, Group (1), Family, Old_Key, Result);
+         Begin_Transaction (Item, TX_ID (180), Group (2), Result);
+         Put (Item, Group (2), Family, New_Key, To_Value ([7, 8, 9]), Result);
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Commit_Group (Item, ID (181), Group, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
+         Expect (Result, Success, "distinct-key replacement group at exact live caps was rejected");
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 1
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 1
+         then
+            raise Program_Error with "distinct-key replacement publication counters were inconsistent";
+         end if;
+         if Visible (Item) /= 7 then
+            raise Program_Error with "distinct-key replacement assigned an inconsistent sequence range";
+         end if;
+         Begin_Transaction (Item, TX_ID (183), Reader, Result);
+         Get (Item, Reader, Family, Old_Key, Data, Result);
+         Expect (Result, Not_Found, "distinct-key replacement retained its deleted key");
+         Get (Item, Reader, Family, New_Key, Data, Result);
+         Expect (Result, Success, "distinct-key replacement lost its new key");
+         if Data /= To_Value ([7, 8, 9]) then
+            raise Program_Error with "distinct-key replacement installed the wrong value";
+         end if;
+         Rollback (Reader, Result);
+
+         Begin_Transaction (Item, TX_ID (187), Group (1), Result);
+         Put (Item, Group (1), Family, Empty_Key, To_Value ([9, 8, 7]), Result);
+         Begin_Transaction (Item, TX_ID (188), Group (2), Result);
+         Delete (Item, Group (2), Family, Empty_Key, Result);
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Commit_Group (Item, ID (189), Group, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
+         Expect (Result, Success, "same-empty-key put/delete group at exact live caps was rejected");
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 1
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 1
+         then
+            raise Program_Error with "same-empty-key publication counters were inconsistent";
+         end if;
+         if Visible (Item) /= 9 then
+            raise Program_Error with "same-empty-key group assigned an inconsistent sequence range";
+         end if;
+         Begin_Transaction (Item, TX_ID (190), Reader, Result);
+         Get (Item, Reader, Family, Empty_Key, Data, Result);
+         Expect (Result, Not_Found, "same-empty-key group retained its deleted key");
+         Get (Item, Reader, Family, New_Key, Data, Result);
+         Expect (Result, Success, "same-empty-key group changed the retained replacement key");
+         if Data /= To_Value ([7, 8, 9]) then
+            raise Program_Error with "same-empty-key group changed the retained replacement value";
+         end if;
          Rollback (Reader, Result);
 
          Close (Item, Result);
          Open (Item, Context'Access, DB_ID (169), Test_Operation_Timeout, Result => Result);
          Expect (Result, Success, "exact-cap projected state did not reopen");
          Open_Column_Family (Item, 1, Family, Result);
-         Begin_Transaction (Item, TX_ID (178), Reader, Result);
+         Begin_Transaction (Item, TX_ID (184), Reader, Result);
          Get (Item, Reader, Family, Old_Key, Data, Result);
-         Expect (Result, Success, "reopen lost the put-before-delete replacement key");
-         if Data /= To_Value ([7, 8, 9]) then
-            raise Program_Error with "reopen changed the put-before-delete replacement value";
-         end if;
+         Expect (Result, Not_Found, "reopen restored the distinct replacement's deleted key");
          Get (Item, Reader, Family, New_Key, Data, Result);
-         Expect (Result, Not_Found, "reopen restored the put-before-delete deleted key");
+         Expect (Result, Success, "reopen lost the distinct replacement key");
+         if Data /= To_Value ([7, 8, 9]) then
+            raise Program_Error with "reopen changed the distinct replacement value";
+         end if;
+         Get (Item, Reader, Family, Empty_Key, Data, Result);
+         Expect (Result, Not_Found, "reopen restored the same-empty-key deletion");
          Rollback (Reader, Result);
+
          Close (Item, Result);
       end Run_Projection_Case;
    begin
