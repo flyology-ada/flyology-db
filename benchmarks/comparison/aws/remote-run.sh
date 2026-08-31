@@ -225,9 +225,28 @@ observed_diff=$(
 [ "$observed_diff" = "$SOURCE_DIFF_SHA256" ] || fail "source diff mismatch"
 
 cd "$repository"
-alr index --reset-community
-alr index --add=git+https://github.com/flyology-ada/alire-index.git \
-  --name=flyology --before=community
+community_index=git+https://github.com/alire-project/alire-index#stable-1.4.0
+flyology_index=git+https://github.com/flyology-ada/alire-index.git
+if [ "$campaign_mode" = launch ]; then
+  alr index --reset-community
+  index_rows=$(LC_ALL=C alr index --list | awk '$1 ~ /^[0-9]+$/')
+  [ "$(printf '%s\n' "$index_rows" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] ||
+    fail 'fresh benchmark host has an unexpected Alire index inventory'
+  [ "$(printf '%s\n' "$index_rows" | awk '{ print $1, $2, $3 }')" = \
+    "1 community $community_index" ] ||
+    fail 'fresh benchmark host community index differs from the expected index'
+  alr index --add=git+https://github.com/flyology-ada/alire-index.git \
+    --name=flyology --before=community
+fi
+index_rows=$(LC_ALL=C alr index --list | awk '$1 ~ /^[0-9]+$/')
+[ "$(printf '%s\n' "$index_rows" | awk 'NF { count++ } END { print count + 0 }')" -eq 2 ] ||
+  fail 'benchmark Alire index inventory is not exact'
+[ "$(printf '%s\n' "$index_rows" | awk 'NR == 1 { print $1, $2, $3 }')" = \
+  "1 flyology $flyology_index" ] ||
+  fail 'benchmark Flyology index identity or priority differs'
+[ "$(printf '%s\n' "$index_rows" | awk 'NR == 2 { print $1, $2, $3 }')" = \
+  "2 community $community_index" ] ||
+  fail 'benchmark community index identity or priority differs'
 alr --non-interactive toolchain --select \
   gnat_native=16.1.0 gprbuild=26.0.1
 
