@@ -1,0 +1,35 @@
+{
+  "schema_version": "flyology.db.benchmark.pair-request.v1",
+  "campaign_identity_sha256": "c9bb09012bf44a4ffb378cde6b32dd4109b302d7bf373ceceb1a4f871411d135",
+  "identity": "rustfs--sustained-8960--flyology-db-rustfs--slatedb-rustfs-default",
+  "workload": {
+    "id": "sustained-8960",
+    "key_bytes": 16,
+    "value_bytes": 1024,
+    "mutations": 256,
+    "transactions": 35
+  },
+  "reference": "flyology-db-rustfs",
+  "contender": "slatedb-rustfs-default",
+  "power": {
+    "detector": "system_profiler",
+    "os": "macos",
+    "power_source": "AC Power",
+    "profile": "low-power",
+    "detector_exit_status": "10"
+  },
+  "environment": {
+    "FLYOLOGY_DB_BENCH_NAMESPACE": "rustfs--sustained-8960--flyology-db-rustfs--slatedb-rustfs-default"
+  },
+  "command_argv": [
+    "/Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/bin/flyology_db_benchmark_panel",
+    "flyology-db-rustfs",
+    "slatedb-rustfs-default",
+    "16",
+    "1024",
+    "256",
+    "35",
+    "/Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/publishable-rustfs-v2-raw/rustfs--sustained-8960--flyology-db-rustfs--slatedb-rustfs-default.json",
+    "/Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/publishable-rustfs-v2-raw/rustfs--sustained-8960--flyology-db-rustfs--slatedb-rustfs-default.metrics.ndjson"
+  ]
+}

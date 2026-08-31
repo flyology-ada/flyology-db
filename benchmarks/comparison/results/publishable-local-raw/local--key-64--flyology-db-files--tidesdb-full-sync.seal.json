@@ -1,0 +1,8 @@
+{
+  "schema_version": "flyology.db.benchmark.pair-seal.v1",
+  "completed_at_utc": "2026-08-31T00:35:43.909772+00:00",
+  "request_sha256": "339e8d61eb681d57de3fac014f7faec5b7299492b3062e5e151c8bf3e649b04d",
+  "comparison_sha256": "38d8984696e9eda2a4976bee409180c6b8ad18b54d870c96a146188b9072386b",
+  "metrics_sha256": "84ef831e563d67c17c9917279aa1d633886e29fd46d418dfdb7288843320f0be",
+  "primary_metric_sha256": "216d6ba988d1c97fcfeecc2b856a63dc833f90d6c82e1510eff317a255bb311f"
+}

@@ -10,6 +10,7 @@ executables = ["flyology_db_benchmark"]
 
 [[depends-on]]
 flyology_db = "*"
+flyology_bench = "=0.1.1-dev"
 flyology_object_storage = "=0.1.0-dev"
 
 [[pins]]

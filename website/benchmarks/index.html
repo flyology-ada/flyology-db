@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="A capability-aware Flyology.DB benchmark panel for local durability and remote durability on RustFS.">
+  <meta name="description" content="Retained Flyology.DB latency comparisons across key-size, value-size, batch-size, and sustained-write workloads.">
   <title>Benchmarks · Flyology.DB</title>
   <link rel="canonical" href="https://db.flyology.org/benchmarks/">
   <link rel="icon" href="../assets/brand/flyology-primary-icon.svg" type="image/svg+xml">
@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="../assets/styles/db.css">
   <script src="../assets/scripts/ada-highlight.js"></script>
   <script src="../assets/scripts/site.js"></script>
+  <script src="../assets/scripts/benchmark-panel.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -18,67 +19,195 @@
     <nav class="site-nav" aria-label="Primary navigation">
       <a class="brand" href="../"><img src="../assets/brand/flyology-mark-transparent.svg" alt=""><span>Flyology.DB</span></a>
       <ul class="nav-links" data-nav-links>
-        <li><a href="../">Overview</a></li>
-        <li><a href="../guide/">Guide</a></li>
-        <li><a href="../architecture/">Architecture</a></li>
-        <li><a href="../support/">Support</a></li>
-        <li><a href="./" aria-current="page">Benchmarks</a></li>
-        <li><a href="../api/">API</a></li>
+        <li><a href="../">Overview</a></li><li><a href="../guide/">Guide</a></li>
+        <li><a href="../architecture/">Architecture</a></li><li><a href="../support/">Support</a></li>
+        <li><a href="./" aria-current="page">Benchmarks</a></li><li><a href="../api/">API</a></li>
         <li><a href="https://github.com/flyology-ada/flyology-db">GitHub</a></li>
         <li><a href="https://flyology.org/">Flyology</a></li>
       </ul>
       <div class="nav-tools"><button class="icon-button" type="button" data-theme-toggle><span class="visually-hidden" data-theme-label>Change theme</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.64 5.64 7.2 7.2M16.8 16.8l1.56 1.56M18.36 5.64 16.8 7.2M7.2 16.8l-1.56 1.56"/><circle cx="12" cy="12" r="4"/></svg></button><button class="menu-button" type="button" data-menu-toggle aria-expanded="false" aria-label="Toggle navigation"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div>
     </nav>
   </header>
+
   <main id="main">
-    <header class="benchmark-hero page-shell">
-      <div><ol class="breadcrumb" aria-label="Breadcrumb"><li><a href="../">Flyology.DB</a></li><li aria-current="page">Benchmarks</li></ol><h1>Compare the guarantee before the speed.</h1></div>
-      <p>One panel measures local power-loss durability. The other measures remote durability on the same RustFS server. Results from these lanes are never pooled.</p>
+    <header class="benchmark-hero benchmark-hero-new page-shell">
+      <div class="benchmark-hero-copy">
+        <ol class="breadcrumb" aria-label="Breadcrumb"><li><a href="../">Flyology.DB</a></li><li aria-current="page">Benchmarks</li></ol>
+        <span class="eyebrow">Directional evidence · 30 August 2026</span>
+        <h1>Commit latency depends on the workload.</h1>
+        <p class="lede">Flyology.DB had lower median primary latency in selected small durable transactions. TidesDB or SlateDB had lower latency in larger batch and sustained workloads. Explore all 41 paired comparisons before drawing a conclusion.</p>
+      </div>
+      <aside class="benchmark-caution" aria-label="How to read these results">
+        <strong>Not a universal ranking</strong>
+        <p>These results describe one Apple M3 Max, two retained campaign snapshots, one writer, and selected synthetic workloads. The operator reported High Power on AC, but both artifacts record the detector result <code>low-power</code>. Treat the power profile as unknown.</p>
+      </aside>
     </header>
 
     <section class="benchmark-status" aria-labelledby="campaign-status">
-      <div class="page-shell benchmark-status-inner"><div><span class="eyebrow">Directional campaign · 30 August 2026</span><h2 id="campaign-status">Validated numbers, measured on AC power.</h2></div><p>Every measured participant passed close, reopen, and full-state verification. All samples ran on one Apple M3 Max with High Power configured. The retained detector metadata conflicts with that configuration, so compare only these exact participants within this campaign.</p></div>
+      <div class="page-shell benchmark-status-inner">
+        <div><span class="eyebrow">Retained campaign</span><h2 id="campaign-status">41 comparisons. Every participant reopens and verifies the expected state.</h2></div>
+        <p>Each pair has 10 samples and balanced 5/5 execution order. Before each pair, <code>flyology_bench</code> applied its CPU admission gate. After timing, each participant closed, reopened, read every expected key-value entry, and compared the bytes. The artifacts retain aggregate statistics, not individual timing samples.</p>
+      </div>
+    </section>
+
+    <nav class="benchmark-jump page-shell" aria-label="On this page">
+      <span>On this page</span><a href="#takeaways-title">Results</a><a href="#explorer-title">Explorer</a>
+      <a href="#limits-title">Limits</a><a href="#participants-title">Participants</a>
+      <a href="#method-title">Method</a><a href="#reproduce-title">Reproduce</a><a href="#source-title">Source</a>
+    </nav>
+
+    <div class="benchmark-participant-key page-shell" aria-label="Participant key">
+      <span><strong>Flyology.DB</strong> Ada transactional database</span>
+      <span><strong>SlateDB</strong> Rust object-storage engine</span>
+      <span><strong>TidesDB</strong> C transactional storage engine</span>
+      <span><strong>RustFS</strong> shared S3-compatible server</span>
+    </div>
+
+    <section class="benchmark-takeaways page-shell" aria-labelledby="takeaways-title">
+      <div class="db-section-heading">
+        <div><span class="eyebrow">What the data says</span><h2 id="takeaways-title">Results change with the workload.</h2></div>
+        <p>Lower median primary latency is better. The primary timer covers begin, every put, and durable completion.</p>
+      </div>
+      <div class="benchmark-takeaway-grid">
+        <article><span>Tiny local commit</span><strong>82.8×</strong><p>SlateDB with its default 100 ms flush interval took 82.8 times as long as Flyology.DB for one 1 KiB value.</p></article>
+        <article><span>Batch of 256</span><strong>4.1×</strong><p>Flyology.DB took 4.1 times as long as TidesDB for one transaction with 256 mutations.</p></article>
+        <article><span>Sustained on RustFS</span><strong>23.7×</strong><p>Flyology.DB took 23.7 times as long as SlateDB with a 1 ms interval across 8,960 key-value writes.</p></article>
+      </div>
+      <p class="benchmark-exclusion"><strong>Interpretation:</strong> the results are consistent with fixed per-transaction costs affecting small commits and with batching amortizing those costs. The campaign does not identify where the costs occur.</p>
+    </section>
+
+    <section class="db-section page-shell benchmark-explorer" aria-labelledby="explorer-title"
+      data-benchmark-panel data-benchmark-data="../assets/data/benchmark-matrix.json">
+      <div class="db-section-heading">
+        <div><span class="eyebrow">Interactive evidence</span><h2 id="explorer-title">Change one dimension at a time.</h2></div>
+        <p>The primary timer covers begin, every put, and durable completion. It excludes setup, close, reopen, and verification. The ratio is contender median divided by Flyology.DB median. Above 1× means Flyology.DB has lower median primary latency.</p>
+      </div>
+      <div class="benchmark-controls" aria-label="Benchmark filters">
+        <fieldset><legend>Storage lane</legend><div class="benchmark-segments"><button type="button" data-lane="local" aria-pressed="true">Local durable</button><button type="button" data-lane="rustfs" aria-pressed="false">RustFS</button></div></fieldset>
+        <fieldset><legend>Workload axis</legend><div class="benchmark-segments"><button type="button" data-local-axis data-axis="key" aria-pressed="true">Key size</button><button type="button" data-local-axis data-axis="value" aria-pressed="false">Value size</button><button type="button" data-local-axis data-axis="batch" aria-pressed="false">Batch size</button><button type="button" data-local-axis data-axis="sustained" aria-pressed="false">Sustained</button><button type="button" data-remote-axis data-axis="remote" aria-pressed="false" hidden>Remote suite</button></div></fieldset>
+      </div>
+      <div class="benchmark-summary" data-benchmark-summary></div>
+      <div class="benchmark-plot-shell">
+        <div class="benchmark-plot-heading"><div><h3>Pairwise time ratio</h3><p>Logarithmic scale. The 1× line is equal time.</p></div><div class="benchmark-legend" data-benchmark-legend></div></div>
+        <div data-benchmark-chart></div>
+        <p class="benchmark-chart-zones"><span>Below 1×: contender has lower time</span><span>Above 1×: Flyology.DB has lower time</span></p>
+      </div>
+      <p class="benchmark-panel-status" data-benchmark-status aria-live="polite">Loading retained benchmark data…</p>
+      <noscript><p class="benchmark-exclusion">The interactive table requires JavaScript. Download the two aggregate JSON files in the Reproduce section to inspect every retained comparison.</p></noscript>
+      <div class="benchmark-table-wrap">
+        <table class="benchmark-table benchmark-detail-table" aria-labelledby="explorer-title">
+          <caption data-benchmark-caption>Selected benchmark comparisons</caption>
+          <thead><tr><th>Workload</th><th>Contender</th><th data-reference-header>Flyology.DB time</th><th data-contender-header>Contender time</th><th>Pairwise result</th><th>95% contender-time change vs Flyology.DB</th><th>Evidence</th></tr></thead>
+          <tbody data-benchmark-table-body></tbody>
+        </table>
+      </div>
+      <p class="benchmark-table-note">Medians summarize 10 paired samples. The artifacts retain aggregate statistics, 5/5 order counts, bootstrap intervals, host fields, requests, and content hashes. They do not retain individual timing values or order vectors.</p>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="claims-title">
+      <div class="db-section-heading">
+        <div><span class="eyebrow">Claim boundary</span><h2 id="claims-title">Separate observations, possible causes, and unmeasured behavior.</h2></div>
+        <p>This section states what the campaign established and what it did not measure.</p>
+      </div>
+      <div class="benchmark-claim-grid">
+        <article class="claim-evidence"><span>Observed</span><h3>Flyology.DB had lower median latency in selected small-commit comparisons.</h3><p>After each measured workload, each adapter closed and reopened its database and read every expected key-value entry.</p></article>
+        <article class="claim-inference"><span>Possible cause</span><h3>The results are consistent with fixed per-transaction costs.</h3><p>The Flyology.DB advantage falls as each transaction carries more mutations. The campaign did not profile internal work.</p></article>
+        <article class="claim-unknown"><span>Not measured</span><h3>The campaign does not measure production workloads.</h3><p>It does not test concurrency, tail latency, CPU, memory, real networks, failure injection, or power loss.</p></article>
+      </div>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="limits-title">
+      <div class="db-section-heading">
+        <div><span class="eyebrow">Limits</span><h2 id="limits-title">What these comparisons do not establish.</h2></div>
+        <p>Read these limits together. Each one narrows the claims on this page.</p>
+      </div>
+      <ul class="benchmark-limit-list">
+        <li>One writer uses generated keys and values in a fresh database for every sample.</li>
+        <li>The measured workload contains no reads, scans, concurrent clients, or accumulated maintenance backlog.</li>
+        <li>The RustFS lane uses loopback networking, not a production network.</li>
+        <li>The CPU admission gate runs before sampling. It does not measure I/O, thermal, frequency, interrupt, or mid-sample interference.</li>
+        <li>Each pair retains aggregate statistics from 10 samples. It does not retain individual timing observations.</li>
+        <li>Close and reopen verify bytes after normal execution. The campaign does not inject a crash or power loss.</li>
+      </ul>
     </section>
 
     <section class="db-section page-shell" aria-labelledby="participants-title">
-      <div class="db-section-heading"><div><span class="eyebrow">Participants and infrastructure</span><h2 id="participants-title">What each name means.</h2></div><p>An embedded database or storage engine runs as a library inside the application process. Flyology.DB is a database; SlateDB and TidesDB are storage engines. Flyology Object Storage and RustFS provide storage beneath them.</p></div>
+      <div class="db-section-heading">
+        <div><span class="eyebrow">Participants</span><h2 id="participants-title">What each engine actually is.</h2></div>
+        <p>Flyology Object Storage and RustFS are infrastructure. They are not extra database competitors.</p>
+      </div>
       <dl class="benchmark-provenance">
-        <div><dt>Flyology.DB</dt><dd>An experimental embedded transactional key-value database for Ada. It maintains the transaction log, column families, snapshots, and log-structured merge-tree (LSM) checkpoints. This campaign connects the same engine to either local Files or remote S3-compatible object storage.</dd></div>
-        <div><dt><a href="https://github.com/slatedb/slatedb">SlateDB</a></dt><dd>An embedded Rust LSM storage engine designed around object storage. It batches writes into immutable sorted tables. The campaign uses its local-filesystem adapter with fsync for the local lane and its AWS object-storage client for RustFS.</dd></div>
-        <div><dt><a href="https://tidesdb.com/getting-started/how-does-tidesdb-work/">TidesDB</a></dt><dd>An embedded C key-value engine with transactions, column families, a write-ahead log, and an LSM tree. The local lane uses full WAL synchronization. The pinned remote path is excluded because it does not preserve the same failure contract.</dd></div>
-        <div><dt><a href="https://github.com/flyology-ada/flyology-object-storage">Flyology Object Storage</a></dt><dd>The provider library beneath Flyology.DB, not another database. It gives the engine one object API for local Files and authenticated S3-compatible storage while Flyology.DB retains transaction and publication policy.</dd></div>
-        <div><dt><a href="https://docs.rustfs.com/en/developer/sdk">RustFS</a></dt><dd>The S3-compatible object-storage server used as the common remote backend, not a database engine. Both eligible remote participants talk to the same pinned RustFS container over loopback.</dd></div>
+        <div><dt>Flyology.DB</dt><dd>An experimental embedded transactional key-value database for Ada. It owns transactions, column families, the global commit sequence, checkpoints, and conditional publication. Local tests use Flyology Object Storage Files. Remote tests use its S3-compatible provider.</dd></div>
+        <div><dt><a href="https://github.com/slatedb/slatedb">SlateDB</a></dt><dd>An embedded Rust storage engine designed for object storage. Its group-commit flush interval is 100 ms by default. The panel keeps that default and adds a separate 1 ms sensitivity variant. Neither variant is presented as a universal optimum.</dd></div>
+        <div><dt><a href="https://tidesdb.com/getting-started/how-does-tidesdb-work/">TidesDB</a></dt><dd>An embedded C key-value engine with transactions, column families, a write-ahead log, and an LSM tree. The local lane requests full write-ahead-log synchronization. The remote lane excludes its pinned S3 path because that path does not preserve the same upload-failure contract.</dd></div>
+        <div><dt><a href="https://github.com/flyology-ada/flyology-object-storage">Flyology Object Storage</a></dt><dd>The provider library under Flyology.DB. It supplies Files and S3-compatible object operations. Flyology.DB retains transaction, publication, and recovery policy.</dd></div>
+        <div><dt><a href="https://docs.rustfs.com/en/developer/sdk">RustFS</a></dt><dd>The pinned S3-compatible server used for the remote lane. Eligible participants used the same loopback server and isolated key namespaces.</dd></div>
       </dl>
     </section>
 
-    <section class="db-section page-shell" aria-labelledby="local-lane">
-      <div class="db-section-heading"><div><span class="eyebrow">Panel 1</span><h2 id="local-lane">Local durable commit</h2></div><p>This lane compares one mutation per transaction on one writer. Each success includes the participant's qualified local durability barrier. A later reopen verifies every value outside the timed region.</p></div>
-      <div class="benchmark-table-wrap"><table class="benchmark-table"><thead><tr><th>Engine</th><th>Storage profile</th><th>Eligibility</th><th>Median durable commits/s</th></tr></thead><tbody><tr><th scope="row">Flyology.DB</th><td>Flyology Object Storage Files with power-loss-durable commit policy</td><td><span class="benchmark-state eligible">Eligible</span></td><td><strong class="benchmark-number">1,140.6</strong><span class="benchmark-range">1,025.4–1,187.1 · 0.88 ms/commit</span></td></tr><tr><th scope="row">SlateDB</th><td><code>object_store</code> LocalFileSystem with fsync enabled</td><td><span class="benchmark-state eligible">Eligible</span></td><td><strong class="benchmark-number">9.82</strong><span class="benchmark-range">9.81–9.82 · 101.85 ms/commit</span></td></tr><tr><th scope="row">TidesDB</th><td>Unified WAL and memtable with full sync and no compression</td><td><span class="benchmark-state eligible">Eligible</span></td><td><strong class="benchmark-number">245.8</strong><span class="benchmark-range">227.1–249.9 · 4.07 ms/commit</span></td></tr></tbody></table></div>
-      <p class="benchmark-source-links"><a href="https://github.com/flyology-ada/flyology-db/blob/main/benchmarks/comparison/results/local-durable-low-power.json">Inspect the local raw samples</a><span><code>sha256:db5c4fa4…f948053b</code></span></p>
-    </section>
-
-    <section class="db-section page-shell" aria-labelledby="remote-lane">
-      <div class="db-section-heading"><div><span class="eyebrow">Panel 2</span><h2 id="remote-lane">Remote durable commit on RustFS</h2></div><p>Every eligible participant uses the same pinned RustFS image on loopback. A successful sample must include the engine's documented remote-durability barrier, not only submission or immediate visibility.</p></div>
-      <div class="benchmark-table-wrap"><table class="benchmark-table"><thead><tr><th>Engine</th><th>Client path</th><th>Eligibility</th><th>Median durable commits/s</th></tr></thead><tbody><tr><th scope="row">Flyology.DB</th><td>Indexed <code>flyology_object_storage=0.1.0-dev</code> client</td><td><span class="benchmark-state eligible">Eligible</span></td><td><strong class="benchmark-number">359.1</strong><span class="benchmark-range">339.0–374.1 · 2.78 ms/commit</span></td></tr><tr><th scope="row">SlateDB</th><td><code>object_store</code> AWS client with awaited durable writes and WAL enabled</td><td><span class="benchmark-state eligible">Eligible</span></td><td><strong class="benchmark-number">9.82</strong><span class="benchmark-range">9.81–9.83 · 101.87 ms/commit</span></td></tr><tr><th scope="row">TidesDB</th><td>Pinned TidesDB S3 path</td><td><span class="benchmark-state unsupported">Unsupported</span></td><td>Not compared</td></tr></tbody></table></div>
-      <p class="benchmark-exclusion"><strong>Why TidesDB has no remote result:</strong> the pinned TidesDB implementation can ignore object-store WAL upload failures. A throughput number from that path would not represent the same durable outcome.</p>
-      <p class="benchmark-source-links"><a href="https://github.com/flyology-ada/flyology-db/blob/main/benchmarks/comparison/results/remote-rustfs-low-power.json">Inspect the RustFS raw samples</a><span><code>sha256:94f91ec6…a2f4a4f</code></span></p>
-    </section>
-
     <section class="benchmark-method" aria-labelledby="method-title">
-      <div class="page-shell benchmark-method-inner"><div><span class="eyebrow">Measurement contract</span><h2 id="method-title">A result must carry its evidence.</h2><p>The panel accepts a campaign only when its retained artifact contains every required field. These fields identify sources, build details, storage, workload, host, power profile, raw samples, errors, and checksums.</p></div><ol><li><strong>Prove eligibility</strong><span>Run the participant's maintained correctness gate before timing.</span></li><li><strong>Match the environment</strong><span>Measure every comparison on one host and one detectable power profile.</span></li><li><strong>Retain raw work</strong><span>Keep every repetition, elapsed time, byte count, error count, and state checksum.</span></li><li><strong>Validate the artifact</strong><span>Reject unsupported cells, incomplete provenance, or summaries that do not match samples.</span></li></ol></div>
+      <div class="page-shell benchmark-method-inner">
+        <div><span class="eyebrow">Method</span><h2 id="method-title">The primary timer excludes setup and verification.</h2><p>The benchmark measures transaction work, not process launch. All three engine adapters execute inside the benchmark process. SlateDB crosses a narrow Rust C ABI. Flyology.DB and TidesDB use direct Ada bindings.</p></div>
+        <ol>
+          <li><strong>Pass the CPU admission gate</strong><span>Before each pair, <code>flyology_bench</code> requires two continuous seconds at or below 25% average CPU and 60% on the busiest logical CPU.</span></li>
+          <li><strong>Interleave each pair</strong><span>Ten samples use deterministic balanced order: five start with Flyology.DB and five start with the contender.</span></li>
+          <li><strong>Measure durable work</strong><span>The primary timer covers begin, every put, and the participant's durable completion. Setup and verification stay outside.</span></li>
+          <li><strong>Reopen and verify</strong><span>Each adapter closes, reopens, and compares every expected key and value byte-for-byte.</span></li>
+          <li><strong>Seal immediately</strong><span>Each pair retains its request, comparison JSON, metrics NDJSON, content hashes, and hashed campaign identity.</span></li>
+        </ol>
+      </div>
     </section>
 
-    <section class="db-section page-shell" aria-labelledby="workload-title">
-      <div class="db-section-heading"><div><span class="eyebrow">Shared workload</span><h2 id="workload-title">One durable mutation, measured the same way.</h2></div><p>Each operation begins one transaction, writes one unique 16-byte key and 1,024-byte value, and waits for the lane's durable commit result. Creation and full close, reopen, read, and SHA-256 verification stay outside the timer.</p></div>
-      <dl class="benchmark-provenance"><div><dt>Writer geometry</dt><dd>One writer, one mutation per transaction, one fresh database per repetition</dd></div><div><dt>Timed region</dt><dd>Begin, put, and durable commit</dd></div><div><dt>Campaign geometry</dt><dd>5 warmups, 30 measured commits, and 5 fresh-database repetitions per participant</dd></div><div><dt>Verification</dt><dd>Close, reopen, read all 35 keys, and require checksum <code>5dc2cc54…ed326482</code></dd></div><div><dt>Host profile</dt><dd>Apple M3 Max, 48 GiB, macOS 26.6.2, AC Power, High Power configured; retained <code>system_profiler</code> indicators conflicted</dd></div></dl>
+    <section class="db-section page-shell" aria-labelledby="workloads-title">
+      <div class="db-section-heading">
+        <div><span class="eyebrow">Workloads</span><h2 id="workloads-title">Keys, values, batches, and sustained writes.</h2></div>
+        <p>Every point uses a fresh database and one warm-up transaction. The workload then varies one reviewed dimension.</p>
+      </div>
+      <div class="benchmark-method-grid">
+        <article><h3>Key size</h3><p>8, 16, 64, and 256-byte keys with 1 KiB values and one mutation per transaction.</p></article>
+        <article><h3>Value size</h3><p>64 B, 1 KiB, 16 KiB, and 64 KiB values with 16-byte keys and one mutation per transaction.</p></article>
+        <article><h3>Batch size</h3><p>1, 16, 64, and 256 mutations in one transaction. Every key is unique.</p></article>
+        <article><h3>Sustained writes</h3><p>35 transactions of 256 mutations: 8,960 key-value writes. The final reopen verifies the complete state.</p></article>
+      </div>
+      <div class="boundary-note"><strong>Power-profile disclosure</strong><p>The operator reported selecting macOS High Power while connected to AC. Both campaign artifacts record the detector result <code>low-power</code>. Because these records conflict, treat the host power mode as unknown.</p></div>
     </section>
 
-    <section class="db-section page-shell" aria-labelledby="provenance-title">
-      <div class="db-section-heading"><div><span class="eyebrow">Pinned inputs</span><h2 id="provenance-title">Source identities stay visible.</h2></div><p>The campaign materializes Flyology Object Storage from the Flyology Alire index, then pins those fetched bytes inside the benchmark crate. Each result records the resolved source commit and exact Alire-index commit.</p></div>
-      <dl class="benchmark-provenance"><div><dt>Flyology Object Storage</dt><dd><code>0.1.0-dev</code> from source commit <code>5eaf79cf12358c1402b5b7d7ed0a6ec74df6a628</code></dd></div><div><dt>Flyology Alire index</dt><dd><code>122abd7e6a9fd88a451e2224a8aae2192d226321</code></dd></div><div><dt>SlateDB</dt><dd><code>e0161973d8d7ffdede7c44725729838811674e99</code></dd></div><div><dt>TidesDB</dt><dd><code>23a67a6531bc6c0b537d3696758c7879586dcfce</code></dd></div><div><dt>RustFS</dt><dd><code>ghcr.io/rustfs/rustfs@sha256:800cf3f352a0a27e3275ca854a51f0027975d7acc7a0d52089a35bcc9fcbf0b5</code></dd></div></dl>
-      <p class="benchmark-source-links"><a href="https://github.com/flyology-ada/flyology-db/tree/main/benchmarks/comparison">Read the workload, contract, and validator</a><a href="../support/">Review support boundaries</a></p>
+    <section class="db-section page-shell" aria-labelledby="reproduce-title">
+      <div class="db-section-heading">
+        <div><span class="eyebrow">Reproduce</span><h2 id="reproduce-title">Download and reproduce the retained campaigns.</h2></div>
+        <p>First follow the <a href="https://github.com/flyology-ada/flyology-db/blob/main/benchmarks/comparison/README.md">benchmark build and dependency prerequisites</a>. Each command below creates an absent scratch output. Resume mode is only for an incomplete sealed campaign.</p>
+      </div>
+      <details class="benchmark-command"><summary>Local campaign command</summary><pre><code>benchmark_root=$(mktemp -d)
+python3 benchmarks/comparison/run_realistic_campaign.py \
+  --lane local \
+  --output "$benchmark_root/local.json"</code></pre></details>
+      <details class="benchmark-command"><summary>RustFS campaign command</summary><pre><code>benchmark_root=$(mktemp -d)
+FLYOLOGY_DB_BENCHMARK_OUTPUT="$benchmark_root/rustfs.json" \
+FLYOLOGY_S3_SERVER_RUNNER="$PWD/benchmarks/comparison/run_realistic_rustfs.py" \
+  ./.deps/flyology-object-storage/tests/scripts/test-rustfs.sh</code></pre></details>
+      <dl class="benchmark-provenance">
+        <div><dt>Local aggregate</dt><dd><a href="https://github.com/flyology-ada/flyology-db/blob/main/benchmarks/comparison/results/publishable-local.json"><code>publishable-local.json</code></a><br><code data-artifact-hash="local">loading…</code></dd></div>
+        <div><dt>RustFS aggregate</dt><dd><a href="https://github.com/flyology-ada/flyology-db/blob/main/benchmarks/comparison/results/publishable-rustfs-v2.json"><code>publishable-rustfs-v2.json</code></a><br><code data-artifact-hash="rustfs">loading…</code></dd></div>
+        <div><dt>Local collection snapshot</dt><dd><code data-artifact-provenance="local">loading…</code></dd></div>
+        <div><dt>RustFS collection snapshot</dt><dd><code data-artifact-provenance="rustfs">loading…</code></dd></div>
+        <div><dt>RustFS image</dt><dd><code>ghcr.io/rustfs/rustfs@sha256:800cf3f352a0a27e3275ca854a51f0027975d7acc7a0d52089a35bcc9fcbf0b5</code></dd></div>
+        <div><dt>Sampling</dt><dd>10 paired samples, balanced 5/5 order, 2,000 paired bootstrap resamples, 95% interval</dd></div>
+      </dl>
+    </section>
+
+    <section class="db-section page-shell" aria-labelledby="source-title">
+      <div class="db-section-heading">
+        <div><span class="eyebrow">Current harness source</span><h2 id="source-title">Inspect each durable transaction implementation.</h2></div>
+        <p>These excerpts show the current reviewed adapter code, not the exact historical bytes used by both retained campaigns. The campaign artifacts retain their collection-time source and executable hashes. If a marker is absent, duplicated, or outside the repository, the build fails.</p>
+      </div>
+      <div class="benchmark-source-grid">
+        <details class="benchmark-source-card" open><summary>Flyology.DB · Ada</summary><p data-benchmark-source-meta>Loading source identity…</p><pre><code data-benchmark-source="flyology">Loading exact source…</code></pre></details>
+        <details class="benchmark-source-card"><summary>TidesDB · Ada and C ABI</summary><p data-benchmark-source-meta>Loading source identity…</p><pre><code data-benchmark-source="tidesdb">Loading exact source…</code></pre></details>
+        <details class="benchmark-source-card"><summary>SlateDB · Rust C ABI</summary><p data-benchmark-source-meta>Loading source identity…</p><pre><code data-benchmark-source="slatedb">Loading exact source…</code></pre></details>
+      </div>
+      <p class="benchmark-source-links"><a href="https://github.com/flyology-ada/flyology-db/tree/main/benchmarks/comparison">Read the complete benchmark implementation</a><a href="../support/">Review product boundaries</a></p>
     </section>
   </main>
-  <footer class="site-footer"><div class="footer-inner"><span>Benchmark results describe one retained campaign, not portable product performance.</span><div class="footer-links"><a href="../guide/">Guide</a><a href="../architecture/">Architecture</a><a href="../support/">Support</a><a href="./">Benchmarks</a><a href="../api/">API</a></div></div></footer>
+  <footer class="site-footer"><div class="footer-inner"><span>Benchmark evidence describes two retained campaigns, not portable product performance.</span><div class="footer-links"><a href="../guide/">Guide</a><a href="../architecture/">Architecture</a><a href="../support/">Support</a><a href="./">Benchmarks</a><a href="../api/">API</a></div></div></footer>
 </body>
 </html>

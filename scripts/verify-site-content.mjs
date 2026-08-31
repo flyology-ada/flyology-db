@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 const siteRoot = resolve(process.argv[2]);
 const repositoryRoot = process.cwd();
@@ -26,6 +27,7 @@ const routes = [
   "/guide/storage-limits-and-ownership/",
   "/architecture/",
   "/support/",
+  "/benchmarks/",
   "/api/",
 ];
 for (const route of routes) {
@@ -118,5 +120,51 @@ for (const htmlPath of await htmlFilesUnder(siteRoot)) {
 
 if (exampleCount === 0) throw new Error("site contains no maintained executable Ada example regions");
 
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+const benchmarkDataPath = join(siteRoot, "assets/data/benchmark-matrix.json");
+const benchmarkData = JSON.parse(await readFile(benchmarkDataPath, "utf8"));
+if (
+  benchmarkData.schema_version !== "flyology.db.benchmark.site.v1"
+  || benchmarkData.artifacts?.local?.records?.length !== 33
+  || benchmarkData.artifacts?.rustfs?.records?.length !== 8
+) {
+  throw new Error("built benchmark data has an unexpected schema or comparison count");
+}
+
+for (const [lane, filename] of [
+  ["local", "publishable-local.json"],
+  ["rustfs", "publishable-rustfs-v2.json"],
+]) {
+  const aggregate = await readFile(join(repositoryRoot, "benchmarks/comparison/results", filename));
+  if (sha256(aggregate) !== benchmarkData.artifacts[lane].sha256) {
+    throw new Error(`built benchmark ${lane} aggregate hash differs from repository evidence`);
+  }
+}
+
+for (const [name, sourceRecord] of Object.entries(benchmarkData.sources)) {
+  const sourcePath = resolve(repositoryRoot, sourceRecord.path);
+  const fromRoot = relative(repositoryRoot, sourcePath);
+  if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) {
+    throw new Error(`benchmark source escapes repository: ${sourceRecord.path}`);
+  }
+  const marker = sourceRecord.language === "ada" ? "-- " : "//";
+  const lines = (await readFile(sourcePath, "utf8")).replaceAll("\r\n", "\n").split("\n");
+  const start = `${marker} website-benchmark:start ${sourceRecord.region}`;
+  const end = `${marker} website-benchmark:end ${sourceRecord.region}`;
+  const starts = lines.flatMap((line, index) => line.trimStart() === start ? [index] : []);
+  const ends = lines.flatMap((line, index) => line.trimStart() === end ? [index] : []);
+  if (starts.length !== 1 || ends.length !== 1 || starts[0] >= ends[0]) {
+    throw new Error(`benchmark source ${name} does not have one ordered source region`);
+  }
+  const expected = lines.slice(starts[0] + 1, ends[0]).join("\n");
+  if (sourceRecord.code !== expected || sourceRecord.sha256 !== sha256(expected)) {
+    throw new Error(`benchmark source ${name} differs from its maintained adapter`);
+  }
+}
+
 console.log(`Verified db.flyology.org routes and ${boundaryPhrases.length} support boundaries.`);
 console.log(`Verified ${exampleCount} maintained executable Ada example region(s).`);
+console.log("Verified 41 sealed benchmark comparisons and 3 exact timed source regions.");

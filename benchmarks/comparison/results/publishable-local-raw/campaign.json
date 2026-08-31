@@ -1,0 +1,159 @@
+{
+  "schema_version": "flyology.db.benchmark.campaign.v1",
+  "created_at_utc": "2026-08-31T00:25:34.081713+00:00",
+  "identity_sha256": "63a68ab1c0fc88e6088d08d43098997db5bfb54ab2dcc0ff04384543b4d28361",
+  "identity": {
+    "lane": "local",
+    "host": {
+      "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "cpu": "Apple M3 Max",
+      "memory_bytes": 51539607552,
+      "power": {
+        "detector": "system_profiler",
+        "os": "macos",
+        "power_source": "AC Power",
+        "profile": "low-power",
+        "detector_exit_status": "10"
+      }
+    },
+    "power": {
+      "detector": "system_profiler",
+      "os": "macos",
+      "power_source": "AC Power",
+      "profile": "low-power",
+      "detector_exit_status": "10"
+    },
+    "method": {
+      "framework": "flyology_bench 0.1.1-dev",
+      "samples": 10,
+      "bootstrap_resamples": 2000,
+      "confidence_percent": 95,
+      "cpu_quiescence": {
+        "maximum_average_percent": 25,
+        "maximum_core_percent": 60,
+        "stable_seconds": 2,
+        "timeout_seconds": 300
+      },
+      "timed_region": "begin, all puts, durable commit outcome",
+      "verification": "close, reopen, byte-compare every key, participant SHA-256, harness SHA-256",
+      "comparison_batching": "shared logical iteration count with balanced pair order",
+      "resumption": "Each pair is sealed immediately with its request, collection-time identity, and raw hashes. A resumed campaign accepts only byte-identical sealed pairs under the same campaign identity.",
+      "in_process_adapter_note": "Each batch uses an in-process engine adapter and a fresh database. Setup, close, reopen, and verification are visible as harness wall time but excluded from primary_time."
+    },
+    "provenance": {
+      "repository_commit": "2f339a1e0449f3828f59560052dfd2b2fb7f71e7",
+      "repository_diff_sha256": "224e59979e29be81e62332dd8eb6f5ea5de8af77528872e20a334873a6e04b59",
+      "flyology_bench_version": "0.1.1-dev",
+      "flyology_bench_commit": "bd95746d5c9c31f5b41b611db9ba82a016ceaaa4",
+      "flyology_bench_lock_sha256": "fbcd9c2857f522af2d8820de06ebc5f34a75e50bb1d020dff33ea4d8a6f53e17",
+      "flyology_db_adapter_spec_sha256": "e95e96f1d0c905ba996d3c70caa17dc5fb4aff56fa90f5cfedf64d49b918df98",
+      "flyology_db_adapter_body_sha256": "835cda4c2cc98b625a08ad8fab936684edfb38b257f8661cb2110176b62b11ac",
+      "panel_adapter_sha256": "54791e95f2961720a5878ce81bddb22b18bb6a2b6b0c2a637d3992d9cd496307",
+      "panel_executable_sha256": "a8bb9acf59efa24388be3bb5195a61bb2b5b9988b645731e1744f84b384b82df",
+      "campaign_driver_sha256": "24d121f2e334f3a3e90da1dcf3052c0b3f383537bdbaa52612ecfa762458c8f8",
+      "slatedb_adapter_sha256": "785adf5bb56a3b7981d8cfcc0c8783e8d05537d651c54603a43085da5be3e970",
+      "slatedb_lock_sha256": "f1389cd99cc640eecee9f2419ba79a0288fa145bc1c30f182dbbe6b0d7b809ec",
+      "tidesdb_adapter_spec_sha256": "795574bdd4cc5dee51d4e8422554559c2ad4e5a17d870515a1acf11645a86b3c",
+      "tidesdb_adapter_body_sha256": "cfa9bca9de1f82004ffdae713346d867fd14c7ce8a92005ad3b739126dd36f27",
+      "slatedb_commit": "e0161973d8d7ffdede7c44725729838811674e99",
+      "tidesdb_commit": "23a67a6531bc6c0b537d3696758c7879586dcfce",
+      "object_storage_commit": "f65afbf28108bb9d81fac6dc15496857dc710796"
+    },
+    "plan": {
+      "pairs": [
+        [
+          "flyology-db-files",
+          "tidesdb-full-sync"
+        ],
+        [
+          "flyology-db-files",
+          "slatedb-default"
+        ],
+        [
+          "flyology-db-files",
+          "slatedb-1ms"
+        ]
+      ],
+      "workloads": [
+        {
+          "id": "baseline",
+          "key_bytes": 16,
+          "value_bytes": 1024,
+          "mutations": 1,
+          "transactions": 1
+        },
+        {
+          "id": "key-8",
+          "key_bytes": 8,
+          "value_bytes": 1024,
+          "mutations": 1,
+          "transactions": 1
+        },
+        {
+          "id": "key-64",
+          "key_bytes": 64,
+          "value_bytes": 1024,
+          "mutations": 1,
+          "transactions": 1
+        },
+        {
+          "id": "key-256",
+          "key_bytes": 256,
+          "value_bytes": 1024,
+          "mutations": 1,
+          "transactions": 1
+        },
+        {
+          "id": "value-64",
+          "key_bytes": 16,
+          "value_bytes": 64,
+          "mutations": 1,
+          "transactions": 1
+        },
+        {
+          "id": "value-16384",
+          "key_bytes": 16,
+          "value_bytes": 16384,
+          "mutations": 1,
+          "transactions": 1
+        },
+        {
+          "id": "value-65536",
+          "key_bytes": 16,
+          "value_bytes": 65536,
+          "mutations": 1,
+          "transactions": 1
+        },
+        {
+          "id": "batch-16",
+          "key_bytes": 16,
+          "value_bytes": 1024,
+          "mutations": 16,
+          "transactions": 1
+        },
+        {
+          "id": "batch-64",
+          "key_bytes": 16,
+          "value_bytes": 1024,
+          "mutations": 64,
+          "transactions": 1
+        },
+        {
+          "id": "batch-256",
+          "key_bytes": 16,
+          "value_bytes": 1024,
+          "mutations": 256,
+          "transactions": 1
+        },
+        {
+          "id": "sustained-8960",
+          "key_bytes": 16,
+          "value_bytes": 1024,
+          "mutations": 256,
+          "transactions": 35
+        }
+      ]
+    }
+  }
+}

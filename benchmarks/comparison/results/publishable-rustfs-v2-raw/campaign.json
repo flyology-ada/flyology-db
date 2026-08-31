@@ -1,0 +1,111 @@
+{
+  "schema_version": "flyology.db.benchmark.campaign.v1",
+  "created_at_utc": "2026-08-31T01:11:43.843371+00:00",
+  "identity_sha256": "c9bb09012bf44a4ffb378cde6b32dd4109b302d7bf373ceceb1a4f871411d135",
+  "identity": {
+    "lane": "rustfs",
+    "host": {
+      "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "cpu": "Apple M3 Max",
+      "memory_bytes": 51539607552,
+      "power": {
+        "detector": "system_profiler",
+        "os": "macos",
+        "power_source": "AC Power",
+        "profile": "low-power",
+        "detector_exit_status": "10"
+      }
+    },
+    "power": {
+      "detector": "system_profiler",
+      "os": "macos",
+      "power_source": "AC Power",
+      "profile": "low-power",
+      "detector_exit_status": "10"
+    },
+    "method": {
+      "framework": "flyology_bench 0.1.1-dev",
+      "samples": 10,
+      "bootstrap_resamples": 2000,
+      "confidence_percent": 95,
+      "cpu_quiescence": {
+        "maximum_average_percent": 25,
+        "maximum_core_percent": 60,
+        "stable_seconds": 2,
+        "timeout_seconds": 300
+      },
+      "timed_region": "begin, all puts, durable commit outcome",
+      "verification": "close, reopen, byte-compare every key, participant SHA-256, harness SHA-256",
+      "comparison_batching": "shared logical iteration count with balanced pair order",
+      "resumption": "Each pair is sealed immediately with its request, collection-time identity, and raw hashes. A resumed campaign accepts only byte-identical sealed pairs under the same campaign identity.",
+      "in_process_adapter_note": "Each batch uses an in-process engine adapter and a fresh database. Setup, close, reopen, and verification are visible as harness wall time but excluded from primary_time."
+    },
+    "provenance": {
+      "repository_commit": "2f339a1e0449f3828f59560052dfd2b2fb7f71e7",
+      "repository_diff_sha256": "224e59979e29be81e62332dd8eb6f5ea5de8af77528872e20a334873a6e04b59",
+      "flyology_bench_version": "0.1.1-dev",
+      "flyology_bench_commit": "bd95746d5c9c31f5b41b611db9ba82a016ceaaa4",
+      "flyology_bench_lock_sha256": "fbcd9c2857f522af2d8820de06ebc5f34a75e50bb1d020dff33ea4d8a6f53e17",
+      "flyology_db_adapter_spec_sha256": "e95e96f1d0c905ba996d3c70caa17dc5fb4aff56fa90f5cfedf64d49b918df98",
+      "flyology_db_adapter_body_sha256": "835cda4c2cc98b625a08ad8fab936684edfb38b257f8661cb2110176b62b11ac",
+      "panel_adapter_sha256": "bc3a7a2ce6fda4bfc5babe459b603c408b63870fb63e240fc8aa867e2e0eb082",
+      "panel_executable_sha256": "6227091ef1f3affc9881f5bc6de216a241900100b22bc41981102c6508cb730b",
+      "campaign_driver_sha256": "a4aa6a0cfa89e898cc67a521bdaefea2e2d98cb8d4b15ad15697eb6de661f1fe",
+      "slatedb_adapter_sha256": "785adf5bb56a3b7981d8cfcc0c8783e8d05537d651c54603a43085da5be3e970",
+      "slatedb_lock_sha256": "f1389cd99cc640eecee9f2419ba79a0288fa145bc1c30f182dbbe6b0d7b809ec",
+      "tidesdb_adapter_spec_sha256": "795574bdd4cc5dee51d4e8422554559c2ad4e5a17d870515a1acf11645a86b3c",
+      "tidesdb_adapter_body_sha256": "cfa9bca9de1f82004ffdae713346d867fd14c7ce8a92005ad3b739126dd36f27",
+      "slatedb_commit": "e0161973d8d7ffdede7c44725729838811674e99",
+      "tidesdb_commit": "23a67a6531bc6c0b537d3696758c7879586dcfce",
+      "object_storage_commit": "f65afbf28108bb9d81fac6dc15496857dc710796"
+    },
+    "remote_server": {
+      "implementation": "rustfs",
+      "revision": "ghcr.io/rustfs/rustfs@sha256:800cf3f352a0a27e3275ca854a51f0027975d7acc7a0d52089a35bcc9fcbf0b5",
+      "transport": "loopback-http"
+    },
+    "plan": {
+      "pairs": [
+        [
+          "flyology-db-rustfs",
+          "slatedb-rustfs-default"
+        ],
+        [
+          "flyology-db-rustfs",
+          "slatedb-rustfs-1ms"
+        ]
+      ],
+      "workloads": [
+        {
+          "id": "baseline",
+          "key_bytes": 16,
+          "value_bytes": 1024,
+          "mutations": 1,
+          "transactions": 1
+        },
+        {
+          "id": "value-16384",
+          "key_bytes": 16,
+          "value_bytes": 16384,
+          "mutations": 1,
+          "transactions": 1
+        },
+        {
+          "id": "batch-16",
+          "key_bytes": 16,
+          "value_bytes": 1024,
+          "mutations": 16,
+          "transactions": 1
+        },
+        {
+          "id": "sustained-8960",
+          "key_bytes": 16,
+          "value_bytes": 1024,
+          "mutations": 256,
+          "transactions": 35
+        }
+      ]
+    }
+  }
+}

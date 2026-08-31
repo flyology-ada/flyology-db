@@ -1,0 +1,32 @@
+{
+  "schema_version": "flyology.db.benchmark.pair-request.v1",
+  "campaign_identity_sha256": "63a68ab1c0fc88e6088d08d43098997db5bfb54ab2dcc0ff04384543b4d28361",
+  "identity": "local--key-8--flyology-db-files--slatedb-1ms",
+  "workload": {
+    "id": "key-8",
+    "key_bytes": 8,
+    "value_bytes": 1024,
+    "mutations": 1,
+    "transactions": 1
+  },
+  "reference": "flyology-db-files",
+  "contender": "slatedb-1ms",
+  "power": {
+    "detector": "system_profiler",
+    "os": "macos",
+    "power_source": "AC Power",
+    "profile": "low-power",
+    "detector_exit_status": "10"
+  },
+  "command_argv": [
+    "/Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/bin/flyology_db_benchmark_panel",
+    "flyology-db-files",
+    "slatedb-1ms",
+    "8",
+    "1024",
+    "1",
+    "1",
+    "/Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/publishable-local-raw/local--key-8--flyology-db-files--slatedb-1ms.json",
+    "/Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/publishable-local-raw/local--key-8--flyology-db-files--slatedb-1ms.metrics.ndjson"
+  ]
+}
