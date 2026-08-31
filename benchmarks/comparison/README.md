@@ -131,6 +131,50 @@ The EC2 instance, key pair, and security group are removed unless
 `--keep-instance` is explicit; if termination fails, access resources are
 retained and identified for manual recovery.
 
+Rerun a new authenticated source snapshot on a retained host without
+reprovisioning the instance or reformatting its local NVMe disk:
+
+```sh
+benchmarks/comparison/run-aws-nitro-campaign.sh rerun \
+  yrashk-inferal \
+  benchmarks/comparison/results/aws-nitro-20260831T035005Z \
+  --include-untracked path/to/intentional-source
+```
+
+The original evidence directory, its caller identity and instance inventory,
+and its mode-0600 PEM remain the host identity anchor. Current campaigns also
+retain the AWS key-pair identity and an AWS-console-authenticated SSH host key.
+For an older retained campaign, rerun resolves the unique live key by the
+evidenced name and PEM fingerprint and obtains the host key from authenticated
+EC2 console output. The AWS profile therefore needs `ec2:GetConsoleOutput` in
+addition to the documented launch and inspection permissions. Rerun
+reauthenticates the AWS account, instance, AMI, type, zone, public address,
+key, complete security-group shape, and evidenced tags. It never changes
+ingress, formats or mounts a disk, or mutates EC2 resources. Each invocation
+uses a unique source/evidence/scratch root under the mounted instance-store
+volume and takes a host-wide nonblocking campaign lock, so old evidence is not
+overwritten and concurrent measurements fail closed. Use `--include-untracked`
+once for each intentional untracked source path, just as for a new host.
+
+After a retained campaign is no longer needed, tear down its EC2 host and
+public IPv4 allocation using the authenticated `instance.json` in that
+campaign's evidence directory:
+
+```sh
+benchmarks/comparison/run-aws-nitro-campaign.sh teardown \
+  yrashk-inferal \
+  benchmarks/comparison/results/aws-nitro-20260831T035005Z
+```
+
+Teardown requires the retained instance inventory, caller identity, and PEM;
+current evidence also supplies the exact key-pair ID. It reauthenticates the
+instance, key pair, security group, campaign tags, and public IPv4 address
+before mutation. For legacy evidence it resolves the unique key by its
+evidenced name and PEM fingerprint. Terminating the instance releases an
+automatically assigned address; an evidenced Elastic IP is also released
+explicitly. The AWS key pair and security group are deleted after termination.
+Local evidence, including any retained PEM file, is preserved.
+
 The runners reject a detected reduced-performance profile. The explicit
 `--allow-reduced-performance` local option or
 `FLYOLOGY_DB_BENCHMARK_ALLOW_REDUCED=1` remote setting is reserved for a user-

@@ -32,6 +32,8 @@ formal/tla/states/
 *.dylib
 *.exe
 instance-key.pem
+/benchmarks/comparison/results/**/instance.json
+/benchmarks/comparison/results/**/instance-key.pem
 /benchmarks/comparison/results/aws-nitro-*/
 /benchmarks/comparison/results/current-local-raw/
 /benchmarks/comparison/results/publishable-rustfs-raw/
