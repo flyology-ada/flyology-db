@@ -9,7 +9,9 @@ import json
 import os
 import platform
 import subprocess
+import sys
 import tempfile
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,10 @@ PANEL = HERE / "bin" / "flyology_db_benchmark_panel"
 POWER_DETECTOR = (
     ROOT / ".agents" / "skills" / "performance-testing" / "scripts" / "check-power-profile.sh"
 )
+INDEXED_FOS = HERE / ".deps" / "flyology_object_storage_0.1.0_5eaf79cf"
+INDEXED_FOS_COMMIT = "5eaf79cf12358c1402b5b7d7ed0a6ec74df6a628"
+INDEXED_FOS_ORIGIN = "git+https://github.com/flyology-ada/flyology-object-storage.git"
+SOURCE_TREE_DIGEST = HERE / "aws" / "source-tree-digest.py"
 
 # These exact points are a benchmark fixture, not product limits. Each axis
 # changes one factor from baseline; sustained-8960 repeats the largest batch
@@ -86,6 +92,36 @@ def write_json_atomic(path: Path, value: Any) -> None:
     temporary_path.replace(path)
 
 
+def flyology_index_provenance() -> dict[str, str]:
+    rows = run(["alr", "index"]).splitlines()
+    matches = [row for row in rows if row.split()[1:2] == ["flyology"]]
+    if len(matches) != 1:
+        raise RuntimeError("configured Flyology Alire index is missing or ambiguous")
+    index_path = Path(matches[0].split()[-1])
+    status = run(["git", "-C", str(index_path), "status", "--short"]).strip()
+    if status:
+        raise RuntimeError("configured Flyology Alire index is dirty")
+    entry = (
+        index_path
+        / "index"
+        / "fl"
+        / "flyology_object_storage"
+        / "flyology_object_storage-0.1.0-dev.toml"
+    )
+    release = tomllib.loads(entry.read_text(encoding="utf-8"))
+    origin = release.get("origin", {})
+    if origin.get("commit") != INDEXED_FOS_COMMIT or origin.get("url") != INDEXED_FOS_ORIGIN:
+        raise RuntimeError("Flyology index Object Storage origin does not match the benchmark pin")
+    return {
+        "flyology_alire_index_commit": run(
+            ["git", "-C", str(index_path), "rev-parse", "HEAD"]
+        ).strip(),
+        "object_storage_index_entry_sha256": sha256(entry),
+        "object_storage_commit": origin["commit"],
+        "object_storage_origin": origin["url"],
+    }
+
+
 def power_profile() -> dict[str, str | None]:
     completed = subprocess.run(
         [str(POWER_DETECTOR)],
@@ -95,7 +131,9 @@ def power_profile() -> dict[str, str | None]:
         stderr=subprocess.STDOUT,
         check=False,
     )
-    if completed.returncode not in (0, 2, 10):
+    allow_reduced = os.environ.get("FLYOLOGY_DB_BENCHMARK_ALLOW_REDUCED") == "1"
+    accepted = (0, 2, 10) if allow_reduced else (0, 2)
+    if completed.returncode not in accepted:
         raise RuntimeError(
             f"power detector exited {completed.returncode}:\n{completed.stdout}"
         )
@@ -114,16 +152,32 @@ def power_profile() -> dict[str, str | None]:
 
 
 def host(power: dict[str, str | None]) -> dict[str, Any]:
+    if platform.system() == "Darwin":
+        cpu = run(["sysctl", "-n", "machdep.cpu.brand_string"]).strip()
+        memory_bytes = int(run(["sysctl", "-n", "hw.memsize"]).strip())
+    elif platform.system() == "Linux":
+        cpu_rows = {
+            line.split(":", 1)[1].strip()
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines()
+            if line.startswith("model name") and ":" in line
+        }
+        if len(cpu_rows) != 1:
+            raise RuntimeError("Linux CPU model is missing or ambiguous")
+        cpu = cpu_rows.pop()
+        memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    else:
+        raise RuntimeError(f"unsupported benchmark host {platform.system()}")
     return {
         "os": platform.platform(),
         "architecture": platform.machine(),
-        "cpu": run(["sysctl", "-n", "machdep.cpu.brand_string"]).strip(),
-        "memory_bytes": int(run(["sysctl", "-n", "hw.memsize"]).strip()),
+        "cpu": cpu,
+        "memory_bytes": memory_bytes,
         "power": power,
     }
 
 
 def provenance() -> dict[str, Any]:
+    index = flyology_index_provenance()
     return {
         "repository_commit": run(["git", "rev-parse", "HEAD"]).strip(),
         "repository_diff_sha256": hashlib.sha256(
@@ -151,8 +205,10 @@ def provenance() -> dict[str, Any]:
         ),
         "slatedb_commit": run(["git", "-C", str(ROOT / ".deps" / "slatedb"), "rev-parse", "HEAD"]).strip(),
         "tidesdb_commit": run(["git", "-C", str(ROOT / ".deps" / "tidesdb"), "rev-parse", "HEAD"]).strip(),
-        "object_storage_commit": run(
-            ["git", "-C", str(ROOT / ".deps" / "flyology-object-storage"), "rev-parse", "HEAD"]
+        **index,
+        "object_storage_manifest_sha256": sha256(INDEXED_FOS / "alire.toml"),
+        "object_storage_source_sha256": run(
+            [sys.executable, str(SOURCE_TREE_DIGEST), str(INDEXED_FOS)]
         ).strip(),
     }
 
@@ -422,9 +478,11 @@ def collect(lane: str, output: Path, resume: bool) -> None:
                 }
             )
 
+    detector_status = campaign["identity"]["host"]["power"]["detector_exit_status"]
+    classification = "exploratory" if detector_status == "2" else "directional"
     artifact = {
         "schema_version": "flyology.db.benchmark.matrix.v3",
-        "classification": "directional",
+        "classification": classification,
         "campaign_created_at_utc": campaign["created_at_utc"],
         "assembled_at_utc": datetime.now(timezone.utc).isoformat(),
         "lane": lane,

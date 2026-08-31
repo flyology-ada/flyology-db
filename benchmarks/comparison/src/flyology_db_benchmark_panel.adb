@@ -82,10 +82,15 @@ procedure Flyology_DB_Benchmark_Panel is
    end Expected_SHA;
 
    function Scratch_Path return String is
+      Root : constant String :=
+        (if Ada.Environment_Variables.Exists ("FLYOLOGY_DB_BENCH_SCRATCH_ROOT")
+         then Ada.Environment_Variables.Value ("FLYOLOGY_DB_BENCH_SCRATCH_ROOT")
+         else "/tmp");
    begin
       Sequence := Sequence + 1;
       return
-        "/tmp/flyology-db-bench."
+        Root
+        & "/flyology-db-bench."
         & Image (OS.Pid_To_Integer (OS.Current_Process_Id))
         & "."
         & Image (Sequence);

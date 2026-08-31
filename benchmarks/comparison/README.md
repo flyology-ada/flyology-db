@@ -109,7 +109,32 @@ python3 benchmarks/comparison/validate_result.py \
   benchmarks/comparison/results/remote-rustfs.json
 ```
 
+Provision a disposable AWS Nitro host, run the deterministic suite and local
+realistic matrix, download all evidence, and terminate the host:
+
+```sh
+benchmarks/comparison/run-aws-nitro-campaign.sh yrashk-inferal i4i.xlarge
+```
+
+The AWS profile and instance type are mandatory. The wrapper defaults to
+`us-west-2`, accepts `--region` and `--output`, uses Ubuntu 24.04 x86-64, and
+requires a Nitro instance with exactly one local NVMe instance-store device.
+Dirty tracked bytes are authenticated automatically. Each intentional
+untracked source path must be named with a separate `--include-untracked`;
+unexpected untracked work fails closed and result directories are never sent.
+It permits SSH only from the caller's current public IPv4 address. Alire,
+GNAT, GPRbuild, Rust, GCC, the exact indexed Object Storage source and Alire
+index, source, and dependencies are pinned or recorded in the downloaded
+evidence. Workload scratch data is routed to the admitted local NVMe device.
+The wrapper reports failure if evidence download or resource cleanup fails.
+The EC2 instance, key pair, and security group are removed unless
+`--keep-instance` is explicit; if termination fails, access resources are
+retained and identified for manual recovery.
+
 The runners reject a detected reduced-performance profile. The explicit
 `--allow-reduced-performance` local option or
 `FLYOLOGY_DB_BENCHMARK_ALLOW_REDUCED=1` remote setting is reserved for a user-
 approved directional campaign and records that profile in every result.
+An unclassifiable Linux profile is likewise recorded as exploratory evidence;
+it does not establish a publishable comparison under the maintained power-
+profile rule.

@@ -31,6 +31,10 @@ formal/tla/states/
 *.so
 *.dylib
 *.exe
+instance-key.pem
+/benchmarks/comparison/results/aws-nitro-*/
+/benchmarks/comparison/results/current-local-raw/
+/benchmarks/comparison/results/publishable-rustfs-raw/
 .DS_Store
 /obj/
 /lib/

@@ -30,18 +30,27 @@ cmake --build "$build/upstream" --clean-first --parallel
 
 case "$(uname -s)" in
   Darwin)
+    set --
     tidesdb_library="$build/upstream/libtidesdb.dylib"
     shim_library="$build/libflyology_tidesdb_oracle.dylib"
     shared_flag=-dynamiclib
     ;;
+  Linux)
+    # TidesDB's CMake target exports this definition for its public headers.
+    set -- -D_GNU_SOURCE
+    tidesdb_library="$build/upstream/libtidesdb.so"
+    shim_library="$build/libflyology_tidesdb_oracle.so"
+    shared_flag=-shared
+    ;;
   *)
+    set --
     tidesdb_library="$build/upstream/libtidesdb.so"
     shim_library="$build/libflyology_tidesdb_oracle.so"
     shared_flag=-shared
     ;;
 esac
 
-cc -std=c11 -O2 -fPIC -Wall -Wextra -Werror "$shared_flag" \
+cc "$@" -std=c11 -O2 -fPIC -Wall -Wextra -Werror "$shared_flag" \
   -I"$upstream/src" -I"$upstream/external" -I"$build/upstream" \
   "$adapter_root/oracle_shim.c" "$tidesdb_library" \
   -Wl,-rpath,"$build/upstream" -o "$shim_library"
