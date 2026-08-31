@@ -289,7 +289,7 @@ sha256sum "$power_detector" > "$evidence_root/power-profile-detector.sha256"
 lsblk -O -J > "$evidence_root/lsblk.json"
 lscpu -J > "$evidence_root/lscpu.json"
 
-./tests/scripts/test.sh
+FLYOLOGY_DB_FORCE_REBUILD=1 ./tests/scripts/test.sh
 printf '%s\n' 'Flyology.DB AWS deterministic suite passed' |
   tee "$evidence_root/deterministic-sentinel.txt"
 
@@ -341,10 +341,10 @@ mv "$indexed_fos" "$benchmark/.deps/"
 
 cargo build --manifest-path "$benchmark/slatedb/Cargo.toml" \
   --release --locked
-./oracles/adapters/tidesdb/scripts/build.sh
+FLYOLOGY_DB_FORCE_REBUILD=1 ./oracles/adapters/tidesdb/scripts/build.sh
 (
   cd "$benchmark"
-  alr build --release
+  alr build --release -- -f
 )
 
 export LD_LIBRARY_PATH="$benchmark/slatedb/target/release:\

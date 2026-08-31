@@ -4,11 +4,20 @@ set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 alr=$($project_root/scripts/find-alr.sh)
 
+build_crate()
+{
+  if [ "${FLYOLOGY_DB_FORCE_REBUILD:-0}" = 1 ]; then
+    "$alr" build -- -f
+  else
+    "$alr" build
+  fi
+}
+
 cd "$project_root"
-"$alr" build
+build_crate
 "$project_root/scripts/check-repository.sh"
 cd "$project_root/tests"
-"$alr" build
+build_crate
 ./bin/flyology-db-tests
 
 # The local authenticated client gate uses one ephemeral Flyology memory
@@ -32,7 +41,7 @@ cleanup_client_server() {
   esac
 }
 trap cleanup_client_server EXIT HUP INT TERM
-(cd "$client_server_dir" && "$alr" build)
+(cd "$client_server_dir" && build_crate)
 env \
   FLYOLOGY_OBJECT_STORAGE_BACKEND=memory \
   FLYOLOGY_ADMIN_CREDENTIALS_FILE="$client_server_root/admin.credentials" \

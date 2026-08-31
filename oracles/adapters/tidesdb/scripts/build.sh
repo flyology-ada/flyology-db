@@ -7,6 +7,13 @@ upstream="$repository_root/.deps/tidesdb"
 build="$adapter_root/build"
 expected=23a67a6531bc6c0b537d3696758c7879586dcfce
 
+if [ "${FLYOLOGY_DB_FORCE_REBUILD:-0}" = 1 ]
+then
+  expected_build="$repository_root/oracles/adapters/tidesdb/build"
+  test "$build" = "$expected_build"
+  rm -rf -- "$build"
+fi
+
 actual=$(git -C "$upstream" rev-parse HEAD)
 if test "$actual" != "$expected"
 then

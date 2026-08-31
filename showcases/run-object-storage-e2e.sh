@@ -18,5 +18,9 @@ case "$5" in
   *) echo "addressing style must be path or virtual-hosted" >&2; exit 2 ;;
 esac
 
-"$ALR" exec -- gprbuild -p -P "$SCRIPT_DIR/object_storage_e2e.gpr"
+GPRBUILD_ARGUMENTS=(-p -P "$SCRIPT_DIR/object_storage_e2e.gpr")
+if [ "${FLYOLOGY_DB_FORCE_REBUILD:-0}" = 1 ]; then
+  GPRBUILD_ARGUMENTS=(-f "${GPRBUILD_ARGUMENTS[@]}")
+fi
+"$ALR" exec -- gprbuild "${GPRBUILD_ARGUMENTS[@]}"
 "$SCRIPT_DIR/bin/flyology_db_object_storage_e2e" "$@"

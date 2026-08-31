@@ -14,5 +14,9 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-"$ALR" exec -- gprbuild -p -P "$SCRIPT_DIR/limited_e2e.gpr"
+GPRBUILD_ARGUMENTS=(-p -P "$SCRIPT_DIR/limited_e2e.gpr")
+if [ "${FLYOLOGY_DB_FORCE_REBUILD:-0}" = 1 ]; then
+  GPRBUILD_ARGUMENTS=(-f "${GPRBUILD_ARGUMENTS[@]}")
+fi
+"$ALR" exec -- gprbuild "${GPRBUILD_ARGUMENTS[@]}"
 "$SCRIPT_DIR/bin/flyology_db_limited_e2e" "$CAMPAIGN_ROOT"
