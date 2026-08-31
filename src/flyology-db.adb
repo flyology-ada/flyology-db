@@ -118,8 +118,6 @@ package body Flyology.DB is
    type Stored_Object_Kind is (Batch_Object, Manifest_Object, Run_Object, Head_Object);
 
    procedure Free_Shared_Image is new Ada.Unchecked_Deallocation (Shared_Image_Record, Shared_Image_Access);
-   procedure Free_Owned_Mutations is new
-     Ada.Unchecked_Deallocation (Owned_Mutation_Array, Owned_Mutation_Array_Access);
    procedure Free_Owned_Point_Read is new
      Ada.Unchecked_Deallocation (Owned_Point_Read, Owned_Point_Read_Access);
    procedure Free_Owned_Scan_Range is new
@@ -355,7 +353,6 @@ package body Flyology.DB is
             Scan.Next := null;
             Free_Owned_Scan_Range (Scan);
          end loop;
-         Free_Owned_Mutations (Arena.Mutations);
          Image_Accounting.Record_Arena_Release;
          Free_Transaction_Arena (Arena);
       end if;
@@ -11602,7 +11599,7 @@ package body Flyology.DB is
       Payload_Limit    : Interfaces.Unsigned_64;
       Point_Read_Limit : Interfaces.Unsigned_32;
       Scan_Range_Limit : Interfaces.Unsigned_32;
-      Mutations        : Owned_Mutation_Array_Access := null;
+      Arena            : Transaction_Arena_Access := null;
    begin
       Reset_Transaction (Txn);
       if Is_Zero (Transaction_ID) then
@@ -11630,10 +11627,9 @@ package body Flyology.DB is
          end if;
          Lease.State.Gate.Snapshot (Head, Generation, Uncertain, Fenced);
          Allocation_Faults.Check (Transaction_Arena_Allocation);
-         Mutations := new Owned_Mutation_Array (1 .. Natural (Mutation_Limit));
-         Txn.Owner.Arena :=
-           new Transaction_Arena'(Mutations => Mutations, Count => 0, Bytes_Used => 0, others => <>);
-         Mutations := null;
+         Arena := new Transaction_Arena (Natural (Mutation_Limit));
+         Txn.Owner.Arena := Arena;
+         Arena := null;
          Image_Accounting.Record_Arena_Allocation;
          Txn.Active := True;
          Txn.Database_ID := Head.Database_ID;
@@ -11646,7 +11642,7 @@ package body Flyology.DB is
       end if;
    exception
       when Storage_Error =>
-         Free_Owned_Mutations (Mutations);
+         Free_Transaction_Arena (Arena);
          Reset_Transaction (Txn);
          Result := Capacity_Exceeded;
    end Begin_Transaction;
@@ -11858,6 +11854,47 @@ package body Flyology.DB is
       end loop;
       return True;
    end Same_Owned_Key;
+
+   function Mutation_Bucket
+     (Arena : not null Transaction_Arena_Access; Item_Hash : Interfaces.Unsigned_64) return Positive is
+   begin
+      return
+        Arena.Mutation_Buckets'First
+        + Natural (Item_Hash mod Interfaces.Unsigned_64 (Arena.Mutation_Buckets'Length));
+   end Mutation_Bucket;
+
+   procedure Find_Owned_Mutation
+     (Arena     : not null Transaction_Arena_Access;
+      Family    : Column_Family_ID;
+      Item_Key  : Byte_Array;
+      Item_Hash : Interfaces.Unsigned_64;
+      Index     : out Natural;
+      Result    : out Outcome_Code)
+   is
+      Remaining : Natural := Arena.Count;
+   begin
+      if Arena.Count > Arena.Mutations'Length then
+         Index := 0;
+         Result := Invalid_State;
+         return;
+      end if;
+      Index := Arena.Mutation_Buckets (Mutation_Bucket (Arena, Item_Hash));
+      while Index /= 0 loop
+         if Remaining = 0 or else Index > Arena.Count then
+            Index := 0;
+            Result := Invalid_State;
+            return;
+         elsif Arena.Mutations (Index).Family = Family
+           and then Same_Owned_Key (Arena.Mutations (Index), Item_Key, Item_Hash)
+         then
+            Result := Success;
+            return;
+         end if;
+         Remaining := Remaining - 1;
+         Index := Arena.Mutations (Index).Next_In_Bucket;
+      end loop;
+      Result := Success;
+   end Find_Owned_Mutation;
 
    function Same_Owned_Key (Point : Owned_Point_Read; Item_Key : Byte_Array) return Boolean is
    begin
@@ -12256,6 +12293,7 @@ package body Flyology.DB is
       Old_Bytes     : Interfaces.Unsigned_64 := 0;
       New_Bytes     : Interfaces.Unsigned_64;
       Item_Hash     : Interfaces.Unsigned_64;
+      New_Entry     : Boolean;
       Candidate     : Flyology.Bytes.Unbounded_Bytes;
       Configuration : Column_Family_Configuration;
    begin
@@ -12302,18 +12340,17 @@ package body Flyology.DB is
          return;
       end if;
       Item_Hash := Runtime_Key_Hash (Item_Key);
-      for Index in Positive range 1 .. Txn.Owner.Arena.Count loop
-         if Txn.Owner.Arena.Mutations (Index).Family = Family.Configuration.ID
-           and then Same_Owned_Key (Txn.Owner.Arena.Mutations (Index), Item_Key, Item_Hash)
-         then
-            Existing := Index;
-            Old_Bytes :=
-              Interfaces.Unsigned_64
-                (Txn.Owner.Arena.Mutations (Index).Key_Length
-                 + Txn.Owner.Arena.Mutations (Index).Value_Length);
-            exit;
-         end if;
-      end loop;
+      Find_Owned_Mutation (Txn.Owner.Arena, Family.Configuration.ID, Item_Key, Item_Hash, Existing, Result);
+      if Result /= Success then
+         return;
+      end if;
+      New_Entry := Existing = 0;
+      if not New_Entry then
+         Old_Bytes :=
+           Interfaces.Unsigned_64
+             (Txn.Owner.Arena.Mutations (Existing).Key_Length
+              + Txn.Owner.Arena.Mutations (Existing).Value_Length);
+      end if;
       if Existing = 0 and then Txn.Owner.Arena.Count = Txn.Owner.Arena.Mutations'Length then
          Result := Capacity_Exceeded;
          return;
@@ -12344,7 +12381,7 @@ package body Flyology.DB is
             Flyology.Bytes.Append (Candidate, Ada.Streams.Stream_Element (Value));
          end loop;
       end if;
-      if Existing = 0 then
+      if New_Entry then
          Txn.Owner.Arena.Count := Txn.Owner.Arena.Count + 1;
          Existing := Txn.Owner.Arena.Count;
       end if;
@@ -12357,6 +12394,14 @@ package body Flyology.DB is
          Mutation.Key_Length := Item_Key'Length;
          Mutation.Value_Length := (if Operation = Put_Mutation then Data'Length else 0);
          Flyology.Bytes.Move (Mutation.Payload, Candidate);
+         if New_Entry then
+            declare
+               Bucket : constant Positive := Mutation_Bucket (Txn.Owner.Arena, Item_Hash);
+            begin
+               Mutation.Next_In_Bucket := Txn.Owner.Arena.Mutation_Buckets (Bucket);
+               Txn.Owner.Arena.Mutation_Buckets (Bucket) := Existing;
+            end;
+         end if;
       end;
       Txn.Owner.Arena.Bytes_Used := Txn.Owner.Arena.Bytes_Used - Old_Bytes + New_Bytes;
       Txn.Owner.Arena.Mutation_Version := Txn.Owner.Arena.Mutation_Version + 1;
@@ -27534,33 +27579,33 @@ package body Flyology.DB is
          begin
             for Transaction_Index in Commit_Slot range 1 .. Case_Number loop
                declare
-                  Mutations : Owned_Mutation_Array_Access := new Owned_Mutation_Array (1 .. 1);
+                  Arena : Transaction_Arena_Access := new Transaction_Arena (1);
                begin
-                  Mutations (1).Family := Column_Family_ID (Transaction_Index);
-                  Mutations (1).Operation :=
+                  Arena.Mutations (1).Family := Column_Family_ID (Transaction_Index);
+                  Arena.Mutations (1).Operation :=
                     (if Transaction_Index mod 2 = 0 then Delete_Mutation else Put_Mutation);
-                  Mutations (1).Key_Length := 2;
-                  Mutations (1).Value_Length := (if Mutations (1).Operation = Put_Mutation then 1 else 0);
+                  Arena.Mutations (1).Key_Length := 2;
+                  Arena.Mutations (1).Value_Length :=
+                    (if Arena.Mutations (1).Operation = Put_Mutation then 1 else 0);
                   Flyology.Bytes.Append
-                    (Mutations (1).Payload, Ada.Streams.Stream_Element (Transaction_Index));
-                  Flyology.Bytes.Append (Mutations (1).Payload, Ada.Streams.Stream_Element (Case_Number));
-                  if Mutations (1).Operation = Put_Mutation then
-                     Flyology.Bytes.Append (Mutations (1).Payload, Ada.Streams.Stream_Element (16#80#));
+                    (Arena.Mutations (1).Payload, Ada.Streams.Stream_Element (Transaction_Index));
+                  Flyology.Bytes.Append
+                    (Arena.Mutations (1).Payload, Ada.Streams.Stream_Element (Case_Number));
+                  if Arena.Mutations (1).Operation = Put_Mutation then
+                     Flyology.Bytes.Append (Arena.Mutations (1).Payload, Ada.Streams.Stream_Element (16#80#));
                   end if;
                   Items (Transaction_Index).Transaction_ID :=
                     Transaction_Identifier
                       (Structural_ID (16#A1#, Interfaces.Unsigned_64 (Transaction_Index)));
                   Items (Transaction_Index).Batch_ID := Batch_ID;
-                  Items (Transaction_Index).Arena :=
-                    new Transaction_Arena'
-                      (Mutations  => Mutations,
-                       Count      => 1,
-                       Bytes_Used => Interfaces.Unsigned_64 (2 + Mutations (1).Value_Length),
-                       others     => <>);
+                  Arena.Count := 1;
+                  Arena.Bytes_Used := Interfaces.Unsigned_64 (2 + Arena.Mutations (1).Value_Length);
+                  Items (Transaction_Index).Arena := Arena;
+                  Arena := null;
                   Image_Accounting.Record_Arena_Allocation;
                exception
                   when others =>
-                     Free_Owned_Mutations (Mutations);
+                     Free_Transaction_Arena (Arena);
                      raise;
                end;
             end loop;

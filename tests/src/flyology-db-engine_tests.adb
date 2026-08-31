@@ -1207,6 +1207,11 @@ package body Flyology.DB.Engine_Tests is
          Root_DB.Put (Item, Txn, Family, [Byte (Index / 256), Byte (Index mod 256)], [], Result);
          Expect (Result, Success, "257-mutation transaction was narrowed to the reference instance");
       end loop;
+      Root_DB.Put (Item, Txn, Family, [0, 1], [], Result);
+      Expect (Result, Success, "replacement at the dynamic mutation limit was rejected");
+      if Txn.Owner.Arena.Count /= 257 then
+         raise Program_Error with "replacement at the dynamic mutation limit grew the arena";
+      end if;
       Root_DB.Put (Item, Txn, Family, [1, 2], [], Result);
       Expect (Result, Capacity_Exceeded, "dynamic transaction mutation one-over was admitted");
       Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
@@ -8457,12 +8462,34 @@ package body Flyology.DB.Engine_Tests is
       Expect (Result, Success, "collision fixture Put failed");
       Collision_Hash := Reader.Owner.Arena.Mutations (2).Key_Hash;
       Reader.Owner.Arena.Mutations (2).Key_Hash := Reader.Owner.Arena.Mutations (1).Key_Hash;
+      declare
+         Bucket : constant Positive :=
+           Reader.Owner.Arena.Mutation_Buckets'First
+           + Natural
+               (Reader.Owner.Arena.Mutations (1).Key_Hash
+                mod Interfaces.Unsigned_64 (Reader.Owner.Arena.Mutation_Buckets'Length));
+      begin
+         Reader.Owner.Arena.Mutation_Buckets := [others => 0];
+         Reader.Owner.Arena.Mutations (1).Next_In_Bucket := 0;
+         Reader.Owner.Arena.Mutations (2).Next_In_Bucket := 1;
+         Reader.Owner.Arena.Mutation_Buckets (Bucket) := 2;
+      end;
       Get (Item, Reader, 1, Same_Key, Data, Result);
       if Result /= Not_Found or else Data.Length /= 0 then
          raise Program_Error with "equal cached hash bypassed exact-key Get comparison";
       end if;
       Reader.Owner.Arena.Mutations (2).Key_Hash := Collision_Hash;
       Reader.Owner.Arena.Mutations (1).Key_Hash := Collision_Hash;
+      declare
+         Bucket : constant Positive :=
+           Reader.Owner.Arena.Mutation_Buckets'First
+           + Natural (Collision_Hash mod Interfaces.Unsigned_64 (Reader.Owner.Arena.Mutation_Buckets'Length));
+      begin
+         Reader.Owner.Arena.Mutation_Buckets := [others => 0];
+         Reader.Owner.Arena.Mutations (1).Next_In_Bucket := 2;
+         Reader.Owner.Arena.Mutations (2).Next_In_Bucket := 0;
+         Reader.Owner.Arena.Mutation_Buckets (Bucket) := 1;
+      end;
       Put (Item, Reader, 1, Collision_Key, To_Value ([15]), Result);
       Expect (Result, Success, "collision fixture replacement failed");
       if Reader.Owner.Arena.Count /= 2 then
@@ -8472,6 +8499,48 @@ package body Flyology.DB.Engine_Tests is
       if Result /= Success or else Data /= To_Value ([15]) then
          raise Program_Error with "equal cached hash changed replacement value authority";
       end if;
+      declare
+         Bucket : constant Positive :=
+           Reader.Owner.Arena.Mutation_Buckets'First
+           + Natural (Collision_Hash mod Interfaces.Unsigned_64 (Reader.Owner.Arena.Mutation_Buckets'Length));
+         Head           : constant Natural := Reader.Owner.Arena.Mutation_Buckets (Bucket);
+         First_Next     : constant Natural := Reader.Owner.Arena.Mutations (1).Next_In_Bucket;
+         Before_Count   : constant Natural := Reader.Owner.Arena.Count;
+         Before_Bytes   : constant Interfaces.Unsigned_64 := Reader.Owner.Arena.Bytes_Used;
+         Before_Version : constant Interfaces.Unsigned_64 := Reader.Owner.Arena.Mutation_Version;
+
+         procedure Expect_Unchanged (Context : String) is
+         begin
+            if Reader.Owner.Arena.Count /= Before_Count
+              or else Reader.Owner.Arena.Bytes_Used /= Before_Bytes
+              or else Reader.Owner.Arena.Mutation_Version /= Before_Version
+            then
+               raise Program_Error with Context & " changed arena state";
+            end if;
+         end Expect_Unchanged;
+      begin
+         Reader.Owner.Arena.Mutation_Buckets (Bucket) := Reader.Owner.Arena.Count + 1;
+         Put (Item, Reader, 1, Collision_Key, To_Value ([16]), Result);
+         Expect (Result, Invalid_State, "invalid mutation bucket link was treated as key absence");
+         Expect_Unchanged ("invalid mutation bucket head");
+         Reader.Owner.Arena.Mutation_Buckets (Bucket) := Head;
+
+         Reader.Owner.Arena.Mutations (1).Next_In_Bucket := Reader.Owner.Arena.Count + 1;
+         Put (Item, Reader, 1, Collision_Key, To_Value ([17]), Result);
+         Expect (Result, Invalid_State, "invalid mutation chain link was treated as key absence");
+         Expect_Unchanged ("invalid mutation chain link");
+
+         Reader.Owner.Arena.Mutations (1).Next_In_Bucket := 1;
+         Put (Item, Reader, 1, Collision_Key, To_Value ([18]), Result);
+         Expect (Result, Invalid_State, "cyclic mutation chain was treated as key absence");
+         Expect_Unchanged ("cyclic mutation chain");
+
+         Reader.Owner.Arena.Mutations (1).Next_In_Bucket := First_Next;
+         Get (Item, Reader, 1, Collision_Key, Data, Result);
+         if Result /= Success or else Data /= To_Value ([15]) then
+            raise Program_Error with "invalid mutation chain changed the prior payload";
+         end if;
+      end;
       Rollback (Reader, Result);
       Expect (Result, Success, "fixed-snapshot reader rollback failed");
 

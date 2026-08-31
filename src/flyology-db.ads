@@ -2313,17 +2313,19 @@ private
    --  not an application default; zero lengths become meaningful only for an
    --  admitted empty-key or empty-value mutation.
    type Owned_Mutation is record
-      Family       : Column_Family_ID := Column_Family_ID'First;
-      Operation    : Mutation_Kind := Put_Mutation;
+      Family         : Column_Family_ID := Column_Family_ID'First;
+      Operation      : Mutation_Kind := Put_Mutation;
       --  This transient hash only screens transaction-local candidates;
-      --  exact payload bytes remain authoritative for key identity.
-      Key_Hash     : Interfaces.Unsigned_64 := 0;
-      Key_Length   : Natural := 0;
-      Value_Length : Natural := 0;
-      Payload      : Flyology.Bytes.Unbounded_Bytes;
+      --  exact payload bytes remain authoritative for key identity. The link
+      --  is transient too; zero is the vacant chain sentinel.
+      Key_Hash       : Interfaces.Unsigned_64 := 0;
+      Next_In_Bucket : Natural := 0;
+      Key_Length     : Natural := 0;
+      Value_Length   : Natural := 0;
+      Payload        : Flyology.Bytes.Unbounded_Bytes;
    end record;
    type Owned_Mutation_Array is array (Positive range <>) of Owned_Mutation;
-   type Owned_Mutation_Array_Access is access Owned_Mutation_Array;
+   type Mutation_Bucket_Array is array (Positive range <>) of Natural;
 
    type Owned_Point_Read;
    type Owned_Point_Read_Access is access Owned_Point_Read;
@@ -2356,8 +2358,12 @@ private
       Next         : Owned_Scan_Range_Access := null;
    end record;
 
-   type Transaction_Arena is limited record
-      Mutations        : Owned_Mutation_Array_Access := null;
+   --  Both arrays have exactly the authenticated per-transaction mutation
+   --  capacity. Keeping them in one owned allocation introduces no new bound
+   --  and keeps every bucket head adjacent to the entries it indexes.
+   type Transaction_Arena (Mutation_Capacity : Positive) is limited record
+      Mutations        : Owned_Mutation_Array (1 .. Mutation_Capacity);
+      Mutation_Buckets : Mutation_Bucket_Array (1 .. Mutation_Capacity) := [others => 0];
       Count            : Natural := 0;
       Bytes_Used       : Interfaces.Unsigned_64 := 0;
       Point_Reads      : Owned_Point_Read_Access := null;
