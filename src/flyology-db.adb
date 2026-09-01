@@ -7383,10 +7383,7 @@ package body Flyology.DB is
                      Value_Offset       => Cursor + Mutation_Frame_Header_Length + Source.Key_Length,
                      Value_Length       => Source.Value_Length,
                      Matched_Live_Entry => False);
-                  for Byte_Index in Positive range 1 .. Flyology.Bytes.Length (Source.Payload) loop
-                     Flyology.Bytes.Append
-                       (Batch.Image.Data, Flyology.Bytes.Element (Source.Payload, Byte_Index));
-                  end loop;
+                  Flyology.Bytes.Append (Batch.Image.Data, Source.Payload);
                   Target.Key_Hash := Runtime_Key_Hash (Batch.Image, Target.Key_Offset, Target.Key_Length);
                   Cursor := Cursor + Mutation_Frame_Header_Length + Source.Key_Length + Source.Value_Length;
                   Next_Mutation := Next_Mutation + 1;
