@@ -1,4 +1,5 @@
 with "flyology_object_storage.gpr";
+with "flyology_crc.gpr";
 with "config/flyology_db_config.gpr";
 project Flyology_Db is
 

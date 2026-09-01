@@ -1,0 +1,33 @@
+with "/mnt/flyology-bench/experiments/exact-owned-batch-image-probe-v1/candidate/db/flyology_db.gpr";
+with "flyology_bench.gpr";
+
+project Candidate_Benchmark is
+   Root := "/mnt/flyology-bench/experiments/exact-owned-batch-image-probe-v1/";
+   for Source_Dirs use (Root & "candidate/db/benchmarks/comparison/src");
+   for Object_Dir use Root & "candidate/benchmark-obj";
+   for Exec_Dir use Root & "candidate/binaries";
+   for Main use ("flyology_db_benchmark.adb");
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      for Default_Switches ("Ada") use
+        ("-gnat2022", "-gnatW8", "-gnatw.e", "-gnatyM110", "-O3");
+   end Compiler;
+
+   package Linker is
+      for Default_Switches ("Ada") use
+        ("-L/mnt/flyology-bench/experiments/prepared-projection-v1/source/benchmarks/comparison/"
+         & "slatedb/target/release",
+         "-lflyology_db_slatedb_benchmark",
+         "-L/mnt/flyology-bench/experiments/prepared-projection-v1/source/oracles/adapters/"
+         & "tidesdb/build",
+         "-lflyology_tidesdb_oracle",
+         "-L/mnt/flyology-bench/experiments/prepared-projection-v1/source/oracles/adapters/"
+         & "tidesdb/build/upstream",
+         "-ltidesdb",
+         "-Wl,-rpath,/mnt/flyology-bench/experiments/prepared-projection-v1/source/benchmarks/"
+         & "comparison/slatedb/target/release:/mnt/flyology-bench/experiments/"
+         & "prepared-projection-v1/source/oracles/adapters/tidesdb/build:/mnt/flyology-bench/"
+         & "experiments/prepared-projection-v1/source/oracles/adapters/tidesdb/build/upstream");
+   end Linker;
+end Candidate_Benchmark;

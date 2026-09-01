@@ -6,6 +6,7 @@ private package Flyology.DB.Testing is
      (Transaction_Arena,
       Transaction_Payload,
       Batch_Descriptors,
+      Runtime_Batch_Image,
       Runtime_Mutation_Lookup,
       Storage_Sink,
       Recovery_History,

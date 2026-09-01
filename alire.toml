@@ -17,6 +17,9 @@ flyology_object_storage = "=0.1.0-dev"
 flyology = "*"
 
 [[depends-on]]
+flyology_crc = "=0.1.1"
+
+[[depends-on]]
 flyology_tla = "=0.1.0-dev"
 
 [[depends-on]]

@@ -2219,9 +2219,6 @@ private
       Scan_Cursor_Entry_Allocation,
       Scan_Cursor_Owned_Bytes_Allocation,
       Batch_Descriptor_Allocation,
-      --  Test-only failure before allocating the exact final batch-v1 image.
-      --  This position is neither persisted nor product capacity policy.
-      Runtime_Batch_Image_Allocation,
       Runtime_Mutation_Lookup_Allocation,
       Storage_Sink_Allocation,
       Recovery_History_Allocation,
@@ -2297,16 +2294,14 @@ private
       Count : Positive := 1;
    end Shared_Image_References;
 
-   type Shared_Image_Storage is (Growable_Storage, Exact_Storage);
    type Owned_Byte_Array_Access is access Ada.Streams.Stream_Element_Array;
 
-   type Shared_Image_Record (Storage : Shared_Image_Storage := Growable_Storage) is limited record
+   type Shared_Image_Record is limited record
       References : Shared_Image_References;
-      --  Decoded and recovered images retain the established growable
-      --  representation. It remains empty for Exact_Storage.
+      --  Decoded/recovered images retain the established growable form.
       Data       : Flyology.Bytes.Unbounded_Bytes;
-      --  Fresh runtime batches own one exact final allocation. The immutable
-      --  discriminant selects this field and it remains null for Growable_Storage.
+      --  Fresh runtime batches instead own one exact final allocation. Exactly
+      --  one representation is populated for any valid image.
       Exact_Data : Owned_Byte_Array_Access := null;
    end record;
    type Shared_Image_Access is access Shared_Image_Record;

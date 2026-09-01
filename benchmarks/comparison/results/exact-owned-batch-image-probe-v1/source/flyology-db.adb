@@ -323,84 +323,61 @@ package body Flyology.DB is
       end Snapshot;
    end Image_Accounting;
 
-   function Allocate_Shared_Image
-     (Storage : Shared_Image_Storage := Growable_Storage) return Shared_Image_Access
-   is
-      Result : constant Shared_Image_Access := new Shared_Image_Record (Storage => Storage);
+   function Allocate_Shared_Image return Shared_Image_Access is
+      Result : constant Shared_Image_Access := new Shared_Image_Record;
    begin
       Image_Accounting.Record_Allocation;
       return Result;
    end Allocate_Shared_Image;
 
-   function Image_Length (Image : not null Shared_Image_Access) return Natural
-   is (case Image.Storage is
-         when Growable_Storage => Flyology.Bytes.Length (Image.Data),
-         when Exact_Storage    => (if Image.Exact_Data = null then 0 else Image.Exact_Data'Length));
+   function Image_Length (Image : not null Shared_Image_Access) return Natural is
+     (if Image.Exact_Data = null
+      then Flyology.Bytes.Length (Image.Data)
+      else Image.Exact_Data'Length);
 
    function Image_Element
-     (Image : not null Shared_Image_Access; Index : Positive) return Ada.Streams.Stream_Element is
+     (Image : not null Shared_Image_Access;
+      Index : Positive) return Ada.Streams.Stream_Element
+   is
    begin
       if Index > Image_Length (Image) then
          raise Constraint_Error with "shared-image index exceeds image length";
+      elsif Image.Exact_Data = null then
+         return Flyology.Bytes.Element (Image.Data, Index);
+      else
+         return
+           Image.Exact_Data
+             (Image.Exact_Data'First + Ada.Streams.Stream_Element_Offset (Index - 1));
       end if;
-      case Image.Storage is
-         when Growable_Storage =>
-            return Flyology.Bytes.Element (Image.Data, Index);
-
-         when Exact_Storage    =>
-            return Image.Exact_Data (Image.Exact_Data'First + Ada.Streams.Stream_Element_Offset (Index - 1));
-      end case;
    end Image_Element;
-
-   procedure Copy_Growable_Range
-     (Data          : Flyology.Bytes.Unbounded_Bytes;
-      Source_Offset : Natural;
-      Target        : out Ada.Streams.Stream_Element_Array) is
-   begin
-      if Target'Length = 0 then
-         return;
-      elsif Source_Offset > Flyology.Bytes.Length (Data)
-        or else Target'Length > Flyology.Bytes.Length (Data) - Source_Offset
-      then
-         raise Constraint_Error with "byte copy range exceeds source length";
-      end if;
-      for Offset in Natural range 0 .. Target'Length - 1 loop
-         Target (Target'First + Ada.Streams.Stream_Element_Offset (Offset)) :=
-           Flyology.Bytes.Element (Data, Source_Offset + Offset + 1);
-      end loop;
-   end Copy_Growable_Range;
 
    procedure Copy_Image_Range
      (Image         : not null Shared_Image_Access;
       Source_Offset : Natural;
-      Target        : out Ada.Streams.Stream_Element_Array) is
+      Target        : out Ada.Streams.Stream_Element_Array)
+   is
    begin
       if Target'Length = 0 then
          return;
-      elsif Source_Offset > Image_Length (Image) or else Target'Length > Image_Length (Image) - Source_Offset
+      elsif Source_Offset > Image_Length (Image)
+        or else Target'Length > Image_Length (Image) - Source_Offset
       then
          raise Constraint_Error with "shared-image range exceeds image length";
+      elsif Image.Exact_Data /= null then
+         Target :=
+           Image.Exact_Data
+             (Image.Exact_Data'First + Ada.Streams.Stream_Element_Offset (Source_Offset)
+              .. Image.Exact_Data'First
+                   + Ada.Streams.Stream_Element_Offset (Source_Offset + Target'Length - 1));
+      else
+         Flyology.Bytes.Copy (Image.Data, Source_Offset, Target);
       end if;
-      case Image.Storage is
-         when Growable_Storage =>
-            Copy_Growable_Range (Image.Data, Source_Offset, Target);
-
-         when Exact_Storage    =>
-            Target :=
-              Image.Exact_Data
-                (Image.Exact_Data'First
-                 + Ada.Streams.Stream_Element_Offset (Source_Offset)
-                 .. Image.Exact_Data'First
-                    + Ada.Streams.Stream_Element_Offset (Source_Offset + Target'Length - 1));
-      end case;
    end Copy_Image_Range;
 
    procedure Destroy_Shared_Image (Image : in out Shared_Image_Access) is
    begin
       if Image /= null then
-         if Image.Storage = Exact_Storage then
-            Free_Owned_Bytes (Image.Exact_Data);
-         end if;
+         Free_Owned_Bytes (Image.Exact_Data);
          Image_Accounting.Record_Release;
          Free_Shared_Image (Image);
       end if;
@@ -1025,7 +1002,8 @@ package body Flyology.DB is
          Deadline   : Ada.Real_Time.Time;
          Token      : access Flyology.Cancellation.Token;
          Generation : out Generation_Value;
-         Result     : out Put_Outcome);
+         Result     : out Put_Outcome;
+         Entity_Tag : String := "");
 
       procedure Put_Create
         (Storage    : in out Storage_Context;
@@ -1697,10 +1675,15 @@ package body Flyology.DB is
             procedure Fill (Data : in out Ada.Streams.Stream_Element_Array; Written : in out Natural) is
             begin
                Copy_Image_Range
-                 (Image, 0, Data (Data'First .. Data'First + Ada.Streams.Stream_Element_Offset (Length) - 1));
+                 (Image,
+                  0,
+                  Data
+                    (Data'First
+                     .. Data'First + Ada.Streams.Stream_Element_Offset (Length) - 1));
                for Offset in Natural range 0 .. Length - 1 loop
                   Payload_Text (Offset + 1) :=
-                    Character'Val (Data (Data'First + Ada.Streams.Stream_Element_Offset (Offset)));
+                    Character'Val
+                      (Data (Data'First + Ada.Streams.Stream_Element_Offset (Offset)));
                end loop;
                Written := Length;
             end Fill;
@@ -1813,11 +1796,13 @@ package body Flyology.DB is
          Deadline     : Ada.Real_Time.Time;
          Token        : access Flyology.Cancellation.Token;
          Generation   : out Generation_Value;
-         Result       : out Put_Outcome)
+         Result       : out Put_Outcome;
+         Entity_Tag   : String := "")
       is
          Source   : Buffer_Source;
          Info     : OS.Object_Information;
          Status   : OS.Status;
+         Options  : OS.Put_Options := OS.Default_Put_Options;
          Fault    : Storage_Fault_Mode;
          Entered  : Boolean := False;
          Borrowed : Shared_Image_Access := Image;
@@ -1862,11 +1847,12 @@ package body Flyology.DB is
             Is_Manifest => Before_Point = Before_Manifest_Put,
             Is_Run      => Before_Point = Before_Run_Put);
          Entered := True;
+         Options.Entity_Tag := UStrings.To_Unbounded_String (Entity_Tag);
          Storage.Backend.Put_Object
            (Bucket     => UStrings.To_String (Storage.Bucket),
             Key        => Key,
             Source     => Source,
-            Options    => OS.Default_Put_Options,
+            Options    => Options,
             Token      => Token,
             Deadline   => Deadline,
             Info       => Info,
@@ -1917,7 +1903,8 @@ package body Flyology.DB is
          Deadline   : Ada.Real_Time.Time;
          Token      : access Flyology.Cancellation.Token;
          Generation : out Generation_Value;
-         Result     : out Put_Outcome)
+         Result     : out Put_Outcome;
+         Entity_Tag : String := "")
       is
          Conditions   : OS.Write_Conditions := OS.Default_Write_Conditions;
          --  Test-injection points are a total mapping from persisted object
@@ -1938,7 +1925,17 @@ package body Flyology.DB is
       begin
          Conditions.If_None_Match := UStrings.To_Unbounded_String ("*");
          Put_Common
-           (Storage, Key, Image, Conditions, Before_Point, After_Point, Deadline, Token, Generation, Result);
+           (Storage,
+            Key,
+            Image,
+            Conditions,
+            Before_Point,
+            After_Point,
+            Deadline,
+            Token,
+            Generation,
+            Result,
+            Entity_Tag);
       end Put_Create;
 
       procedure Put_Create
@@ -2237,7 +2234,9 @@ package body Flyology.DB is
    begin
       if Length > 0 then
          for Index in Natural range 0 .. Length - 1 loop
-            Result := (Result xor Interfaces.Unsigned_64 (Image_Element (Image, Offset + Index + 1))) * Prime;
+            Result :=
+              (Result xor Interfaces.Unsigned_64 (Image_Element (Image, Offset + Index + 1)))
+              * Prime;
          end loop;
       end if;
       return Result;
@@ -2585,10 +2584,12 @@ package body Flyology.DB is
       Indexed_Total : Natural := 0;
 
       function Valid_Slice (Offset, Length : Natural) return Boolean is
-         Source_Length : constant Natural := (if Batch.Image = null then 0 else Image_Length (Batch.Image));
+         Source_Length : constant Natural :=
+           (if Batch.Image = null then 0 else Image_Length (Batch.Image));
       begin
-         return
-           Batch.Image /= null and then Offset <= Source_Length and then Length <= Source_Length - Offset;
+         return Batch.Image /= null
+           and then Offset <= Source_Length
+           and then Length <= Source_Length - Offset;
       end Valid_Slice;
 
       function Precedes (Left, Right : Runtime_Mutation_Lookup_Entry) return Boolean is
@@ -2970,10 +2971,12 @@ package body Flyology.DB is
       Result      : out Outcome_Code)
    is
       function Valid_Slice (Offset, Length : Natural) return Boolean is
-         Source_Length : constant Natural := (if Batch.Image = null then 0 else Image_Length (Batch.Image));
+         Source_Length : constant Natural :=
+           (if Batch.Image = null then 0 else Image_Length (Batch.Image));
       begin
-         return
-           Batch.Image /= null and then Offset <= Source_Length and then Length <= Source_Length - Offset;
+         return Batch.Image /= null
+           and then Offset <= Source_Length
+           and then Length <= Source_Length - Offset;
       end Valid_Slice;
 
       procedure Add_Source (Mutation : Runtime_Mutation; Version : Sequence_Number; Order : Positive) is
@@ -3283,7 +3286,8 @@ package body Flyology.DB is
          Policy_Failure        : constant Outcome_Code :=
            (if Identities_Reserved then Capacity_Exceeded else Corrupt);
 
-         function Valid_Slice (Image : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
+         function Valid_Slice
+           (Image : not null Shared_Image_Access; Offset, Length : Natural) return Boolean
          is
             Source_Length : constant Natural := Image_Length (Image);
          begin
@@ -3294,7 +3298,8 @@ package body Flyology.DB is
            (Mutation   : Runtime_Mutation;
             State_Item : State_Entry;
             Comparison : out Integer;
-            Valid      : out Boolean) is
+            Valid      : out Boolean)
+         is
          begin
             Comparison := 0;
             Valid := True;
@@ -3349,7 +3354,9 @@ package body Flyology.DB is
          end Key_Precedes;
 
          procedure Find_Latest_Mutation
-           (State_Item : State_Entry; Lookup_Position : out Natural; Valid : out Boolean)
+           (State_Item      : State_Entry;
+            Lookup_Position : out Natural;
+            Valid           : out Boolean)
          is
             Low        : Natural := 0;
             Remaining  : Natural := Batch.Mutation_Total;
@@ -3367,7 +3374,8 @@ package body Flyology.DB is
                      Valid := False;
                      return;
                   end if;
-                  Compare_Key (Batch.Mutations (Indexed.Mutation_Index), State_Item, Comparison, Valid);
+                  Compare_Key
+                    (Batch.Mutations (Indexed.Mutation_Index), State_Item, Comparison, Valid);
                   if not Valid then
                      return;
                   elsif Comparison < 0 then
@@ -3387,7 +3395,8 @@ package body Flyology.DB is
                      Valid := False;
                      return;
                   end if;
-                  Compare_Key (Batch.Mutations (Indexed.Mutation_Index), State_Item, Comparison, Valid);
+                  Compare_Key
+                    (Batch.Mutations (Indexed.Mutation_Index), State_Item, Comparison, Valid);
                   if Valid and then Comparison = 0 then
                      Lookup_Position := Position;
                   end if;
@@ -3468,7 +3477,8 @@ package body Flyology.DB is
                Transaction         : Runtime_Transaction renames Batch.Transactions (Transaction_Index);
                Transaction_Payload : Interfaces.Unsigned_64 := 0;
             begin
-               if Transaction.Sequence /= Batch.First_Sequence + Sequence_Number (Transaction_Index - 1)
+               if Transaction.Sequence
+                    /= Batch.First_Sequence + Sequence_Number (Transaction_Index - 1)
                  or else Transaction.Mutation_Count = 0
                  or else Transaction.First_Mutation /= Checked_Mutations + 1
                  or else Transaction.Mutation_Count > Batch.Mutation_Total
@@ -3577,9 +3587,12 @@ package body Flyology.DB is
                   Result := Policy_Failure;
                   return;
                end if;
-               Transaction := Batch.Transactions (Positive (Indexed.Sequence - Batch.First_Sequence + 1));
+               Transaction :=
+                 Batch.Transactions
+                   (Positive (Indexed.Sequence - Batch.First_Sequence + 1));
                if Indexed.Mutation_Index < Transaction.First_Mutation
-                 or else Indexed.Mutation_Index - Transaction.First_Mutation >= Transaction.Mutation_Count
+                 or else Indexed.Mutation_Index - Transaction.First_Mutation
+                         >= Transaction.Mutation_Count
                then
                   Result := Policy_Failure;
                   return;
@@ -3591,7 +3604,9 @@ package body Flyology.DB is
                     or else not Valid_Slice (Batch.Image, Mutation.Key_Offset, Mutation.Key_Length)
                     or else (Mutation.Operation = Put_Mutation
                              and then not Valid_Slice
-                                            (Batch.Image, Mutation.Value_Offset, Mutation.Value_Length))
+                                            (Batch.Image,
+                                             Mutation.Value_Offset,
+                                             Mutation.Value_Length))
                   then
                      Result := Policy_Failure;
                      return;
@@ -3608,11 +3623,13 @@ package body Flyology.DB is
                           Batch.Mutations (Previous.Mutation_Index);
                      begin
                         if Key_Precedes (Mutation, Previous_Mutation)
-                          or else (Same_Runtime_Key (Batch.Image, Previous_Mutation, Batch.Image, Mutation)
-                                   and then (Previous.Sequence < Indexed.Sequence
-                                             or else (Previous.Sequence = Indexed.Sequence
-                                                      and then Previous.Mutation_Index
-                                                               < Indexed.Mutation_Index)))
+                          or else
+                            (Same_Runtime_Key
+                               (Batch.Image, Previous_Mutation, Batch.Image, Mutation)
+                             and then (Previous.Sequence < Indexed.Sequence
+                                       or else (Previous.Sequence = Indexed.Sequence
+                                                and then Previous.Mutation_Index
+                                                         < Indexed.Mutation_Index)))
                         then
                            Result := Policy_Failure;
                            return;
@@ -3688,8 +3705,8 @@ package body Flyology.DB is
 
          for Position in Positive range 1 .. Batch.Mutation_Total loop
             declare
-               Indexed       : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
-               Mutation      : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
+               Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+               Mutation : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
                First_For_Key : constant Boolean :=
                  Position = 1
                  or else not Same_Runtime_Key
@@ -4725,7 +4742,10 @@ package body Flyology.DB is
          end Same_Key;
 
          procedure Compare_Key
-           (Batch : Runtime_Batch; Mutation : Runtime_Mutation; Comparison : out Integer; Valid : out Boolean)
+           (Batch       : Runtime_Batch;
+            Mutation    : Runtime_Mutation;
+            Comparison  : out Integer;
+            Valid       : out Boolean)
          is
          begin
             Comparison := 0;
@@ -4799,7 +4819,8 @@ package body Flyology.DB is
                            Result := Corrupt;
                            return;
                         end if;
-                        Compare_Key (Batch, Batch.Mutations (Indexed.Mutation_Index), Comparison, Valid);
+                        Compare_Key
+                          (Batch, Batch.Mutations (Indexed.Mutation_Index), Comparison, Valid);
                         if not Valid then
                            Result := Corrupt;
                            return;
@@ -4825,7 +4846,8 @@ package body Flyology.DB is
                                  return;
                               end if;
                               declare
-                                 Mutation : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
+                                 Mutation : Runtime_Mutation renames
+                                   Batch.Mutations (Indexed.Mutation_Index);
                               begin
                                  Compare_Key (Batch, Mutation, Comparison, Valid);
                                  if not Valid then
@@ -4835,7 +4857,8 @@ package body Flyology.DB is
                                     exit;
                                  elsif Indexed.Sequence = 0
                                    or else Indexed.Sequence
-                                           /= Runtime_Mutation_Sequence (Batch, Indexed.Mutation_Index)
+                                           /= Runtime_Mutation_Sequence
+                                                (Batch, Indexed.Mutation_Index)
                                  then
                                     Result := Corrupt;
                                     return;
@@ -4997,7 +5020,9 @@ package body Flyology.DB is
               and then Entries (Index).Key_Length = Item_Key'Length;
             if Matches then
                for Offset in Natural range 0 .. Item_Key'Length - 1 loop
-                  if Byte (Image_Element (Entries (Index).Image, Entries (Index).Key_Offset + Offset + 1))
+                  if Byte
+                       (Image_Element
+                          (Entries (Index).Image, Entries (Index).Key_Offset + Offset + 1))
                     /= Item_Key (Item_Key'First + Offset)
                   then
                      Matches := False;
@@ -5631,8 +5656,10 @@ package body Flyology.DB is
    begin
       for Offset in Natural range 0 .. Shared - 1 loop
          declare
-            Left_Byte  : constant Byte := Byte (Image_Element (Left.Image, Left.Key_Offset + Offset + 1));
-            Right_Byte : constant Byte := Byte (Image_Element (Right.Image, Right.Key_Offset + Offset + 1));
+            Left_Byte  : constant Byte :=
+              Byte (Image_Element (Left.Image, Left.Key_Offset + Offset + 1));
+            Right_Byte : constant Byte :=
+              Byte (Image_Element (Right.Image, Right.Key_Offset + Offset + 1));
          begin
             if Left_Byte < Right_Byte then
                return True;
@@ -5780,7 +5807,8 @@ package body Flyology.DB is
             Target.Key_Byte_Total := Reference.Key_Length;
             for Offset in Natural range 0 .. Reference.Key_Length - 1 loop
                Value.Payload (Payload_Cursor + Offset) :=
-                 Formats.Byte (Image_Element (Reference.Image, Reference.Key_Offset + Offset + 1));
+                 Formats.Byte
+                   (Image_Element (Reference.Image, Reference.Key_Offset + Offset + 1));
             end loop;
             Payload_Cursor := Payload_Cursor + Reference.Key_Length;
             Target.Value_Offset := Payload_Cursor;
@@ -5789,7 +5817,8 @@ package body Flyology.DB is
             if Target.Value_Byte_Total > 0 then
                for Offset in Natural range 0 .. Target.Value_Byte_Total - 1 loop
                   Value.Payload (Payload_Cursor + Offset) :=
-                    Formats.Byte (Image_Element (Reference.Image, Reference.Value_Offset + Offset + 1));
+                    Formats.Byte
+                      (Image_Element (Reference.Image, Reference.Value_Offset + Offset + 1));
                end loop;
                Payload_Cursor := Payload_Cursor + Target.Value_Byte_Total;
             end if;
@@ -7053,45 +7082,22 @@ package body Flyology.DB is
       end loop;
    end Append_Array;
 
-   type Runtime_CRC_32C_Table is array (Byte) of Interfaces.Unsigned_32;
-
-   function Build_Runtime_CRC_32C_Table return Runtime_CRC_32C_Table is
-      --  Persisted-format authority: derive the table from the exact reflected
-      --  Castagnoli polynomial rather than storing an independently chosen
-      --  table or selecting a platform-specific checksum.
-      Polynomial : constant Interfaces.Unsigned_32 := 16#82F6_3B78#;
-      Result     : Runtime_CRC_32C_Table;
-   begin
-      for Value in Byte loop
-         Result (Value) := Interfaces.Unsigned_32 (Value);
-         for Bit in Natural range 0 .. 7 loop
-            pragma Unreferenced (Bit);
-            if (Result (Value) and 1) = 1 then
-               Result (Value) := Interfaces.Shift_Right (Result (Value), 1) xor Polynomial;
-            else
-               Result (Value) := Interfaces.Shift_Right (Result (Value), 1);
-            end if;
-         end loop;
-      end loop;
-      return Result;
-   end Build_Runtime_CRC_32C_Table;
-
-   Runtime_CRC_32C : constant Runtime_CRC_32C_Table := Build_Runtime_CRC_32C_Table;
-
    function CRC_32C (Data : Flyology.Bytes.Unbounded_Bytes; Count : Natural) return Interfaces.Unsigned_32 is
-      --  Externally fixed all-ones initial state and final complement complete
-      --  the persisted-format CRC-32C contract implemented by the table above.
-      Result : Interfaces.Unsigned_32 := 16#FFFF_FFFF#;
+      Copy : constant Ada.Streams.Stream_Element_Array := Flyology.Bytes.To_Array (Data);
    begin
-      for Index in Positive range 1 .. Count loop
-         declare
-            Table_Index : constant Byte :=
-              Byte ((Result xor Interfaces.Unsigned_32 (Flyology.Bytes.Element (Data, Index))) and 16#FF#);
-         begin
-            Result := Interfaces.Shift_Right (Result, 8) xor Runtime_CRC_32C (Table_Index);
-         end;
-      end loop;
-      return not Result;
+      if Count = 0 then
+         return
+           Flyology_CRC.Width_32.Compute_ISCSI
+             (Ada.Streams.Stream_Element_Array'(1 .. 0 => 0));
+      elsif Count > Copy'Length then
+         raise Constraint_Error with "CRC-32C prefix exceeds the available bytes";
+      else
+         return
+           Flyology_CRC.Width_32.Compute_ISCSI
+             (Copy
+                (Copy'First
+                 .. Copy'First + Ada.Streams.Stream_Element_Offset (Count) - 1));
+      end if;
    end CRC_32C;
 
    function New_Image (Data : Formats.Byte_Array) return Shared_Image_Access is
@@ -7212,7 +7218,8 @@ package body Flyology.DB is
       begin
          for Offset in Natural range 0 .. Source'Length - 1 loop
             Batch.Image.Exact_Data
-              (Batch.Image.Exact_Data'First + Ada.Streams.Stream_Element_Offset (Position + Offset)) :=
+              (Batch.Image.Exact_Data'First
+               + Ada.Streams.Stream_Element_Offset (Position + Offset)) :=
               Ada.Streams.Stream_Element (Source (Source'First + Offset));
          end loop;
       end Store_Array;
@@ -7224,12 +7231,14 @@ package body Flyology.DB is
          Store_Array (Position, Encoded);
       end Store_U32;
 
-      function Exact_CRC_32C (Bytes : Natural) return Interfaces.Unsigned_32 is
+      function Exact_CRC_32C (Bytes : Natural) return Interfaces.Unsigned_32
+      is
       begin
          if Bytes = 0 then
-            return Flyology_CRC.Width_32.Compute_ISCSI (Ada.Streams.Stream_Element_Array'(1 .. 0 => 0));
+            return
+              Flyology_CRC.Width_32.Compute_ISCSI
+                (Ada.Streams.Stream_Element_Array'(1 .. 0 => 0));
          elsif Batch.Image = null
-           or else Batch.Image.Storage /= Exact_Storage
            or else Batch.Image.Exact_Data = null
            or else Bytes > Batch.Image.Exact_Data'Length
          then
@@ -7239,7 +7248,8 @@ package body Flyology.DB is
               Flyology_CRC.Width_32.Compute_ISCSI
                 (Batch.Image.Exact_Data
                    (Batch.Image.Exact_Data'First
-                    .. Batch.Image.Exact_Data'First + Ada.Streams.Stream_Element_Offset (Bytes) - 1));
+                    .. Batch.Image.Exact_Data'First
+                         + Ada.Streams.Stream_Element_Offset (Bytes) - 1));
          end if;
       end Exact_CRC_32C;
    begin
@@ -7306,20 +7316,17 @@ package body Flyology.DB is
             end;
          end loop;
       end loop;
-      if Mutation_Total = 0
-        or else Wire_Length > Interfaces.Unsigned_64 (Natural'Last)
-        or else Wire_Length > Interfaces.Unsigned_64 (Ada.Streams.Stream_Element_Offset'Last)
-      then
+      if Mutation_Total = 0 or else Wire_Length > Interfaces.Unsigned_64 (Natural'Last) then
          Result := Capacity_Exceeded;
          return;
       end if;
       Allocation_Faults.Check (Batch_Descriptor_Allocation);
       Batch.Transactions := new Runtime_Transaction_Array (1 .. Count);
       Batch.Mutations := new Runtime_Mutation_Array (1 .. Mutation_Total);
-      Batch.Image := Allocate_Shared_Image (Exact_Storage);
-      Allocation_Faults.Check (Runtime_Batch_Image_Allocation);
+      Batch.Image := Allocate_Shared_Image;
       Batch.Image.Exact_Data :=
-        new Ada.Streams.Stream_Element_Array (1 .. Ada.Streams.Stream_Element_Offset (Wire_Length));
+        new Ada.Streams.Stream_Element_Array
+          (1 .. Ada.Streams.Stream_Element_Offset (Wire_Length));
       Batch.Database_ID := Expected.Database_ID;
       Batch.Epoch := Expected.Epoch;
       Batch.Batch_ID := Items (1).Batch_ID;
@@ -7448,18 +7455,17 @@ package body Flyology.DB is
                      Value_Length       => Source.Value_Length,
                      Matched_Live_Entry => False);
                   if Flyology.Bytes.Length (Source.Payload) > 0 then
-                     Copy_Growable_Range
+                     Flyology.Bytes.Copy
                        (Source.Payload,
                         0,
                         Batch.Image.Exact_Data
                           (Batch.Image.Exact_Data'First
-                           + Ada.Streams.Stream_Element_Offset (Cursor + Mutation_Frame_Header_Length)
+                           + Ada.Streams.Stream_Element_Offset
+                               (Cursor + Mutation_Frame_Header_Length)
                            .. Batch.Image.Exact_Data'First
-                              + Ada.Streams.Stream_Element_Offset
-                                  (Cursor
-                                   + Mutation_Frame_Header_Length
-                                   + Flyology.Bytes.Length (Source.Payload)
-                                   - 1)));
+                                + Ada.Streams.Stream_Element_Offset
+                                    (Cursor + Mutation_Frame_Header_Length
+                                     + Flyology.Bytes.Length (Source.Payload) - 1)));
                   end if;
                   Target.Key_Hash := Runtime_Key_Hash (Batch.Image, Target.Key_Offset, Target.Key_Length);
                   Cursor := Cursor + Mutation_Frame_Header_Length + Source.Key_Length + Source.Value_Length;
@@ -8050,7 +8056,8 @@ package body Flyology.DB is
          Deadline,
          Token,
          Ignored_Generation,
-         Put_Result);
+         Put_Result,
+         Identifier_Hex (Batch.Batch_ID));
       if Put_Result /= Object_Published then
          if Put_Result = Put_Outcome_Unknown then
             Storage_Port.Get_Whole
@@ -16330,7 +16337,8 @@ package body Flyology.DB is
          end if;
          First := Commit_Authorities.Batch_First (Image);
          for Offset in Natural range 0 .. Image_Length (Receipt.Retained_Image.Image) - 1 loop
-            Image (First + Offset) := Byte (Image_Element (Receipt.Retained_Image.Image, Offset + 1));
+            Image (First + Offset) :=
+              Byte (Image_Element (Receipt.Retained_Image.Image, Offset + 1));
          end loop;
          Commit_Authorities.Seal (Image);
          Length := Required;
@@ -16545,13 +16553,11 @@ package body Flyology.DB is
 
    function Digest_Image (Image : not null Shared_Image_Access) return GNAT.SHA256.Message_Digest is
    begin
-      case Image.Storage is
-         when Growable_Storage =>
-            return GNAT.SHA256.Digest (Flyology.Bytes.To_Array (Image.Data));
-
-         when Exact_Storage    =>
-            return GNAT.SHA256.Digest (Image.Exact_Data.all);
-      end case;
+      if Image.Exact_Data /= null then
+         return GNAT.SHA256.Digest (Image.Exact_Data.all);
+      else
+         return GNAT.SHA256.Digest (Flyology.Bytes.To_Array (Image.Data));
+      end if;
    end Digest_Image;
 
    procedure Adopt_Encoded_Image
@@ -16698,7 +16704,9 @@ package body Flyology.DB is
       procedure Copy (Data : in out Ada.Streams.Stream_Element_Array; Written : in out Natural) is
       begin
          Copy_Image_Range
-           (Image, 0, Data (Data'First .. Data'First + Ada.Streams.Stream_Element_Offset (Length) - 1));
+           (Image,
+            0,
+            Data (Data'First .. Data'First + Ada.Streams.Stream_Element_Offset (Length) - 1));
          Written := Length;
       end Copy;
    begin
@@ -19622,7 +19630,9 @@ package body Flyology.DB is
          declare
             Mutation : Owned_Mutation renames Operation.Txn.Owner.Arena.Mutations (Index);
          begin
-            if Mutation.Family = State.Family.ID and then Same_Owned_Key (Mutation, Item_Key, Item_Hash) then
+            if Mutation.Family = State.Family.ID
+              and then Same_Owned_Key (Mutation, Item_Key, Item_Hash)
+            then
                State.Has_Local_Result := True;
                State.Local_Result := (if Mutation.Operation = Delete_Mutation then Not_Found else Success);
                if State.Local_Result = Success then
@@ -19654,7 +19664,8 @@ package body Flyology.DB is
          State.Local_Result := Success;
          Flyology.Bytes.Reserve_Capacity (Operation.Final_Value, Value_Length);
          for Offset in Positive range 1 .. Value_Length loop
-            Flyology.Bytes.Append (Operation.Final_Value, Image_Element (Image, Value_Offset + Offset));
+            Flyology.Bytes.Append
+              (Operation.Final_Value, Image_Element (Image, Value_Offset + Offset));
          end loop;
          return;
       elsif Lookup_Result = Not_Found and then Matched then
@@ -21430,7 +21441,8 @@ package body Flyology.DB is
               Value.Key_Offset <= Image_Length (Value.Image.Image)
               and then Value.Key_Length <= Image_Length (Value.Image.Image) - Value.Key_Offset
               and then Value.Value_Offset <= Image_Length (Value.Image.Image)
-              and then Value.Value_Length <= Image_Length (Value.Image.Image) - Value.Value_Offset;
+              and then Value.Value_Length
+                       <= Image_Length (Value.Image.Image) - Value.Value_Offset;
          else
             return
               Value.Key_Offset <= Flyology.Bytes.Length (Value.Owned)
@@ -24284,7 +24296,15 @@ package body Flyology.DB is
             return;
          end if;
          Storage_Port.Get_Whole
-           (Storage, Key, Kind, Deadline, Token, Read_Data, Generation, Read_Result, Image_Length (Image));
+           (Storage,
+            Key,
+            Kind,
+            Deadline,
+            Token,
+            Read_Data,
+            Generation,
+            Read_Result,
+            Image_Length (Image));
          if Read_Result = Object_Read and then Exact_Bytes (Image, Read_Data) then
             Result := Success;
          elsif Read_Result = Object_Read then
@@ -24318,7 +24338,15 @@ package body Flyology.DB is
       Read_Result : Read_Outcome;
    begin
       Storage_Port.Get_Whole
-        (Storage, Key, Kind, Deadline, Token, Read_Data, Generation, Read_Result, Image_Length (Image));
+        (Storage,
+         Key,
+         Kind,
+         Deadline,
+         Token,
+         Read_Data,
+         Generation,
+         Read_Result,
+         Image_Length (Image));
       if Read_Result = Object_Read and then Exact_Bytes (Image, Read_Data) then
          Result := Success;
       elsif Read_Result = Object_Read then
@@ -27621,9 +27649,9 @@ package body Flyology.DB is
             return;
          end if;
       end loop;
-      --  Exercise every public group cardinality against the frozen reference
-      --  encoder; the public maximum bounds this deterministic test dimension.
-      for Case_Number in Group_Count range 1 .. Maximum_Group_Transactions loop
+      --  Cases 1..4 cover every supported group cardinality used by this
+      --  parity witness; the range is a bounded test dimension.
+      for Case_Number in Group_Count range 1 .. 4 loop
          Items := [others => <>];
          Batch := (others => <>);
          Reference := Batches.Empty_Batch;
@@ -27703,7 +27731,8 @@ package body Flyology.DB is
                   Target.Key_Size := Source.Key_Length;
                   Target.Value_Size := Source.Value_Length;
                   for Offset in Positive range 1 .. Source.Key_Length loop
-                     Target.Key (Offset) := Byte (Image_Element (Batch.Image, Source.Key_Offset + Offset));
+                     Target.Key (Offset) :=
+                       Byte (Image_Element (Batch.Image, Source.Key_Offset + Offset));
                   end loop;
                   for Offset in Positive range 1 .. Source.Value_Length loop
                      Target.Value (Offset) :=

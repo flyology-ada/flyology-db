@@ -1309,6 +1309,26 @@ package body Flyology.DB.Engine_Tests is
          raise Program_Error with "encoder allocation failure reached storage publication";
       end if;
 
+      Before := Current_Ownership;
+      Begin_Transaction (Item, Numbered_TX_ID (28_001), Txn, Result);
+      Put (Item, Txn, 1, To_Key ([3]), To_Value ([3]), Result);
+      Testing.Publication_Counts (Context, Before_Batch, Before_Head);
+      Testing.Fail_Next_Allocation (Testing.Runtime_Batch_Image);
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Capacity_Exceeded, "exact batch image allocation failure was not typed capacity");
+      if Receipt_Transaction_ID (Receipt) /= Numbered_TX_ID (28_001)
+        or else Receipt_Batch_ID (Receipt) /= Numbered_ID (28_001)
+      then
+         raise Program_Error with "exact batch image allocation failure lost stable receipt identity";
+      end if;
+      Rollback (Txn, Result);
+      Expect (Result, Invalid_State, "exact batch image allocation failure left transaction active");
+      Testing.Publication_Counts (Context, After_Batch, After_Head);
+      if After_Batch /= Before_Batch or else After_Head /= Before_Head then
+         raise Program_Error with "exact batch image allocation failure reached storage publication";
+      end if;
+      Expect_No_Owner_Growth (Before, "exact batch image allocation failure");
+
       Begin_Transaction (Item, TX_ID (30), Txn, Result);
       Put (Item, Txn, 1, To_Key ([4]), To_Value ([4]), Result);
       Testing.Publication_Counts (Context, Before_Batch, Before_Head);
