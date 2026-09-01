@@ -10,7 +10,6 @@ compilation:
 dependencies:
   apm:
     - path: ./agent-packages/repository
-    - path: ./agent-packages/website
     - git: https://github.com/flyology-ada/agents.git
       path: packages/profiles/ada-library
       ref: main
