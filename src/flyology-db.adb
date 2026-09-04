@@ -3125,48 +3125,6 @@ package body Flyology.DB is
          Incarnation := Stamp;
       end Initialize;
 
-      function Same_History_Key
-        (Candidate : Owned_Mutation; Batch : Runtime_Batch; Mutation : Runtime_Mutation) return Boolean is
-      begin
-         if Batch.Image = null
-           or else Candidate.Family /= Mutation.Family
-           or else Candidate.Key_Length /= Mutation.Key_Length
-         then
-            return False;
-         elsif Candidate.Key_Length = 0 then
-            return True;
-         end if;
-         for Offset in Natural range 0 .. Candidate.Key_Length - 1 loop
-            if Flyology.Bytes.Element (Candidate.Payload, Offset + 1)
-              /= Image_Element (Batch.Image, Mutation.Key_Offset + Offset + 1)
-            then
-               return False;
-            end if;
-         end loop;
-         return True;
-      end Same_History_Key;
-
-      function Same_History_Key
-        (Candidate : Owned_Point_Read; Batch : Runtime_Batch; Mutation : Runtime_Mutation) return Boolean is
-      begin
-         if Batch.Image = null
-           or else Candidate.Family /= Mutation.Family
-           or else Candidate.Key_Length /= Mutation.Key_Length
-         then
-            return False;
-         elsif Candidate.Key_Length = 0 then
-            return True;
-         end if;
-         for Offset in Natural range 0 .. Candidate.Key_Length - 1 loop
-            if Flyology.Bytes.Element (Candidate.Key, Offset + 1)
-              /= Image_Element (Batch.Image, Mutation.Key_Offset + Offset + 1)
-            then
-               return False;
-            end if;
-         end loop;
-         return True;
-      end Same_History_Key;
-
       function History_Key_Before_Bound
         (Batch      : Runtime_Batch;
          Mutation   : Runtime_Mutation;
@@ -3210,6 +3168,232 @@ package body Flyology.DB is
                                (Batch, Mutation, Candidate.Upper, Candidate.Upper_Length));
       end History_Key_In_Range;
 
+      function Point_Key_Hash (Candidate : Owned_Point_Read) return Interfaces.Unsigned_64 is
+         --  This is the same transient FNV-1a ordering key used by the runtime
+         --  mutation lookup. Exact bytes below remain authoritative.
+         Prime  : constant Interfaces.Unsigned_64 := 1_099_511_628_211;
+         Result : Interfaces.Unsigned_64 := 14_695_981_039_346_656_037;
+      begin
+         if Candidate.Key_Length > 0 then
+            for Offset in Positive range 1 .. Candidate.Key_Length loop
+               Result :=
+                 (Result xor Interfaces.Unsigned_64 (Flyology.Bytes.Element (Candidate.Key, Offset)))
+                 * Prime;
+            end loop;
+         end if;
+         return Result;
+      end Point_Key_Hash;
+
+      function Compare_History_Key
+        (Batch     : Runtime_Batch;
+         Mutation  : Runtime_Mutation;
+         Candidate : Owned_Mutation;
+         Valid     : out Boolean) return Integer
+      is
+      begin
+         Valid := Batch.Image /= null;
+         if not Valid then
+            return 0;
+         elsif Mutation.Family < Candidate.Family then
+            return -1;
+         elsif Mutation.Family > Candidate.Family then
+            return 1;
+         elsif Mutation.Key_Hash < Candidate.Key_Hash then
+            return -1;
+         elsif Mutation.Key_Hash > Candidate.Key_Hash then
+            return 1;
+         elsif Mutation.Key_Length < Candidate.Key_Length then
+            return -1;
+         elsif Mutation.Key_Length > Candidate.Key_Length then
+            return 1;
+         end if;
+         if Mutation.Key_Length > 0 then
+            for Offset in Natural range 0 .. Mutation.Key_Length - 1 loop
+               declare
+                  History_Byte : constant Ada.Streams.Stream_Element :=
+                    Image_Element (Batch.Image, Mutation.Key_Offset + Offset + 1);
+                  Candidate_Byte : constant Ada.Streams.Stream_Element :=
+                    Flyology.Bytes.Element (Candidate.Payload, Offset + 1);
+               begin
+                  if History_Byte < Candidate_Byte then
+                     return -1;
+                  elsif History_Byte > Candidate_Byte then
+                     return 1;
+                  end if;
+               end;
+            end loop;
+         end if;
+         return 0;
+      exception
+         when others =>
+            Valid := False;
+            return 0;
+      end Compare_History_Key;
+
+      function Compare_History_Key
+        (Batch          : Runtime_Batch;
+         Mutation       : Runtime_Mutation;
+         Candidate      : Owned_Point_Read;
+         Candidate_Hash : Interfaces.Unsigned_64;
+         Valid          : out Boolean) return Integer
+      is
+      begin
+         Valid := Batch.Image /= null;
+         if not Valid then
+            return 0;
+         elsif Mutation.Family < Candidate.Family then
+            return -1;
+         elsif Mutation.Family > Candidate.Family then
+            return 1;
+         elsif Mutation.Key_Hash < Candidate_Hash then
+            return -1;
+         elsif Mutation.Key_Hash > Candidate_Hash then
+            return 1;
+         elsif Mutation.Key_Length < Candidate.Key_Length then
+            return -1;
+         elsif Mutation.Key_Length > Candidate.Key_Length then
+            return 1;
+         end if;
+         if Mutation.Key_Length > 0 then
+            for Offset in Natural range 0 .. Mutation.Key_Length - 1 loop
+               declare
+                  History_Byte : constant Ada.Streams.Stream_Element :=
+                    Image_Element (Batch.Image, Mutation.Key_Offset + Offset + 1);
+                  Candidate_Byte : constant Ada.Streams.Stream_Element :=
+                    Flyology.Bytes.Element (Candidate.Key, Offset + 1);
+               begin
+                  if History_Byte < Candidate_Byte then
+                     return -1;
+                  elsif History_Byte > Candidate_Byte then
+                     return 1;
+                  end if;
+               end;
+            end loop;
+         end if;
+         return 0;
+      exception
+         when others =>
+            Valid := False;
+            return 0;
+      end Compare_History_Key;
+
+      function Batch_Has_Post_Snapshot_Key
+        (Batch : Runtime_Batch; Candidate : Owned_Mutation; Snapshot_At : Sequence_Number) return Boolean
+      is
+         Low        : Natural := 0;
+         Remaining  : Natural := Batch.Mutation_Total;
+         Comparison : Integer;
+         Valid      : Boolean;
+      begin
+         while Remaining > 0 loop
+            declare
+               Step     : constant Natural := Remaining / 2;
+               Position : constant Positive := Positive (Low + Step + 1);
+               Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+            begin
+               if Indexed.Mutation_Index > Batch.Mutation_Total then
+                  return True;
+               elsif Indexed.Sequence < Batch.First_Sequence
+                 or else Indexed.Sequence > Batch.Last_Sequence
+               then
+                  return True;
+               end if;
+               Comparison :=
+                 Compare_History_Key
+                   (Batch, Batch.Mutations (Indexed.Mutation_Index), Candidate, Valid);
+               if not Valid then
+                  return True;
+               elsif Comparison < 0 then
+                  Low := Low + Step + 1;
+                  Remaining := Remaining - Step - 1;
+               else
+                  Remaining := Step;
+               end if;
+            end;
+         end loop;
+         if Low >= Batch.Mutation_Total then
+            return False;
+         end if;
+         declare
+            Position : constant Positive := Positive (Low + 1);
+            Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+         begin
+            if Indexed.Mutation_Index > Batch.Mutation_Total
+              or else Indexed.Sequence < Batch.First_Sequence
+              or else Indexed.Sequence > Batch.Last_Sequence
+            then
+               return True;
+            end if;
+            Comparison :=
+              Compare_History_Key
+                (Batch, Batch.Mutations (Indexed.Mutation_Index), Candidate, Valid);
+            return not Valid or else (Comparison = 0 and then Indexed.Sequence > Snapshot_At);
+         end;
+      end Batch_Has_Post_Snapshot_Key;
+
+      function Batch_Has_Post_Snapshot_Key
+        (Batch : Runtime_Batch; Candidate : Owned_Point_Read; Snapshot_At : Sequence_Number) return Boolean
+      is
+         Candidate_Hash : constant Interfaces.Unsigned_64 := Point_Key_Hash (Candidate);
+         Low            : Natural := 0;
+         Remaining      : Natural := Batch.Mutation_Total;
+         Comparison     : Integer;
+         Valid          : Boolean;
+      begin
+         while Remaining > 0 loop
+            declare
+               Step     : constant Natural := Remaining / 2;
+               Position : constant Positive := Positive (Low + Step + 1);
+               Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+            begin
+               if Indexed.Mutation_Index > Batch.Mutation_Total then
+                  return True;
+               elsif Indexed.Sequence < Batch.First_Sequence
+                 or else Indexed.Sequence > Batch.Last_Sequence
+               then
+                  return True;
+               end if;
+               Comparison :=
+                 Compare_History_Key
+                   (Batch,
+                    Batch.Mutations (Indexed.Mutation_Index),
+                    Candidate,
+                    Candidate_Hash,
+                    Valid);
+               if not Valid then
+                  return True;
+               elsif Comparison < 0 then
+                  Low := Low + Step + 1;
+                  Remaining := Remaining - Step - 1;
+               else
+                  Remaining := Step;
+               end if;
+            end;
+         end loop;
+         if Low >= Batch.Mutation_Total then
+            return False;
+         end if;
+         declare
+            Position : constant Positive := Positive (Low + 1);
+            Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+         begin
+            if Indexed.Mutation_Index > Batch.Mutation_Total
+              or else Indexed.Sequence < Batch.First_Sequence
+              or else Indexed.Sequence > Batch.Last_Sequence
+            then
+               return True;
+            end if;
+            Comparison :=
+              Compare_History_Key
+                (Batch,
+                 Batch.Mutations (Indexed.Mutation_Index),
+                 Candidate,
+                 Candidate_Hash,
+                 Valid);
+            return not Valid or else (Comparison = 0 and then Indexed.Sequence > Snapshot_At);
+         end;
+      end Batch_Has_Post_Snapshot_Key;
+
       function Has_Transaction_Conflict
         (Arena : Transaction_Arena_Access; Snapshot_At : Sequence_Number) return Boolean
       is
@@ -3223,40 +3407,60 @@ package body Flyology.DB is
             declare
                Batch : Runtime_Batch renames History_Batches (History_Index);
             begin
-               if Batch.Image = null or else Batch.Transactions = null or else Batch.Mutations = null then
+               if Batch.Image = null
+                 or else Batch.Transactions = null
+                 or else Batch.Mutations = null
+                 or else Batch.Lookup = null
+                 or else Batch.Transaction_Total = 0
+                 or else Batch.Mutation_Total = 0
+                 or else Batch.Transaction_Total /= Batch.Transactions'Length
+                 or else Batch.Mutation_Total /= Batch.Mutations'Length
+                 or else Batch.Mutation_Total /= Batch.Lookup'Length
+                 or else Batch.Transactions'First /= 1
+                 or else Batch.Mutations'First /= 1
+                 or else Batch.Lookup'First /= 1
+                 or else Batch.First_Sequence = 0
+                 or else Batch.Last_Sequence < Batch.First_Sequence
+                 or else Batch.Last_Sequence - Batch.First_Sequence
+                         /= Sequence_Number (Batch.Transaction_Total - 1)
+               then
                   return True;
-               end if;
-               for Transaction of Batch.Transactions (1 .. Batch.Transaction_Total) loop
-                  if Transaction.Sequence > Snapshot_At then
-                     for Mutation_Index in
-                       Positive
-                         range Transaction.First_Mutation
-                               .. Transaction.First_Mutation + Transaction.Mutation_Count - 1
-                     loop
-                        for Candidate_Index in Positive range 1 .. Arena.Count loop
-                           if Same_History_Key
-                                (Arena.Mutations (Candidate_Index), Batch, Batch.Mutations (Mutation_Index))
+               elsif Batch.Last_Sequence > Snapshot_At then
+                  for Candidate_Index in Positive range 1 .. Arena.Count loop
+                     if Batch_Has_Post_Snapshot_Key
+                          (Batch, Arena.Mutations (Candidate_Index), Snapshot_At)
+                     then
+                        return True;
+                     end if;
+                  end loop;
+                  Point := Arena.Point_Reads;
+                  while Point /= null loop
+                     if Batch_Has_Post_Snapshot_Key (Batch, Point.all, Snapshot_At) then
+                        return True;
+                     end if;
+                     Point := Point.Next;
+                  end loop;
+                  Scan := Arena.Scan_Ranges;
+                  while Scan /= null loop
+                     for Position in Positive range 1 .. Batch.Mutation_Total loop
+                        declare
+                           Indexed : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+                        begin
+                           if Indexed.Mutation_Index > Batch.Mutation_Total
+                             or else Indexed.Sequence = 0
+                           then
+                              return True;
+                           elsif Indexed.Sequence > Snapshot_At
+                             and then History_Key_In_Range
+                                        (Scan.all, Batch, Batch.Mutations (Indexed.Mutation_Index))
                            then
                               return True;
                            end if;
-                        end loop;
-                        Point := Arena.Point_Reads;
-                        while Point /= null loop
-                           if Same_History_Key (Point.all, Batch, Batch.Mutations (Mutation_Index)) then
-                              return True;
-                           end if;
-                           Point := Point.Next;
-                        end loop;
-                        Scan := Arena.Scan_Ranges;
-                        while Scan /= null loop
-                           if History_Key_In_Range (Scan.all, Batch, Batch.Mutations (Mutation_Index)) then
-                              return True;
-                           end if;
-                           Scan := Scan.Next;
-                        end loop;
+                        end;
                      end loop;
-                  end if;
-               end loop;
+                     Scan := Scan.Next;
+                  end loop;
+               end if;
             end;
          end loop;
          return False;
