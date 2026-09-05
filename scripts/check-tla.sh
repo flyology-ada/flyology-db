@@ -2301,6 +2301,371 @@ done
 grep -q 'All 13 obligations proved.' \
   "$temporary_root/tlaps-lazy-checkpoint-read.log"
 
+#  Four independent transactions, including one finite-deadline singleton,
+#  are bounded model geometry for an opt-in private coalescing prototype. They
+#  are not a public cohort size, wait window, deadline policy, or scheduler.
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 \
+  -metadir "$temporary_root/tlc-independent-coalescing-states" \
+  -config IndependentCommitCoalescing.cfg IndependentCommitCoalescing \
+  >"$temporary_root/tlc-independent-coalescing.log" 2>&1
+independent_coalescing_tlc_status=$?
+set -e
+if test "$independent_coalescing_tlc_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA independent coalescing positive TLC exited $independent_coalescing_tlc_status" \
+    >&2
+  cat "$temporary_root/tlc-independent-coalescing.log" >&2
+  exit "$independent_coalescing_tlc_status"
+fi
+if ! grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-independent-coalescing.log"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA independent coalescing completion sentinel missing' >&2
+  cat "$temporary_root/tlc-independent-coalescing.log" >&2
+  exit 1
+fi
+if grep -q '^Warning:' "$temporary_root/tlc-independent-coalescing.log"
+then
+  printf '%s\n' 'Flyology.DB TLA independent coalescing positive TLC warned' >&2
+  cat "$temporary_root/tlc-independent-coalescing.log" >&2
+  exit 1
+fi
+independent_coalescing_state_lines=$(grep -E \
+  '^[1-9][0-9]* states generated, [1-9][0-9]* distinct states found, 0 states left on queue[.]$' \
+  "$temporary_root/tlc-independent-coalescing.log" || :)
+if test -z "$independent_coalescing_state_lines" || \
+  test "$(printf '%s\n' "$independent_coalescing_state_lines" | wc -l | tr -d ' ')" -ne 1
+then
+  printf '%s\n' \
+    'Flyology.DB TLA independent coalescing state geometry missing or ambiguous' >&2
+  grep 'states generated' "$temporary_root/tlc-independent-coalescing.log" >&2 || :
+  exit 1
+fi
+independent_coalescing_generated=$(printf '%s\n' "$independent_coalescing_state_lines" | awk '{print $1}')
+independent_coalescing_states=$(printf '%s\n' "$independent_coalescing_state_lines" | awk '{print $4}')
+independent_coalescing_depth_lines=$(grep -E \
+  '^The depth of the complete state graph search is [1-9][0-9]*[.]$' \
+  "$temporary_root/tlc-independent-coalescing.log" || :)
+if test -z "$independent_coalescing_depth_lines" || \
+  test "$(printf '%s\n' "$independent_coalescing_depth_lines" | wc -l | tr -d ' ')" -ne 1
+then
+  printf '%s\n' \
+    'Flyology.DB TLA independent coalescing depth missing or ambiguous' >&2
+  grep 'depth of the complete state graph search' \
+    "$temporary_root/tlc-independent-coalescing.log" >&2 || :
+  exit 1
+fi
+independent_coalescing_depth=$(printf '%s\n' "$independent_coalescing_depth_lines" | \
+  sed 's/^The depth of the complete state graph search is \([1-9][0-9]*\)[.]$/\1/')
+for geometry_value in "$independent_coalescing_generated" \
+  "$independent_coalescing_states" "$independent_coalescing_depth"
+do
+  case "$geometry_value" in
+    ''|0|*[!0-9]*)
+      printf '%s\n' \
+        'Flyology.DB TLA independent coalescing geometry is not positive numeric' >&2
+      printf '%s\n' "$independent_coalescing_state_lines" \
+        "$independent_coalescing_depth_lines" >&2
+      exit 1
+      ;;
+  esac
+done
+if test "$independent_coalescing_generated" -ne 4690375 || \
+  test "$independent_coalescing_states" -ne 435678 || \
+  test "$independent_coalescing_depth" -ne 28
+then
+  printf '%s\n' \
+    'Flyology.DB TLA independent coalescing state geometry changed:' \
+    "$independent_coalescing_state_lines" \
+    "$independent_coalescing_depth_lines" >&2
+  exit 1
+fi
+
+independent_coalescing_final_coverage="$temporary_root/independent-coalescing-final-coverage.txt"
+if ! awk '
+  /^Model checking completed\. No error has been found\.$/ {
+    completed++
+    next
+  }
+  /^The coverage statistics at / {
+    if (completed == 0) {
+      next
+    }
+    if (completed != 1 || capture || reports != 0) {
+      invalid = 1
+      next
+    }
+    block = ""
+    capture = 1
+    reports++
+  }
+  capture {
+    block = block $0 ORS
+  }
+  capture && /^End of statistics/ {
+    final = block
+    capture = 0
+  }
+  END {
+    if (invalid || completed != 1 || reports != 1 || capture || final == "") {
+      exit 1
+    }
+    printf "%s", final
+  }
+' "$temporary_root/tlc-independent-coalescing.log" \
+  >"$independent_coalescing_final_coverage"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA independent coalescing final coverage report missing or incomplete' >&2
+  exit 1
+fi
+independent_coalescing_action_report="$temporary_root/independent-coalescing-action-coverage.txt"
+: >"$independent_coalescing_action_report"
+for action in AdmitSingleton RejectConflict CancelBeforeAdmission \
+  ExpireBeforeAdmission FallbackFiniteDeadline FreezeCohort \
+  PublishMemberBatch ConfirmAmbiguousBatch SplitFailedMember \
+  PublishCohortHead LoseHeadResponse ObserveSuccess \
+  ObserveHeadPreconditionFailure RetainUnknownAtPredecessor \
+  ObserveConclusiveSuccessor ResolveMember ExportMemberAuthority \
+  CrashLoseVolatileReceipts ImportMemberAuthority RejectMalformedAuthority \
+  RejectSwappedAuthority RecoverCohortChain RejectMalformedRecovery \
+  CompleteCohort
+do
+  independent_coalescing_action_lines=$(grep -E "^<$action " \
+    "$independent_coalescing_final_coverage" || :)
+  if test -z "$independent_coalescing_action_lines"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA independent coalescing action $action failed: missing" >&2
+    exit 1
+  fi
+  independent_coalescing_action_unique_lines=$(
+    printf '%s\n' "$independent_coalescing_action_lines" |
+      LC_ALL=C sort -u
+  )
+  if test "$(printf '%s\n' "$independent_coalescing_action_unique_lines" | \
+    wc -l | tr -d ' ')" -ne 1
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA independent coalescing action $action failed: conflicting coverage" \
+      >&2
+    printf '%s\n' "$independent_coalescing_action_lines" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$independent_coalescing_action_unique_lines" |
+    grep -Eq "^<$action .*: [0-9][0-9]*(:[0-9]+)?$"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA independent coalescing action $action failed: malformed or nonnumeric" \
+      >&2
+    printf '%s\n' "$independent_coalescing_action_lines" >&2
+    exit 1
+  fi
+  independent_coalescing_action_counts=${independent_coalescing_action_unique_lines##*: }
+  independent_coalescing_action_count=${independent_coalescing_action_counts%%:*}
+  case "$independent_coalescing_action_count" in
+    ''|*[!0-9]*)
+      printf '%s\n' \
+        "Flyology.DB TLA independent coalescing action $action failed: malformed or nonnumeric" \
+        >&2
+      printf '%s\n' "$independent_coalescing_action_lines" >&2
+      exit 1
+      ;;
+    0*)
+      printf '%s\n' \
+        "Flyology.DB TLA independent coalescing action $action failed: zero coverage" >&2
+      printf '%s\n' "$independent_coalescing_action_lines" >&2
+      exit 1
+      ;;
+  esac
+  printf '    %s %s\n' "$action" "$independent_coalescing_action_count" \
+    >>"$independent_coalescing_action_report"
+done
+independent_expected_action_report="$temporary_root/independent-coalescing-action-coverage.expected.txt"
+cat >"$independent_expected_action_report" <<'EOF'
+    AdmitSingleton 2510
+    RejectConflict 29395
+    CancelBeforeAdmission 29383
+    ExpireBeforeAdmission 21627
+    FallbackFiniteDeadline 21627
+    FreezeCohort 2525
+    PublishMemberBatch 13500
+    ConfirmAmbiguousBatch 6750
+    SplitFailedMember 3240
+    PublishCohortHead 3375
+    LoseHeadResponse 6750
+    ObserveSuccess 4095
+    ObserveHeadPreconditionFailure 3375
+    RetainUnknownAtPredecessor 19970
+    ObserveConclusiveSuccessor 10935
+    ResolveMember 31030
+    ExportMemberAuthority 16615
+    CrashLoseVolatileReceipts 13595
+    ImportMemberAuthority 25175
+    RejectMalformedAuthority 25175
+    RejectSwappedAuthority 25175
+    RecoverCohortChain 26605
+    RejectMalformedRecovery 89155
+    CompleteCohort 4095
+EOF
+if ! cmp "$independent_expected_action_report" \
+  "$independent_coalescing_action_report"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA independent coalescing action coverage changed:' >&2
+  cat "$independent_coalescing_action_report" >&2
+  exit 1
+fi
+
+for probe in \
+  IndependentCommitCoalescingPartialVisibilityProbe:WholeCohortVisibility \
+  IndependentCommitCoalescingReplayProbe:ResolutionDoesNotReplay \
+  IndependentCommitCoalescingStaleAdmissionProbe:FencingStopsAdmission \
+  IndependentCommitCoalescingAuthorityProbe:ImportedAuthorityIsValid \
+  IndependentCommitCoalescingRecoveryProbe:RecoveryIsExact \
+  IndependentCommitCoalescingParkedLeakProbe:ParkedSuffixWaitsForPrefix
+do
+  probe_module=${probe%%:*}
+  probe_invariant=${probe#*:}
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-$probe_module-states" \
+    -config "$probe_module.cfg" "$probe_module" \
+    >"$temporary_root/tlc-$probe_module.log" 2>&1
+  probe_status=$?
+  set -e
+  if test "$probe_status" -ne 12
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA independent coalescing probe $probe_module exited $probe_status" >&2
+    cat "$temporary_root/tlc-$probe_module.log" >&2
+    if test "$probe_status" -eq 0
+    then
+      exit 1
+    fi
+    exit "$probe_status"
+  fi
+  if ! grep -q "Invariant $probe_invariant is violated." \
+    "$temporary_root/tlc-$probe_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA independent coalescing probe $probe_module missed $probe_invariant" >&2
+    cat "$temporary_root/tlc-$probe_module.log" >&2
+    exit 1
+  fi
+  if grep -q '^Warning:' "$temporary_root/tlc-$probe_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA independent coalescing probe $probe_module warned" >&2
+    cat "$temporary_root/tlc-$probe_module.log" >&2
+    exit 1
+  fi
+done
+
+for witness in \
+  IndependentCommitCoalescingSplitWitness:SplitPending \
+  IndependentCommitCoalescingParkedSplitWitness:ParkedSplitPending \
+  IndependentCommitCoalescingAuthorityWitness:AuthorityRecoveryPending \
+  IndependentCommitCoalescingSiblingAuthorityWitness:SiblingAuthorityPending \
+  IndependentCommitCoalescingEmptyRecoveryWitness:EmptyRecoveryPending \
+  IndependentCommitCoalescingParkedPreconditionWitness:ParkedPreconditionPending \
+  IndependentCommitCoalescingParkedResolutionWitness:ParkedResolutionPending \
+  IndependentCommitCoalescingParkedSuccessorWitness:ParkedSuccessorPending
+do
+  witness_module=${witness%%:*}
+  witness_invariant=${witness#*:}
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-$witness_module-states" \
+    -config "$witness_module.cfg" "$witness_module" \
+    >"$temporary_root/tlc-$witness_module.log" 2>&1
+  witness_status=$?
+  set -e
+  if test "$witness_status" -ne 12
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA independent coalescing witness $witness_module exited $witness_status" >&2
+    cat "$temporary_root/tlc-$witness_module.log" >&2
+    if test "$witness_status" -eq 0
+    then
+      exit 1
+    fi
+    exit "$witness_status"
+  fi
+  if ! grep -q "Invariant $witness_invariant is violated." \
+    "$temporary_root/tlc-$witness_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA independent coalescing witness $witness_module missed $witness_invariant" >&2
+    cat "$temporary_root/tlc-$witness_module.log" >&2
+    exit 1
+  fi
+  if grep -q '^Warning:' "$temporary_root/tlc-$witness_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA independent coalescing witness $witness_module warned" >&2
+    cat "$temporary_root/tlc-$witness_module.log" >&2
+    exit 1
+  fi
+done
+
+set +e
+"$tlapm" --cache-dir "$temporary_root/tlapm-independent-coalescing-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/IndependentCommitCoalescingSafetyProof.tla" \
+  >"$temporary_root/tlaps-independent-coalescing.log" 2>&1
+independent_coalescing_tlaps_status=$?
+set -e
+if test "$independent_coalescing_tlaps_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA independent coalescing TLAPS exited $independent_coalescing_tlaps_status" \
+    >&2
+  cat "$temporary_root/tlaps-independent-coalescing.log" >&2
+  exit "$independent_coalescing_tlaps_status"
+fi
+if grep -q '^Warning:' "$temporary_root/tlaps-independent-coalescing.log"
+then
+  printf '%s\n' 'Flyology.DB TLA independent coalescing TLAPS warned' >&2
+  cat "$temporary_root/tlaps-independent-coalescing.log" >&2
+  exit 1
+fi
+independent_coalescing_tlaps_lines=$(grep -E \
+  '^(\[INFO\]: )?All [1-9][0-9]* obligations proved[.]$' \
+  "$temporary_root/tlaps-independent-coalescing.log" || :)
+if test -z "$independent_coalescing_tlaps_lines" || \
+  test "$(printf '%s\n' "$independent_coalescing_tlaps_lines" | wc -l | tr -d ' ')" -ne 1
+then
+  printf '%s\n' \
+    'Flyology.DB TLA independent coalescing TLAPS summary missing or ambiguous' >&2
+  cat "$temporary_root/tlaps-independent-coalescing.log" >&2
+  exit 1
+fi
+independent_coalescing_obligations=$(printf '%s\n' \
+  "$independent_coalescing_tlaps_lines" | \
+  sed -E 's/^(\[INFO\]: )?All ([1-9][0-9]*) obligations proved[.]$/\2/')
+case "$independent_coalescing_obligations" in
+  ''|0|*[!0-9]*)
+    printf '%s\n' \
+      'Flyology.DB TLA independent coalescing TLAPS total is not positive numeric' >&2
+    cat "$temporary_root/tlaps-independent-coalescing.log" >&2
+    exit 1
+    ;;
+esac
+if test "$independent_coalescing_obligations" -ne 16
+then
+  printf '%s\n' \
+    'Flyology.DB TLA independent coalescing obligation total changed:' >&2
+  cat "$temporary_root/tlaps-independent-coalescing.log" >&2
+  exit 1
+fi
+
 if test "${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}" = 1
 then
   trace_inventory_before_copy="$temporary_root/trace-inventory.before-copy"
@@ -2362,6 +2727,17 @@ printf '%s\n' "  Durable commit authority accepted/rejected crash-import witness
 printf '%s\n' "  Durable commit authority malformed-swap probe detected"
 printf '%s\n' "  Durable commit authority TLAPS 10/10 obligations"
 printf '%s\n' "  TLAPS 23/23 obligations"
+printf '%s\n' \
+  "  Independent coalescing TLC $independent_coalescing_generated generated," \
+  "        $independent_coalescing_states distinct, depth $independent_coalescing_depth"
+printf '%s\n' "  Independent coalescing action coverage"
+cat "$independent_coalescing_action_report"
+printf '%s\n' \
+  "  Independent coalescing TLAPS $independent_coalescing_obligations/16 obligations"
+printf '%s\n' \
+  "  Independent coalescing split/authority/empty-recovery/parked-resolution/fence witnesses reached"
+printf '%s\n' \
+  "  Negative independent-coalescing visibility/replay/fence/authority/recovery probes detected"
 printf '%s\n' "  Negative stale-publication probe detected"
 printf '%s\n' "  Negative overlapping-transaction ownership probe detected"
 printf '%s\n' "  Deep committed/failed reconciliation traces canonical"
