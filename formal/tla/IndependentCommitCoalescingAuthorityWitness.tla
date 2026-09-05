@@ -2,12 +2,13 @@
 EXTENDS IndependentCommitCoalescing
 
 AuthorityRecoveryComplete ==
-    /\ lastAction = "RecoverCohortChain"
+    /\ lastAction = "ResolveMember"
     /\ crashObserved
     /\ ~headAttemptEntered
     /\ visible = {T1, T2}
     /\ recovered = visible
-    /\ authorityState[T1] = "Imported"
+    /\ RecoveredChainIsExact
+    /\ authorityState[T1] = "Resolved"
     /\ IF importedAuthority[T1] \in AuthorityValue
        THEN importedAuthority[T1].member = T1
        ELSE FALSE
@@ -15,8 +16,7 @@ AuthorityRecoveryComplete ==
     /\ receipt[T1] = "Committed"
     /\ txnState[T2] = "Unknown"
     /\ receipt[T2] = "Unknown"
-    /\ cohort = {}
-    /\ headState = "Collecting"
+    /\ ResolvedAuthorityValidFor(T1, importedAuthority[T1])
     /\ batchPutCalls = 2
     /\ headPutCalls = 1
     /\ resolutionPutCalls = 0

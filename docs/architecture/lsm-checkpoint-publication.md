@@ -168,17 +168,22 @@ successful HEAD transition, and unreachable complete objects remain orphans.
 Only a complete Commit receipt classified `Outcome_Unknown` at `Head_Publication_Unknown` can be exported. The
 length query returns zero for every other receipt. Export writes one caller-owned buffer failure-atomically and
 retains the original database ID, member transaction ID and sequence, shared batch ID, complete expected and
-attempted HEAD fields, and exact batch-v1 bytes. Singleton Commit and every Commit_Group member are supported
-without assuming that transaction ID equals batch ID. No provider operation or publication occurs.
+attempted HEAD fields, and exact retained batch bytes. Version 1 pairs only with an ordinary batch-v1 image;
+version 2 pairs only with one independent-cohort batch-v2 singleton. Singleton Commit and every Commit_Group member
+retain their existing transaction/batch identity relation; an independent-cohort singleton requires its transaction
+ID to equal its distinct member batch ID. No provider operation or publication occurs.
 
-The private authority-v1 envelope is explicit big-endian data with distinct magic, version, kind, and flags; exact
-total and batch lengths; a header CRC-32C; and an object CRC-32C. It never serializes Ada enum positions, addresses,
-access values, refcounts, generations, incarnations, cancellation tokens, deadlines, or provider credentials.
-Import treats the bytes as untrusted, borrows them only for the call, validates the envelope and embedded batch under
-the open database's authenticated persisted limits, and requires exactly one matching member identity and sequence.
-Wrong database, malformed relation, checksum, truncation, trailing bytes, unsupported version, closed lifecycle,
-capacity, and allocation failures leave both the database and destination receipt unchanged. Success adopts one
-independently owned unknown receipt only after the complete candidate is decoded and validated.
+The private authority envelope is explicit big-endian data with distinct magic, version, kind, and flags; exact total
+and batch lengths; a header CRC-32C; and an object CRC-32C. Both versions retain the same fixed 360-byte header. It
+never serializes Ada enum positions, addresses, access values, refcounts, generations, incarnations, cancellation
+tokens, deadlines, or provider credentials. Import treats the bytes as untrusted, borrows them only for the call,
+validates the envelope and embedded batch under the open database's authenticated persisted limits, and requires
+exactly one matching member identity and sequence. Version 2 additionally requires the independent-coalescing
+profile and a claimed cohort span within the authenticated retained-history bound. Import remains structural and
+performs no provider request; only Resolve authenticates the complete maximal same-publication cohort chain recovered
+from object storage. Wrong database, malformed relation, checksum, truncation, trailing bytes, unsupported version,
+closed lifecycle, capacity, and allocation failures leave both the database and destination receipt unchanged.
+Success adopts one independently owned unknown receipt only after the complete candidate is decoded and validated.
 
 The imported receipt grants only the existing bounded read-only Commit `Resolve`; it does not authorize a second
 batch or HEAD publication, a replacement identity, or an application retry. Accepted and conclusive-rejected

@@ -46,6 +46,7 @@ package body Flyology.DB.Engine_Tests is
 
    use type Byte;
    use type Ada.Real_Time.Time;
+   use type Commit_Authorities.Decode_Status;
    use type Interfaces.Unsigned_16;
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
@@ -5485,7 +5486,14 @@ package body Flyology.DB.Engine_Tests is
             Expect (Result, Success, Label_Text & " profile rewrite failed");
          end if;
          Testing.Install_Cohort_History
-           (Context, DB_ID (230), ID (231), ID (232), Members, History_Case, Result);
+           (Context,
+            DB_ID (230),
+            ID (231),
+            ID (232),
+            Members,
+            History_Case,
+            Test_Operation_Timeout,
+            Result);
          Expect (Result, Success, Label_Text & " cohort fixture installation failed");
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          Open (Item, Context'Access, DB_ID (230), Test_Operation_Timeout, Result => Result);
@@ -5578,7 +5586,14 @@ package body Flyology.DB.Engine_Tests is
          Testing.Rewrite_Manifest_Profile (Context, ID (245), DB_ID (240), Result);
          Expect (Result, Success, "checkpoint cohort successor profile rewrite failed");
          Testing.Install_Cohort_History
-           (Context, DB_ID (240), ID (245), ID (246), 2, Valid_Cohort_History, Result);
+           (Context,
+            DB_ID (240),
+            ID (245),
+            ID (246),
+            2,
+            Valid_Cohort_History,
+            Test_Operation_Timeout,
+            Result);
          Expect (Result, Success, "checkpoint cohort fixture installation failed");
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          Open (Item, Context'Access, DB_ID (240), Test_Operation_Timeout, Result => Result);
@@ -6337,6 +6352,34 @@ package body Flyology.DB.Engine_Tests is
       Limited_Families : constant Column_Family_Configuration_Array :=
         [Configure_Column_Family (1, [Byte (Character'Pos ('l'))], 1, 1, 2, 1, 1)];
       Create_Info      : Create_Receipt;
+
+      function Authority_Database (Image : Byte_Array) return Commit_Authorities.Heads.Identifier is
+         Value : Commit_Authorities.Heads.Identifier;
+      begin
+         for Index in Value'Range loop
+            Value (Index) := Image (Image'First + 11 + Index);
+         end loop;
+         return Value;
+      end Authority_Database;
+
+      function Authority_Digest (Image : Byte_Array) return Interfaces.Unsigned_64 is
+         Result : Interfaces.Unsigned_64 := 16#CBF2_9CE4_8422_2325#;
+      begin
+         for Item of Image loop
+            Result := (Result xor Interfaces.Unsigned_64 (Item)) * 16#0000_0100_0000_01B3#;
+         end loop;
+         return Result;
+      end Authority_Digest;
+
+      function Authority_U64 (Image : Byte_Array; Position : Positive) return Interfaces.Unsigned_64 is
+         Result : Interfaces.Unsigned_64 := 0;
+      begin
+         for Offset in Natural range 0 .. 7 loop
+            Result :=
+              Interfaces.Shift_Left (Result, 8) or Interfaces.Unsigned_64 (Image (Position + Offset));
+         end loop;
+         return Result;
+      end Authority_U64;
    begin
       Bind_Context (Context, Backend, "memory-commit-authority");
       Bind_Context (Wrong_Context, Backend, "memory-commit-authority-wrong");
@@ -6542,6 +6585,29 @@ package body Flyology.DB.Engine_Tests is
          then
             raise Program_Error with "commit authority singleton did not match its independent golden header";
          end if;
+         declare
+            Metadata     : Commit_Authorities.Authority_Metadata;
+            Batch_First  : Positive;
+            Batch_Length : Natural;
+            Status       : Commit_Authorities.Decode_Status;
+         begin
+            Commit_Authorities.Decode
+              (Authority,
+               Authority_Database (Authority),
+               Metadata,
+               Batch_First,
+               Batch_Length,
+               Status);
+            if Status /= Commit_Authorities.Decoded then
+               raise Program_Error with "commit authority v1 golden did not decode";
+            end if;
+            Metadata.Format_Version := Commit_Authorities.Cohort_Authority_Format_Version;
+            if Commit_Authorities.Batch_Member_Valid
+                 (Metadata, Authority (Batch_First .. Batch_First + Batch_Length - 1))
+            then
+               raise Program_Error with "authority v2 accepted an embedded batch-v1 image";
+            end if;
+         end;
          Export_Commit_Resolution_Authority (Receipt, Offset_Authority, Exported_Length, Result);
          Expect (Result, Success, "non-one-based commit authority export failed");
          if Exported_Length /= Authority_Length then
@@ -6625,7 +6691,7 @@ package body Flyology.DB.Engine_Tests is
          Expect_Imported_Unchanged ("trailing authority changed the old destination receipt");
 
          Unsupported := Authority;
-         Unsupported (Unsupported'First + 9) := 2;
+         Unsupported (Unsupported'First + 9) := 3;
          Import_Commit_Resolution_Authority (Item, Unsupported, Imported, Result);
          Expect (Result, Unsupported_Format, "commit authority version mismatch was not typed");
          Expect_Imported_Unchanged ("unsupported authority changed the old destination receipt");
@@ -6837,6 +6903,312 @@ package body Flyology.DB.Engine_Tests is
          then
             raise Program_Error with "rejected authority resolution replayed publication";
          end if;
+      end;
+
+      --  Authority-v2 binds each independently stored singleton to the same
+      --  authenticated cohort range. First, middle, and final members survive
+      --  teardown independently and resolve only through the complete chain.
+      declare
+         Cohort_Context                             : aliased Storage_Context;
+         Standard_Context                           : aliased Storage_Context;
+         Cohort_Item                                : Database;
+         Standard_Item                              : Database;
+         Imported                                   : Commit_Receipt;
+         Cohort_DB                                  : constant Database_Identifier := DB_ID (202);
+         Transition_ID                              : constant Identifier := ID (204);
+         Manifest_ID                                : constant Identifier := Manifest_ID_For (Transition_ID);
+         Authority                                  : Byte_Array (1 .. 1_024) := [others => 0];
+         Authority_Length                           : Natural;
+         Cohort_Golden_Length                       : constant Natural := 572;
+         Cohort_Golden_Digest                       : constant Interfaces.Unsigned_64 :=
+           16#7B51_03CA_CAF0_D0B2#;
+         Batch_Before, Manifest_Before, Head_Before : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
+      begin
+         Bind_Context (Cohort_Context, Backend, "memory-cohort-authority");
+         Bind_Context (Standard_Context, Backend, "memory-cohort-authority-standard");
+         Create_DB (Cohort_Item, Cohort_Context'Access, Cohort_DB, Transition_ID, Result);
+         Expect (Result, Success, "cohort authority root create failed");
+         Close (Cohort_Item, Result);
+         Expect (Result, Success, "cohort authority root close failed");
+         Testing.Rewrite_Manifest_Profile (Cohort_Context, Manifest_ID, Cohort_DB, Result);
+         Expect (Result, Success, "cohort authority profile rewrite failed");
+         Testing.Install_Cohort_History
+           (Cohort_Context,
+            Cohort_DB,
+            Manifest_ID,
+            Transition_ID,
+            3,
+            Valid_Cohort_History,
+            Test_Operation_Timeout,
+            Result);
+         Expect (Result, Success, "cohort authority history installation failed");
+
+         Create_DB (Standard_Item, Standard_Context'Access, Cohort_DB, Transition_ID, Result);
+         Expect (Result, Success, "cohort authority standard-profile fixture failed");
+         Testing.Build_Cohort_Authority
+           (Cohort_Context,
+            Cohort_DB,
+            Manifest_ID,
+            Transition_ID,
+            3,
+            2,
+            Valid_Cohort_Authority,
+            Test_Operation_Timeout,
+            Authority,
+            Authority_Length,
+            Result);
+         Expect (Result, Success, "middle cohort authority construction failed");
+         if Authority_Length /= Cohort_Golden_Length
+           or else Authority (1 .. 12)
+                   /= [16#46#, 16#4C#, 16#59#, 16#43#, 16#41#, 16#55#, 16#54#, 16#31#, 0, 2, 1, 0]
+           or else Authority_U64 (Authority, 29) /= Interfaces.Unsigned_64 (Cohort_Golden_Length)
+           or else Authority_U64 (Authority, 37) /= 208
+           or else Authority (361 .. 372)
+                   /= [16#46#, 16#4C#, 16#59#, 16#42#, 16#41#, 16#54#, 16#43#, 16#31#, 0, 2, 2, 0]
+           or else Authority_Digest (Authority (1 .. Authority_Length)) /= Cohort_Golden_Digest
+         then
+            raise Program_Error
+              with
+                "cohort authority v2 independent golden mismatch: length"
+                & Natural'Image (Authority_Length)
+                & " digest"
+                & Interfaces.Unsigned_64'Image (Authority_Digest (Authority (1 .. Authority_Length)));
+         end if;
+         declare
+            Metadata     : Commit_Authorities.Authority_Metadata;
+            Batch_First  : Positive;
+            Batch_Length : Natural;
+            Status       : Commit_Authorities.Decode_Status;
+         begin
+            Commit_Authorities.Decode
+              (Authority (1 .. Authority_Length),
+               Authority_Database (Authority (1 .. Authority_Length)),
+               Metadata,
+               Batch_First,
+               Batch_Length,
+               Status);
+            if Status /= Commit_Authorities.Decoded
+              or else Metadata.Format_Version /= Commit_Authorities.Cohort_Authority_Format_Version
+            then
+               raise Program_Error with "cohort authority v2 golden did not decode";
+            end if;
+            Metadata.Format_Version := Commit_Authorities.Authority_Format_Version;
+            if Commit_Authorities.Batch_Member_Valid
+                 (Metadata, Authority (Batch_First .. Batch_First + Batch_Length - 1))
+            then
+               raise Program_Error with "authority v1 accepted an embedded batch-v2 image";
+            end if;
+         end;
+         Import_Commit_Resolution_Authority
+           (Standard_Item, Authority (1 .. Authority_Length), Imported, Result);
+         Expect (Result, Unsupported_Format, "standard profile accepted cohort authority");
+         if Commit_Resolution_Authority_Length (Imported) /= 0 then
+            raise Program_Error with "wrong-profile cohort import changed its destination";
+         end if;
+         Close (Standard_Item, Result);
+         Expect (Result, Success, "cohort authority standard-profile close failed");
+
+         for Member in Positive range 1 .. 3 loop
+            Authority := [others => 0];
+            Testing.Build_Cohort_Authority
+              (Cohort_Context,
+               Cohort_DB,
+               Manifest_ID,
+               Transition_ID,
+               3,
+               Member,
+               Valid_Cohort_Authority,
+               Test_Operation_Timeout,
+               Authority,
+               Authority_Length,
+               Result);
+            Expect (Result, Success, "cohort member authority construction failed");
+            if Authority (9) /= 0 or else Authority (10) /= 2 then
+               raise Program_Error with "cohort member authority used the wrong format version";
+            end if;
+
+            Open (Cohort_Item, Cohort_Context'Access, Cohort_DB, Test_Operation_Timeout, Result => Result);
+            Expect (Result, Success, "cohort authority reopen failed");
+            Testing.Publication_Counts (Cohort_Context, Batch_Before, Manifest_Before, Head_Before);
+
+            if Member = 1 then
+               declare
+                  Narrowed         : Byte_Array (1 .. Authority'Length) := [others => 0];
+                  Oversized        : Byte_Array (1 .. Authority'Length) := [others => 0];
+                  Narrowed_Length  : Natural;
+                  Oversized_Length : Natural;
+                  Narrowed_Receipt : Commit_Receipt;
+                  Retained_Batch   : Identifier;
+               begin
+                  Testing.Build_Cohort_Authority
+                    (Cohort_Context,
+                     Cohort_DB,
+                     Manifest_ID,
+                     Transition_ID,
+                     3,
+                     1,
+                     Narrowed_Final_Authority,
+                     Test_Operation_Timeout,
+                     Narrowed,
+                     Narrowed_Length,
+                     Result);
+                  Expect (Result, Success, "narrowed cohort authority construction failed");
+                  if Narrowed_Length /= Authority_Length then
+                     raise Program_Error with "narrowed cohort authority length changed";
+                  end if;
+                  Import_Commit_Resolution_Authority
+                    (Cohort_Item, Narrowed (1 .. Narrowed_Length), Narrowed_Receipt, Result);
+                  Expect (Result, Success, "structural narrowed cohort authority import failed");
+                  Resolve (Cohort_Item, Narrowed_Receipt, Test_Operation_Timeout, Result => Result);
+                  Expect (Result, Corrupt, "narrowed cohort boundary bypassed full-chain resolution");
+                  Retained_Batch := Receipt_Batch_ID (Narrowed_Receipt);
+
+                  Testing.Build_Cohort_Authority
+                    (Cohort_Context,
+                     Cohort_DB,
+                     Manifest_ID,
+                     Transition_ID,
+                     3,
+                     1,
+                     Oversized_Cohort_Authority,
+                     Test_Operation_Timeout,
+                     Oversized,
+                     Oversized_Length,
+                     Result);
+                  Expect (Result, Success, "oversized cohort authority construction failed");
+                  if Oversized_Length /= Authority_Length then
+                     raise Program_Error with "oversized cohort authority length changed";
+                  end if;
+                  Import_Commit_Resolution_Authority
+                    (Cohort_Item, Oversized (1 .. Oversized_Length), Narrowed_Receipt, Result);
+                  Expect (Result, Capacity_Exceeded, "oversized cohort authority span was imported");
+                  if Receipt_Batch_ID (Narrowed_Receipt) /= Retained_Batch then
+                     raise Program_Error with "oversized cohort import changed its destination";
+                  end if;
+               end;
+            elsif Member = 3 then
+               declare
+                  Narrowed         : Byte_Array (1 .. Authority'Length) := [others => 0];
+                  Narrowed_Length  : Natural;
+                  Narrowed_Receipt : Commit_Receipt;
+               begin
+                  Testing.Build_Cohort_Authority
+                    (Cohort_Context,
+                     Cohort_DB,
+                     Manifest_ID,
+                     Transition_ID,
+                     3,
+                     3,
+                     Narrowed_Prefix_Authority,
+                     Test_Operation_Timeout,
+                     Narrowed,
+                     Narrowed_Length,
+                     Result);
+                  Expect (Result, Success, "narrowed cohort prefix construction failed");
+                  Import_Commit_Resolution_Authority
+                    (Cohort_Item, Narrowed (1 .. Narrowed_Length), Narrowed_Receipt, Result);
+                  Expect (Result, Success, "structural narrowed cohort prefix import failed");
+                  Resolve (Cohort_Item, Narrowed_Receipt, Test_Operation_Timeout, Result => Result);
+                  Expect (Result, Corrupt, "narrowed cohort prefix bypassed full-chain resolution");
+                  if Receipt_Batch_ID (Narrowed_Receipt) = Zero_Identifier then
+                     raise Program_Error with "rejected cohort prefix lost its retained authority";
+                  end if;
+               end;
+            end if;
+
+            Import_Commit_Resolution_Authority
+              (Cohort_Item, Authority (1 .. Authority_Length), Imported, Result);
+            Expect (Result, Success, "cohort member authority import failed");
+            if Receipt_Batch_ID (Imported) /= Identifier (Receipt_Transaction_ID (Imported))
+              or else Receipt_Sequence (Imported) /= Sequence_Number (Member)
+              or else Commit_Resolution_Authority_Length (Imported) /= Authority_Length
+            then
+               raise Program_Error with "cohort member authority lost exact identity";
+            end if;
+            declare
+               Reexported        : Byte_Array (1 .. Authority_Length) := [others => 0];
+               Reexported_Length : Natural;
+            begin
+               Export_Commit_Resolution_Authority (Imported, Reexported, Reexported_Length, Result);
+               Expect (Result, Success, "imported cohort member did not re-export");
+               if Reexported_Length /= Authority_Length
+                 or else Reexported /= Authority (1 .. Authority_Length)
+                 or else Reexported (9) /= 0
+                 or else Reexported (10) /= 2
+               then
+                  raise Program_Error with "production export changed cohort authority v2 bytes";
+               end if;
+            end;
+            Authority := [others => 0];
+            declare
+               Copy : constant Commit_Receipt := Imported;
+            begin
+               if Commit_Resolution_Authority_Length (Copy) /= Authority_Length then
+                  raise Program_Error with "cohort authority copy lost its member image";
+               end if;
+            end;
+            if Commit_Resolution_Authority_Length (Imported) /= Authority_Length then
+               raise Program_Error with "cohort authority copy finalization released its source";
+            end if;
+            Resolve (Cohort_Item, Imported, Test_Operation_Timeout, Result => Result);
+            Expect (Result, Success, "cohort member authority did not resolve through its full chain");
+            Testing.Publication_Counts (Cohort_Context, Batch_After, Manifest_After, Head_After);
+            if Batch_After /= Batch_Before
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before
+            then
+               raise Program_Error with "cohort authority import or resolution replayed publication";
+            end if;
+            if Commit_Resolution_Authority_Length (Imported) /= 0 then
+               raise Program_Error with "resolved cohort authority remained exportable";
+            end if;
+            Close (Cohort_Item, Result);
+            Expect (Result, Success, "resolved cohort authority database close failed");
+         end loop;
+
+         Authority := [others => 0];
+         Testing.Build_Cohort_Authority
+           (Cohort_Context,
+            Cohort_DB,
+            Manifest_ID,
+            Transition_ID,
+            3,
+            2,
+            Valid_Cohort_Authority,
+            Test_Operation_Timeout,
+            Authority,
+            Authority_Length,
+            Result);
+         Expect (Result, Success, "rejected cohort authority construction failed");
+         Open (Cohort_Item, Cohort_Context'Access, Cohort_DB, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "rejected cohort authority reopen failed");
+         Import_Commit_Resolution_Authority
+           (Cohort_Item, Authority (1 .. Authority_Length), Imported, Result);
+         Expect (Result, Success, "rejected cohort authority import failed");
+         Testing.Install_Cohort_Rival_Head
+           (Cohort_Context,
+            Cohort_DB,
+            Manifest_ID,
+            Transition_ID,
+            Test_Operation_Timeout,
+            Result);
+         Expect (Result, Success, "cohort rival HEAD installation failed");
+         Testing.Publication_Counts (Cohort_Context, Batch_Before, Manifest_Before, Head_Before);
+         Resolve (Cohort_Item, Imported, Test_Operation_Timeout, Result => Result);
+         Expect (Result, Stale_Writer, "cohort authority ignored its conclusive rival HEAD");
+         Testing.Publication_Counts (Cohort_Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "rejected cohort authority resolution replayed publication";
+         end if;
+         if Commit_Resolution_Authority_Length (Imported) /= 0 then
+            raise Program_Error with "rejected cohort authority remained exportable";
+         end if;
+         Close (Cohort_Item, Result);
+         Expect (Result, Success, "rejected cohort authority database close failed");
       end;
 
       Close (Wrong_Item, Result);
@@ -10525,11 +10897,11 @@ package body Flyology.DB.Engine_Tests is
          Before_Sink_Bytes);
       declare
          --  Memory-backend test capacity: four buckets, the established 512-object
-         --  corpus, ten durable-authority fixture keys, and eleven exact
-         --  coalescing-profile keys plus 69 version-2 recovery-matrix objects.
+         --  corpus, ten durable-authority fixture keys, seven cohort-authority
+         --  keys, and eleven coalescing-profile keys plus 69 v2 recovery objects.
          --  Eight million bytes cover the complete deterministic engine corpus
          --  while retaining explicit backend backpressure.
-         Store : aliased Memory.Store (4, 602, 8_000_000);
+         Store : aliased Memory.Store (4, 609, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then

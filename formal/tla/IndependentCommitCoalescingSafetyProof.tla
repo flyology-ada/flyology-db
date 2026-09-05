@@ -203,7 +203,8 @@ ExportAuthority(t, final) ==
 
 ImportAuthority(t, final) ==
     /\ <<t, final>> \in authority
-    /\ t \in visible
+    \* Import is a local structural bearer decode. Authoritative visibility is
+    \* authenticated only by the later read-only Resolve action.
     /\ UNCHANGED vars
 
 RejectMalformedImport == UNCHANGED vars

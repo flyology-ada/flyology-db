@@ -1,8 +1,10 @@
 with Flyology.DB.Head_Policy;
+with Interfaces;
 
 --  Defines the private versioned envelope used to retain exact commit
 --  reconciliation authority outside one process. The embedded batch remains
---  the existing batch-v1 image; this package adds no operational batch bound.
+--  an exact batch-v1 or coalesced-singleton batch-v2 image; this package adds
+--  no operational batch bound.
 
 private package Flyology.DB.Commit_Authority_Formats
   with SPARK_Mode => On
@@ -13,12 +15,16 @@ is
    use type Heads.Commit_Sequence;
    use type Heads.Identifier;
 
-   --  Frozen authority-v1 envelope: 360-byte header, exact batch bytes, and
-   --  one four-byte object CRC. A format change requires a new version.
-   Authority_Header_Length  : constant := 360;
-   Authority_Trailer_Length : constant := 4;
+   --  Frozen authority envelope: 360-byte header, exact batch bytes, and one
+   --  four-byte object CRC. Version 2 binds one batch-v2 singleton to its
+   --  shared cohort HEAD range without changing the envelope layout.
+   Authority_Format_Version        : constant Interfaces.Unsigned_16 := 1;
+   Cohort_Authority_Format_Version : constant Interfaces.Unsigned_16 := 2;
+   Authority_Header_Length         : constant := 360;
+   Authority_Trailer_Length        : constant := 4;
 
    type Authority_Metadata is record
+      Format_Version    : Interfaces.Unsigned_16 := Authority_Format_Version;
       Transaction_ID    : Heads.Identifier := Heads.Zero_Identifier;
       Assigned_Sequence : Heads.Commit_Sequence := 0;
       Batch_ID          : Heads.Identifier := Heads.Zero_Identifier;

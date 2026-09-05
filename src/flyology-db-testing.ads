@@ -99,7 +99,8 @@ private package Flyology.DB.Testing is
       Limits                : Database_Limits;
       Initial_Families      : Column_Family_Configuration_Array;
       Timeout               : Duration;
-      Result                : out Outcome_Code);
+      Result                : out Outcome_Code;
+      Independent_Profile   : Boolean := False);
    procedure Install_Cohort_History
      (Item                  : in out Storage_Context;
       Database_ID           : Database_Identifier;
@@ -107,6 +108,26 @@ private package Flyology.DB.Testing is
       Initial_Transition_ID : Identifier;
       Members               : Positive;
       History_Case          : Test_Cohort_History_Case;
+      Timeout               : Duration;
+      Result                : out Outcome_Code);
+   procedure Install_Cohort_Rival_Head
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Timeout               : Duration;
+      Result                : out Outcome_Code);
+   procedure Build_Cohort_Authority
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Members               : Positive;
+      Member                : Positive;
+      Authority_Case        : Test_Cohort_Authority_Case;
+      Timeout               : Duration;
+      Authority             : in out Byte_Array;
+      Length                : out Natural;
       Result                : out Outcome_Code);
    procedure Install_Unsupported_Head
      (Item          : in out Storage_Context;

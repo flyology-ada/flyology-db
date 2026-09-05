@@ -3238,6 +3238,163 @@ begin
       end;
    end;
 
+   --  A recovered independent-publication cohort exercises authority-v2
+   --  through the client-bound composable resolver. IDs 51 through 53 belong
+   --  only to this isolated provider fixture; they are not allocation policy.
+   declare
+      Cohort_Context       : aliased Storage_Context;
+      Cohort_Item          : aliased Database;
+      Cohort_Database_ID   : constant Database_Identifier :=
+        Database_Identifier (Numbered_ID (51));
+      Cohort_Manifest_ID   : constant Identifier := Numbered_ID (52);
+      Cohort_Transition_ID : constant Identifier := Numbered_ID (53);
+      Authority            : Byte_Array (1 .. 1_024) := [others => 0];
+      Authority_Length     : Natural;
+      Imported             : Commit_Receipt;
+      Imported_Batch       : Identifier;
+      Imported_Transaction : Transaction_Identifier;
+      Imported_Sequence    : Sequence_Number;
+      Batch_Before         : Natural;
+      Manifest_Before      : Natural;
+      Head_Before          : Natural;
+      Batch_After          : Natural;
+      Manifest_After       : Natural;
+      Head_After           : Natural;
+      Cohort_Open          :
+        Open_Operation
+           (Composable_Set'Access,
+            Cohort_Item'Access,
+           Cohort_Context'Access,
+           Client'Access,
+           Flush_Pool'Access,
+           null);
+      Cohort_Resolve       :
+        Refresh_Operation
+           (Composable_Set'Access,
+            Cohort_Item'Access,
+           Cohort_Context'Access,
+           Client'Access,
+           Flush_Pool'Access,
+           null);
+   begin
+      Binding.Bind_Client
+        (Cohort_Context,
+         Client'Access,
+         Origin,
+         Identity'Access,
+         Bucket,
+         "database-cohort-authority",
+         "us-east-1",
+         Low_Level.Path_Style,
+         "application/octet-stream",
+         "",
+         "",
+         False);
+      Testing.Install_V1_Root
+        (Cohort_Context,
+         Cohort_Database_ID,
+         Cohort_Manifest_ID,
+         Cohort_Transition_ID,
+         Limits,
+         Families,
+         Test_Operation_Timeout,
+         Result,
+         Independent_Profile => True);
+      Expect (Result, Success, "client-backed cohort root installation failed");
+      Testing.Install_Cohort_History
+        (Cohort_Context,
+         Cohort_Database_ID,
+         Cohort_Manifest_ID,
+         Cohort_Transition_ID,
+         3,
+         Valid_Cohort_History,
+         Test_Operation_Timeout,
+         Result);
+      if Result /= Success then
+         Testing.Publication_Counts (Cohort_Context, Batch_After, Manifest_After, Head_After);
+         raise Program_Error
+           with
+             "client-backed cohort history installation failed: "
+             & Outcome_Code'Image (Result)
+             & " batch="
+             & Natural'Image (Batch_After)
+             & " manifest="
+             & Natural'Image (Manifest_After)
+             & " head="
+             & Natural'Image (Head_After);
+      end if;
+      Testing.Build_Cohort_Authority
+        (Cohort_Context,
+         Cohort_Database_ID,
+         Cohort_Manifest_ID,
+         Cohort_Transition_ID,
+         3,
+         2,
+         Valid_Cohort_Authority,
+         Test_Operation_Timeout,
+         Authority,
+         Authority_Length,
+         Result);
+      Expect (Result, Success, "client-backed cohort authority construction failed");
+
+      Open (Cohort_Database_ID, Flush_Buffer, Test_Operation_Timeout, Cohort_Open);
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Cohort_Open, Result, Restored_Buffer);
+      Flyology.Operations.Release (Cohort_Open);
+      Expect (Result, Success, "client-backed composable cohort open failed");
+      if Flyology.Buffers.Has_Buffer (Flush_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "client-backed cohort open lost its exact token";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+
+      Testing.Publication_Counts (Cohort_Context, Batch_Before, Manifest_Before, Head_Before);
+      Import_Commit_Resolution_Authority
+        (Cohort_Item, Authority (1 .. Authority_Length), Imported, Result);
+      Expect (Result, Success, "client-backed cohort authority import failed");
+      Imported_Batch := Receipt_Batch_ID (Imported);
+      Imported_Transaction := Receipt_Transaction_ID (Imported);
+      Imported_Sequence := Receipt_Sequence (Imported);
+      if Imported_Batch = Zero_Identifier
+        or else Imported_Transaction /= Transaction_Identifier (Imported_Batch)
+        or else Imported_Sequence = 0
+        or else Receipt_Outcome (Imported) /= Outcome_Unknown
+      then
+         raise Program_Error with "client-backed cohort authority lost exact member identity";
+      end if;
+
+      Resolve (Imported, Flush_Buffer, Test_Operation_Timeout, Cohort_Resolve);
+      if Receipt_Batch_ID (Imported) /= Zero_Identifier
+        or else Flyology.Buffers.Has_Buffer (Flush_Buffer)
+      then
+         raise Program_Error with "composable cohort resolution retained caller ownership";
+      end if;
+      Flyology.Operations.Wait_All (Composable_Set);
+      Finish (Cohort_Resolve, Imported, Result, Restored_Buffer);
+      Flyology.Operations.Release (Cohort_Resolve);
+      Expect (Result, Success, "client-backed composable cohort resolution failed");
+      if Receipt_Batch_ID (Imported) /= Imported_Batch
+        or else Receipt_Transaction_ID (Imported) /= Imported_Transaction
+        or else Receipt_Sequence (Imported) /= Imported_Sequence
+        or else not Flyology.Buffers.Has_Buffer (Restored_Buffer)
+        or else Flyology.Buffers.Tag (Restored_Buffer) /= Flush_Token_Tag
+      then
+         raise Program_Error with "composable cohort resolution lost receipt or token identity";
+      end if;
+      Flyology.Buffers.Move (Restored_Buffer, Flush_Buffer);
+      Testing.Publication_Counts (Cohort_Context, Batch_After, Manifest_After, Head_After);
+      if Batch_After /= Batch_Before
+        or else Manifest_After /= Manifest_Before
+        or else Head_After /= Head_Before
+      then
+         raise Program_Error with "composable cohort resolution replayed provider mutation";
+      end if;
+      Close (Cohort_Item, Close_Result);
+      Expect (Close_Result, Success, "client-backed cohort authority close failed");
+   end;
+
    Close (Created, Close_Result);
    Expect (Close_Result, Success, "client-backed close failed");
    Close (Replica, Close_Result);

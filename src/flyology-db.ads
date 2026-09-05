@@ -1672,7 +1672,9 @@ package Flyology.DB is
    --  Authority is unchanged on failure. Length is the exact meaningful
    --  prefix on Success and zero otherwise. The operation performs no storage
    --  request, changes no receipt, and introduces no retry or replacement
-   --  identity. Individual Commit_Group member receipts are supported and
+   --  identity. Version 1 carries an exact ordinary batch-v1 image. Version 2
+   --  carries one exact batch-v2 singleton and the complete shared cohort HEAD
+   --  range. Individual Commit_Group and independent-cohort member receipts
    --  retain their member-specific transaction identity and sequence.
    --  @param Receipt Complete unresolved commit authority
    --  @param Authority Caller-owned destination retained by the caller
@@ -1687,13 +1689,16 @@ package Flyology.DB is
    --  Import one untrusted bearer record into an independently owned
    --  unresolved Commit receipt bound to the open Item. Decoding uses Item's
    --  authenticated persisted limits and validates the exact database, batch,
-   --  HEAD transition, member transaction, and member sequence before the
-   --  receipt is replaced. Authority is borrowed only for this call. Item and
-   --  Receipt are unchanged on every failure. Success performs no storage
-   --  request; the resulting receipt is usable only by the existing read-only
-   --  Resolve operation. CRC validation detects corruption, not a malicious
-   --  bearer substitution, so callers remain responsible for authenticated,
-   --  confidential durable storage and higher-level request binding.
+   --  HEAD transition, member transaction, member sequence, format pair, and
+   --  profile before the receipt is replaced. Version 2 also bounds the claimed
+   --  cohort by the authenticated retained-history limit. Authority is borrowed
+   --  only for this call. Item and Receipt are unchanged on every failure.
+   --  Success performs no storage request; the resulting receipt is usable only
+   --  by the existing read-only Resolve operation, which authenticates the
+   --  complete maximal cohort chain before reporting success. CRC validation
+   --  detects corruption, not a malicious bearer substitution, so callers
+   --  remain responsible for authenticated, confidential durable storage and
+   --  higher-level request binding.
    --  @param Item Open database whose authenticated identity and limits bind the import
    --  @param Authority Exact exported bearer bytes borrowed for this call
    --  @param Receipt Destination replaced atomically only on Success
@@ -3224,7 +3229,8 @@ private
       Limits                : Database_Limits;
       Initial_Families      : Column_Family_Configuration_Array;
       Timeout               : Duration;
-      Result                : out Outcome_Code);
+      Result                : out Outcome_Code;
+      Independent_Profile   : Boolean := False);
    type Test_Cohort_History_Case is
      (Valid_Cohort_History,
       Consecutive_Cohort_History,
@@ -3244,6 +3250,31 @@ private
       Initial_Transition_ID : Identifier;
       Members               : Positive;
       History_Case          : Test_Cohort_History_Case;
+      Timeout               : Duration;
+      Result                : out Outcome_Code);
+   procedure Install_Test_Cohort_Rival_Head
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Timeout               : Duration;
+      Result                : out Outcome_Code);
+   type Test_Cohort_Authority_Case is
+     (Valid_Cohort_Authority,
+      Narrowed_Final_Authority,
+      Narrowed_Prefix_Authority,
+      Oversized_Cohort_Authority);
+   procedure Build_Test_Cohort_Authority
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Members               : Positive;
+      Member                : Positive;
+      Authority_Case        : Test_Cohort_Authority_Case;
+      Timeout               : Duration;
+      Authority             : in out Byte_Array;
+      Length                : out Natural;
       Result                : out Outcome_Code);
    procedure Install_Test_Unsupported_Head
      (Item          : in out Storage_Context;

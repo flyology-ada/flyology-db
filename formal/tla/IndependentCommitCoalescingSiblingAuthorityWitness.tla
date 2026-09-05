@@ -9,7 +9,7 @@ SiblingAuthorityComplete ==
     /\ txnState[T2] = "Unknown"
     /\ receipt[T2] = "Unknown"
     /\ authorityState[T2] = "Exported"
-    /\ AuthorityValidFor(T2, durableAuthority[T2])
+    /\ AuthorityMatchesPublishedCohort(T2, durableAuthority[T2])
     /\ cohort = {}
     /\ headState = "Collecting"
     /\ ~headAttemptEntered

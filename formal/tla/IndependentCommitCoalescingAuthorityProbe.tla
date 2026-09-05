@@ -2,12 +2,16 @@
 EXTENDS IndependentCommitCoalescing
 
 (***************************************************************************
-This negative probe imports a wrong-database bearer authority after crash.
-It must violate ImportedAuthorityIsValid.
+This negative probe imports one locally malformed bearer authority after crash.
+It covers the database, member, range, final-member equivalence, predecessor,
+and cross-version boundary. At least one locally invalid candidate must violate
+ImportedAuthorityIsValid; structurally valid narrowed endpoints remain reserved
+for the resolved-authority probe.
 ***************************************************************************)
 
 UnsafeImportMalformedAuthority(t) ==
-    LET candidate == MalformedAuthority(t, "WrongDatabase")
+    \E kind \in MalformedAuthorityKinds :
+    LET candidate == MalformedAuthority(t, kind)
     IN
     /\ txnState[t] = "Unknown"
     /\ receipt[t] = "None"

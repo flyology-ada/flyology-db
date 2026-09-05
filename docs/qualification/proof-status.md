@@ -197,6 +197,18 @@ findings and maximum successful effort 6,522 steps. The exact additive delta fro
 allocation, controlled receipt adoption, database lifecycle serialization, provider behavior, confidentiality, and
 Ada-to-TLA refinement remain executable or caller-trust boundaries rather than SPARK-proved claims.
 
+The independent-coalescing authority foundation extends the same fixed-size authority envelope with an explicit
+version-2 pairing for one exact batch-v2 cohort member. Warning-strict FSF GNATprove 16.1.0 proves 1,429/1,429
+selected checks: 139 initialization, 677 run-time, 101 assertion, 407 functional-contract, and 105 termination
+checks. Flow analysis discharges 243 and provers discharge 1,186, with zero failed, unproved, justified, warning, or
+actual `pragma Assume` findings and maximum successful effort 6,253 steps. Relative to the accepted 1,400-check
+authority boundary, the exact additive delta is 29 checks: eight flow and 21 prover. The deterministic suite covers
+version pairing, three independently owned member authorities, exact re-export, malformed endpoint and predecessor
+relations, persisted-history capacity, failure atomicity, read-only resolution, and zero added publication. Runtime
+history traversal, controlled receipt adoption, provider behavior, and refinement to the coalescing model remain
+executable or trusted boundaries. This foundation does not enable independent commit coalescing or qualify it on a
+provider.
+
 The provider-centric Object Storage migration at source
 `3455cde3158fd589480281beac39bea51305bb5e` reruns this maintained gate without changing the selected SPARK
 algorithms or their proof boundary. The exact campaign proves 1,090/1,090 selected checks: 166 by flow analysis and

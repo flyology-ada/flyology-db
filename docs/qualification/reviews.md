@@ -1,5 +1,36 @@
 # Review record
 
+## Accepted independent-coalescing authority foundation
+
+- Parent and scope: prepare durable per-member Commit authority for the private independent-coalescing profile
+  without enabling its publisher. Authority version 1 remains paired byte-for-byte with singleton batch-v1;
+  authority version 2 carries one exact batch-v2 member and the shared expected and attempted HEAD transition in the
+  unchanged 360-byte envelope. No public operation, default, capacity, scheduling policy, acknowledgement rule, or
+  standard-profile persisted byte changes.
+- Runtime and ownership: Import authenticates envelope and member structure against the open database and persisted
+  limits without provider I/O, constructs a complete independent receipt, and adopts it only after all validation and
+  allocation succeed. Existing blocking and composable Resolve paths authenticate the exact retained member and the
+  complete maximal same-publication predecessor chain before returning committed. A truncated prefix or suffix,
+  substituted member, inexact predecessor, or malformed cohort boundary fails closed; later different-publication
+  successors remain admissible. Imports and resolutions add zero batch, manifest, or HEAD writes.
+- Executable evidence: `./tests/scripts/test.sh` passes every maintained deterministic sentinel. The focused fixture
+  covers a three-member cohort, exact version-2 re-export for first/middle/final members, independent receipt copying
+  and finalization, profile mismatch, narrow-final and stale-prefix relations, persisted-history overflow, failure
+  atomicity, and read-only resolution. The fixture installs authenticated private history rather than activating a
+  production coalescing publisher, and this unit makes no new provider-qualification claim.
+- Formal and proof evidence: the maintained TLA+ gate generates 5,400,897 states, finds 459,627 distinct states at
+  depth 30, pins exact positive counts for all 24 independent-coalescing actions, detects seven focused safety
+  violations,
+  reaches eight focused witnesses, and proves 16/16 TLAPS obligations. It distinguishes structurally importable
+  authority from authority whose complete recovered cohort has been authenticated. All 41 canonical traces remain
+  unchanged. Warning-strict FSF GNATprove 16.1.0 proves 1,429/1,429 selected checks: 243 by flow and 1,186 by provers,
+  an exact +29 over the 1,400-check authority boundary, with zero failed, unproved, justified, warning, or actual
+  `pragma Assume` findings and maximum successful effort 6,253 steps.
+- Disposition: final API/compatibility, persisted-format, ownership/failure-atomicity, runtime-history, deterministic
+  evidence, TLA/TLAPS, SPARK-boundary, documentation, and unnecessary-surface reviews find P0 none, P1 none, and P2
+  none. This foundation does not enable the experimental publisher, change acknowledgement semantics, prove provider
+  behavior, or establish an Ada-to-TLA refinement.
+
 ## Accepted durable Commit resolution-authority handoff
 
 - Parent and scope: add an experimental caller-buffered handoff for only a complete `Outcome_Unknown` /

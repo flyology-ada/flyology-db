@@ -2374,9 +2374,9 @@ do
       ;;
   esac
 done
-if test "$independent_coalescing_generated" -ne 4690375 || \
-  test "$independent_coalescing_states" -ne 435678 || \
-  test "$independent_coalescing_depth" -ne 28
+if test "$independent_coalescing_generated" -ne 5400897 || \
+  test "$independent_coalescing_states" -ne 459627 || \
+  test "$independent_coalescing_depth" -ne 30
 then
   printf '%s\n' \
     'Flyology.DB TLA independent coalescing state geometry changed:' \
@@ -2487,30 +2487,30 @@ do
 done
 independent_expected_action_report="$temporary_root/independent-coalescing-action-coverage.expected.txt"
 cat >"$independent_expected_action_report" <<'EOF'
-    AdmitSingleton 2510
-    RejectConflict 29395
-    CancelBeforeAdmission 29383
-    ExpireBeforeAdmission 21627
-    FallbackFiniteDeadline 21627
-    FreezeCohort 2525
-    PublishMemberBatch 13500
-    ConfirmAmbiguousBatch 6750
-    SplitFailedMember 3240
-    PublishCohortHead 3375
-    LoseHeadResponse 6750
-    ObserveSuccess 4095
-    ObserveHeadPreconditionFailure 3375
-    RetainUnknownAtPredecessor 19970
-    ObserveConclusiveSuccessor 10935
-    ResolveMember 31030
-    ExportMemberAuthority 16615
-    CrashLoseVolatileReceipts 13595
-    ImportMemberAuthority 25175
-    RejectMalformedAuthority 25175
-    RejectSwappedAuthority 25175
-    RecoverCohortChain 26605
-    RejectMalformedRecovery 89155
-    CompleteCohort 4095
+    AdmitSingleton 2075
+    RejectConflict 29734
+    CancelBeforeAdmission 29722
+    ExpireBeforeAdmission 22050
+    FallbackFiniteDeadline 22050
+    FreezeCohort 2090
+    PublishMemberBatch 12120
+    ConfirmAmbiguousBatch 6060
+    SplitFailedMember 2910
+    PublishCohortHead 3030
+    LoseHeadResponse 6060
+    ObserveSuccess 3855
+    ObserveHeadPreconditionFailure 3030
+    RetainUnknownAtPredecessor 23740
+    ObserveConclusiveSuccessor 10395
+    ResolveMember 24260
+    ExportMemberAuthority 16800
+    CrashLoseVolatileReceipts 13645
+    ImportMemberAuthority 44535
+    RejectMalformedAuthority 26065
+    RejectSwappedAuthority 26065
+    RecoverCohortChain 34210
+    RejectMalformedRecovery 91270
+    CompleteCohort 3855
 EOF
 if ! cmp "$independent_expected_action_report" \
   "$independent_coalescing_action_report"
@@ -2526,6 +2526,7 @@ for probe in \
   IndependentCommitCoalescingReplayProbe:ResolutionDoesNotReplay \
   IndependentCommitCoalescingStaleAdmissionProbe:FencingStopsAdmission \
   IndependentCommitCoalescingAuthorityProbe:ImportedAuthorityIsValid \
+  IndependentCommitCoalescingResolvedAuthorityProbe:ResolvedImportedAuthorityIsExact \
   IndependentCommitCoalescingRecoveryProbe:RecoveryIsExact \
   IndependentCommitCoalescingParkedLeakProbe:ParkedSuffixWaitsForPrefix
 do

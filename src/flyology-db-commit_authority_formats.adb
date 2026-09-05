@@ -1,4 +1,3 @@
-with Interfaces;
 with Flyology.DB.Batch_Formats;
 with Flyology.DB.Formats;
 
@@ -29,8 +28,7 @@ is
       Character'Pos ('T'),
       Character'Pos ('1')];
 
-   Authority_Format_Version : constant Interfaces.Unsigned_16 := 1;
-   Authority_Object_Kind    : constant Formats.Byte := 1;
+   Authority_Object_Kind : constant Formats.Byte := 1;
 
    --  Batch format version 1 freezes object kind 2 for immutable commit
    --  batches. Authority envelopes embed that existing persisted object.
@@ -177,10 +175,8 @@ is
       Result : Heads.Identifier;
    begin
       for Index in Heads.Identifier_Index loop
-         pragma Loop_Invariant
-           (Natural (Index - Heads.Identifier_Index'First) <= Batch'Length - Offset - 1);
-         Result (Index) :=
-           Batch (Batch'First + (Offset + Natural (Index - Heads.Identifier_Index'First)));
+         pragma Loop_Invariant (Natural (Index - Heads.Identifier_Index'First) <= Batch'Length - Offset - 1);
+         Result (Index) := Batch (Batch'First + (Offset + Natural (Index - Heads.Identifier_Index'First)));
       end loop;
       return Result;
    end Batch_Identifier;
@@ -188,7 +184,8 @@ is
    function Structurally_Valid (Value : Authority_Metadata) return Boolean is
       Difference : Interfaces.Unsigned_64;
    begin
-      if Heads.Is_Zero (Value.Transaction_ID)
+      if Value.Format_Version not in Authority_Format_Version | Cohort_Authority_Format_Version
+        or else Heads.Is_Zero (Value.Transaction_ID)
         or else Heads.Is_Zero (Value.Batch_ID)
         or else not Heads.Structurally_Valid (Value.Expected_Head)
         or else Value.Expected_Head.Highest_Visible >= Value.Attempted_Head.Highest_Visible
@@ -207,7 +204,12 @@ is
         and then Value.Expected_Head.Version = Heads.Current_Format
         and then Value.Attempted_Head.Version = Heads.Current_Format
         and then Value.Expected_Head.Epoch = Value.Attempted_Head.Epoch
-        and then Value.Attempted_Head.Latest_Batch = Value.Batch_ID
+        and then (if Value.Format_Version = Authority_Format_Version
+                  then Value.Attempted_Head.Latest_Batch = Value.Batch_ID
+                  else
+                    Value.Transaction_ID = Value.Batch_ID
+                    and then ((Value.Assigned_Sequence = Value.Attempted_Head.Highest_Visible)
+                              = (Value.Batch_ID = Value.Attempted_Head.Latest_Batch)))
         and then Value.Attempted_Head.Latest_Manifest = Value.Expected_Head.Latest_Manifest
         and then not Heads.Is_Zero (Value.Attempted_Head.Transition_ID)
         and then Value.Attempted_Head.Transition_ID /= Value.Expected_Head.Transition_ID
@@ -253,7 +255,10 @@ is
               Character'Pos ('T'),
               Character'Pos ('C'),
               Character'Pos ('1'))
-        or else Batch_U16 (Batch, 8) /= Batch_Formats.Batch_Format_Version
+        or else Batch_U16 (Batch, 8)
+                /= (if Value.Format_Version = Authority_Format_Version
+                    then Batch_Formats.Batch_Format_Version
+                    else Batch_Formats.Cohort_Batch_Format_Version)
         or else Header (10) /= Embedded_Batch_Object_Kind
         or else Header (11) /= 0
         or else Batch_Identifier (Batch, 12) /= Value.Expected_Head.Database_ID
@@ -278,16 +283,29 @@ is
         Interfaces.Unsigned_64 (Value.Attempted_Head.Highest_Visible)
         - Interfaces.Unsigned_64 (Value.Expected_Head.Highest_Visible);
       Transaction_Total := Batch_U32 (Batch, 148);
-      if Interfaces.Unsigned_64 (Transaction_Total) /= Expected_Total
-        or else Batch_U64 (Batch, 44) /= Interfaces.Unsigned_64 (Value.Expected_Head.Epoch)
+      if Batch_U64 (Batch, 44) /= Interfaces.Unsigned_64 (Value.Expected_Head.Epoch)
         or else Batch_Identifier (Batch, 52) /= Value.Batch_ID
-        or else Batch_Identifier (Batch, 68) /= Value.Expected_Head.Latest_Batch
         or else Batch_Identifier (Batch, 84) /= Value.Expected_Head.Transition_ID
         or else Batch_U64 (Batch, 100) /= Interfaces.Unsigned_64 (Value.Expected_Head.Transition_Number)
         or else Batch_Identifier (Batch, 108) /= Value.Attempted_Head.Transition_ID
         or else Batch_U64 (Batch, 124) /= Interfaces.Unsigned_64 (Value.Attempted_Head.Transition_Number)
-        or else Batch_U64 (Batch, 132) /= Interfaces.Unsigned_64 (Value.Expected_Head.Highest_Visible) + 1
-        or else Batch_U64 (Batch, 140) /= Interfaces.Unsigned_64 (Value.Attempted_Head.Highest_Visible)
+        or else (if Value.Format_Version = Authority_Format_Version
+                 then
+                   Interfaces.Unsigned_64 (Transaction_Total) /= Expected_Total
+                   or else Batch_Identifier (Batch, 68) /= Value.Expected_Head.Latest_Batch
+                   or else Batch_U64 (Batch, 132)
+                           /= Interfaces.Unsigned_64 (Value.Expected_Head.Highest_Visible) + 1
+                   or else Batch_U64 (Batch, 140)
+                           /= Interfaces.Unsigned_64 (Value.Attempted_Head.Highest_Visible)
+                 else
+                   Transaction_Total /= 1
+                   or else Batch_U64 (Batch, 132) /= Interfaces.Unsigned_64 (Value.Assigned_Sequence)
+                   or else Batch_U64 (Batch, 140) /= Interfaces.Unsigned_64 (Value.Assigned_Sequence)
+                   or else (if Value.Assigned_Sequence = Value.Expected_Head.Highest_Visible + 1
+                            then Batch_Identifier (Batch, 68) /= Value.Expected_Head.Latest_Batch
+                            else
+                              Heads.Is_Zero (Batch_Identifier (Batch, 68))
+                              or else Batch_Identifier (Batch, 68) = Value.Batch_ID))
       then
          return False;
       end if;
@@ -377,11 +395,9 @@ is
          Result : Heads.Identifier;
       begin
          for Index in Heads.Identifier_Index loop
-            pragma Loop_Invariant
-              (Natural (Index - Heads.Identifier_Index'First) + 1 <= Length - Offset);
+            pragma Loop_Invariant (Natural (Index - Heads.Identifier_Index'First) + 1 <= Length - Offset);
             Result (Index) :=
-              Source_Element
-                (Source, Offset + (Natural (Index - Heads.Identifier_Index'First) + 1));
+              Source_Element (Source, Offset + (Natural (Index - Heads.Identifier_Index'First) + 1));
          end loop;
          return Result;
       end Read_Identifier_At;
@@ -437,7 +453,10 @@ is
               Character'Pos ('T'),
               Character'Pos ('C'),
               Character'Pos ('1'))
-        or else Read_U16_At (8) /= Batch_Formats.Batch_Format_Version
+        or else Read_U16_At (8)
+                /= (if Value.Format_Version = Authority_Format_Version
+                    then Batch_Formats.Batch_Format_Version
+                    else Batch_Formats.Cohort_Batch_Format_Version)
         or else Header (10) /= Embedded_Batch_Object_Kind
         or else Header (11) /= 0
         or else Read_Identifier_At (12) /= Value.Expected_Head.Database_ID
@@ -453,16 +472,28 @@ is
         Interfaces.Unsigned_64 (Value.Attempted_Head.Highest_Visible)
         - Interfaces.Unsigned_64 (Value.Expected_Head.Highest_Visible);
       Transaction_Total := Read_U32_At (148);
-      if Interfaces.Unsigned_64 (Transaction_Total) /= Expected_Total
-        or else Read_U64_At (44) /= Interfaces.Unsigned_64 (Value.Expected_Head.Epoch)
+      if Read_U64_At (44) /= Interfaces.Unsigned_64 (Value.Expected_Head.Epoch)
         or else Read_Identifier_At (52) /= Value.Batch_ID
-        or else Read_Identifier_At (68) /= Value.Expected_Head.Latest_Batch
         or else Read_Identifier_At (84) /= Value.Expected_Head.Transition_ID
         or else Read_U64_At (100) /= Interfaces.Unsigned_64 (Value.Expected_Head.Transition_Number)
         or else Read_Identifier_At (108) /= Value.Attempted_Head.Transition_ID
         or else Read_U64_At (124) /= Interfaces.Unsigned_64 (Value.Attempted_Head.Transition_Number)
-        or else Read_U64_At (132) /= Interfaces.Unsigned_64 (Value.Expected_Head.Highest_Visible) + 1
-        or else Read_U64_At (140) /= Interfaces.Unsigned_64 (Value.Attempted_Head.Highest_Visible)
+        or else (if Value.Format_Version = Authority_Format_Version
+                 then
+                   Interfaces.Unsigned_64 (Transaction_Total) /= Expected_Total
+                   or else Read_Identifier_At (68) /= Value.Expected_Head.Latest_Batch
+                   or else Read_U64_At (132)
+                           /= Interfaces.Unsigned_64 (Value.Expected_Head.Highest_Visible) + 1
+                   or else Read_U64_At (140) /= Interfaces.Unsigned_64 (Value.Attempted_Head.Highest_Visible)
+                 else
+                   Transaction_Total /= 1
+                   or else Read_U64_At (132) /= Interfaces.Unsigned_64 (Value.Assigned_Sequence)
+                   or else Read_U64_At (140) /= Interfaces.Unsigned_64 (Value.Assigned_Sequence)
+                   or else (if Value.Assigned_Sequence = Value.Expected_Head.Highest_Visible + 1
+                            then Read_Identifier_At (68) /= Value.Expected_Head.Latest_Batch
+                            else
+                              Heads.Is_Zero (Read_Identifier_At (68))
+                              or else Read_Identifier_At (68) = Value.Batch_ID))
       then
          return False;
       end if;
@@ -527,7 +558,7 @@ is
       Expected_Image := Formats.Encode_Head (Value.Expected_Head);
       Attempted_Image := Formats.Encode_Head (Value.Attempted_Head);
       Header (0 .. 7) := Magic;
-      Put_U16 (Header, 8, Authority_Format_Version);
+      Put_U16 (Header, 8, Value.Format_Version);
       Header (10) := Authority_Object_Kind;
       Header (11) := 0;
       Put_Identifier (Header, 12, Value.Expected_Head.Database_ID);
@@ -598,7 +629,7 @@ is
       if Header (0 .. 7) /= Magic then
          Status := Invalid_Magic;
          return;
-      elsif Read_U16 (Header, 8) /= Authority_Format_Version then
+      elsif Read_U16 (Header, 8) not in Authority_Format_Version | Cohort_Authority_Format_Version then
          Status := Unsupported_Version;
          return;
       elsif Header (10) /= Authority_Object_Kind then
@@ -656,7 +687,8 @@ is
       end if;
 
       Candidate :=
-        (Transaction_ID    => Read_Identifier (Header, 48),
+        (Format_Version    => Read_U16 (Header, 8),
+         Transaction_ID    => Read_Identifier (Header, 48),
          Assigned_Sequence => Heads.Commit_Sequence (Read_U64 (Header, 64)),
          Batch_ID          => Read_Identifier (Header, 72),
          Expected_Head     => Expected_Head,

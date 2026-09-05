@@ -90,6 +90,20 @@ width or admission delay. Those two values remain explicit private runtime exper
 must be reported with every benchmark.
 
 The compatibility layer may decode an empty independent-profile root before the publication
-driver and durable-authority extension are enabled, but it rejects every `Commit` and
-`Commit_Group` without writing a batch or HEAD. Enabling publication is one later semantic unit;
-there is no mixed version-1 fallback for an independent-profile root.
+driver is enabled, but it rejects every `Commit` and `Commit_Group` without writing a batch or
+HEAD. Enabling publication is one later semantic unit; there is no mixed version-1 fallback for
+an independent-profile root.
+
+Durable authority for this profile uses envelope version 2 around one exact batch-v2 singleton.
+Import is deliberately local and structural: it authenticates the envelope, member identity,
+format pair, database/profile binding, HEAD relation, and retained-history bound without issuing a
+provider request. Read-only Resolve then authenticates the maximal contiguous same-publication
+cohort in recovered history, including both outer boundaries, before any member can become
+committed. The finite model's structurally valid imported authority corresponds to those local
+checks; its resolved-valid predicate corresponds to the later recovered-chain authentication.
+
+An unresolved authority therefore depends on the exact cohort chain remaining within the
+authenticated retained batch-history window. Explicit maintenance cannot be treated as authority
+migration: callers must resolve or retain the required cohort history before a later checkpoint
+could move that chain beyond the recoverable boundary. This is an experimental recovery boundary,
+not an automatic retention policy or a production durability claim.

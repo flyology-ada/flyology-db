@@ -40,7 +40,7 @@ TxnStates == {
 BatchStates == {"None", "Confirmed", "Ambiguous", "Failed"}
 HeadStates == {"Collecting", "Publishing", "Accepted", "Unknown", "Committed", "Rejected"}
 ReceiptStates == {"None", "Unknown", "Committed", "Failed"}
-AuthorityStates == {"None", "Exported", "Lost", "Imported"}
+AuthorityStates == {"None", "Exported", "Lost", "Imported", "Resolved"}
 
 ActionNames == {
     "Init", "AdmitSingleton", "RejectConflict", "CancelBeforeAdmission",
@@ -54,9 +54,17 @@ ActionNames == {
     "RecoverCohortChain", "RejectMalformedRecovery", "CompleteCohort"
 }
 
+AuthorityVersions == {"V1", "V2"}
+
 AuthorityValue ==
-    [database : {DB, OtherDB}, member : Txns, sequence : Nat,
-     first : Nat, last : Nat, final : Txns \cup {NoTxn}]
+    [version : AuthorityVersions,
+     database : {DB, OtherDB},
+     member : Txns,
+     sequence : Nat,
+     first : Nat,
+     last : Nat,
+     final : Txns \cup {NoTxn},
+     previous : Txns \cup {NoTxn}]
 
 RecoveryImageValue ==
     [database : {DB, OtherDB},
@@ -417,55 +425,41 @@ ObserveConclusiveSuccessor ==
         headPutCalls, resolutionPutCalls, staleAdmissionObserved,
         crashObserved>>
 
-ResolveMember(t) ==
-    /\ txnState[t] = "Unknown"
-    /\ receipt[t] = "Unknown"
-    /\ t \in visible
-    /\ txnState' =
-        [u \in Txns |->
-            IF u = t THEN "Committed"
-            ELSE IF t \in cohort /\ txnState[u] = "Parked"
-                 THEN "Admitted"
-                 ELSE txnState[u]]
-    /\ receipt' = [receipt EXCEPT ![t] = "Committed"]
-    /\ cohort' = IF t \in cohort THEN {} ELSE cohort
-    /\ headState' = IF t \in cohort THEN "Collecting" ELSE headState
-    /\ headAttemptEntered' = IF t \in cohort THEN FALSE ELSE headAttemptEntered
-    /\ lastAction' = "ResolveMember"
-    /\ UNCHANGED <<sequence, latestBatch, memberSequence,
-        memberBatch, batchPrevious, batchState, storedBatches, visible,
-        publishedCohorts, durableAuthority, authorityState, importedAuthority,
-        recovered, recoveryImage,
-        batchPutCalls, headPutCalls, resolutionPutCalls, fenced,
-        staleAdmissionObserved, crashObserved>>
-
 KnownCohorts == publishedCohorts \cup (IF cohort = {} THEN {} ELSE {cohort})
 
 AuthorityCohort(t) == CHOOSE group \in KnownCohorts : t \in group
 
 ExactAuthority(t) ==
-    [database |-> DB,
+    [version |-> "V2",
+     database |-> DB,
      member |-> t,
      sequence |-> memberSequence[t],
      first |-> memberSequence[FirstMember(AuthorityCohort(t))],
      last |-> memberSequence[FinalMember(AuthorityCohort(t))],
-     final |-> FinalMember(AuthorityCohort(t))]
+     final |-> FinalMember(AuthorityCohort(t)),
+     previous |-> batchPrevious[t]]
 
 DefaultAuthority(t) ==
-    [database |-> DB,
+    [version |-> "V2",
+     database |-> DB,
      member |-> t,
      sequence |-> 0,
      first |-> 0,
      last |-> 0,
-     final |-> NoTxn]
+     final |-> NoTxn,
+     previous |-> NoTxn]
 
 BaseAuthority(t) ==
     IF durableAuthority[t] = NoAuthority
     THEN DefaultAuthority(t)
     ELSE durableAuthority[t]
 
+OtherTxn(value) == CHOOSE u \in Txns : u # value
+
 MalformedAuthorityKinds == {
-    "WrongDatabase", "SwappedMember", "WrongSequence", "WrongRange", "WrongFinal"
+    "WrongDatabase", "SwappedMember", "WrongSequence", "WrongRange",
+    "WrongFinal", "WrongPrevious", "WrongVersion", "CrossFinal",
+    "NarrowedFinal"
 }
 
 MalformedAuthority(t, kind) ==
@@ -478,26 +472,105 @@ MalformedAuthority(t, kind) ==
             [BaseAuthority(t) EXCEPT !.sequence = @ + 1]
       [] kind = "WrongRange" ->
             [BaseAuthority(t) EXCEPT !.first = 0]
-      [] OTHER -> [BaseAuthority(t) EXCEPT !.final = NoTxn]
+      [] kind = "WrongFinal" ->
+            [BaseAuthority(t) EXCEPT !.final = NoTxn]
+      [] kind = "WrongPrevious" ->
+            [BaseAuthority(t) EXCEPT
+                !.previous = OtherTxn(@)]
+      [] kind = "WrongVersion" ->
+            [BaseAuthority(t) EXCEPT !.version = "V1"]
+      [] kind = "NarrowedFinal" ->
+            [BaseAuthority(t) EXCEPT
+                !.last = BaseAuthority(t).sequence,
+                !.final = BaseAuthority(t).member]
+      [] OTHER ->
+            [BaseAuthority(t) EXCEPT
+                !.final = OtherTxn(@)]
 
 AuthorityInputs(t) ==
     {BaseAuthority(t)} \cup
         {MalformedAuthority(t, kind) : kind \in MalformedAuthorityKinds}
 
-AuthorityValidFor(t, candidate) ==
+StructuralAuthorityValidFor(t, candidate) ==
     /\ candidate \in AuthorityValue
+    /\ candidate.version = "V2"
     /\ candidate.database = DB
     /\ candidate.member = t
-    /\ candidate.sequence = memberSequence[t]
+    /\ candidate.sequence > 0
     /\ candidate.first > 0
     /\ candidate.first <= candidate.sequence
     /\ candidate.sequence <= candidate.last
+    /\ candidate.final # NoTxn
+    /\ (candidate.sequence = candidate.last) = (candidate.member = candidate.final)
+    /\ candidate.previous # candidate.member
+    /\ IF candidate.sequence = candidate.first
+       THEN IF candidate.first = 1
+            THEN candidate.previous = NoTxn
+            ELSE candidate.previous # NoTxn
+       ELSE candidate.previous # NoTxn
+
+AuthorityMatchesCohortSet(t, candidate, cohorts) ==
+    /\ StructuralAuthorityValidFor(t, candidate)
     /\ candidate.final \in storedBatches
-    /\ \E group \in KnownCohorts :
+    /\ candidate.sequence = memberSequence[t]
+    /\ candidate.previous = batchPrevious[t]
+    /\ \E group \in cohorts :
         /\ t \in group
         /\ candidate.first = memberSequence[FirstMember(group)]
         /\ candidate.last = memberSequence[FinalMember(group)]
         /\ candidate.final = FinalMember(group)
+
+AuthorityMatchesKnownCohort(t, candidate) ==
+    AuthorityMatchesCohortSet(t, candidate, KnownCohorts)
+
+AuthorityMatchesPublishedCohort(t, candidate) ==
+    AuthorityMatchesCohortSet(t, candidate, publishedCohorts)
+
+RecoveredChainIsExact ==
+    /\ recovered = visible
+    /\ recoveryImage.database = DB
+    /\ recoveryImage.members = visible
+    /\ recoveryImage.final = latestBatch
+    /\ \A u \in Txns :
+        /\ recoveryImage.present[u] = (u \in visible)
+        /\ u \in visible =>
+            /\ recoveryImage.member[u] = memberBatch[u]
+            /\ recoveryImage.sequence[u] = memberSequence[u]
+            /\ recoveryImage.previous[u] = batchPrevious[u]
+
+ResolutionObservationValidFor(t, candidate) ==
+    /\ AuthorityMatchesPublishedCohort(t, candidate)
+    /\ RecoveredChainIsExact
+    /\ t \in recovered
+
+ResolvedAuthorityValidFor(t, candidate) ==
+    AuthorityMatchesPublishedCohort(t, candidate)
+
+ResolveMember(t) ==
+    /\ txnState[t] = "Unknown"
+    /\ receipt[t] = "Unknown"
+    /\ t \in visible
+    /\ (authorityState[t] = "Imported" =>
+        ResolutionObservationValidFor(t, importedAuthority[t]))
+    /\ txnState' =
+        [u \in Txns |->
+            IF u = t THEN "Committed"
+            ELSE IF t \in cohort /\ txnState[u] = "Parked"
+                 THEN "Admitted"
+                 ELSE txnState[u]]
+    /\ receipt' = [receipt EXCEPT ![t] = "Committed"]
+    /\ authorityState' =
+        [authorityState EXCEPT ![t] = IF @ = "Imported" THEN "Resolved" ELSE @]
+    /\ cohort' = IF t \in cohort THEN {} ELSE cohort
+    /\ headState' = IF t \in cohort THEN "Collecting" ELSE headState
+    /\ headAttemptEntered' = IF t \in cohort THEN FALSE ELSE headAttemptEntered
+    /\ lastAction' = "ResolveMember"
+    /\ UNCHANGED <<sequence, latestBatch, memberSequence,
+        memberBatch, batchPrevious, batchState, storedBatches, visible,
+        publishedCohorts, durableAuthority, importedAuthority,
+        recovered, recoveryImage,
+        batchPutCalls, headPutCalls, resolutionPutCalls, fenced,
+        staleAdmissionObserved, crashObserved>>
 
 ExportMemberAuthority(t) ==
     /\ (t \in cohort \/ t \in visible)
@@ -541,7 +614,7 @@ ImportMemberAuthority(t) ==
     /\ receipt[t] = "None"
     /\ authorityState[t] = "Lost"
     /\ \E candidate \in AuthorityInputs(t) :
-        /\ AuthorityValidFor(t, candidate)
+        /\ StructuralAuthorityValidFor(t, candidate)
         /\ receipt' = [receipt EXCEPT ![t] = "Unknown"]
         /\ authorityState' = [authorityState EXCEPT ![t] = "Imported"]
         /\ importedAuthority' = [importedAuthority EXCEPT ![t] = candidate]
@@ -555,7 +628,7 @@ ImportMemberAuthority(t) ==
 RejectMalformedAuthority(t) ==
     /\ authorityState[t] = "Lost"
     /\ \E candidate \in AuthorityInputs(t) :
-        /\ ~AuthorityValidFor(t, candidate)
+        /\ ~StructuralAuthorityValidFor(t, candidate)
         /\ lastAction' = "RejectMalformedAuthority"
         /\ UNCHANGED <<txnState, cohort, sequence, latestBatch, memberSequence,
             memberBatch, batchPrevious, batchState, storedBatches, visible,
@@ -566,7 +639,7 @@ RejectMalformedAuthority(t) ==
 
 RejectSwappedAuthority(t) ==
     /\ authorityState[t] = "Lost"
-    /\ ~AuthorityValidFor(t, MalformedAuthority(t, "SwappedMember"))
+    /\ ~StructuralAuthorityValidFor(t, MalformedAuthority(t, "SwappedMember"))
     /\ lastAction' = "RejectSwappedAuthority"
     /\ UNCHANGED <<txnState, cohort, sequence, latestBatch, memberSequence,
         memberBatch, batchPrevious, batchState, storedBatches, visible,
@@ -833,13 +906,19 @@ DurableAuthorityIsExact ==
     \A t \in Txns :
         authorityState[t] # "None" =>
             /\ txnState[t] \in {"Unknown", "Committed"}
-            /\ AuthorityValidFor(t, durableAuthority[t])
+            /\ AuthorityMatchesKnownCohort(t, durableAuthority[t])
 
 ImportedAuthorityIsValid ==
     \A t \in Txns :
         authorityState[t] = "Imported" =>
             /\ importedAuthority[t] \in AuthorityValue
-            /\ AuthorityValidFor(t, importedAuthority[t])
+            /\ StructuralAuthorityValidFor(t, importedAuthority[t])
+
+ResolvedImportedAuthorityIsExact ==
+    \A t \in Txns :
+        authorityState[t] = "Resolved" =>
+            /\ receipt[t] = "Committed"
+            /\ ResolvedAuthorityValidFor(t, importedAuthority[t])
 
 RecoveryIsExact ==
     /\ recovered \subseteq visible
@@ -862,6 +941,7 @@ Safety ==
     /\ ParkedSuffixWaitsForPrefix
     /\ DurableAuthorityIsExact
     /\ ImportedAuthorityIsValid
+    /\ ResolvedImportedAuthorityIsExact
     /\ RecoveryIsExact
 
 =============================================================================
