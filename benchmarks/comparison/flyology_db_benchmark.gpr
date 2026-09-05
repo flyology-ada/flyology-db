@@ -1,4 +1,4 @@
-with "flyology_db.gpr";
+with "../../flyology_db.gpr";
 with "flyology_bench.gpr";
 
 project Flyology_DB_Benchmark is

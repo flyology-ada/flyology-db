@@ -115,13 +115,19 @@ async fn run(arguments: Arguments) -> Result<Report, String> {
         .build()
         .await
         .map_err(|error| format!("cannot create database: {error}"))?;
-    for index in 1..=arguments.warmup {
-        put_transaction(&db, index, &arguments).await?;
+    let pipeline_depth = requested_pipeline_depth()?;
+    if arguments.warmup > 0 {
+        put_transactions_pipelined(&db, 1, arguments.warmup, pipeline_depth, &arguments).await?;
     }
     let started = Instant::now();
-    for index in arguments.warmup + 1..=total {
-        put_transaction(&db, index, &arguments).await?;
-    }
+    put_transactions_pipelined(
+        &db,
+        arguments.warmup + 1,
+        arguments.measured,
+        pipeline_depth,
+        &arguments,
+    )
+    .await?;
     let elapsed_nanoseconds = u64::try_from(started.elapsed().as_nanos())
         .map_err(|_| "elapsed time exceeds the report representation")?;
     db.close()
@@ -190,6 +196,76 @@ async fn put_transaction(db: &Db, index: usize, arguments: &Arguments) -> Result
 }
 // website-benchmark:end slatedb-durable-transaction
 
+async fn put_transactions_pipelined(
+    db: &Db,
+    first_index: usize,
+    count: usize,
+    pipeline_depth: usize,
+    arguments: &Arguments,
+) -> Result<(), String> {
+    if pipeline_depth == 1 {
+        for index in first_index..first_index + count {
+            put_transaction(db, index, arguments).await?;
+        }
+        return Ok(());
+    }
+
+    let end = first_index
+        .checked_add(count)
+        .ok_or("pipeline transaction range overflow")?;
+    let mut next = first_index;
+    while next < end {
+        let cohort_end = next.saturating_add(pipeline_depth).min(end);
+        let mut handles = Vec::with_capacity(cohort_end - next);
+        let mut submission_error = None;
+        for index in next..cohort_end {
+            let submission = async {
+                let transaction = db
+                    .begin(IsolationLevel::Snapshot)
+                    .await
+                    .map_err(|error| format!("cannot begin transaction {index}: {error}"))?;
+                for mutation in 1..=arguments.mutations {
+                    let key_index = (index - 1) * arguments.mutations + mutation;
+                    transaction
+                        .put(
+                            key_for(key_index, arguments.key_bytes),
+                            value_for(key_index, arguments.value_bytes),
+                        )
+                        .map_err(|error| format!("cannot put transaction {index}: {error}"))?;
+                }
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|error| format!("cannot commit transaction {index}: {error}"))?
+                    .ok_or_else(|| format!("transaction {index} produced no durable write handle"))
+            }
+            .await;
+            match submission {
+                Ok(handle) => handles.push((index, handle)),
+                Err(error) => {
+                    submission_error = Some(error);
+                    break;
+                }
+            }
+        }
+        let mut durability_error = None;
+        for (index, handle) in handles {
+            if let Err(error) = handle.await_durable().await {
+                if durability_error.is_none() {
+                    durability_error = Some(format!(
+                        "transaction {index} did not become durable: {error}"
+                    ));
+                }
+            }
+        }
+        if let Some(error) = submission_error.or(durability_error) {
+            return Err(error);
+        }
+        next = cohort_end;
+    }
+    Ok(())
+}
+
 fn key_for(index: usize, bytes: usize) -> Vec<u8> {
     let mut key = vec![0_u8; bytes];
     key[bytes - 8..].copy_from_slice(&(index as u64).to_be_bytes());
@@ -210,6 +286,16 @@ fn settings(flush_interval_ms: Option<u64>) -> Settings {
         settings.flush_interval = Some(Duration::from_millis(milliseconds));
     }
     settings
+}
+
+fn requested_pipeline_depth() -> Result<usize, String> {
+    let value = env::var("FLYOLOGY_DB_SLATE_PIPELINE_DEPTH").unwrap_or_else(|_| "1".to_owned());
+    let parsed = positive(&value, "SlateDB pipeline depth")?;
+    if parsed <= 8 {
+        Ok(parsed)
+    } else {
+        Err("SlateDB pipeline depth must fit the eight-slot benchmark fixture".to_owned())
+    }
 }
 
 fn arguments() -> Result<Arguments, String> {

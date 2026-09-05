@@ -16,3 +16,6 @@ flyology_object_storage = "=0.1.0-dev"
 [[pins]]
 flyology_db = { path = ".deps/flyology_db-fca74780" }
 flyology_object_storage = { path = ".deps/flyology_object_storage_0.1.0_5eaf79cf" }
+
+[[depends-on]]
+flyology_crc = "=0.1.1"

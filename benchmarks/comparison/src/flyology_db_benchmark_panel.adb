@@ -28,6 +28,10 @@ procedure Flyology_DB_Benchmark_Panel is
    Maximum_Value_Bytes : constant := 64 * 1_024;
    Maximum_Mutations : constant := 256;
 
+   Flyology_Singleton_Prefix : constant String := "flyology-db-files-singleton-depth";
+   Flyology_Group_Prefix : constant String := "flyology-db-files-explicit-group";
+   SlateDB_Depth_Prefix : constant String := "slatedb-1ms-depth";
+
    Reference_Name : constant String := Ada.Command_Line.Argument (1);
    Contender_Name : constant String := Ada.Command_Line.Argument (2);
    Key_Bytes : constant Positive := Positive'Value (Ada.Command_Line.Argument (3));
@@ -37,11 +41,76 @@ procedure Flyology_DB_Benchmark_Panel is
      Positive'Value (Ada.Command_Line.Argument (6));
    JSON_Path : constant String := Ada.Command_Line.Argument (7);
    Metrics_Path : constant String := Ada.Command_Line.Argument (8);
+   Warmup_Transactions : constant Natural :=
+     (if Ada.Environment_Variables.Exists ("FLYOLOGY_DB_BENCH_WARMUP")
+      then Natural'Value (Ada.Environment_Variables.Value ("FLYOLOGY_DB_BENCH_WARMUP"))
+      else 1);
 
    Sequence : Natural := 0;
 
    function Image (Value : Integer) return String is
      (Fixed.Trim (Integer'Image (Value), Ada.Strings.Both));
+
+   function Has_Profile_Prefix (Name : String; Prefix : String) return Boolean is
+     (Name'Length > Prefix'Length
+      and then Name (Name'First .. Name'First + Prefix'Length - 1) = Prefix);
+
+   function Profile_Value (Text : String; Context : String) return Positive is
+      Value : constant Positive := Positive'Value (Text);
+   begin
+      if Text /= Image (Value) or else Value > 8 then
+         raise Program_Error with Context & " must be a canonical integer from 1 through 8";
+      end if;
+      return Value;
+   exception
+      when Constraint_Error =>
+         raise Program_Error with Context & " must be a canonical integer from 1 through 8";
+   end Profile_Value;
+
+   procedure Configure_Flyology_Profile (Name : String) is
+   begin
+      if Name = "flyology-db-files" then
+         Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP", "0");
+         Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_GROUP_SIZE", "1");
+         Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", "1");
+      elsif Has_Profile_Prefix (Name, Flyology_Singleton_Prefix) then
+         declare
+            Depth_Text : constant String :=
+              Name (Name'First + Flyology_Singleton_Prefix'Length .. Name'Last);
+            Depth : constant Positive := Profile_Value (Depth_Text, "Flyology singleton depth");
+         begin
+            Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP", "0");
+            Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_GROUP_SIZE", "1");
+            Ada.Environment_Variables.Set
+              ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Depth));
+         end;
+      else
+         declare
+            Profile : constant String :=
+              Name (Name'First + Flyology_Group_Prefix'Length .. Name'Last);
+            Separator : constant Natural := Fixed.Index (Profile, "-depth");
+         begin
+            if Separator = 0
+              or else Separator = Profile'First
+              or else Separator + 6 > Profile'Last
+            then
+               raise Program_Error with "invalid Flyology explicit-group benchmark profile " & Name;
+            end if;
+            declare
+               Group_Text : constant String := Profile (Profile'First .. Separator - 1);
+               Depth_Text : constant String := Profile (Separator + 6 .. Profile'Last);
+               Group_Size : constant Positive := Profile_Value (Group_Text, "Flyology group size");
+               Depth : constant Positive := Profile_Value (Depth_Text, "Flyology group depth");
+            begin
+               Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP", "1");
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_GROUP_SIZE", Image (Group_Size));
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Depth));
+            end;
+         end;
+      end if;
+   end Configure_Flyology_Profile;
 
    function Key_For (Index : Positive) return Ada.Streams.Stream_Element_Array is
       Result : Ada.Streams.Stream_Element_Array (1 .. Ada.Streams.Stream_Element_Offset (Key_Bytes)) :=
@@ -111,10 +180,14 @@ procedure Flyology_DB_Benchmark_Panel is
       Flush : Flyology_DB_Benchmark_SlateDB.Flush_Profile;
    begin
       Ada.Directories.Create_Directory (Scratch);
-      if Name = "flyology-db-files" then
+      if Name = "flyology-db-files"
+        or else Has_Profile_Prefix (Name, Flyology_Singleton_Prefix)
+        or else Has_Profile_Prefix (Name, Flyology_Group_Prefix)
+      then
+         Configure_Flyology_Profile (Name);
          Flyology_DB_Benchmark_Flyology.Run_Local
            (Root,
-            1,
+            Warmup_Transactions,
             Transactions,
             Key_Bytes,
             Value_Bytes,
@@ -122,14 +195,25 @@ procedure Flyology_DB_Benchmark_Panel is
             Elapsed,
             Verified_Keys,
             State_SHA256);
-      elsif Name = "slatedb-default" or else Name = "slatedb-1ms" then
+      elsif Name = "slatedb-default"
+        or else Name = "slatedb-1ms"
+        or else Has_Profile_Prefix (Name, SlateDB_Depth_Prefix)
+      then
+         Ada.Environment_Variables.Set
+           ("FLYOLOGY_DB_SLATE_PIPELINE_DEPTH",
+            (if Has_Profile_Prefix (Name, SlateDB_Depth_Prefix)
+             then Image
+               (Profile_Value
+                  (Name (Name'First + SlateDB_Depth_Prefix'Length .. Name'Last),
+                   "SlateDB pipeline depth"))
+             else "1"));
          Flush :=
            (if Name = "slatedb-default"
             then Flyology_DB_Benchmark_SlateDB.Default_Flush
             else Flyology_DB_Benchmark_SlateDB.One_Millisecond_Flush);
          Flyology_DB_Benchmark_SlateDB.Run_Local
            (Root,
-            1,
+            Warmup_Transactions,
             Transactions,
             Key_Bytes,
             Value_Bytes,
@@ -141,7 +225,7 @@ procedure Flyology_DB_Benchmark_Panel is
       elsif Name = "tidesdb-full-sync" then
          Flyology_DB_Benchmark_TidesDB.Run_Local
            (Root,
-            1,
+            Warmup_Transactions,
             Transactions,
             Key_Bytes,
             Value_Bytes,
@@ -156,7 +240,7 @@ procedure Flyology_DB_Benchmark_Panel is
             Ada.Environment_Variables.Value ("FLYOLOGY_DB_BENCH_NAMESPACE")
             & "/"
             & Image (Sequence),
-            1,
+            Warmup_Transactions,
             Transactions,
             Key_Bytes,
             Value_Bytes,
@@ -175,7 +259,7 @@ procedure Flyology_DB_Benchmark_Panel is
             Ada.Environment_Variables.Value ("FLYOLOGY_DB_BENCH_NAMESPACE")
             & "/"
             & Image (Sequence),
-            1,
+            Warmup_Transactions,
             Transactions,
             Key_Bytes,
             Value_Bytes,
@@ -188,8 +272,8 @@ procedure Flyology_DB_Benchmark_Panel is
          raise Program_Error with "unknown benchmark participant " & Name;
       end if;
       if Elapsed <= 0.0
-        or else Verified_Keys /= (Transactions + 1) * Mutations
-        or else State_SHA256 /= Expected_SHA (Transactions + 1)
+        or else Verified_Keys /= (Transactions + Warmup_Transactions) * Mutations
+        or else State_SHA256 /= Expected_SHA (Transactions + Warmup_Transactions)
       then
          raise Program_Error
            with "benchmark participant returned invalid evidence: " & Name;
@@ -238,7 +322,8 @@ begin
      or else Key_Bytes > Maximum_Key_Bytes
      or else Value_Bytes > Maximum_Value_Bytes
      or else Mutations > Maximum_Mutations
-     or else Transactions_Per_Operation >= Maximum_Transactions
+     or else Warmup_Transactions >= Maximum_Transactions
+     or else Transactions_Per_Operation > Maximum_Transactions - Warmup_Transactions
    then
       raise Program_Error with
         "usage: panel REFERENCE CONTENDER KEY_BYTES VALUE_BYTES MUTATIONS"
@@ -252,7 +337,10 @@ begin
    Config.Minimum_Sample_Time := 0.001;
    Config.Maximum_Iterations :=
      Flyology_Bench.Positive_Iteration_Count
-       (Integer'Min (4, (Maximum_Transactions - 1) / Transactions_Per_Operation));
+       (Integer'Min
+          (4,
+           (Maximum_Transactions - Warmup_Transactions)
+           / Transactions_Per_Operation));
    Config.Comparison_Batching := Flyology_Bench.Shared_Iterations;
    Config.Bootstrap_Resamples := 2_000;
    Config.Random_Seed := 20_260_830;

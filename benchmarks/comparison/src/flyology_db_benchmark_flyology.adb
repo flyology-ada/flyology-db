@@ -1,5 +1,6 @@
 with Ada.Environment_Variables;
 with Ada.Real_Time;
+with Ada.Unchecked_Deallocation;
 with Flyology.Bytes;
 with Flyology.DB;
 with Flyology.DB.Object_Storage;
@@ -8,6 +9,7 @@ with Flyology.HTTP.Client;
 with Flyology.Object_Storage;
 with Flyology.Object_Storage.Backends.Files;
 with Flyology.Object_Storage.Client.Low_Level;
+with Flyology.Operations;
 with Interfaces;
 
 package body Flyology_DB_Benchmark_Flyology is
@@ -17,18 +19,24 @@ package body Flyology_DB_Benchmark_Flyology is
    package HTTP renames Flyology.HTTP;
    package HTTP_Client renames Flyology.HTTP.Client;
    package Low_Level renames Flyology.Object_Storage.Client.Low_Level;
+   package Operations renames Flyology.Operations;
    package OS renames Flyology.Object_Storage;
 
    use type Ada.Real_Time.Time;
    use type DB.Byte;
+   use type DB.Identifier;
    use type DB.Outcome_Code;
+   use type DB.Sequence_Number;
+   use type DB.Transaction_Identifier;
    use type OS.Status;
+   use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
 
    Maximum_Operations          : constant := 63;
    Maximum_Key_Length          : constant := 256;
    Maximum_Value_Length        : constant := 64 * 1_024;
    Maximum_Mutations_Per_Batch : constant := 256;
+   Maximum_Pipeline_Depth       : constant := 8;
    Timeout                     : constant Duration := 30.0;
    Local_Bucket                : constant String := "flyology-db-benchmark";
    Local_Prefix                : constant String := "database";
@@ -63,6 +71,35 @@ package body Flyology_DB_Benchmark_Flyology is
      (if Ada.Environment_Variables.Exists (Name)
       then Ada.Environment_Variables.Value (Name)
       else "");
+
+   function Requested_Group_Size return Positive is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_GROUP_SIZE");
+   begin
+      return (if Raw'Length = 0 then 1 else Positive'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with "FLYOLOGY_DB_BENCH_GROUP_SIZE must be a positive integer";
+   end Requested_Group_Size;
+
+   function Requested_Explicit_Group return Boolean is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP");
+   begin
+      if Raw'Length = 0 or else Raw = "0" then
+         return False;
+      elsif Raw = "1" then
+         return True;
+      end if;
+      raise Program_Error with "FLYOLOGY_DB_BENCH_EXPLICIT_GROUP must be 0 or 1";
+   end Requested_Explicit_Group;
+
+   function Requested_Pipeline_Depth return Positive is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH");
+   begin
+      return (if Raw'Length = 0 then 1 else Positive'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with "FLYOLOGY_DB_BENCH_PIPELINE_DEPTH must be a positive integer";
+   end Requested_Pipeline_Depth;
 
    function Numbered_ID (Value : Interfaces.Unsigned_64) return DB.Identifier
    is
@@ -128,17 +165,16 @@ package body Flyology_DB_Benchmark_Flyology is
    end Same;
 
    --  website-benchmark:start flyology-durable-transaction
-   procedure Put_Transaction
+   procedure Prepare_Transaction
      (Item         : in out DB.Database;
       Family       : DB.Column_Family;
       Index        : Positive;
       Mutations    : Positive;
       Key_Length   : Positive;
-      Value_Length : Positive)
+      Value_Length : Positive;
+      Transaction  : in out DB.Transaction)
    is
-      Transaction : DB.Transaction;
-      Receipt     : DB.Commit_Receipt;
-      Result      : DB.Outcome_Code;
+      Result : DB.Outcome_Code;
    begin
       DB.Begin_Transaction
         (Item,
@@ -163,6 +199,26 @@ package body Flyology_DB_Benchmark_Flyology is
             Expect (Result, "put failed");
          end;
       end loop;
+   exception
+      when others =>
+         DB.Rollback (Transaction, Result);
+         raise;
+   end Prepare_Transaction;
+
+   procedure Put_Transaction
+     (Item         : in out DB.Database;
+      Family       : DB.Column_Family;
+      Index        : Positive;
+      Mutations    : Positive;
+      Key_Length   : Positive;
+      Value_Length : Positive)
+   is
+      Transaction : DB.Transaction;
+      Receipt     : DB.Commit_Receipt;
+      Result      : DB.Outcome_Code;
+   begin
+      Prepare_Transaction
+        (Item, Family, Index, Mutations, Key_Length, Value_Length, Transaction);
       DB.Commit
         (Item, Transaction, Timeout, Receipt => Receipt, Result => Result);
       if Result = DB.Outcome_Unknown then
@@ -175,6 +231,324 @@ package body Flyology_DB_Benchmark_Flyology is
          raise;
    end Put_Transaction;
    --  website-benchmark:end flyology-durable-transaction
+
+   procedure Put_Singletons_Pipelined
+     (Item           : aliased in out DB.Database;
+      Family         : DB.Column_Family;
+      First_Index    : Positive;
+      Count          : Positive;
+      Pipeline_Depth : Positive;
+      Mutations      : Positive;
+      Key_Length     : Positive;
+      Value_Length   : Positive)
+   is
+      type Operation_Access is access DB.Commit_Operation;
+      procedure Free is new Ada.Unchecked_Deallocation
+        (Object => DB.Commit_Operation, Name => Operation_Access);
+      type Operation_Array is array (Positive range <>) of Operation_Access;
+      type Boolean_Array is array (Positive range <>) of Boolean;
+      type Positive_Array is array (Positive range <>) of Positive;
+      type Sequence_Array is array (Positive range <>) of DB.Sequence_Number;
+
+      Set            : aliased Operations.Completion_Set (Pipeline_Depth);
+      Work           : Operation_Array (1 .. Pipeline_Depth) := [others => null];
+      Active         : Boolean_Array (Work'Range) := [others => False];
+      Index_For      : Positive_Array (Work'Range) := [others => First_Index];
+      Sequences      : Sequence_Array (First_Index .. First_Index + Count - 1) := [others => 0];
+      Completed      : Operations.Completion_Batch (Set.Capacity);
+      Submitted      : Natural := 0;
+      Finished       : Natural := 0;
+      Active_Count   : Natural := 0;
+
+      procedure Finish_Slot (Slot : Positive) is
+         Receipt     : DB.Commit_Receipt;
+         Result      : DB.Outcome_Code;
+         Index       : constant Positive := Index_For (Slot);
+         Expected_ID : constant DB.Transaction_Identifier :=
+           DB.Transaction_Identifier
+             (Numbered_ID (Interfaces.Unsigned_64 (1_000 + Index)));
+      begin
+         DB.Finish (Work (Slot).all, Receipt, Result);
+         Operations.Release (Work (Slot).all);
+         Active (Slot) := False;
+         Active_Count := Active_Count - 1;
+         Finished := Finished + 1;
+         Expect (Result, "pipelined singleton commit failed");
+         Require
+           (DB.Receipt_Outcome (Receipt) = DB.Success,
+            "pipelined singleton receipt outcome mismatch");
+         Require
+           (DB.Receipt_Transaction_ID (Receipt) = Expected_ID
+              and then DB.Receipt_Batch_ID (Receipt) = DB.Identifier (Expected_ID),
+            "pipelined singleton receipt identity mismatch");
+         Require
+           (DB.Receipt_Sequence (Receipt) > 0,
+            "pipelined singleton receipt sequence is absent");
+         Sequences (Index) := DB.Receipt_Sequence (Receipt);
+      end Finish_Slot;
+
+      procedure Drain_Ready is
+         Finished_Here : Natural := 0;
+      begin
+         Operations.Wait_Some (Set, Completed);
+         Require (Completed.Count > 0, "singleton pipeline returned no completion");
+         for Slot in Work'Range loop
+            if Active (Slot) and then Operations.Is_Terminal (Work (Slot).all) then
+               Finish_Slot (Slot);
+               Finished_Here := Finished_Here + 1;
+            end if;
+         end loop;
+         Require
+           (Finished_Here = Completed.Count,
+            "singleton pipeline completion batch mismatch");
+      end Drain_Ready;
+
+      procedure Release_All is
+      begin
+         for Slot in Work'Range loop
+            if Work (Slot) /= null then
+               Free (Work (Slot));
+            end if;
+         end loop;
+      end Release_All;
+   begin
+      for Slot in Work'Range loop
+         Work (Slot) := new DB.Commit_Operation (Set'Access, Item'Access, null);
+      end loop;
+      while Finished < Count loop
+         while Submitted < Count and then Active_Count < Pipeline_Depth loop
+            declare
+               Slot        : Positive := Work'First;
+               Index       : constant Positive := First_Index + Submitted;
+               Transaction : DB.Transaction;
+               Result      : DB.Outcome_Code;
+            begin
+               while Active (Slot) loop
+                  Slot := Slot + 1;
+               end loop;
+               Prepare_Transaction
+                 (Item, Family, Index, Mutations, Key_Length, Value_Length, Transaction);
+               DB.Commit (Transaction, Timeout, Work (Slot).all);
+               Index_For (Slot) := Index;
+               Active (Slot) := True;
+               Active_Count := Active_Count + 1;
+               Submitted := Submitted + 1;
+            exception
+               when others =>
+                  DB.Rollback (Transaction, Result);
+                  raise;
+            end;
+         end loop;
+         Drain_Ready;
+      end loop;
+      for Index in Sequences'Range loop
+         Require
+           (Sequences (Index) > 0
+              and then
+                (Index = Sequences'First
+                 or else Sequences (Index) = Sequences (Index - 1) + 1),
+            "pipelined singleton receipt sequence mismatch");
+      end loop;
+      Release_All;
+   exception
+      when others =>
+         for Slot in Work'Range loop
+            if Work (Slot) /= null and then Active (Slot)
+              and then Operations.Is_Active (Work (Slot).all)
+            then
+               Operations.Cancel (Work (Slot).all);
+            end if;
+         end loop;
+         if Active_Count > 0 then
+            Operations.Wait_All (Set);
+         end if;
+         for Slot in Work'Range loop
+            if Work (Slot) /= null and then Active (Slot)
+              and then Operations.Is_Terminal (Work (Slot).all)
+            then
+               declare
+                  Receipt : DB.Commit_Receipt;
+                  Result  : DB.Outcome_Code;
+               begin
+                  DB.Finish (Work (Slot).all, Receipt, Result);
+                  Operations.Release (Work (Slot).all);
+               end;
+            end if;
+         end loop;
+         Release_All;
+         raise;
+   end Put_Singletons_Pipelined;
+
+   procedure Put_Explicit_Groups
+     (Item         : aliased in out DB.Database;
+      Family       : DB.Column_Family;
+      First_Index  : Positive;
+      Count        : Positive;
+      Group_Size   : Positive;
+      Depth        : Positive;
+      Mutations    : Positive;
+      Key_Length   : Positive;
+      Value_Length : Positive)
+   is
+      type Operation_Access is access DB.Commit_Group_Operation;
+      procedure Free is new Ada.Unchecked_Deallocation
+        (Object => DB.Commit_Group_Operation, Name => Operation_Access);
+      type Operation_Array is array (Positive range <>) of Operation_Access;
+      type Boolean_Array is array (Positive range <>) of Boolean;
+      type Positive_Array is array (Positive range <>) of Positive;
+      type Sequence_Array is array (Positive range <>) of DB.Sequence_Number;
+
+      Set          : aliased Operations.Completion_Set (Depth);
+      Work         : Operation_Array (1 .. Depth) := [others => null];
+      Active       : Boolean_Array (Work'Range) := [others => False];
+      First_For    : Positive_Array (Work'Range) := [others => First_Index];
+      Sequences    : Sequence_Array (First_Index .. First_Index + Count - 1) := [others => 0];
+      Completed    : Operations.Completion_Batch (Set.Capacity);
+      Submitted    : Natural := 0;
+      Finished     : Natural := 0;
+      Active_Count : Natural := 0;
+
+      procedure Finish_Slot (Slot : Positive) is
+         Receipts : DB.Commit_Receipt_Array (1 .. Group_Size);
+         Result   : DB.Outcome_Code;
+         First    : constant Positive := First_For (Slot);
+         Batch_ID : constant DB.Identifier :=
+           Numbered_ID (10_000_000 + Interfaces.Unsigned_64 (First));
+      begin
+         DB.Finish (Work (Slot).all, Receipts, Result);
+         Operations.Release (Work (Slot).all);
+         Active (Slot) := False;
+         Active_Count := Active_Count - 1;
+         Finished := Finished + Group_Size;
+         Expect (Result, "explicit group durable publication failed");
+         for Member in Receipts'Range loop
+            declare
+               Index       : constant Positive := First + Member - 1;
+               Expected_ID : constant DB.Transaction_Identifier :=
+                 DB.Transaction_Identifier
+                   (Numbered_ID (Interfaces.Unsigned_64 (1_000 + Index)));
+            begin
+               Require
+                 (DB.Receipt_Outcome (Receipts (Member)) = DB.Success
+                    and then DB.Receipt_Transaction_ID (Receipts (Member)) = Expected_ID
+                    and then DB.Receipt_Batch_ID (Receipts (Member)) = Batch_ID,
+                  "explicit group member receipt identity mismatch");
+               Require
+                 (DB.Receipt_Sequence (Receipts (Member)) > 0,
+                  "explicit group member receipt sequence is absent");
+               Sequences (Index) := DB.Receipt_Sequence (Receipts (Member));
+            end;
+         end loop;
+      end Finish_Slot;
+
+      procedure Drain_Ready is
+         Finished_Here : Natural := 0;
+      begin
+         Operations.Wait_Some (Set, Completed);
+         Require (Completed.Count > 0, "explicit group pipeline returned no completion");
+         for Slot in Work'Range loop
+            if Active (Slot) and then Operations.Is_Terminal (Work (Slot).all) then
+               Finish_Slot (Slot);
+               Finished_Here := Finished_Here + 1;
+            end if;
+         end loop;
+         Require
+           (Finished_Here = Completed.Count,
+            "explicit group pipeline completion batch mismatch");
+      end Drain_Ready;
+
+      procedure Release_All is
+      begin
+         for Slot in Work'Range loop
+            if Work (Slot) /= null then
+               Free (Work (Slot));
+            end if;
+         end loop;
+      end Release_All;
+   begin
+      Require
+        (Count mod Group_Size = 0,
+         "explicit group transaction count must divide by the group size");
+      for Slot in Work'Range loop
+         Work (Slot) := new DB.Commit_Group_Operation (Set'Access, Item'Access, null, Group_Size);
+      end loop;
+      while Finished < Count loop
+         while Submitted < Count and then Active_Count < Depth loop
+            declare
+               Slot         : Positive := Work'First;
+               First        : constant Positive := First_Index + Submitted;
+               Transactions : DB.Transaction_Array (1 .. Group_Size);
+               Result       : DB.Outcome_Code;
+            begin
+               while Active (Slot) loop
+                  Slot := Slot + 1;
+               end loop;
+               for Member in Transactions'Range loop
+                  Prepare_Transaction
+                    (Item,
+                     Family,
+                     First + Member - 1,
+                     Mutations,
+                     Key_Length,
+                     Value_Length,
+                     Transactions (Member));
+               end loop;
+               DB.Commit_Group
+                 (Numbered_ID (10_000_000 + Interfaces.Unsigned_64 (First)),
+                  Transactions,
+                  Timeout,
+                  Work (Slot).all);
+               First_For (Slot) := First;
+               Active (Slot) := True;
+               Active_Count := Active_Count + 1;
+               Submitted := Submitted + Group_Size;
+            exception
+               when others =>
+                  for Transaction of Transactions loop
+                     DB.Rollback (Transaction, Result);
+                  end loop;
+                  raise;
+            end;
+         end loop;
+         Drain_Ready;
+      end loop;
+      for Index in Sequences'Range loop
+         Require
+           (Sequences (Index) > 0
+              and then
+                (Index = Sequences'First
+                 or else Sequences (Index) = Sequences (Index - 1) + 1),
+            "explicit group member receipt sequence mismatch");
+      end loop;
+      Release_All;
+   exception
+      when others =>
+         for Slot in Work'Range loop
+            if Work (Slot) /= null and then Active (Slot)
+              and then Operations.Is_Active (Work (Slot).all)
+            then
+               Operations.Cancel (Work (Slot).all);
+            end if;
+         end loop;
+         if Active_Count > 0 then
+            Operations.Wait_All (Set);
+         end if;
+         for Slot in Work'Range loop
+            if Work (Slot) /= null and then Active (Slot)
+              and then Operations.Is_Terminal (Work (Slot).all)
+            then
+               declare
+                  Receipts : DB.Commit_Receipt_Array (1 .. Group_Size);
+                  Result   : DB.Outcome_Code;
+               begin
+                  DB.Finish (Work (Slot).all, Receipts, Result);
+                  Operations.Release (Work (Slot).all);
+               end;
+            end if;
+         end loop;
+         Release_All;
+         raise;
+   end Put_Explicit_Groups;
 
    function Verify_All
      (Item         : in out DB.Database;
@@ -230,33 +604,39 @@ package body Flyology_DB_Benchmark_Flyology is
       Verified_Keys       : out Positive;
       State_SHA256        : out GNAT.SHA256.Message_Digest)
    is
+      Group_Size         : constant Positive := Requested_Group_Size;
+      Explicit_Group     : constant Boolean := Requested_Explicit_Group;
+      Pipeline_Depth     : constant Positive := Requested_Pipeline_Depth;
       Total_Transactions : constant Positive := Warmup + Measured;
       Total_Keys         : constant Positive :=
         Total_Transactions * Mutations;
+      Batch_History      : constant Interfaces.Unsigned_32 :=
+        Interfaces.Unsigned_32 (Total_Transactions + 1);
       Live_Bytes         : constant Interfaces.Unsigned_64 :=
         Interfaces.Unsigned_64 (Total_Keys)
         * Interfaces.Unsigned_64 (Key_Length + Value_Length + 256);
       Batch_Bytes        : constant Interfaces.Unsigned_64 :=
         Interfaces.Unsigned_64 (Mutations)
         * Interfaces.Unsigned_64 (Key_Length + Value_Length + 256);
+      Maximum_Batch_Bytes : constant Interfaces.Unsigned_64 :=
+        Batch_Bytes * Interfaces.Unsigned_64 (Maximum_Pipeline_Depth);
       Limits             : constant DB.Database_Limits :=
         (Maximum_Column_Families             => 1,
          Maximum_Manifest_History            => 2,
-         Maximum_Batch_History               =>
-           Interfaces.Unsigned_32 (Total_Transactions + 1),
-         Maximum_Transactions_Per_Batch      => 1,
+         Maximum_Batch_History               => Batch_History,
+         Maximum_Transactions_Per_Batch      => Maximum_Pipeline_Depth,
          Maximum_Mutations_Per_Transaction   =>
            Interfaces.Unsigned_32 (Mutations),
          Maximum_Mutations_Per_Batch         =>
-           Interfaces.Unsigned_32 (Mutations),
+           Interfaces.Unsigned_32 (Mutations * Maximum_Pipeline_Depth),
          Maximum_Live_Entries                =>
            Interfaces.Unsigned_32 (Total_Keys),
          Maximum_Transaction_Payload_Bytes   => Batch_Bytes,
-         Maximum_Batch_Payload_Bytes         => Batch_Bytes,
+         Maximum_Batch_Payload_Bytes         => Maximum_Batch_Bytes,
          Maximum_Live_State_Bytes            => Live_Bytes,
          Maximum_Total_L0_Runs               => 1,
          Maximum_Checkpoint_Identities       =>
-           Interfaces.Unsigned_32 (Total_Transactions * 2 + 4),
+           Batch_History * Interfaces.Unsigned_32 (Maximum_Pipeline_Depth + 1),
          Maximum_Point_Reads_Per_Transaction => 1,
          Maximum_Scan_Ranges_Per_Transaction => 1);
       Families           : constant DB.Column_Family_Configuration_Array :=
@@ -272,7 +652,7 @@ package body Flyology_DB_Benchmark_Flyology is
             Memtable_Max_Bytes   => Live_Bytes,
             Memtable_Max_Entries => Interfaces.Unsigned_32 (Total_Keys),
             Maximum_L0_Runs      => 1)];
-      Ignored_Item        : DB.Database;
+      Ignored_Item        : aliased DB.Database;
       Family              : DB.Column_Family;
       Create_Info         : DB.Create_Receipt;
       Result              : DB.Outcome_Code;
@@ -282,6 +662,22 @@ package body Flyology_DB_Benchmark_Flyology is
       Require
         (Total_Transactions <= Maximum_Operations,
          "operation count exceeds benchmark fixture limit");
+      Require
+        (Group_Size <= Maximum_Pipeline_Depth,
+         "benchmark group size exceeds the eight-slot fixture capacity");
+      Require
+        (Pipeline_Depth <= Maximum_Pipeline_Depth,
+         "benchmark pipeline depth exceeds the eight-slot fixture capacity");
+      Require
+        ((Explicit_Group
+            and then Group_Size >= 2
+            and then Group_Size * Pipeline_Depth <= Maximum_Pipeline_Depth)
+           or else (not Explicit_Group and then Group_Size = 1),
+         "explicit group geometry must fit eight commit slots; singletons require group size one");
+      Require
+        (not Explicit_Group
+           or else (Warmup mod Group_Size = 0 and then Measured mod Group_Size = 0),
+         "explicit-group warmup and measured counts must divide by the group size");
       Require
         (Key_Length in 8 .. Maximum_Key_Length,
          "key length is outside the benchmark fixture limit");
@@ -310,15 +706,63 @@ package body Flyology_DB_Benchmark_Flyology is
       DB.Open_Column_Family (Ignored_Item, 1, Family, Result);
       Expect (Result, "family open failed");
 
-      for Index in 1 .. Warmup loop
-         Put_Transaction
-           (Ignored_Item, Family, Index, Mutations, Key_Length, Value_Length);
-      end loop;
+      if Warmup > 0 then
+         if Explicit_Group then
+            Put_Explicit_Groups
+              (Ignored_Item,
+               Family,
+               1,
+               Positive (Warmup),
+               Group_Size,
+               Pipeline_Depth,
+               Mutations,
+               Key_Length,
+               Value_Length);
+         elsif Pipeline_Depth = 1 then
+            for Index in 1 .. Warmup loop
+               Put_Transaction
+                 (Ignored_Item, Family, Index, Mutations, Key_Length, Value_Length);
+            end loop;
+         else
+            Put_Singletons_Pipelined
+              (Ignored_Item,
+               Family,
+               1,
+               Positive (Warmup),
+               Pipeline_Depth,
+               Mutations,
+               Key_Length,
+               Value_Length);
+         end if;
+      end if;
       Started := Ada.Real_Time.Clock;
-      for Index in Warmup + 1 .. Total_Transactions loop
-         Put_Transaction
-           (Ignored_Item, Family, Index, Mutations, Key_Length, Value_Length);
-      end loop;
+      if Explicit_Group then
+         Put_Explicit_Groups
+           (Ignored_Item,
+            Family,
+            Warmup + 1,
+            Measured,
+            Group_Size,
+            Pipeline_Depth,
+            Mutations,
+            Key_Length,
+            Value_Length);
+      elsif Pipeline_Depth = 1 then
+         for Index in Warmup + 1 .. Total_Transactions loop
+            Put_Transaction
+              (Ignored_Item, Family, Index, Mutations, Key_Length, Value_Length);
+         end loop;
+      else
+         Put_Singletons_Pipelined
+           (Ignored_Item,
+            Family,
+            Warmup + 1,
+            Measured,
+            Pipeline_Depth,
+            Mutations,
+            Key_Length,
+            Value_Length);
+      end if;
       Finished := Ada.Real_Time.Clock;
 
       DB.Close (Ignored_Item, Result);

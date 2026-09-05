@@ -70,6 +70,60 @@ A laptop campaign is directional. It is not a portable performance claim or
 a production qualification. A formal baseline additionally requires the
 isolated-host protocol in the repository performance rules.
 
+### Bounded commit-concurrency experiments
+
+The panel also exposes parameterized local Files/SlateDB participants for
+controlled successful-path durability experiments:
+
+- `flyology-db-files-singleton-depthN` admits up to `N` ordinary Flyology.DB
+  singleton Commit operations through one bounded completion set and finishes
+  every individual receipt;
+- `slatedb-1ms-depthN` admits up to `N` independent SlateDB transactions and
+  awaits every returned durable handle; and
+- `flyology-db-files-explicit-groupG-depthN` admits up to `N` caller-requested
+  `Commit_Group` operations of `G` transactions and validates every member
+  transaction ID, shared batch ID, and sequence.
+
+`N` and `G` are canonical decimal integers bounded by the existing eight-slot
+benchmark fixture; explicit groups require `G >= 2` and `G * N <= 8`. The
+participant name records the exact geometry in JSON and NDJSON evidence. These
+are benchmark profile choices, not database defaults: the useful balance
+between publication amortization and in-flight overlap can vary by hardware,
+provider latency, key/value geometry, and transaction shape.
+
+The first two participants are the matched successful, conflict-free singleton
+comparison. Ordinary serial singleton `Commit` is the group-size-one geometry;
+the explicit-group participants start at two because `Commit_Group` deliberately
+rejects a one-member group. They are amortization ceilings with
+caller-visible group identity and shared publication fate; it is not a
+transparent singleton coalescer. No timing from these participants establishes
+equivalent conflict, cancellation, unknown-publication, or recovery semantics
+between engines. Every accepted comparison must still use fresh roots, balanced
+order, matching work and power conditions, close/reopen verification, and an
+identical final state digest.
+
+For these participants, the NDJSON `primary_time` axis is the authoritative
+durable transaction window. The JSON headline is the harness wall clock around
+fresh-root creation, database creation, close/reopen verification, and scratch
+deletion, so it is useful for campaign diagnostics but not for commit-throughput
+decisions.
+
+`FLYOLOGY_DB_BENCH_WARMUP` selects the per-sample transaction warmup. The
+profile name selects the exact bounded concurrency geometry; those values are
+experimental fixture inputs, not product defaults or policy.
+
+For example, this runs the matched depth-eight singleton comparison with eight
+warmup and 32 measured transactions of 256 mutations each:
+
+```sh
+FLYOLOGY_DB_BENCH_WARMUP=8 \
+  benchmarks/comparison/bin/flyology_db_benchmark_panel \
+  slatedb-1ms-depth8 flyology-db-files-singleton-depth8 \
+  16 1024 256 32 \
+  benchmarks/comparison/results/slatedb-vs-flyology-depth8.json \
+  benchmarks/comparison/results/slatedb-vs-flyology-depth8.ndjson
+```
+
 ## Maintained commands
 
 Build the participant executables before measurement:
