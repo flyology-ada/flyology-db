@@ -36,6 +36,7 @@ package body Flyology.DB.LSM_Format_Tests is
    use type Manifests.Manifest;
    use type Runtime.Allocation_Status;
    use type Runtime.Checkpoint_Manifest;
+   use type Runtime.Commit_Profiles.Commit_Publication_Profile;
    use type Runtime.Decode_Status;
    use type Runtime.Encode_Status;
    use type Runtime.Checkpoint_Manifest_Access;
@@ -49,22 +50,22 @@ package body Flyology.DB.LSM_Format_Tests is
 
    --  Exact extents derived independently by generate_lsm_goldens.py from the
    --  frozen field tables and fixture values; they are not product limits.
-   Previous_Manifest_Length : constant := 358;
-   Manifest_Length          : constant := 366;
-   SST_Length               : constant := 164;
-   SST_V2_Length            : constant := 323;
+   Previous_Manifest_Length     : constant := 358;
+   Manifest_Length              : constant := 366;
+   Experimental_Manifest_Length : constant := 370;
+   SST_Length                   : constant := 164;
+   SST_V2_Length                : constant := 323;
 
    --  Each equality restates the normative field-width formula rather than an
    --  independent expected size. A failure is a wire-table/golden drift event.
    pragma
      Compile_Time_Error
        (LSM.Previous_Checkpoint_Manifest_Header_Length
-        /= Manifests.Manifest_Header_Length + 8 + 4 + 4 + 4 + 4,
+          /= Manifests.Manifest_Header_Length + 8 + 4 + 4 + 4 + 4,
         "previous checkpoint manifest header arithmetic changed");
    pragma
      Compile_Time_Error
-       (LSM.Checkpoint_Manifest_Header_Length
-        /= LSM.Previous_Checkpoint_Manifest_Header_Length + 4 + 4,
+       (LSM.Checkpoint_Manifest_Header_Length /= LSM.Previous_Checkpoint_Manifest_Header_Length + 4 + 4,
         "checkpoint manifest header arithmetic changed");
    pragma
      Compile_Time_Error
@@ -83,8 +84,7 @@ package body Flyology.DB.LSM_Format_Tests is
        (LSM.SST_Entry_Header_Length /= 8 + 1 + 1 + 2 + 4 + 4, "SST entry header arithmetic changed");
    pragma
      Compile_Time_Error
-       (Runtime.SST_V2_Header_Length /= LSM.SST_Header_Length + 4 * 8,
-        "SST-v2 header arithmetic changed");
+       (Runtime.SST_V2_Header_Length /= LSM.SST_Header_Length + 4 * 8, "SST-v2 header arithmetic changed");
    pragma
      Compile_Time_Error
        (Runtime.SST_V2_Index_Entry_Header_Length /= 8 + 8 + 8 + 1 + 1 + 2 + 4 + 4,
@@ -135,6 +135,20 @@ package body Flyology.DB.LSM_Format_Tests is
         & "0000001000000002000000010000000063660000000000000000000000000000000900000000000000010000"
         & "000000000002000000030000000000000000000000040000000000000000000000000000000A000000000000"
         & "0000000000000000000B451EAAFD");
+
+   --  Independent manifest-v4 compatibility image. It appends only profile
+   --  code 1; cohort geometry remains an explicit runtime experiment input.
+   Experimental_Manifest_Golden : constant Formats.Byte_Array (0 .. Experimental_Manifest_Length - 1) :=
+     Hex
+       ("464C5943464D30310004030000000000000000000000000000000001000000E8000000000000008618BD773F"
+        & "0000000000000000000000000000000700000000000000000000000000000003000000000000000000000000"
+        & "0000000400000000000000020000000000000000000000000000000800000000000000030000000000000001"
+        & "0000000000000002000000010000004000000040000000400000000800000040000000400000010000000000"
+        & "0020000000000000010000000000000004000000000000000000000200000002000000040000000200000000"
+        & "0000000800000004000000010000000100000000000000000000000800000000000000080002000000000000"
+        & "0000100000000010000000020000000100000000636600000000000000000000000000000009000000000000"
+        & "00010000000000000002000000030000000000000000000000040000000000000000000000000000000A0000"
+        & "000000000000000000000000000B23B1584D");
 
    --  Exact manifest-v2 compatibility image. Runtime decoding must retain it
    --  without inventing v3 serializable limits; the bounded reference codec
@@ -318,7 +332,7 @@ package body Flyology.DB.LSM_Format_Tests is
         Runtime.SST_V2_Header_Length
         + 3 * (Runtime.SST_V2_Frame_Header_Length + Runtime.SST_V2_Frame_Trailer_Length)
         + 4;
-      Index_CRC : constant := Index_Offset + 3 * Runtime.SST_V2_Index_Entry_Header_Length + 3;
+      Index_CRC    : constant := Index_Offset + 3 * Runtime.SST_V2_Index_Entry_Header_Length + 3;
    begin
       Put_U32 (Image, Index_CRC, Formats.CRC_32C (Image (Index_Offset .. Index_CRC - 1)));
       Repair_Object_Checksum (Image);
@@ -672,20 +686,21 @@ package body Flyology.DB.LSM_Format_Tests is
    end Test_SST_Rejection;
 
    procedure Test_Runtime_Golden_Parity is
-      Manifest_Value : Runtime.Checkpoint_Manifest_Access;
-      Manifest_Read  : Runtime.Checkpoint_Manifest_Access;
-      Manifest_Image : Runtime.Image_Access;
-      Manifest_Head  : Runtime.Checkpoint_Header_Admission;
-      Table_Value    : Runtime.SST_Access;
-      Table_Read     : Runtime.SST_Access;
-      Table_Image    : Runtime.Image_Access;
-      Table_Head     : Runtime.SST_Header_Admission;
-      Table_Index    : Runtime.SST_V2_Index_Access;
-      Table_Frame    : Runtime.SST_V2_Frame_Access;
-      Allocation     : Runtime.Allocation_Status;
-      Encode_Status  : Runtime.Encode_Status;
-      Decode_Status  : Runtime.Decode_Status;
-      Descriptor     : constant Runtime.Run_Descriptor :=
+      Manifest_Value       : Runtime.Checkpoint_Manifest_Access;
+      Manifest_Read        : Runtime.Checkpoint_Manifest_Access;
+      Manifest_Image       : Runtime.Image_Access;
+      Experimental_Image   : Runtime.Image_Access;
+      Manifest_Head        : Runtime.Checkpoint_Header_Admission;
+      Table_Value          : Runtime.SST_Access;
+      Table_Read           : Runtime.SST_Access;
+      Table_Image          : Runtime.Image_Access;
+      Table_Head           : Runtime.SST_Header_Admission;
+      Table_Index          : Runtime.SST_V2_Index_Access;
+      Table_Frame          : Runtime.SST_V2_Frame_Access;
+      Allocation           : Runtime.Allocation_Status;
+      Encode_Status        : Runtime.Encode_Status;
+      Decode_Status        : Runtime.Decode_Status;
+      Descriptor           : constant Runtime.Run_Descriptor :=
         (Run_ID                => ID (9),
          Lowest_Sequence       => 1,
          Highest_Sequence      => 2,
@@ -694,10 +709,10 @@ package body Flyology.DB.LSM_Format_Tests is
       --  Derived golden geometry: three framed entries carry four logical
       --  bytes and three one-byte index keys. These values assert the fixture,
       --  not a production frame count or object-size policy.
-      Fixture_Frame_Bytes : constant :=
+      Fixture_Frame_Bytes  : constant :=
         3 * (Runtime.SST_V2_Frame_Header_Length + Runtime.SST_V2_Frame_Trailer_Length) + 4;
       Fixture_Index_Offset : constant := Runtime.SST_V2_Header_Length + Fixture_Frame_Bytes;
-      Fixture_Index_Bytes : constant :=
+      Fixture_Index_Bytes  : constant :=
         3 * Runtime.SST_V2_Index_Entry_Header_Length + 3 + Runtime.SST_V2_Index_Trailer_Length;
 
       procedure Expect_Visible_Position
@@ -764,9 +779,23 @@ package body Flyology.DB.LSM_Format_Tests is
         or else Manifest_Head.Header_Length /= Runtime.LSM.Checkpoint_Manifest_Header_Length
         or else Manifest_Head.Maximum_Point_Reads_Per_Transaction /= 8
         or else Manifest_Head.Maximum_Scan_Ranges_Per_Transaction /= 4
+        or else Manifest_Head.Commit_Profile /= Runtime.Commit_Profiles.Standard_Publication
         or else Manifest_Head.Maximum_Object_Length /= 232 + 307 + 96 + 32
       then
          raise Program_Error with "runtime manifest header admission mismatch";
+      end if;
+      Runtime.Inspect_Checkpoint_Manifest_Header
+        (Manifest_Golden (0 .. Runtime.Experimental_Checkpoint_Manifest_Header_Length - 1),
+         ID (1),
+         Manifest_Golden'Length,
+         Manifest_Head,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Manifest_Head.Format_Version /= Runtime.LSM.Checkpoint_Manifest_Format_Version
+        or else Manifest_Head.Header_Length /= Runtime.LSM.Checkpoint_Manifest_Header_Length
+        or else Manifest_Head.Commit_Profile /= Runtime.Commit_Profiles.Standard_Publication
+      then
+         raise Program_Error with "runtime manifest-v3 wide recovery header admission changed";
       end if;
       Runtime.Inspect_Checkpoint_Manifest_Header
         (Previous_Manifest_Golden (0 .. Runtime.LSM.Previous_Checkpoint_Manifest_Header_Length - 1),
@@ -779,8 +808,22 @@ package body Flyology.DB.LSM_Format_Tests is
         or else Manifest_Head.Header_Length /= Runtime.LSM.Previous_Checkpoint_Manifest_Header_Length
         or else Manifest_Head.Maximum_Point_Reads_Per_Transaction /= 0
         or else Manifest_Head.Maximum_Scan_Ranges_Per_Transaction /= 0
+        or else Manifest_Head.Commit_Profile /= Runtime.Commit_Profiles.Standard_Publication
       then
          raise Program_Error with "runtime manifest-v2 exact header admission changed";
+      end if;
+      Runtime.Inspect_Checkpoint_Manifest_Header
+        (Previous_Manifest_Golden (0 .. Runtime.Experimental_Checkpoint_Manifest_Header_Length - 1),
+         ID (1),
+         Previous_Manifest_Golden'Length,
+         Manifest_Head,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Manifest_Head.Format_Version /= Runtime.LSM.Previous_Checkpoint_Manifest_Format_Version
+        or else Manifest_Head.Header_Length /= Runtime.LSM.Previous_Checkpoint_Manifest_Header_Length
+        or else Manifest_Head.Commit_Profile /= Runtime.Commit_Profiles.Standard_Publication
+      then
+         raise Program_Error with "runtime manifest-v2 wide recovery header admission changed";
       end if;
       Runtime.Inspect_Checkpoint_Manifest_Header
         (Previous_Manifest_Golden (0 .. Runtime.LSM.Previous_Checkpoint_Manifest_Header_Length + 3),
@@ -798,6 +841,7 @@ package body Flyology.DB.LSM_Format_Tests is
         or else Manifest_Read.Identity_Total /= 2
         or else Manifest_Read.Maximum_Point_Reads_Per_Transaction /= 8
         or else Manifest_Read.Maximum_Scan_Ranges_Per_Transaction /= 4
+        or else Manifest_Read.Commit_Profile /= Runtime.Commit_Profiles.Standard_Publication
       then
          raise Program_Error with "runtime manifest golden did not round-trip";
       end if;
@@ -808,9 +852,96 @@ package body Flyology.DB.LSM_Format_Tests is
         or else not Runtime.Structurally_Valid (Manifest_Read.all)
         or else Manifest_Read.Maximum_Point_Reads_Per_Transaction /= 0
         or else Manifest_Read.Maximum_Scan_Ranges_Per_Transaction /= 0
+        or else Manifest_Read.Commit_Profile /= Runtime.Commit_Profiles.Standard_Publication
       then
          raise Program_Error with "runtime manifest-v2 backward read changed";
       end if;
+
+      Runtime.Release (Manifest_Read);
+      Manifest_Value.Commit_Profile := Runtime.Commit_Profiles.Independent_Coalescing;
+      Runtime.Encode_Checkpoint_Manifest (Manifest_Value.all, Experimental_Image, Encode_Status);
+      if Encode_Status /= Runtime.Encoded
+        or else Experimental_Image = null
+        or else Experimental_Image.all /= Experimental_Manifest_Golden
+      then
+         raise Program_Error with "runtime experimental manifest differs from independent golden";
+      end if;
+      Runtime.Inspect_Checkpoint_Manifest_Header
+        (Experimental_Manifest_Golden (0 .. Runtime.Experimental_Checkpoint_Manifest_Header_Length - 1),
+         ID (1),
+         Experimental_Manifest_Golden'Length,
+         Manifest_Head,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Manifest_Head.Format_Version /= Runtime.Experimental_Checkpoint_Manifest_Format_Version
+        or else Manifest_Head.Header_Length /= Runtime.Experimental_Checkpoint_Manifest_Header_Length
+        or else Manifest_Head.Commit_Profile /= Runtime.Commit_Profiles.Independent_Coalescing
+        or else Manifest_Head.Maximum_Object_Length /= 236 + 307 + 96 + 32
+      then
+         raise Program_Error with "runtime experimental manifest header admission mismatch";
+      end if;
+      Runtime.Decode_Checkpoint_Manifest (Experimental_Manifest_Golden, ID (1), Manifest_Read, Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Manifest_Read = null
+        or else not Runtime.Structurally_Valid (Manifest_Read.all)
+        or else Manifest_Read.all /= Manifest_Value.all
+      then
+         raise Program_Error with "runtime experimental manifest did not round-trip";
+      end if;
+      Runtime.Release (Manifest_Read);
+      Runtime.Release (Experimental_Image);
+      declare
+         Corrupt_Profile : Formats.Byte_Array := Experimental_Manifest_Golden;
+
+         procedure Expect_Experimental
+           (Image             : Formats.Byte_Array;
+            Expected          : Runtime.Decode_Status;
+            Expected_Database : Head.Identifier := ID (1))
+         is
+            Decoded : Runtime.Checkpoint_Manifest_Access;
+            Actual  : Runtime.Decode_Status;
+         begin
+            Runtime.Decode_Checkpoint_Manifest (Image, Expected_Database, Decoded, Actual);
+            if Actual /= Expected or else (Actual /= Runtime.Decoded and then Decoded /= null) then
+               Runtime.Release (Decoded);
+               raise Program_Error
+                 with "experimental manifest rejection mismatch: " & Runtime.Decode_Status'Image (Actual);
+            end if;
+            Runtime.Release (Decoded);
+         end Expect_Experimental;
+      begin
+         for Size in Natural range 0 .. Experimental_Manifest_Length - 1 loop
+            declare
+               Short : Formats.Byte_Array (1 .. Size);
+            begin
+               if Size > 0 then
+                  Short := Experimental_Manifest_Golden (0 .. Size - 1);
+               end if;
+               Expect_Experimental (Short, Runtime.Invalid_Length);
+            end;
+         end loop;
+         declare
+            Long : Formats.Byte_Array (0 .. Experimental_Manifest_Length) := [others => 0];
+         begin
+            Long (0 .. Experimental_Manifest_Length - 1) := Experimental_Manifest_Golden;
+            Expect_Experimental (Long, Runtime.Invalid_Length);
+         end;
+         Expect_Experimental (Experimental_Manifest_Golden, Runtime.Wrong_Database, ID (2));
+         Corrupt_Profile := Experimental_Manifest_Golden;
+         Corrupt_Profile (228) := Corrupt_Profile (228) xor 1;
+         Expect_Experimental (Corrupt_Profile, Runtime.Header_Checksum_Failed);
+         Corrupt_Profile := Experimental_Manifest_Golden;
+         Corrupt_Profile (Runtime.Experimental_Checkpoint_Manifest_Header_Length) :=
+           Corrupt_Profile (Runtime.Experimental_Checkpoint_Manifest_Header_Length) xor 1;
+         Expect_Experimental (Corrupt_Profile, Runtime.Object_Checksum_Failed);
+         Corrupt_Profile := Experimental_Manifest_Golden;
+         Put_U32 (Corrupt_Profile, 228, 0);
+         Repair_Checksums (Corrupt_Profile, Runtime.Experimental_Checkpoint_Manifest_Header_Length);
+         Expect_Experimental (Corrupt_Profile, Runtime.Invalid_Manifest_State);
+         Put_U32 (Corrupt_Profile, 228, 2);
+         Repair_Checksums (Corrupt_Profile, Runtime.Experimental_Checkpoint_Manifest_Header_Length);
+         Expect_Experimental (Corrupt_Profile, Runtime.Invalid_Manifest_State);
+      end;
 
       Runtime.Create_SST (3, 4, Table_Value, Allocation);
       if Allocation /= Runtime.Allocated then
@@ -1070,31 +1201,48 @@ package body Flyology.DB.LSM_Format_Tests is
       declare
          --  Nonzero lower bounds verify that operational parsing is positional;
          --  these test shifts are not persisted offsets or allocation policy.
-         Shifted_Manifest       : constant Formats.Byte_Array (7 .. 7 + Manifest_Length - 1) :=
+         Shifted_Manifest           : constant Formats.Byte_Array (7 .. 7 + Manifest_Length - 1) :=
            Manifest_Golden;
-         Shifted_SST            : constant Formats.Byte_Array (11 .. 11 + SST_Length - 1) := SST_Golden;
-         Shifted_SST_V2         : constant Formats.Byte_Array (13 .. 13 + SST_V2_Length - 1) := SST_V2_Golden;
-         Shifted_Manifest_Value : Runtime.Checkpoint_Manifest_Access;
-         Shifted_Table_Value    : Runtime.SST_Access;
-         Shifted_Table_V2_Value : Runtime.SST_Access;
+         Shifted_Experimental       :
+           constant Formats.Byte_Array (9 .. 9 + Experimental_Manifest_Length - 1) :=
+             Experimental_Manifest_Golden;
+         Shifted_SST                : constant Formats.Byte_Array (11 .. 11 + SST_Length - 1) := SST_Golden;
+         Shifted_SST_V2             : constant Formats.Byte_Array (13 .. 13 + SST_V2_Length - 1) :=
+           SST_V2_Golden;
+         Shifted_Manifest_Value     : Runtime.Checkpoint_Manifest_Access;
+         Shifted_Experimental_Value : Runtime.Checkpoint_Manifest_Access;
+         Shifted_Table_Value        : Runtime.SST_Access;
+         Shifted_Table_V2_Value     : Runtime.SST_Access;
       begin
          Runtime.Decode_Checkpoint_Manifest (Shifted_Manifest, ID (1), Shifted_Manifest_Value, Decode_Status);
          if Decode_Status /= Runtime.Decoded then
             raise Program_Error with "runtime manifest rejected shifted lower bound";
          end if;
+         Runtime.Decode_Checkpoint_Manifest
+           (Shifted_Experimental, ID (1), Shifted_Experimental_Value, Decode_Status);
+         if Decode_Status /= Runtime.Decoded
+           or else Shifted_Experimental_Value = null
+           or else Shifted_Experimental_Value.Commit_Profile /= Runtime.Commit_Profiles.Independent_Coalescing
+         then
+            Runtime.Release (Shifted_Manifest_Value);
+            raise Program_Error with "runtime experimental manifest rejected shifted lower bound";
+         end if;
          Runtime.Decode_SST (Shifted_SST, ID (1), 1, Descriptor, 8, 8, Shifted_Table_Value, Decode_Status);
          if Decode_Status /= Runtime.Decoded then
             Runtime.Release (Shifted_Manifest_Value);
+            Runtime.Release (Shifted_Experimental_Value);
             raise Program_Error with "runtime SST rejected shifted lower bound";
          end if;
          Runtime.Decode_SST_V2
            (Shifted_SST_V2, ID (1), 1, Descriptor, 8, 8, Shifted_Table_V2_Value, Decode_Status);
          if Decode_Status /= Runtime.Decoded then
             Runtime.Release (Shifted_Manifest_Value);
+            Runtime.Release (Shifted_Experimental_Value);
             Runtime.Release (Shifted_Table_Value);
             raise Program_Error with "runtime SST-v2 rejected shifted lower bound";
          end if;
          Runtime.Release (Shifted_Manifest_Value);
+         Runtime.Release (Shifted_Experimental_Value);
          Runtime.Release (Shifted_Table_Value);
          Runtime.Release (Shifted_Table_V2_Value);
       end;
@@ -1109,6 +1257,7 @@ package body Flyology.DB.LSM_Format_Tests is
       Runtime.Release (Table_Value);
    exception
       when others =>
+         Runtime.Release (Experimental_Image);
          Runtime.Release (Manifest_Image);
          Runtime.Release (Manifest_Read);
          Runtime.Release (Manifest_Value);
@@ -1127,62 +1276,47 @@ package body Flyology.DB.LSM_Format_Tests is
          Highest_Sequence      => 2,
          Entry_Total           => 3,
          Logical_Payload_Bytes => 4);
-      Corrupt : Formats.Byte_Array (SST_V2_Golden'Range) := SST_V2_Golden;
+      Corrupt    : Formats.Byte_Array (SST_V2_Golden'Range) := SST_V2_Golden;
 
       --  Derived fixture positions: three frame overheads and four logical
       --  bytes place the index; each of its three records has a one-byte key.
       --  These are corruption-oracle coordinates, not format policy.
-      Index_Offset : constant :=
+      Index_Offset         : constant :=
         Runtime.SST_V2_Header_Length
         + 3 * (Runtime.SST_V2_Frame_Header_Length + Runtime.SST_V2_Frame_Trailer_Length)
         + 4;
-      Frame_Bytes : constant := Index_Offset - Runtime.SST_V2_Header_Length;
-      Index_Bytes : constant := SST_V2_Length - Index_Offset - Runtime.LSM.Object_Trailer_Length;
-      Index_CRC : constant := Index_Offset + 3 * Runtime.SST_V2_Index_Entry_Header_Length + 3;
-      First_Index_Key : constant := Index_Offset + Runtime.SST_V2_Index_Entry_Header_Length;
-      First_Frame_Value : constant :=
+      Frame_Bytes          : constant := Index_Offset - Runtime.SST_V2_Header_Length;
+      Index_Bytes          : constant := SST_V2_Length - Index_Offset - Runtime.LSM.Object_Trailer_Length;
+      Index_CRC            : constant := Index_Offset + 3 * Runtime.SST_V2_Index_Entry_Header_Length + 3;
+      First_Index_Key      : constant := Index_Offset + Runtime.SST_V2_Index_Entry_Header_Length;
+      First_Frame_Value    : constant :=
         Runtime.SST_V2_Header_Length + Runtime.SST_V2_Frame_Header_Length + 1;
-      First_Frame_Extent : constant :=
+      First_Frame_Extent   : constant :=
         Runtime.SST_V2_Frame_Header_Length + 2 + Runtime.SST_V2_Frame_Trailer_Length;
-      Second_Frame_Offset : constant := Runtime.SST_V2_Header_Length + First_Frame_Extent;
+      Second_Frame_Offset  : constant := Runtime.SST_V2_Header_Length + First_Frame_Extent;
       Swapped_Frame_Extent : constant :=
         Runtime.SST_V2_Frame_Header_Length + 1 + Runtime.SST_V2_Frame_Trailer_Length;
-      Third_Frame_Offset : constant := Second_Frame_Offset + Swapped_Frame_Extent;
-      Index_Golden         :
-        constant Formats.Byte_Array (0 .. Index_Bytes - 1) :=
-          SST_V2_Golden (Index_Offset .. Index_Offset + Index_Bytes - 1);
-      First_Frame_Golden   :
-        constant Formats.Byte_Array (0 .. First_Frame_Extent - 1) :=
-          SST_V2_Golden
-            (Runtime.SST_V2_Header_Length
-             .. Runtime.SST_V2_Header_Length + First_Frame_Extent - 1);
-      Second_Frame_Golden  :
-        constant Formats.Byte_Array (0 .. Swapped_Frame_Extent - 1) :=
-          SST_V2_Golden
-            (Second_Frame_Offset
-             .. Second_Frame_Offset + Swapped_Frame_Extent - 1);
-      Third_Frame_Golden   :
-        constant Formats.Byte_Array (0 .. Swapped_Frame_Extent - 1) :=
-          SST_V2_Golden
-            (Third_Frame_Offset
-             .. Third_Frame_Offset + Swapped_Frame_Extent - 1);
+      Third_Frame_Offset   : constant := Second_Frame_Offset + Swapped_Frame_Extent;
+      Index_Golden         : constant Formats.Byte_Array (0 .. Index_Bytes - 1) :=
+        SST_V2_Golden (Index_Offset .. Index_Offset + Index_Bytes - 1);
+      First_Frame_Golden   : constant Formats.Byte_Array (0 .. First_Frame_Extent - 1) :=
+        SST_V2_Golden (Runtime.SST_V2_Header_Length .. Runtime.SST_V2_Header_Length + First_Frame_Extent - 1);
+      Second_Frame_Golden  : constant Formats.Byte_Array (0 .. Swapped_Frame_Extent - 1) :=
+        SST_V2_Golden (Second_Frame_Offset .. Second_Frame_Offset + Swapped_Frame_Extent - 1);
+      Third_Frame_Golden   : constant Formats.Byte_Array (0 .. Swapped_Frame_Extent - 1) :=
+        SST_V2_Golden (Third_Frame_Offset .. Third_Frame_Offset + Swapped_Frame_Extent - 1);
       Admission            : Runtime.SST_Header_Admission;
       Index_Value          : Runtime.SST_V2_Index_Access;
       Decode_Status        : Runtime.Decode_Status;
 
-      procedure Expect
-        (Image    : Formats.Byte_Array;
-         Expected : Runtime.Decode_Status;
-         Context  : String)
-      is
+      procedure Expect (Image : Formats.Byte_Array; Expected : Runtime.Decode_Status; Context : String) is
          Decoded : Runtime.SST_Access;
          Actual  : Runtime.Decode_Status;
       begin
          Runtime.Decode_SST_V2 (Image, ID (1), 1, Descriptor, 8, 8, Decoded, Actual);
          if Actual /= Expected then
             Runtime.Release (Decoded);
-            raise Program_Error
-              with Context & ": " & Runtime.Decode_Status'Image (Actual);
+            raise Program_Error with Context & ": " & Runtime.Decode_Status'Image (Actual);
          elsif Actual /= Runtime.Decoded and then Decoded /= null then
             Runtime.Release (Decoded);
             raise Program_Error with Context & ": partial SST-v2 output";
@@ -1190,20 +1324,15 @@ package body Flyology.DB.LSM_Format_Tests is
          Runtime.Release (Decoded);
       end Expect;
 
-      procedure Expect_Index
-        (Image    : Formats.Byte_Array;
-         Expected : Runtime.Decode_Status;
-         Context  : String)
+      procedure Expect_Index (Image : Formats.Byte_Array; Expected : Runtime.Decode_Status; Context : String)
       is
          Decoded : Runtime.SST_V2_Index_Access;
          Actual  : Runtime.Decode_Status;
       begin
-         Runtime.Decode_SST_V2_Index
-           (Image, Admission, ID (1), 1, Descriptor, 8, 8, Decoded, Actual);
+         Runtime.Decode_SST_V2_Index (Image, Admission, ID (1), 1, Descriptor, 8, 8, Decoded, Actual);
          if Actual /= Expected then
             Runtime.Release (Decoded);
-            raise Program_Error
-              with Context & ": " & Runtime.Decode_Status'Image (Actual);
+            raise Program_Error with Context & ": " & Runtime.Decode_Status'Image (Actual);
          elsif Actual /= Runtime.Decoded and then Decoded /= null then
             Runtime.Release (Decoded);
             raise Program_Error with Context & ": partial SST-v2 index output";
@@ -1212,20 +1341,15 @@ package body Flyology.DB.LSM_Format_Tests is
       end Expect_Index;
 
       procedure Expect_Frame
-        (Image    : Formats.Byte_Array;
-         Position : Positive;
-         Expected : Runtime.Decode_Status;
-         Context  : String)
+        (Image : Formats.Byte_Array; Position : Positive; Expected : Runtime.Decode_Status; Context : String)
       is
          Decoded : Runtime.SST_V2_Frame_Access;
          Actual  : Runtime.Decode_Status;
       begin
-         Runtime.Decode_SST_V2_Frame
-           (Image, Index_Value.all, Position, Decoded, Actual);
+         Runtime.Decode_SST_V2_Frame (Image, Index_Value.all, Position, Decoded, Actual);
          if Actual /= Expected then
             Runtime.Release (Decoded);
-            raise Program_Error
-              with Context & ": " & Runtime.Decode_Status'Image (Actual);
+            raise Program_Error with Context & ": " & Runtime.Decode_Status'Image (Actual);
          elsif Actual /= Runtime.Decoded and then Decoded /= null then
             Runtime.Release (Decoded);
             raise Program_Error with Context & ": partial SST-v2 frame output";
@@ -1242,8 +1366,7 @@ package body Flyology.DB.LSM_Format_Tests is
          Admission,
          Decode_Status);
       if Decode_Status /= Runtime.Decoded then
-         raise Program_Error
-           with "SST-v2 rejection fixture header did not authenticate";
+         raise Program_Error with "SST-v2 rejection fixture header did not authenticate";
       end if;
 
       for Size in Natural range 0 .. SST_V2_Length - 1 loop
@@ -1351,14 +1474,12 @@ package body Flyology.DB.LSM_Format_Tests is
          Decoded : Runtime.SST_Access;
          Actual  : Runtime.Decode_Status;
       begin
-         Runtime.Decode_SST_V2
-           (SST_V2_Golden, ID (1), 1, Descriptor, 0, 8, Decoded, Actual);
+         Runtime.Decode_SST_V2 (SST_V2_Golden, ID (1), 1, Descriptor, 0, 8, Decoded, Actual);
          if Actual /= Runtime.Limit_Exceeded or else Decoded /= null then
             Runtime.Release (Decoded);
             raise Program_Error with "SST-v2 key limit was not enforced before allocation";
          end if;
-         Runtime.Decode_SST_V2
-           (SST_V2_Golden, ID (1), 1, Descriptor, 8, 0, Decoded, Actual);
+         Runtime.Decode_SST_V2 (SST_V2_Golden, ID (1), 1, Descriptor, 8, 0, Decoded, Actual);
          if Actual /= Runtime.Limit_Exceeded or else Decoded /= null then
             Runtime.Release (Decoded);
             raise Program_Error with "SST-v2 value limit was not enforced before allocation";
@@ -1372,102 +1493,54 @@ package body Flyology.DB.LSM_Format_Tests is
             if Size > 0 then
                Short := Index_Golden (0 .. Size - 1);
             end if;
-            Expect_Index
-              (Short,
-               Runtime.Invalid_Length,
-               "truncated SST-v2 index accepted");
+            Expect_Index (Short, Runtime.Invalid_Length, "truncated SST-v2 index accepted");
          end;
       end loop;
       declare
          Long : Formats.Byte_Array (0 .. Index_Bytes) := [others => 0];
       begin
          Long (0 .. Index_Bytes - 1) := Index_Golden;
-         Expect_Index
-           (Long,
-            Runtime.Invalid_Length,
-            "SST-v2 index trailing byte accepted");
+         Expect_Index (Long, Runtime.Invalid_Length, "SST-v2 index trailing byte accepted");
       end;
       declare
-         Index_Corrupt : Formats.Byte_Array (Index_Golden'Range) :=
-           Index_Golden;
+         Index_Corrupt : Formats.Byte_Array (Index_Golden'Range) := Index_Golden;
       begin
-         Index_Corrupt (Index_Corrupt'Last) :=
-           Index_Corrupt (Index_Corrupt'Last) xor 1;
-         Expect_Index
-           (Index_Corrupt,
-            Runtime.Index_Checksum_Failed,
-            "SST-v2 slice index checksum");
+         Index_Corrupt (Index_Corrupt'Last) := Index_Corrupt (Index_Corrupt'Last) xor 1;
+         Expect_Index (Index_Corrupt, Runtime.Index_Checksum_Failed, "SST-v2 slice index checksum");
 
          Index_Corrupt := Index_Golden;
          Put_U64 (Index_Corrupt, 0, Runtime.SST_V2_Header_Length + 1);
          Repair_Object_Checksum (Index_Corrupt);
-         Expect_Index
-           (Index_Corrupt,
-            Runtime.Invalid_Entry,
-            "SST-v2 slice frame offset binding");
+         Expect_Index (Index_Corrupt, Runtime.Invalid_Entry, "SST-v2 slice frame offset binding");
 
          Index_Corrupt := Index_Golden;
          --  The second one-byte key follows the first 36+1-byte record.
          Index_Corrupt
-           (Runtime.SST_V2_Index_Entry_Header_Length
-            + 1
-            + Runtime.SST_V2_Index_Entry_Header_Length) :=
+           (Runtime.SST_V2_Index_Entry_Header_Length + 1 + Runtime.SST_V2_Index_Entry_Header_Length) :=
            Character'Pos ('0');
          Repair_Object_Checksum (Index_Corrupt);
-         Expect_Index
-           (Index_Corrupt,
-            Runtime.Invalid_SST_State,
-            "SST-v2 slice index ordering");
+         Expect_Index (Index_Corrupt, Runtime.Invalid_SST_State, "SST-v2 slice index ordering");
       end;
       declare
          Decoded : Runtime.SST_V2_Index_Access;
          Actual  : Runtime.Decode_Status;
       begin
-         Runtime.Decode_SST_V2_Index
-           (Index_Golden,
-            Admission,
-            ID (1),
-            1,
-            Descriptor,
-            0,
-            8,
-            Decoded,
-            Actual);
+         Runtime.Decode_SST_V2_Index (Index_Golden, Admission, ID (1), 1, Descriptor, 0, 8, Decoded, Actual);
          if Actual /= Runtime.Limit_Exceeded or else Decoded /= null then
             Runtime.Release (Decoded);
-            raise Program_Error
-              with "SST-v2 index key limit did not fail before allocation";
+            raise Program_Error with "SST-v2 index key limit did not fail before allocation";
          end if;
-         Runtime.Decode_SST_V2_Index
-           (Index_Golden,
-            Admission,
-            ID (1),
-            1,
-            Descriptor,
-            8,
-            0,
-            Decoded,
-            Actual);
+         Runtime.Decode_SST_V2_Index (Index_Golden, Admission, ID (1), 1, Descriptor, 8, 0, Decoded, Actual);
          if Actual /= Runtime.Limit_Exceeded or else Decoded /= null then
             Runtime.Release (Decoded);
-            raise Program_Error
-              with "SST-v2 index value limit did not fail before allocation";
+            raise Program_Error with "SST-v2 index value limit did not fail before allocation";
          end if;
       end;
 
       Runtime.Decode_SST_V2_Index
-        (Index_Golden,
-         Admission,
-         ID (1),
-         1,
-         Descriptor,
-         8,
-         8,
-         Index_Value,
-         Decode_Status);
+        (Index_Golden, Admission, ID (1), 1, Descriptor, 8, 8, Index_Value, Decode_Status);
       if Decode_Status /= Runtime.Decoded or else Index_Value = null then
-         raise Program_Error
-           with "SST-v2 frame rejection index did not authenticate";
+         raise Program_Error with "SST-v2 frame rejection index did not authenticate";
       end if;
       for Size in Natural range 0 .. First_Frame_Extent - 1 loop
          declare
@@ -1476,69 +1549,34 @@ package body Flyology.DB.LSM_Format_Tests is
             if Size > 0 then
                Short := First_Frame_Golden (0 .. Size - 1);
             end if;
-            Expect_Frame
-              (Short,
-               1,
-               Runtime.Invalid_Length,
-               "truncated SST-v2 frame accepted");
+            Expect_Frame (Short, 1, Runtime.Invalid_Length, "truncated SST-v2 frame accepted");
          end;
       end loop;
       declare
          Long : Formats.Byte_Array (0 .. First_Frame_Extent) := [others => 0];
       begin
          Long (0 .. First_Frame_Extent - 1) := First_Frame_Golden;
-         Expect_Frame
-           (Long,
-            1,
-            Runtime.Invalid_Length,
-            "SST-v2 frame trailing byte accepted");
+         Expect_Frame (Long, 1, Runtime.Invalid_Length, "SST-v2 frame trailing byte accepted");
       end;
       declare
-         Frame_Corrupt : Formats.Byte_Array (First_Frame_Golden'Range) :=
-           First_Frame_Golden;
+         Frame_Corrupt : Formats.Byte_Array (First_Frame_Golden'Range) := First_Frame_Golden;
       begin
-         Frame_Corrupt (Frame_Corrupt'Last) :=
-           Frame_Corrupt (Frame_Corrupt'Last) xor 1;
-         Expect_Frame
-           (Frame_Corrupt,
-            1,
-            Runtime.Frame_Checksum_Failed,
-            "SST-v2 slice frame checksum");
+         Frame_Corrupt (Frame_Corrupt'Last) := Frame_Corrupt (Frame_Corrupt'Last) xor 1;
+         Expect_Frame (Frame_Corrupt, 1, Runtime.Frame_Checksum_Failed, "SST-v2 slice frame checksum");
 
          Frame_Corrupt := First_Frame_Golden;
          Put_U64 (Frame_Corrupt, 0, 1);
          Repair_Object_Checksum (Frame_Corrupt);
-         Expect_Frame
-           (Frame_Corrupt,
-            1,
-            Runtime.Invalid_Entry,
-            "SST-v2 slice frame sequence binding");
+         Expect_Frame (Frame_Corrupt, 1, Runtime.Invalid_Entry, "SST-v2 slice frame sequence binding");
 
          Frame_Corrupt := First_Frame_Golden;
-         Frame_Corrupt (Runtime.SST_V2_Frame_Header_Length) :=
-           Character'Pos ('b');
+         Frame_Corrupt (Runtime.SST_V2_Frame_Header_Length) := Character'Pos ('b');
          Repair_Object_Checksum (Frame_Corrupt);
-         Expect_Frame
-           (Frame_Corrupt,
-            1,
-            Runtime.Invalid_SST_State,
-            "SST-v2 slice frame key binding");
+         Expect_Frame (Frame_Corrupt, 1, Runtime.Invalid_SST_State, "SST-v2 slice frame key binding");
       end;
-      Expect_Frame
-        (Third_Frame_Golden,
-         2,
-         Runtime.Invalid_Entry,
-         "SST-v2 slice swapped frame");
-      Expect_Frame
-        (Second_Frame_Golden,
-         2,
-         Runtime.Decoded,
-         "SST-v2 slice exact second frame");
-      Expect_Frame
-        (First_Frame_Golden,
-         4,
-         Runtime.Invalid_SST_State,
-         "SST-v2 frame position bound");
+      Expect_Frame (Third_Frame_Golden, 2, Runtime.Invalid_Entry, "SST-v2 slice swapped frame");
+      Expect_Frame (Second_Frame_Golden, 2, Runtime.Decoded, "SST-v2 slice exact second frame");
+      Expect_Frame (First_Frame_Golden, 4, Runtime.Invalid_SST_State, "SST-v2 frame position bound");
 
       declare
          Bad_Index : Runtime.SST_V2_Index (1, 0);
@@ -1552,12 +1590,10 @@ package body Flyology.DB.LSM_Format_Tests is
          Bad_Index.Highest_Sequence := 1;
          Bad_Index.Frame_Offset := Runtime.SST_V2_Header_Length;
          Bad_Index.Frame_Byte_Total := Natural'Last;
-         Runtime.Decode_SST_V2_Frame
-           (First_Frame_Golden, Bad_Index, 1, Decoded, Actual);
+         Runtime.Decode_SST_V2_Frame (First_Frame_Golden, Bad_Index, 1, Decoded, Actual);
          if Actual /= Runtime.Invalid_SST_State or else Decoded /= null then
             Runtime.Release (Decoded);
-            raise Program_Error
-              with "SST-v2 frame accepted overflowing retained geometry";
+            raise Program_Error with "SST-v2 frame accepted overflowing retained geometry";
          end if;
       end;
 
@@ -1568,50 +1604,25 @@ package body Flyology.DB.LSM_Format_Tests is
       begin
          Wrong_Admission.Index_Bytes := Wrong_Admission.Index_Bytes + 1;
          Runtime.Decode_SST_V2_Index
-           (Index_Golden,
-            Wrong_Admission,
-            ID (1),
-            1,
-            Descriptor,
-            8,
-            8,
-            Decoded_Index,
-            Actual);
+           (Index_Golden, Wrong_Admission, ID (1), 1, Descriptor, 8, 8, Decoded_Index, Actual);
          if Actual /= Runtime.Invalid_Length or else Decoded_Index /= null then
             Runtime.Release (Decoded_Index);
-            raise Program_Error
-              with "SST-v2 index admitted mismatched header geometry";
+            raise Program_Error with "SST-v2 index admitted mismatched header geometry";
          end if;
       end;
 
       declare
-         Shifted_Index :
-           constant Formats.Byte_Array (7 .. 7 + Index_Bytes - 1) :=
-             Index_Golden;
-         Shifted_Frame :
-           constant Formats.Byte_Array (9 .. 9 + First_Frame_Extent - 1) :=
-             First_Frame_Golden;
+         Shifted_Index : constant Formats.Byte_Array (7 .. 7 + Index_Bytes - 1) := Index_Golden;
+         Shifted_Frame : constant Formats.Byte_Array (9 .. 9 + First_Frame_Extent - 1) := First_Frame_Golden;
          Decoded_Index : Runtime.SST_V2_Index_Access;
       begin
          Runtime.Decode_SST_V2_Index
-           (Shifted_Index,
-            Admission,
-            ID (1),
-            1,
-            Descriptor,
-            8,
-            8,
-            Decoded_Index,
-            Decode_Status);
+           (Shifted_Index, Admission, ID (1), 1, Descriptor, 8, 8, Decoded_Index, Decode_Status);
          if Decode_Status /= Runtime.Decoded then
             raise Program_Error with "SST-v2 shifted index range rejected";
          end if;
          Runtime.Release (Decoded_Index);
-         Expect_Frame
-           (Shifted_Frame,
-            1,
-            Runtime.Decoded,
-            "SST-v2 shifted frame range rejected");
+         Expect_Frame (Shifted_Frame, 1, Runtime.Decoded, "SST-v2 shifted frame range rejected");
       end;
       Runtime.Release (Index_Value);
    exception
@@ -1737,30 +1748,30 @@ package body Flyology.DB.LSM_Format_Tests is
    end Test_Runtime_Persisted_Limits;
 
    procedure Test_Runtime_Partial_Merge is
-      Older               : Runtime.SST_Access;
-      Newer               : Runtime.SST_Access;
-      Merged              : Runtime.SST_Access;
-      Decoded             : Runtime.SST_Access;
-      Rejected            : Runtime.SST_Access;
-      Multi_Merged        : Runtime.SST_Access;
-      Image               : Runtime.Image_Access;
-      Successor_Image     : Runtime.Image_Access;
-      Manifest            : Runtime.Checkpoint_Manifest_Access;
-      Successor           : Runtime.Checkpoint_Manifest_Access;
-      Successor_Read      : Runtime.Checkpoint_Manifest_Access;
-      Rejected_Successor  : Runtime.Checkpoint_Manifest_Access;
-      Nonadjacent         : Runtime.Checkpoint_Manifest_Access;
-      Multi_Manifest      : Runtime.Checkpoint_Manifest_Access;
-      Multi_Successor     : Runtime.Checkpoint_Manifest_Access;
-      Allocation          : Runtime.Allocation_Status;
-      Merge_Result        : Runtime.Merge_Status;
-      Encode_Result       : Runtime.Encode_Status;
-      Decode_Result       : Runtime.Decode_Status;
-      Older_Cursor        : Positive := 1;
-      Newer_Cursor        : Positive := 1;
-      Successor_Base      : Manifests.Manifest := Base_Manifest;
-      Invalid_Base        : Manifests.Manifest;
-      Multi_Base          : Manifests.Manifest := Base_Manifest;
+      Older                : Runtime.SST_Access;
+      Newer                : Runtime.SST_Access;
+      Merged               : Runtime.SST_Access;
+      Decoded              : Runtime.SST_Access;
+      Rejected             : Runtime.SST_Access;
+      Multi_Merged         : Runtime.SST_Access;
+      Image                : Runtime.Image_Access;
+      Successor_Image      : Runtime.Image_Access;
+      Manifest             : Runtime.Checkpoint_Manifest_Access;
+      Successor            : Runtime.Checkpoint_Manifest_Access;
+      Successor_Read       : Runtime.Checkpoint_Manifest_Access;
+      Rejected_Successor   : Runtime.Checkpoint_Manifest_Access;
+      Nonadjacent          : Runtime.Checkpoint_Manifest_Access;
+      Multi_Manifest       : Runtime.Checkpoint_Manifest_Access;
+      Multi_Successor      : Runtime.Checkpoint_Manifest_Access;
+      Allocation           : Runtime.Allocation_Status;
+      Merge_Result         : Runtime.Merge_Status;
+      Encode_Result        : Runtime.Encode_Status;
+      Decode_Result        : Runtime.Decode_Status;
+      Older_Cursor         : Positive := 1;
+      Newer_Cursor         : Positive := 1;
+      Successor_Base       : Manifests.Manifest := Base_Manifest;
+      Invalid_Base         : Manifests.Manifest;
+      Multi_Base           : Manifests.Manifest := Base_Manifest;
       Multi_Successor_Base : Manifests.Manifest;
 
       procedure Fill_Entry
@@ -1856,6 +1867,7 @@ package body Flyology.DB.LSM_Format_Tests is
       Manifest.Maximum_Checkpoint_Identities := 1;
       Manifest.Maximum_Point_Reads_Per_Transaction := 1;
       Manifest.Maximum_Scan_Ranges_Per_Transaction := 1;
+      Manifest.Commit_Profile := Runtime.Commit_Profiles.Independent_Coalescing;
       Manifest.Families (1) :=
         (Memtable_Max_Bytes   => Interfaces.Unsigned_64 (Older.Payload_Byte_Total + Newer.Payload_Byte_Total),
          Memtable_Max_Entries => Interfaces.Unsigned_32 (Older.Entry_Total + Newer.Entry_Total),
@@ -1907,6 +1919,7 @@ package body Flyology.DB.LSM_Format_Tests is
         or else Successor.Maximum_Checkpoint_Identities /= Manifest.Maximum_Checkpoint_Identities
         or else Successor.Maximum_Point_Reads_Per_Transaction /= Manifest.Maximum_Point_Reads_Per_Transaction
         or else Successor.Maximum_Scan_Ranges_Per_Transaction /= Manifest.Maximum_Scan_Ranges_Per_Transaction
+        or else Successor.Commit_Profile /= Manifest.Commit_Profile
         or else Successor.Identity_Total /= Manifest.Identity_Total
         or else Successor.Run_Total /= 1
         or else Successor.Families (1).First_Run /= 1
@@ -2124,23 +2137,23 @@ package body Flyology.DB.LSM_Format_Tests is
    end Test_Runtime_Partial_Merge;
 
    procedure Test_Runtime_Three_Run_Merge is
-      First_Run       : Runtime.SST_Access;
-      Middle_Run      : Runtime.SST_Access;
-      Last_Run        : Runtime.SST_Access;
-      Merged          : Runtime.SST_Access;
-      Rejected        : Runtime.SST_Access;
-      Manifest        : Runtime.Checkpoint_Manifest_Access;
-      Successor       : Runtime.Checkpoint_Manifest_Access;
-      Multi_Manifest  : Runtime.Checkpoint_Manifest_Access;
-      Multi_Successor : Runtime.Checkpoint_Manifest_Access;
-      Multi_Merged    : Runtime.SST_Access;
-      Allocation      : Runtime.Allocation_Status;
-      Merge_Result    : Runtime.Merge_Status;
-      First_Cursor    : Positive := 1;
-      Middle_Cursor   : Positive := 1;
-      Last_Cursor     : Positive := 1;
-      Successor_Base  : Manifests.Manifest := Base_Manifest;
-      Multi_Base      : Manifests.Manifest := Base_Manifest;
+      First_Run            : Runtime.SST_Access;
+      Middle_Run           : Runtime.SST_Access;
+      Last_Run             : Runtime.SST_Access;
+      Merged               : Runtime.SST_Access;
+      Rejected             : Runtime.SST_Access;
+      Manifest             : Runtime.Checkpoint_Manifest_Access;
+      Successor            : Runtime.Checkpoint_Manifest_Access;
+      Multi_Manifest       : Runtime.Checkpoint_Manifest_Access;
+      Multi_Successor      : Runtime.Checkpoint_Manifest_Access;
+      Multi_Merged         : Runtime.SST_Access;
+      Allocation           : Runtime.Allocation_Status;
+      Merge_Result         : Runtime.Merge_Status;
+      First_Cursor         : Positive := 1;
+      Middle_Cursor        : Positive := 1;
+      Last_Cursor          : Positive := 1;
+      Successor_Base       : Manifests.Manifest := Base_Manifest;
+      Multi_Base           : Manifests.Manifest := Base_Manifest;
       Multi_Successor_Base : Manifests.Manifest;
 
       procedure Fill_Entry
@@ -2211,8 +2224,7 @@ package body Flyology.DB.LSM_Format_Tests is
       First_Run.Lowest_Sequence := 2;
       First_Run.Highest_Sequence := 2;
       First_Run.Logical_Payload_Bytes := 2;
-      Fill_Entry
-        (First_Run, First_Cursor, 2, Runtime.LSM.Put_Operation, 'a', True, 'x');
+      Fill_Entry (First_Run, First_Cursor, 2, Runtime.LSM.Put_Operation, 'a', True, 'x');
 
       Middle_Run.Database_ID := ID (1);
       Middle_Run.Run_ID := ID (22);
@@ -2220,8 +2232,7 @@ package body Flyology.DB.LSM_Format_Tests is
       Middle_Run.Lowest_Sequence := 3;
       Middle_Run.Highest_Sequence := 3;
       Middle_Run.Logical_Payload_Bytes := 1;
-      Fill_Entry
-        (Middle_Run, Middle_Cursor, 3, Runtime.LSM.Delete_Operation, 'a', False, ' ');
+      Fill_Entry (Middle_Run, Middle_Cursor, 3, Runtime.LSM.Delete_Operation, 'a', False, ' ');
 
       Last_Run.Database_ID := ID (1);
       Last_Run.Run_ID := ID (23);
@@ -2244,6 +2255,7 @@ package body Flyology.DB.LSM_Format_Tests is
       Manifest.Maximum_Checkpoint_Identities := 1;
       Manifest.Maximum_Point_Reads_Per_Transaction := 1;
       Manifest.Maximum_Scan_Ranges_Per_Transaction := 1;
+      Manifest.Commit_Profile := Runtime.Commit_Profiles.Independent_Coalescing;
       Manifest.Families (1) :=
         (Memtable_Max_Bytes   => 5,
          Memtable_Max_Entries => 3,
@@ -2309,6 +2321,7 @@ package body Flyology.DB.LSM_Format_Tests is
         or else Merged.Highest_Sequence /= 4
         or else Successor.Run_Total /= 3
         or else Successor.Families (1).Run_Total /= 3
+        or else Successor.Commit_Profile /= Manifest.Commit_Profile
         or else Successor.Runs (1) /= Manifest.Runs (1)
         or else Successor.Runs (2).Run_ID /= ID (27)
         or else Successor.Runs (3) /= Manifest.Runs (5)
@@ -2327,8 +2340,7 @@ package body Flyology.DB.LSM_Format_Tests is
       Multi_Base.Families (2).Max_Key_Bytes := 8;
       Multi_Base.Families (2).Max_Value_Bytes := 8;
       Multi_Base.Families (2).Name_Length := 2;
-      Multi_Base.Families (2).Name (1 .. 2) :=
-        [Character'Pos ('c'), Character'Pos ('g')];
+      Multi_Base.Families (2).Name (1 .. 2) := [Character'Pos ('c'), Character'Pos ('g')];
       Runtime.Create_Checkpoint_Manifest (2, 6, 0, Multi_Manifest, Allocation);
       if Allocation /= Runtime.Allocated then
          raise Program_Error with "multi-family three-run manifest allocation failed";
@@ -2392,13 +2404,7 @@ package body Flyology.DB.LSM_Format_Tests is
          raise Program_Error with "three-run merge reused a retained identity";
       end if;
       Runtime.Merge_Manifest_Three_Adjacent_SSTs
-        (Manifest.all,
-         First_Run.all,
-         Last_Run.all,
-         Middle_Run.all,
-         ID (28),
-         Rejected,
-         Merge_Result);
+        (Manifest.all, First_Run.all, Last_Run.all, Middle_Run.all, ID (28), Rejected, Merge_Result);
       if Merge_Result /= Runtime.Merge_Invalid_Input or else Rejected /= null then
          raise Program_Error with "three-run merge accepted reordered sequence authority";
       end if;

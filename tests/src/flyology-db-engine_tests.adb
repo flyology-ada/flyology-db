@@ -5436,6 +5436,145 @@ package body Flyology.DB.Engine_Tests is
       Result : Outcome_Code;
    begin
       declare
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Create_Info : Create_Receipt;
+         Version     : Interfaces.Unsigned_16;
+         Families    : constant Column_Family_Configuration_Array :=
+           [Configure_Test_Family (1, [16#76#, 16#34#], 8, 8)];
+      begin
+         Bind_Context (Context, Backend, "open-v4-profile-root");
+         Create
+           (Item,
+            Context'Access,
+            DB_ID (210),
+            ID (211),
+            ID (212),
+            Default_Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "profile-v4 root create failed");
+         Close (Item, Result);
+         Expect (Result, Success, "profile-v4 root close failed");
+         Testing.Rewrite_Manifest_Profile (Context, ID (211), DB_ID (210), Result);
+         Expect (Result, Success, "profile-v4 root rewrite failed");
+         Testing.Manifest_Version (Context, ID (211), Version, Result);
+         Expect (Result, Success, "profile-v4 root version read failed");
+         if Version /= LSM_Runtime.Experimental_Checkpoint_Manifest_Format_Version then
+            raise Program_Error with "profile-v4 root rewrite retained the wrong format";
+         end if;
+         Open (Item, Context'Access, DB_ID (210), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "profile-v4 root did not reopen through the widest header path");
+         Close (Item, Result);
+         Expect (Result, Success, "profile-v4 reopened root did not close");
+      end;
+
+      declare
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Create_Info : Create_Receipt;
+         Families    : constant Column_Family_Configuration_Array :=
+           [Configure_Test_Family (1, [16#61#], 8, 8)];
+      begin
+         Bind_Context (Context, Backend, "open-short-v1-manifest");
+         Create
+           (Item,
+            Context'Access,
+            DB_ID (213),
+            ID (214),
+            ID (215),
+            Default_Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "one-byte-name root create failed");
+         Close (Item, Result);
+         Expect (Result, Success, "one-byte-name root close failed");
+         Testing.Rewrite_Manifest (Context, ID (214), DB_ID (213), Zero_Database_ID, False, Result);
+         Expect (Result, Success, "one-byte-name v1 rewrite failed");
+         Open (Item, Context'Access, DB_ID (213), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "229-byte legacy v1 manifest did not reopen");
+         Close (Item, Result);
+         Expect (Result, Success, "229-byte legacy v1 manifest did not close");
+      end;
+
+      declare
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Create_Info : Create_Receipt;
+         Families    : constant Column_Family_Configuration_Array :=
+           [Configure_Test_Family (1, [16#61#, 16#62#, 16#63#, 16#64#, 16#65#, 16#66#, 16#67#], 8, 8)];
+      begin
+         Bind_Context (Context, Backend, "open-seven-byte-v1-manifest");
+         Create
+           (Item,
+            Context'Access,
+            DB_ID (216),
+            ID (217),
+            ID (218),
+            Default_Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "seven-byte-name root create failed");
+         Close (Item, Result);
+         Expect (Result, Success, "seven-byte-name root close failed");
+         Testing.Rewrite_Manifest (Context, ID (217), DB_ID (216), Zero_Database_ID, False, Result);
+         Expect (Result, Success, "seven-byte-name v1 rewrite failed");
+         Open (Item, Context'Access, DB_ID (216), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "235-byte legacy v1 manifest did not reopen");
+         Close (Item, Result);
+         Expect (Result, Success, "235-byte legacy v1 manifest did not close");
+      end;
+
+      declare
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Txn         : Transaction;
+         Commit_Info : Commit_Receipt;
+         Flush_Info  : Flush_Receipt;
+         Create_Info : Create_Receipt;
+         Families    : constant Column_Family_Configuration_Array :=
+           [Configure_Test_Family (1, [16#6D#], 8, 8)];
+         Runs        : constant Checkpoint_Run_Identity_Array := [Configure_Checkpoint_Run (1, ID (222))];
+      begin
+         Bind_Context (Context, Backend, "open-mixed-profile-ancestry");
+         Create
+           (Item,
+            Context'Access,
+            DB_ID (219),
+            ID (220),
+            ID (221),
+            Default_Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "mixed-profile root create failed");
+         Begin_Transaction (Item, TX_ID (223), Txn, Result);
+         Expect (Result, Success, "mixed-profile transaction begin failed");
+         Put (Item, Txn, 1, To_Key ([1]), To_Value ([2]), Result);
+         Expect (Result, Success, "mixed-profile mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "mixed-profile transaction commit failed");
+         Flush
+           (Item, Runs, ID (224), ID (225), Test_Operation_Timeout, Receipt => Flush_Info, Result => Result);
+         Expect (Result, Success, "mixed-profile checkpoint failed");
+         Close (Item, Result);
+         Expect (Result, Success, "mixed-profile checkpoint close failed");
+         Testing.Rewrite_Manifest (Context, ID (220), DB_ID (219), Zero_Database_ID, False, Result);
+         Expect (Result, Success, "mixed-profile legacy predecessor rewrite failed");
+         Testing.Rewrite_Manifest_Profile (Context, ID (224), DB_ID (219), Result);
+         Expect (Result, Success, "mixed-profile successor rewrite failed");
+         Open (Item, Context'Access, DB_ID (219), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Corrupt, "profile-v4 successor accepted legacy manifest ancestry");
+      end;
+
+      declare
          Context                                    : aliased Storage_Context;
          Item                                       : Database;
          Batch_Before, Manifest_Before, Head_Before : Natural;
@@ -8520,7 +8659,7 @@ package body Flyology.DB.Engine_Tests is
          raise Program_Error with "equal cached hash changed replacement value authority";
       end if;
       declare
-         Bucket : constant Positive :=
+         Bucket         : constant Positive :=
            Reader.Owner.Arena.Mutation_Buckets'First
            + Natural (Collision_Hash mod Interfaces.Unsigned_64 (Reader.Owner.Arena.Mutation_Buckets'Length));
          Head           : constant Natural := Reader.Owner.Arena.Mutation_Buckets (Bucket);
@@ -10150,10 +10289,11 @@ package body Flyology.DB.Engine_Tests is
          Before_Sink_Bytes);
       declare
          --  Memory-backend test capacity: four buckets, the established 512-object
-         --  corpus plus ten exact durable-authority fixture keys, and eight million
-         --  bytes cover the complete deterministic engine corpus while retaining
-         --  explicit backend backpressure.
-         Store : aliased Memory.Store (4, 522, 8_000_000);
+         --  corpus, ten durable-authority fixture keys, and eleven exact
+         --  coalescing-profile compatibility keys. Eight million bytes cover the
+         --  complete deterministic engine corpus while retaining explicit backend
+         --  backpressure.
+         Store : aliased Memory.Store (4, 533, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then

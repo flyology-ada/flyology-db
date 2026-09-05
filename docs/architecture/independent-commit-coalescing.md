@@ -79,3 +79,9 @@ tests, durable-authority format tests, maintained deterministic and provider gat
 same-host benchmarks. The median improvement must be at least 20 percent and the lower confidence
 bound must exceed 10 percent without weakening durability, work, reopen verification, or final
 state identity.
+
+The reserved persisted selector is checkpoint-manifest version 4 with profile code `1`. Ordinary
+`Standard_Publication` roots continue to encode as manifest version 3; version 4 accepts only the
+`Independent_Coalescing` selector. This records semantic compatibility without freezing a cohort
+width or admission delay. Those two values remain explicit private runtime experiment inputs and
+must be reported with every benchmark.

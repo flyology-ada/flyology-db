@@ -3214,7 +3214,17 @@ private
       Manifest_ID   : Identifier;
       Transition_ID : Identifier;
       Legacy        : Boolean;
+      Deadline      : Ada.Real_Time.Time;
       Result        : out Outcome_Code);
+   procedure Install_Test_V1_Root
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Limits                : Database_Limits;
+      Initial_Families      : Column_Family_Configuration_Array;
+      Timeout               : Duration;
+      Result                : out Outcome_Code);
    procedure Install_Test_Unsupported_Head
      (Item          : in out Storage_Context;
       Database_ID   : Database_Identifier;
@@ -3249,6 +3259,11 @@ private
       Drop_Last_Family     : Boolean;
       Restricted_Family    : Interfaces.Unsigned_32;
       Restricted_Max_Key   : Interfaces.Unsigned_64;
+      Result               : out Outcome_Code);
+   procedure Rewrite_Test_Manifest_Profile
+     (Item                 : in out Storage_Context;
+      Manifest_ID          : Identifier;
+      Expected_Database_ID : Database_Identifier;
       Result               : out Outcome_Code);
    procedure Extend_Test_Manifest_Chain
      (Item        : in out Storage_Context;

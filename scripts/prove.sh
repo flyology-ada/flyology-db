@@ -22,6 +22,8 @@ if ! "$alr" gnatprove -P flyology_db_proof.gpr --mode=all --level=1 -j0 \
   flyology-db-commit_authority_proof.ads \
   flyology-db-commit_authority_proof.adb \
   flyology-db-commit_authority_formats.adb \
+  flyology-db-commit_profiles.adb \
+  flyology-db-commit_profile_formats.adb \
   flyology-db-checkpoint_policy.adb flyology-db-head_policy.adb \
   flyology-db-formats.adb flyology-db-batch_formats.adb \
   flyology-db-manifest_formats.adb flyology-db-reference_model.adb \

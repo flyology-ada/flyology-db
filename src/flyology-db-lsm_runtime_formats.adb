@@ -4,6 +4,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
 
    use type Formats.Byte;
    use type Formats.Byte_Array;
+   use type Commit_Profiles.Commit_Publication_Profile;
    use type Head_Policy.Identifier;
    use type Interfaces.Unsigned_16;
    use type Interfaces.Unsigned_32;
@@ -17,7 +18,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
        (Interfaces.Unsigned_64 (Natural'Last) > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last),
         "LSM runtime builders require Natural to fit the frozen U32 fields");
 
-   --  Manifest v2/v3 intentionally retains the frozen FLYCFM01 kind magic so
+   --  Manifest v2/v3/v4 intentionally retains the frozen FLYCFM01 kind magic so
    --  its independent version field selects the compatible layout.
    Manifest_Magic : constant Formats.Byte_Array (0 .. 7) :=
      [Character'Pos ('F'),
@@ -45,13 +46,9 @@ package body Flyology.DB.LSM_Runtime_Formats is
      Ada.Unchecked_Deallocation (Object => Checkpoint_Manifest, Name => Checkpoint_Manifest_Access);
    procedure Free_SST is new Ada.Unchecked_Deallocation (Object => SST, Name => SST_Access);
    procedure Free_SST_V2_Index is new
-     Ada.Unchecked_Deallocation
-       (Object => SST_V2_Index,
-        Name   => SST_V2_Index_Access);
+     Ada.Unchecked_Deallocation (Object => SST_V2_Index, Name => SST_V2_Index_Access);
    procedure Free_SST_V2_Frame is new
-     Ada.Unchecked_Deallocation
-       (Object => SST_V2_Frame,
-        Name   => SST_V2_Frame_Access);
+     Ada.Unchecked_Deallocation (Object => SST_V2_Frame, Name => SST_V2_Frame_Access);
    procedure Free_Image is new
      Ada.Unchecked_Deallocation (Object => Formats.Byte_Array, Name => Image_Access);
 
@@ -270,7 +267,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Admission         : out Checkpoint_Header_Admission;
       Status            : out Decode_Status)
    is
-      Fixed            : Formats.Byte_Array (0 .. LSM.Checkpoint_Manifest_Header_Length - 1);
+      Fixed            : Formats.Byte_Array (0 .. Experimental_Checkpoint_Manifest_Header_Length - 1);
       Family_Wire      : Interfaces.Unsigned_32;
       Identity_Wire    : Interfaces.Unsigned_32;
       Maximum_Runs     : Interfaces.Unsigned_32;
@@ -286,11 +283,13 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Selected_Header  : Natural;
       Maximum_Points   : Interfaces.Unsigned_32 := 0;
       Maximum_Ranges   : Interfaces.Unsigned_32 := 0;
+      Commit_Profile   : Commit_Profiles.Commit_Publication_Profile := Commit_Profiles.Standard_Publication;
+      Valid_Profile    : Boolean := True;
    begin
       Admission := Empty_Checkpoint_Header_Admission;
       Fixed := [others => 0];
       if Header'Length < LSM.Previous_Checkpoint_Manifest_Header_Length
-        or else Header'Length > LSM.Checkpoint_Manifest_Header_Length
+        or else Header'Length > Experimental_Checkpoint_Manifest_Header_Length
       then
          Status := Invalid_Length;
          return;
@@ -303,15 +302,17 @@ package body Flyology.DB.LSM_Runtime_Formats is
          Selected_Header := LSM.Previous_Checkpoint_Manifest_Header_Length;
       elsif Version = LSM.Checkpoint_Manifest_Format_Version then
          Selected_Header := LSM.Checkpoint_Manifest_Header_Length;
+      elsif Version = Experimental_Checkpoint_Manifest_Format_Version then
+         Selected_Header := Experimental_Checkpoint_Manifest_Header_Length;
       else
          Status := Unsupported_Version;
          return;
       end if;
       --  Callers either supply the exact versioned header or the current-width
-      --  recovery probe needed to discover a v2 prefix. No intermediate
+      --  recovery probe needed to discover a v2 or v3 prefix. No intermediate
       --  extent is format authority.
       if Header'Length /= Selected_Header
-        and then Header'Length /= LSM.Checkpoint_Manifest_Header_Length
+        and then Header'Length /= Experimental_Checkpoint_Manifest_Header_Length
       then
          Status := Invalid_Length;
          return;
@@ -331,24 +332,21 @@ package body Flyology.DB.LSM_Runtime_Formats is
       elsif Read_U32 (Fixed, 28) /= Interfaces.Unsigned_32 (Selected_Header) then
          Status := Invalid_Length;
          return;
-      elsif Read_U32 (Fixed, 40)
-        /= Header_Checksum (Fixed (0 .. Selected_Header - 1), Selected_Header)
-      then
+      elsif Read_U32 (Fixed, 40) /= Header_Checksum (Fixed (0 .. Selected_Header - 1), Selected_Header) then
          Status := Header_Checksum_Failed;
          return;
       end if;
 
-      if Object_Length
-        < Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length)
-        or else Object_Length > Interfaces.Unsigned_64 (Natural'Last)
-      then
+      if Object_Length < Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length) then
+         Status := Invalid_Length;
+         return;
+      elsif Object_Length > Interfaces.Unsigned_64 (Natural'Last) then
          Status := Limit_Exceeded;
          return;
       end if;
       Payload_Length := Read_U64 (Fixed, 32);
       if Payload_Length
-        /= Object_Length
-           - Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length)
+        /= Object_Length - Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length)
       then
          Status := Invalid_Length;
          return;
@@ -371,10 +369,18 @@ package body Flyology.DB.LSM_Runtime_Formats is
          Status := Invalid_Manifest_State;
          return;
       end if;
-      if Version = LSM.Checkpoint_Manifest_Format_Version then
+      if Version in LSM.Checkpoint_Manifest_Format_Version | Experimental_Checkpoint_Manifest_Format_Version
+      then
          Maximum_Points := Read_U32 (Fixed, 220);
          Maximum_Ranges := Read_U32 (Fixed, 224);
          if Maximum_Points = 0 or else Maximum_Ranges = 0 then
+            Status := Invalid_Manifest_State;
+            return;
+         end if;
+      end if;
+      if Version = Experimental_Checkpoint_Manifest_Format_Version then
+         Commit_Profiles.Decode (Read_U32 (Fixed, 228), Commit_Profile, Valid_Profile);
+         if not Valid_Profile or else Commit_Profile /= Commit_Profiles.Independent_Coalescing then
             Status := Invalid_Manifest_State;
             return;
          end if;
@@ -400,8 +406,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
          Status := Invalid_Length;
          return;
       end if;
-      Maximum_Length :=
-        Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length);
+      Maximum_Length := Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length);
       if not Add_U64 (Maximum_Length, Family_Bytes, Maximum_Length)
         or else not Add_U64 (Maximum_Length, Run_Bytes, Maximum_Length)
         or else not Add_U64 (Maximum_Length, Identity_Bytes, Maximum_Length)
@@ -418,8 +423,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
          Status := Invalid_Length;
          return;
       end if;
-      Minimum_Length :=
-        Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length);
+      Minimum_Length := Interfaces.Unsigned_64 (Selected_Header + LSM.Object_Trailer_Length);
       if not Add_U64 (Minimum_Length, Term, Minimum_Length)
         or else not Add_U64 (Minimum_Length, Identity_Bytes, Minimum_Length)
         or else Object_Length < Minimum_Length
@@ -430,16 +434,17 @@ package body Flyology.DB.LSM_Runtime_Formats is
       end if;
 
       Admission :=
-        (Object_Length                 => Natural (Object_Length),
-         Format_Version                => Version,
-         Header_Length                 => Selected_Header,
-         Family_Total                  => Natural (Family_Wire),
-         Identity_Total                => Natural (Identity_Wire),
-         Maximum_Total_L0_Runs         => Maximum_Runs,
-         Maximum_Checkpoint_Identities => Maximum_Identity,
+        (Object_Length                       => Natural (Object_Length),
+         Format_Version                      => Version,
+         Header_Length                       => Selected_Header,
+         Family_Total                        => Natural (Family_Wire),
+         Identity_Total                      => Natural (Identity_Wire),
+         Maximum_Total_L0_Runs               => Maximum_Runs,
+         Maximum_Checkpoint_Identities       => Maximum_Identity,
          Maximum_Point_Reads_Per_Transaction => Maximum_Points,
          Maximum_Scan_Ranges_Per_Transaction => Maximum_Ranges,
-         Maximum_Object_Length         => Maximum_Length);
+         Commit_Profile                      => Commit_Profile,
+         Maximum_Object_Length               => Maximum_Length);
       Status := Decoded;
    end Inspect_Checkpoint_Manifest_Header;
 
@@ -469,23 +474,25 @@ package body Flyology.DB.LSM_Runtime_Formats is
    end Read_Manifest_Base_Header;
 
    procedure Write_Manifest_Base_Header
-     (Image : in out Formats.Byte_Array; Value : Checkpoint_Manifest; Length : Natural) is
+     (Image : in out Formats.Byte_Array; Value : Checkpoint_Manifest; Length : Natural)
+   is
+      Version       : constant Interfaces.Unsigned_16 :=
+        Profile_Formats.Manifest_Format_Version (Value.Commit_Profile);
+      Header_Length : constant Natural := Profile_Formats.Manifest_Header_Length (Value.Commit_Profile);
    begin
       --  Frozen common-envelope offsets: magic 0, version 8, kind 10,
       --  flags 11, database 12, header length 28, payload length 32, and CRC 40.
       Image (0 .. 7) := Manifest_Magic;
-      Put_U16 (Image, 8, LSM.Checkpoint_Manifest_Format_Version);
+      Put_U16 (Image, 8, Version);
       Image (10) := Manifests.Manifest_Object_Kind;
       Image (11) := 0;
       Put_Identifier (Image, 12, Value.Base.Database_ID);
-      Put_U32 (Image, 28, Interfaces.Unsigned_32 (LSM.Checkpoint_Manifest_Header_Length));
-      Put_U64
-        (Image,
-         32,
-         Interfaces.Unsigned_64 (Length - LSM.Checkpoint_Manifest_Header_Length - LSM.Object_Trailer_Length));
+      Put_U32 (Image, 28, Interfaces.Unsigned_32 (Header_Length));
+      Put_U64 (Image, 32, Interfaces.Unsigned_64 (Length - Header_Length - LSM.Object_Trailer_Length));
       --  Manifest-v2 preserves v1 identity/limit offsets 44..188 and adds the
       --  replay/run/identity authority at 196..216. Version 3 appends persisted
-      --  serializable point/range count authority at 220/224.
+      --  serializable point/range count authority at 220/224. Version 4 adds
+      --  only the independent-coalescing profile selector at 228.
       Put_Identifier (Image, 44, Value.Base.Manifest_ID);
       Put_Identifier (Image, 60, Value.Base.Previous_Manifest_ID);
       Put_Identifier (Image, 76, Value.Base.Expected_Transition_ID);
@@ -512,6 +519,9 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Put_U32 (Image, 216, 0);
       Put_U32 (Image, 220, Value.Maximum_Point_Reads_Per_Transaction);
       Put_U32 (Image, 224, Value.Maximum_Scan_Ranges_Per_Transaction);
+      if Value.Commit_Profile = Commit_Profiles.Independent_Coalescing then
+         Put_U32 (Image, 228, Commit_Profiles.Encode (Value.Commit_Profile));
+      end if;
    end Write_Manifest_Base_Header;
 
    function Structurally_Valid (Value : Checkpoint_Manifest) return Boolean is
@@ -522,7 +532,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
         or else Value.Maximum_Total_L0_Runs = 0
         or else Value.Maximum_Checkpoint_Identities = 0
         or else (Value.Maximum_Point_Reads_Per_Transaction = 0)
-                  /= (Value.Maximum_Scan_Ranges_Per_Transaction = 0)
+                /= (Value.Maximum_Scan_Ranges_Per_Transaction = 0)
         or else Interfaces.Unsigned_64 (Value.Run_Total)
                 > Interfaces.Unsigned_64 (Value.Maximum_Total_L0_Runs)
         or else Interfaces.Unsigned_64 (Value.Identity_Total)
@@ -592,7 +602,8 @@ package body Flyology.DB.LSM_Runtime_Formats is
 
    function Checkpoint_Encoded_Length (Value : Checkpoint_Manifest; Length : out Natural) return Boolean is
       Total : Interfaces.Unsigned_64 :=
-        Interfaces.Unsigned_64 (LSM.Checkpoint_Manifest_Header_Length + LSM.Object_Trailer_Length);
+        Interfaces.Unsigned_64
+          (Profile_Formats.Manifest_Header_Length (Value.Commit_Profile) + LSM.Object_Trailer_Length);
       Term  : Interfaces.Unsigned_64;
    begin
       Length := 0;
@@ -627,8 +638,9 @@ package body Flyology.DB.LSM_Runtime_Formats is
    procedure Encode_Checkpoint_Manifest
      (Value : Checkpoint_Manifest; Image : out Image_Access; Status : out Encode_Status)
    is
-      Length : Natural;
-      Cursor : Natural := LSM.Checkpoint_Manifest_Header_Length;
+      Length        : Natural;
+      Header_Length : constant Natural := Profile_Formats.Manifest_Header_Length (Value.Commit_Profile);
+      Cursor        : Natural := Header_Length;
    begin
       Image := null;
       if not Structurally_Valid (Value)
@@ -644,11 +656,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
 
       Image := new Formats.Byte_Array'(0 .. Length - 1 => 0);
       Write_Manifest_Base_Header (Image.all, Value, Length);
-      Put_U32
-        (Image.all,
-         40,
-         Header_Checksum
-           (Image (0 .. LSM.Checkpoint_Manifest_Header_Length - 1), LSM.Checkpoint_Manifest_Header_Length));
+      Put_U32 (Image.all, 40, Header_Checksum (Image (0 .. Header_Length - 1), Header_Length));
       for Family_Index in Value.Families'Range loop
          declare
             Base   : Manifests.Column_Family_Configuration renames Value.Base.Families (Family_Index);
@@ -711,27 +719,27 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Value             : out Checkpoint_Manifest_Access;
       Status            : out Decode_Status)
    is
-      Admission      : Checkpoint_Header_Admission;
-      Candidate      : Checkpoint_Manifest_Access := null;
-      Base           : Manifests.Manifest;
-      Allocation     : Allocation_Status;
-      Cursor         : Natural := 0;
-      Payload_End    : Natural;
-      Total_Runs     : Natural := 0;
-      Replay         : Interfaces.Unsigned_64;
-      Family_Run_Max : Interfaces.Unsigned_32;
-      Previous_ID    : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Admission           : Checkpoint_Header_Admission;
+      Candidate           : Checkpoint_Manifest_Access := null;
+      Base                : Manifests.Manifest;
+      Allocation          : Allocation_Status;
+      Cursor              : Natural := 0;
+      Payload_End         : Natural;
+      Total_Runs          : Natural := 0;
+      Replay              : Interfaces.Unsigned_64;
+      Family_Run_Max      : Interfaces.Unsigned_32;
+      Previous_ID         : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
       Header_Probe_Length : Natural;
    begin
       Value := null;
-      if Image'Length
-        < LSM.Previous_Checkpoint_Manifest_Header_Length + LSM.Object_Trailer_Length
-      then
+      if Image'Length < LSM.Previous_Checkpoint_Manifest_Header_Length + LSM.Object_Trailer_Length then
          Status := Invalid_Length;
          return;
       end if;
       Header_Probe_Length :=
-        (if Image'Length >= LSM.Checkpoint_Manifest_Header_Length
+        (if Image'Length >= Experimental_Checkpoint_Manifest_Header_Length
+         then Experimental_Checkpoint_Manifest_Header_Length
+         elsif Image'Length >= LSM.Checkpoint_Manifest_Header_Length
          then LSM.Checkpoint_Manifest_Header_Length
          else LSM.Previous_Checkpoint_Manifest_Header_Length);
       Inspect_Checkpoint_Manifest_Header
@@ -889,10 +897,9 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Candidate.Replay_Boundary := Replay;
       Candidate.Maximum_Total_L0_Runs := Admission.Maximum_Total_L0_Runs;
       Candidate.Maximum_Checkpoint_Identities := Admission.Maximum_Checkpoint_Identities;
-      Candidate.Maximum_Point_Reads_Per_Transaction :=
-        Admission.Maximum_Point_Reads_Per_Transaction;
-      Candidate.Maximum_Scan_Ranges_Per_Transaction :=
-        Admission.Maximum_Scan_Ranges_Per_Transaction;
+      Candidate.Maximum_Point_Reads_Per_Transaction := Admission.Maximum_Point_Reads_Per_Transaction;
+      Candidate.Maximum_Scan_Ranges_Per_Transaction := Admission.Maximum_Scan_Ranges_Per_Transaction;
+      Candidate.Commit_Profile := Admission.Commit_Profile;
 
       Cursor := Admission.Header_Length;
       declare
@@ -1038,9 +1045,9 @@ package body Flyology.DB.LSM_Runtime_Formats is
       end if;
 
       Admission :=
-        (Object_Length => Natural (Object_Length),
-         Entry_Total   => Natural (Entry_Wire),
-         Payload_Bytes => Natural (Expected_Descriptor.Logical_Payload_Bytes),
+        (Object_Length  => Natural (Object_Length),
+         Entry_Total    => Natural (Entry_Wire),
+         Payload_Bytes  => Natural (Expected_Descriptor.Logical_Payload_Bytes),
          Format_Version => LSM.SST_Format_Version,
          Header_Length  => LSM.SST_Header_Length,
          Frame_Offset   => LSM.SST_Header_Length,
@@ -1129,23 +1136,15 @@ package body Flyology.DB.LSM_Runtime_Formats is
 
       if not Multiply_U64
                (Interfaces.Unsigned_64 (Entry_Wire),
-                Interfaces.Unsigned_64
-                  (SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length),
+                Interfaces.Unsigned_64 (SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length),
                 Entry_Bytes)
-        or else not Add_U64
-                      (Entry_Bytes, Expected_Descriptor.Logical_Payload_Bytes, Exact_Frame)
+        or else not Add_U64 (Entry_Bytes, Expected_Descriptor.Logical_Payload_Bytes, Exact_Frame)
         or else not Multiply_U64
                       (Interfaces.Unsigned_64 (Entry_Wire),
                        Interfaces.Unsigned_64 (SST_V2_Index_Entry_Header_Length),
                        Index_Fixed)
-        or else not Add_U64
-                      (Index_Fixed,
-                       Interfaces.Unsigned_64 (SST_V2_Index_Trailer_Length),
-                       Minimum_Index)
-        or else not Add_U64
-                      (Minimum_Index,
-                       Expected_Descriptor.Logical_Payload_Bytes,
-                       Maximum_Index)
+        or else not Add_U64 (Index_Fixed, Interfaces.Unsigned_64 (SST_V2_Index_Trailer_Length), Minimum_Index)
+        or else not Add_U64 (Minimum_Index, Expected_Descriptor.Logical_Payload_Bytes, Maximum_Index)
       then
          Status := Invalid_Length;
          return;
@@ -1161,16 +1160,15 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Expected_Total := Expected_Index;
       if not Add_U64 (Expected_Total, Index_Bytes, Expected_Total)
         or else not Add_U64
-                      (Expected_Total,
-                       Interfaces.Unsigned_64 (LSM.Object_Trailer_Length),
-                       Expected_Total)
+                      (Expected_Total, Interfaces.Unsigned_64 (LSM.Object_Trailer_Length), Expected_Total)
       then
          Status := Invalid_Length;
          return;
       end if;
 
-      if Object_Length < Interfaces.Unsigned_64
-           (SST_V2_Header_Length + SST_V2_Index_Trailer_Length + LSM.Object_Trailer_Length)
+      if Object_Length
+        < Interfaces.Unsigned_64
+            (SST_V2_Header_Length + SST_V2_Index_Trailer_Length + LSM.Object_Trailer_Length)
         or else Object_Length > Interfaces.Unsigned_64 (Natural'Last)
         or else Payload_Length /= Expected_Payload
         or else Frame_Offset /= Interfaces.Unsigned_64 (SST_V2_Header_Length)
@@ -1179,8 +1177,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
         or else Index_Bytes < Minimum_Index
         or else Index_Bytes > Maximum_Index
         or else Expected_Total /= Object_Length
-        or else Expected_Descriptor.Logical_Payload_Bytes
-                > Interfaces.Unsigned_64 (Natural'Last)
+        or else Expected_Descriptor.Logical_Payload_Bytes > Interfaces.Unsigned_64 (Natural'Last)
         or else Frame_Bytes > Interfaces.Unsigned_64 (Natural'Last)
         or else Index_Offset > Interfaces.Unsigned_64 (Natural'Last)
         or else Index_Bytes > Interfaces.Unsigned_64 (Natural'Last)
@@ -1190,9 +1187,9 @@ package body Flyology.DB.LSM_Runtime_Formats is
       end if;
 
       Admission :=
-        (Object_Length => Natural (Object_Length),
-         Entry_Total   => Natural (Entry_Wire),
-         Payload_Bytes => Natural (Expected_Descriptor.Logical_Payload_Bytes),
+        (Object_Length  => Natural (Object_Length),
+         Entry_Total    => Natural (Entry_Wire),
+         Payload_Bytes  => Natural (Expected_Descriptor.Logical_Payload_Bytes),
          Format_Version => SST_V2_Format_Version,
          Header_Length  => SST_V2_Header_Length,
          Frame_Offset   => Natural (Frame_Offset),
@@ -1231,12 +1228,10 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Common : constant Natural := Natural'Min (Left_Length, Right_Length);
    begin
       for Offset in Natural range 1 .. Common loop
-         if Byte_At (Left_Data, Left_Offset + Offset - 1)
-           < Byte_At (Right_Data, Right_Offset + Offset - 1)
+         if Byte_At (Left_Data, Left_Offset + Offset - 1) < Byte_At (Right_Data, Right_Offset + Offset - 1)
          then
             return True;
-         elsif Byte_At (Left_Data, Left_Offset + Offset - 1)
-           > Byte_At (Right_Data, Right_Offset + Offset - 1)
+         elsif Byte_At (Left_Data, Left_Offset + Offset - 1) > Byte_At (Right_Data, Right_Offset + Offset - 1)
          then
             return False;
          end if;
@@ -1249,8 +1244,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Left_Offset  : Natural;
       Left_Length  : Natural;
       Right_Offset : Natural;
-      Right_Length : Natural) return Boolean
-   is
+      Right_Length : Natural) return Boolean is
    begin
       return Key_Less (Data, Left_Offset, Left_Length, Data, Right_Offset, Right_Length);
    end Key_Less;
@@ -1282,8 +1276,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
    function Valid_SST_V2_Index (Value : SST_V2_Index) return Boolean is
       Frame_Cursor      : Natural := Value.Frame_Offset;
       Key_Cursor        : Positive := 1;
-      Lowest            : Interfaces.Unsigned_64 :=
-        Interfaces.Unsigned_64'Last;
+      Lowest            : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
       Highest           : Interfaces.Unsigned_64 := 0;
       Logical           : Interfaces.Unsigned_64 := 0;
       Previous_Sequence : Interfaces.Unsigned_64 := 0;
@@ -1306,23 +1299,16 @@ package body Flyology.DB.LSM_Runtime_Formats is
             Item_Bytes : Interfaces.Unsigned_64;
          begin
             if Item.Frame_Offset /= Frame_Cursor
-              or else Item.Frame_Byte_Total
-                      < SST_V2_Frame_Header_Length
-                        + SST_V2_Frame_Trailer_Length
+              or else Item.Frame_Byte_Total < SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length
               or else Item.Key_Offset /= Key_Cursor
-              or else Item.Key_Byte_Total
-                      > Value.Key_Byte_Total - (Key_Cursor - 1)
+              or else Item.Key_Byte_Total > Value.Key_Byte_Total - (Key_Cursor - 1)
               or else Item.Sequence = 0
               or else Item.Sequence < Value.Lowest_Sequence
               or else Item.Sequence > Value.Highest_Sequence
-              or else Item.Operation
-                      not in LSM.Put_Operation | LSM.Delete_Operation
-              or else (Item.Operation = LSM.Delete_Operation
-                       and then Item.Value_Byte_Total /= 0)
+              or else Item.Operation not in LSM.Put_Operation | LSM.Delete_Operation
+              or else (Item.Operation = LSM.Delete_Operation and then Item.Value_Byte_Total /= 0)
               or else Item.Key_Byte_Total
-                      > Item.Frame_Byte_Total
-                        - SST_V2_Frame_Header_Length
-                        - SST_V2_Frame_Trailer_Length
+                      > Item.Frame_Byte_Total - SST_V2_Frame_Header_Length - SST_V2_Frame_Trailer_Length
               or else Item.Value_Byte_Total
                       /= Item.Frame_Byte_Total
                          - SST_V2_Frame_Header_Length
@@ -1334,8 +1320,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
             end if;
             if Position > Value.Entries'First then
                declare
-                  Previous : SST_V2_Index_Entry renames
-                    Value.Entries (Position - 1);
+                  Previous : SST_V2_Index_Entry renames Value.Entries (Position - 1);
                begin
                   if Same_Key
                        (Value.Keys,
@@ -1359,8 +1344,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
                end;
             end if;
             Item_Bytes :=
-              Interfaces.Unsigned_64 (Item.Key_Byte_Total)
-              + Interfaces.Unsigned_64 (Item.Value_Byte_Total);
+              Interfaces.Unsigned_64 (Item.Key_Byte_Total) + Interfaces.Unsigned_64 (Item.Value_Byte_Total);
             if not Add_U64 (Logical, Item_Bytes, Logical) then
                return False;
             end if;
@@ -1440,27 +1424,23 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Frame_Cursor      : Natural := Admission.Frame_Offset;
       Key_Bytes         : Interfaces.Unsigned_64 := 0;
       Logical           : Interfaces.Unsigned_64 := 0;
-      Lowest            : Interfaces.Unsigned_64 :=
-        Interfaces.Unsigned_64'Last;
+      Lowest            : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
       Highest           : Interfaces.Unsigned_64 := 0;
       Previous_Key      : Natural := 0;
       Previous_Key_Size : Natural := 0;
       Previous_Sequence : Interfaces.Unsigned_64 := 0;
    begin
       Value := null;
-      if Image'Length
-        < SST_V2_Index_Entry_Header_Length + SST_V2_Index_Trailer_Length
+      if Image'Length < SST_V2_Index_Entry_Header_Length + SST_V2_Index_Trailer_Length
         or else Admission.Format_Version /= SST_V2_Format_Version
         or else Admission.Header_Length /= SST_V2_Header_Length
         or else Admission.Entry_Total = 0
         or else Interfaces.Unsigned_64 (Admission.Entry_Total)
                 /= Interfaces.Unsigned_64 (Expected_Descriptor.Entry_Total)
-        or else Interfaces.Unsigned_64 (Admission.Payload_Bytes)
-                /= Expected_Descriptor.Logical_Payload_Bytes
+        or else Interfaces.Unsigned_64 (Admission.Payload_Bytes) /= Expected_Descriptor.Logical_Payload_Bytes
         or else Admission.Frame_Offset /= SST_V2_Header_Length
         or else Admission.Index_Offset < Admission.Frame_Offset
-        or else Admission.Frame_Bytes
-                /= Admission.Index_Offset - Admission.Frame_Offset
+        or else Admission.Frame_Bytes /= Admission.Index_Offset - Admission.Frame_Offset
         or else Admission.Index_Bytes /= Image'Length
         or else not Valid_Run_Descriptor (Expected_Descriptor)
         or else Head_Policy.Is_Zero (Expected_Database)
@@ -1470,8 +1450,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
          return;
       end if;
       Data_End := Image'Length - SST_V2_Index_Trailer_Length;
-      if Read_U32 (Image, Data_End)
-        /= Formats.CRC_32C (Image (Image'First .. Image'First + Data_End - 1))
+      if Read_U32 (Image, Data_End) /= Formats.CRC_32C (Image (Image'First .. Image'First + Data_End - 1))
       then
          Status := Index_Checksum_Failed;
          return;
@@ -1493,9 +1472,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
             Exact_Frame  : Interfaces.Unsigned_64;
             Item_Bytes   : Interfaces.Unsigned_64;
          begin
-            if Cursor > Data_End
-              or else SST_V2_Index_Entry_Header_Length > Data_End - Cursor
-            then
+            if Cursor > Data_End or else SST_V2_Index_Entry_Header_Length > Data_End - Cursor then
                Status := Invalid_Entry;
                return;
             end if;
@@ -1511,8 +1488,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
               or else Sequence < Expected_Descriptor.Lowest_Sequence
               or else Sequence > Expected_Descriptor.Highest_Sequence
               or else Operation not in LSM.Put_Operation | LSM.Delete_Operation
-              or else (Operation = LSM.Delete_Operation
-                       and then Value_Wire /= 0)
+              or else (Operation = LSM.Delete_Operation and then Value_Wire /= 0)
             then
                Status := Invalid_Entry;
                return;
@@ -1525,23 +1501,13 @@ package body Flyology.DB.LSM_Runtime_Formats is
             Key_Total := Natural (Key_Wire);
             Value_Total := Natural (Value_Wire);
             Exact_Frame := Interfaces.Unsigned_64 (SST_V2_Frame_Header_Length);
-            if not Add_U64
-                     (Exact_Frame,
-                      Interfaces.Unsigned_64 (Key_Total),
-                      Exact_Frame)
+            if not Add_U64 (Exact_Frame, Interfaces.Unsigned_64 (Key_Total), Exact_Frame)
+              or else not Add_U64 (Exact_Frame, Interfaces.Unsigned_64 (Value_Total), Exact_Frame)
               or else not Add_U64
-                            (Exact_Frame,
-                             Interfaces.Unsigned_64 (Value_Total),
-                             Exact_Frame)
-              or else not Add_U64
-                            (Exact_Frame,
-                             Interfaces.Unsigned_64
-                               (SST_V2_Frame_Trailer_Length),
-                             Exact_Frame)
+                            (Exact_Frame, Interfaces.Unsigned_64 (SST_V2_Frame_Trailer_Length), Exact_Frame)
               or else Frame_Offset /= Interfaces.Unsigned_64 (Frame_Cursor)
               or else Frame_Bytes /= Exact_Frame
-              or else Frame_Bytes
-                      > Interfaces.Unsigned_64 (Natural'Last - Frame_Cursor)
+              or else Frame_Bytes > Interfaces.Unsigned_64 (Natural'Last - Frame_Cursor)
             then
                Status := Invalid_Entry;
                return;
@@ -1553,36 +1519,19 @@ package body Flyology.DB.LSM_Runtime_Formats is
             end if;
             Key_Start := Cursor;
             if Position > 1 then
-               if Same_Key
-                    (Image,
-                     Previous_Key,
-                     Previous_Key_Size,
-                     Key_Start,
-                     Key_Total)
-               then
+               if Same_Key (Image, Previous_Key, Previous_Key_Size, Key_Start, Key_Total) then
                   if Previous_Sequence <= Sequence then
                      Status := Invalid_SST_State;
                      return;
                   end if;
-               elsif not Key_Less
-                           (Image,
-                            Previous_Key,
-                            Previous_Key_Size,
-                            Key_Start,
-                            Key_Total)
-               then
+               elsif not Key_Less (Image, Previous_Key, Previous_Key_Size, Key_Start, Key_Total) then
                   Status := Invalid_SST_State;
                   return;
                end if;
             end if;
-            Item_Bytes :=
-              Interfaces.Unsigned_64 (Key_Total)
-              + Interfaces.Unsigned_64 (Value_Total);
+            Item_Bytes := Interfaces.Unsigned_64 (Key_Total) + Interfaces.Unsigned_64 (Value_Total);
             if not Add_U64 (Logical, Item_Bytes, Logical)
-              or else not Add_U64
-                            (Key_Bytes,
-                             Interfaces.Unsigned_64 (Key_Total),
-                             Key_Bytes)
+              or else not Add_U64 (Key_Bytes, Interfaces.Unsigned_64 (Key_Total), Key_Bytes)
             then
                Status := Invalid_Length;
                return;
@@ -1607,15 +1556,13 @@ package body Flyology.DB.LSM_Runtime_Formats is
          return;
       end if;
 
-      Candidate :=
-        new SST_V2_Index (Admission.Entry_Total, Natural (Key_Bytes));
+      Candidate := new SST_V2_Index (Admission.Entry_Total, Natural (Key_Bytes));
       Candidate.Database_ID := Expected_Database;
       Candidate.Run_ID := Expected_Descriptor.Run_ID;
       Candidate.Family_ID := Expected_Family;
       Candidate.Lowest_Sequence := Expected_Descriptor.Lowest_Sequence;
       Candidate.Highest_Sequence := Expected_Descriptor.Highest_Sequence;
-      Candidate.Logical_Payload_Bytes :=
-        Expected_Descriptor.Logical_Payload_Bytes;
+      Candidate.Logical_Payload_Bytes := Expected_Descriptor.Logical_Payload_Bytes;
       Candidate.Frame_Offset := Admission.Frame_Offset;
       Candidate.Frame_Byte_Total := Admission.Frame_Bytes;
       Candidate.Entries := [others => <>];
@@ -1626,8 +1573,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       begin
          for Item of Candidate.Entries loop
             declare
-               Key_Total : constant Natural :=
-                 Natural (Read_U32 (Image, Cursor + 28));
+               Key_Total : constant Natural := Natural (Read_U32 (Image, Cursor + 28));
             begin
                Item.Frame_Offset := Natural (Read_U64 (Image, Cursor));
                Item.Frame_Byte_Total := Natural (Read_U64 (Image, Cursor + 8));
@@ -1635,12 +1581,10 @@ package body Flyology.DB.LSM_Runtime_Formats is
                Item.Operation := Byte_At (Image, Cursor + 24);
                Item.Key_Offset := Key_Cursor;
                Item.Key_Byte_Total := Key_Total;
-               Item.Value_Byte_Total :=
-                 Natural (Read_U32 (Image, Cursor + 32));
+               Item.Value_Byte_Total := Natural (Read_U32 (Image, Cursor + 32));
                Cursor := Cursor + SST_V2_Index_Entry_Header_Length;
                for Offset in Natural range 1 .. Key_Total loop
-                  Candidate.Keys (Key_Cursor + Offset - 1) :=
-                    Byte_At (Image, Cursor + Offset - 1);
+                  Candidate.Keys (Key_Cursor + Offset - 1) := Byte_At (Image, Cursor + Offset - 1);
                end loop;
                Cursor := Cursor + Key_Total;
                Key_Cursor := Key_Cursor + Key_Total;
@@ -1672,9 +1616,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Data_End  : Natural;
    begin
       Value := null;
-      if not Valid_SST_V2_Index (Index)
-        or else Position not in Index.Entries'Range
-      then
+      if not Valid_SST_V2_Index (Index) or else Position not in Index.Entries'Range then
          Status := Invalid_SST_State;
          return;
       end if;
@@ -1682,16 +1624,13 @@ package body Flyology.DB.LSM_Runtime_Formats is
          Expected : SST_V2_Index_Entry renames Index.Entries (Position);
       begin
          if Image'Length /= Expected.Frame_Byte_Total
-           or else Image'Length
-                   < SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length
+           or else Image'Length < SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length
          then
             Status := Invalid_Length;
             return;
          end if;
          Data_End := Image'Length - SST_V2_Frame_Trailer_Length;
-         if Read_U32 (Image, Data_End)
-           /= Formats.CRC_32C
-                (Image (Image'First .. Image'First + Data_End - 1))
+         if Read_U32 (Image, Data_End) /= Formats.CRC_32C (Image (Image'First .. Image'First + Data_End - 1))
          then
             Status := Frame_Checksum_Failed;
             return;
@@ -1700,14 +1639,10 @@ package body Flyology.DB.LSM_Runtime_Formats is
            or else Byte_At (Image, 8) /= Expected.Operation
            or else Byte_At (Image, 9) /= 0
            or else Read_U16 (Image, 10) /= 0
-           or else Read_U32 (Image, 12)
-                   /= Interfaces.Unsigned_32 (Expected.Key_Byte_Total)
-           or else Read_U32 (Image, 16)
-                   /= Interfaces.Unsigned_32 (Expected.Value_Byte_Total)
+           or else Read_U32 (Image, 12) /= Interfaces.Unsigned_32 (Expected.Key_Byte_Total)
+           or else Read_U32 (Image, 16) /= Interfaces.Unsigned_32 (Expected.Value_Byte_Total)
            or else Data_End
-                   /= SST_V2_Frame_Header_Length
-                      + Expected.Key_Byte_Total
-                      + Expected.Value_Byte_Total
+                   /= SST_V2_Frame_Header_Length + Expected.Key_Byte_Total + Expected.Value_Byte_Total
          then
             Status := Invalid_Entry;
             return;
@@ -1720,16 +1655,13 @@ package body Flyology.DB.LSM_Runtime_Formats is
                return;
             end if;
          end loop;
-         Candidate :=
-           new SST_V2_Frame
-                 (Expected.Key_Byte_Total + Expected.Value_Byte_Total);
+         Candidate := new SST_V2_Frame (Expected.Key_Byte_Total + Expected.Value_Byte_Total);
          Candidate.Sequence := Expected.Sequence;
          Candidate.Operation := Expected.Operation;
          Candidate.Key_Byte_Total := Expected.Key_Byte_Total;
          Candidate.Value_Byte_Total := Expected.Value_Byte_Total;
          for Offset in Natural range 1 .. Candidate.Payload_Byte_Total loop
-            Candidate.Payload (Offset) :=
-              Byte_At (Image, SST_V2_Frame_Header_Length + Offset - 1);
+            Candidate.Payload (Offset) := Byte_At (Image, SST_V2_Frame_Header_Length + Offset - 1);
          end loop;
       end;
       Value := Candidate;
@@ -2070,9 +2002,9 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Older          : SST;
       Newer          : SST;
       Output_Run_ID  : Head_Policy.Identifier;
-      Merged          : out SST_Access;
-      Successor       : out Checkpoint_Manifest_Access;
-      Status          : out Merge_Status)
+      Merged         : out SST_Access;
+      Successor      : out Checkpoint_Manifest_Access;
+      Status         : out Merge_Status)
    is
       Candidate    : Checkpoint_Manifest_Access := null;
       Allocation   : Allocation_Status;
@@ -2087,34 +2019,26 @@ package body Flyology.DB.LSM_Runtime_Formats is
          Status := Merge_Invalid_Input;
          return;
       end if;
-      Merge_Manifest_Adjacent_SSTs
-        (Current, Older, Newer, Output_Run_ID, Merged, Status);
+      Merge_Manifest_Adjacent_SSTs (Current, Older, Newer, Output_Run_ID, Merged, Status);
       if Status /= Merge_Completed then
          return;
       end if;
 
       Create_Checkpoint_Manifest
-        (Current.Family_Total,
-         Current.Run_Total - 1,
-         Current.Identity_Total,
-         Candidate,
-         Allocation);
+        (Current.Family_Total, Current.Run_Total - 1, Current.Identity_Total, Candidate, Allocation);
       if Allocation /= Allocated then
          Release (Merged);
          Status :=
-           (if Allocation = Allocation_Failed
-            then Merge_Allocation_Failed
-            else Merge_Length_Overflow);
+           (if Allocation = Allocation_Failed then Merge_Allocation_Failed else Merge_Length_Overflow);
          return;
       end if;
       Candidate.Base := Successor_Base;
       Candidate.Replay_Boundary := Current.Replay_Boundary;
       Candidate.Maximum_Total_L0_Runs := Current.Maximum_Total_L0_Runs;
       Candidate.Maximum_Checkpoint_Identities := Current.Maximum_Checkpoint_Identities;
-      Candidate.Maximum_Point_Reads_Per_Transaction :=
-        Current.Maximum_Point_Reads_Per_Transaction;
-      Candidate.Maximum_Scan_Ranges_Per_Transaction :=
-        Current.Maximum_Scan_Ranges_Per_Transaction;
+      Candidate.Maximum_Point_Reads_Per_Transaction := Current.Maximum_Point_Reads_Per_Transaction;
+      Candidate.Maximum_Scan_Ranges_Per_Transaction := Current.Maximum_Scan_Ranges_Per_Transaction;
+      Candidate.Commit_Profile := Current.Commit_Profile;
       Candidate.Identities := Current.Identities;
 
       for Family_Index in Current.Families'Range loop
@@ -2123,8 +2047,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
             Target           : Family_LSM_State renames Candidate.Families (Family_Index);
             Source_Index     : Natural := Source.First_Run;
             Source_Remaining : Natural := Source.Run_Total;
-            Selected         : constant Boolean :=
-              Current.Base.Families (Family_Index).ID = Older.Family_ID;
+            Selected         : constant Boolean := Current.Base.Families (Family_Index).ID = Older.Family_ID;
          begin
             Target := Source;
             Target.First_Run := (if Source.Run_Total = 0 then 0 else Output_Index + 1);
@@ -2136,10 +2059,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
                  and then not Replaced
                  and then Source_Remaining >= 2
                  and then Descriptor_Matches
-                            (Older,
-                             Current.Base.Database_ID,
-                             Older.Family_ID,
-                             Current.Runs (Source_Index))
+                            (Older, Current.Base.Database_ID, Older.Family_ID, Current.Runs (Source_Index))
                  and then Descriptor_Matches
                             (Newer,
                              Current.Base.Database_ID,
@@ -2189,12 +2109,12 @@ package body Flyology.DB.LSM_Runtime_Formats is
    end Build_Adjacent_Merge_Successor;
 
    procedure Merge_Three_Consecutive_SSTs
-     (First_Run      : SST;
-      Middle_Run     : SST;
-      Last_Run       : SST;
-      Output_Run_ID  : Head_Policy.Identifier;
-      Value          : out SST_Access;
-      Status         : out Merge_Status)
+     (First_Run     : SST;
+      Middle_Run    : SST;
+      Last_Run      : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status)
    is
       Candidate        : SST_Access := null;
       Allocation       : Allocation_Status;
@@ -2214,10 +2134,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Payload_Cursor   : Natural := 1;
 
       function Precedes
-        (Left_Table  : SST;
-         Left_Index  : Positive;
-         Right_Table : SST;
-         Right_Index : Positive) return Boolean
+        (Left_Table : SST; Left_Index : Positive; Right_Table : SST; Right_Index : Positive) return Boolean
       is
          Left_Entry  : SST_Entry renames Left_Table.Entries (Left_Index);
          Right_Entry : SST_Entry renames Right_Table.Entries (Right_Index);
@@ -2303,11 +2220,8 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Partial_Payload := First_Run.Payload_Byte_Total + Middle_Run.Payload_Byte_Total;
       if Last_Run.Payload_Byte_Total > Natural'Last - Partial_Payload
         or else not Add_U64
-                      (First_Run.Logical_Payload_Bytes,
-                       Middle_Run.Logical_Payload_Bytes,
-                       Partial_Logical)
-        or else not Add_U64
-                      (Partial_Logical, Last_Run.Logical_Payload_Bytes, Logical_Total)
+                      (First_Run.Logical_Payload_Bytes, Middle_Run.Logical_Payload_Bytes, Partial_Logical)
+        or else not Add_U64 (Partial_Logical, Last_Run.Logical_Payload_Bytes, Logical_Total)
       then
          Status := Merge_Length_Overflow;
          return;
@@ -2336,43 +2250,40 @@ package body Flyology.DB.LSM_Runtime_Formats is
                Source := 1;
             end if;
             if Middle_Remaining > 0
-              and then
-                (Source = 0
-                 or else Precedes (Middle_Run, Middle_Index, First_Run, First_Index))
+              and then (Source = 0 or else Precedes (Middle_Run, Middle_Index, First_Run, First_Index))
             then
                Source := 2;
             end if;
             if Last_Remaining > 0
-              and then
-                (Source = 0
-                 or else
-                   (Source = 1
-                    and then Precedes (Last_Run, Last_Index, First_Run, First_Index))
-                 or else
-                   (Source = 2
-                    and then Precedes (Last_Run, Last_Index, Middle_Run, Middle_Index)))
+              and then (Source = 0
+                        or else (Source = 1 and then Precedes (Last_Run, Last_Index, First_Run, First_Index))
+                        or else (Source = 2
+                                 and then Precedes (Last_Run, Last_Index, Middle_Run, Middle_Index)))
             then
                Source := 3;
             end if;
             case Source is
-               when 1 =>
+               when 1      =>
                   Append_Entry (First_Run, First_Index);
                   First_Remaining := First_Remaining - 1;
                   if First_Remaining > 0 then
                      First_Index := First_Index + 1;
                   end if;
-               when 2 =>
+
+               when 2      =>
                   Append_Entry (Middle_Run, Middle_Index);
                   Middle_Remaining := Middle_Remaining - 1;
                   if Middle_Remaining > 0 then
                      Middle_Index := Middle_Index + 1;
                   end if;
-               when 3 =>
+
+               when 3      =>
                   Append_Entry (Last_Run, Last_Index);
                   Last_Remaining := Last_Remaining - 1;
                   if Last_Remaining > 0 then
                      Last_Index := Last_Index + 1;
                   end if;
+
                when others =>
                   Release (Candidate);
                   Status := Merge_Invalid_Input;
@@ -2398,13 +2309,13 @@ package body Flyology.DB.LSM_Runtime_Formats is
    end Merge_Three_Consecutive_SSTs;
 
    procedure Merge_Manifest_Three_Adjacent_SSTs
-     (Current        : Checkpoint_Manifest;
-      First_Run      : SST;
-      Middle_Run     : SST;
-      Last_Run       : SST;
-      Output_Run_ID  : Head_Policy.Identifier;
-      Value          : out SST_Access;
-      Status         : out Merge_Status) is
+     (Current       : Checkpoint_Manifest;
+      First_Run     : SST;
+      Middle_Run    : SST;
+      Last_Run      : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status) is
    begin
       Value := null;
       if not Structurally_Valid (Current)
@@ -2429,14 +2340,10 @@ package body Flyology.DB.LSM_Runtime_Formats is
                   Status := Merge_Invalid_Input;
                   return;
                end if;
-               for Run_Index in Positive range
-                 Family.First_Run .. Family.First_Run + Family.Run_Total - 3
+               for Run_Index in Positive range Family.First_Run .. Family.First_Run + Family.Run_Total - 3
                loop
                   if Descriptor_Matches
-                       (First_Run,
-                        Current.Base.Database_ID,
-                        First_Run.Family_ID,
-                        Current.Runs (Run_Index))
+                       (First_Run, Current.Base.Database_ID, First_Run.Family_ID, Current.Runs (Run_Index))
                     and then Descriptor_Matches
                                (Middle_Run,
                                 Current.Base.Database_ID,
@@ -2492,27 +2399,20 @@ package body Flyology.DB.LSM_Runtime_Formats is
       end if;
 
       Create_Checkpoint_Manifest
-        (Current.Family_Total,
-         Current.Run_Total - 2,
-         Current.Identity_Total,
-         Candidate,
-         Allocation);
+        (Current.Family_Total, Current.Run_Total - 2, Current.Identity_Total, Candidate, Allocation);
       if Allocation /= Allocated then
          Release (Merged);
          Status :=
-           (if Allocation = Allocation_Failed
-            then Merge_Allocation_Failed
-            else Merge_Length_Overflow);
+           (if Allocation = Allocation_Failed then Merge_Allocation_Failed else Merge_Length_Overflow);
          return;
       end if;
       Candidate.Base := Successor_Base;
       Candidate.Replay_Boundary := Current.Replay_Boundary;
       Candidate.Maximum_Total_L0_Runs := Current.Maximum_Total_L0_Runs;
       Candidate.Maximum_Checkpoint_Identities := Current.Maximum_Checkpoint_Identities;
-      Candidate.Maximum_Point_Reads_Per_Transaction :=
-        Current.Maximum_Point_Reads_Per_Transaction;
-      Candidate.Maximum_Scan_Ranges_Per_Transaction :=
-        Current.Maximum_Scan_Ranges_Per_Transaction;
+      Candidate.Maximum_Point_Reads_Per_Transaction := Current.Maximum_Point_Reads_Per_Transaction;
+      Candidate.Maximum_Scan_Ranges_Per_Transaction := Current.Maximum_Scan_Ranges_Per_Transaction;
+      Candidate.Commit_Profile := Current.Commit_Profile;
       Candidate.Identities := Current.Identities;
 
       for Family_Index in Current.Families'Range loop
@@ -2700,20 +2600,15 @@ package body Flyology.DB.LSM_Runtime_Formats is
       end loop;
       if not Multiply_U64
                (Interfaces.Unsigned_64 (Value.Entry_Total),
-                Interfaces.Unsigned_64
-                  (SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length),
+                Interfaces.Unsigned_64 (SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length),
                 Frame_Fixed)
-        or else not Add_U64
-                      (Frame_Fixed, Interfaces.Unsigned_64 (Value.Payload_Byte_Total), Frame_Bytes)
+        or else not Add_U64 (Frame_Fixed, Interfaces.Unsigned_64 (Value.Payload_Byte_Total), Frame_Bytes)
         or else not Multiply_U64
                       (Interfaces.Unsigned_64 (Value.Entry_Total),
                        Interfaces.Unsigned_64 (SST_V2_Index_Entry_Header_Length),
                        Index_Fixed)
         or else not Add_U64 (Index_Fixed, Key_Bytes, Index_Bytes)
-        or else not Add_U64
-                      (Index_Bytes,
-                       Interfaces.Unsigned_64 (SST_V2_Index_Trailer_Length),
-                       Index_Bytes)
+        or else not Add_U64 (Index_Bytes, Interfaces.Unsigned_64 (SST_V2_Index_Trailer_Length), Index_Bytes)
       then
          Status := Length_Overflow;
          return;
@@ -2751,10 +2646,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Put_U64 (Image.all, 104, Frame_Bytes);
       Put_U64 (Image.all, 112, Interfaces.Unsigned_64 (Index_Cursor));
       Put_U64 (Image.all, 120, Index_Bytes);
-      Put_U32
-        (Image.all,
-         40,
-         Header_Checksum (Image (0 .. SST_V2_Header_Length - 1), SST_V2_Header_Length));
+      Put_U32 (Image.all, 40, Header_Checksum (Image (0 .. SST_V2_Header_Length - 1), SST_V2_Header_Length));
 
       for Item of Value.Entries loop
          declare
@@ -2766,8 +2658,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
             Image (Frame_Cursor + 9) := 0;
             Put_U16 (Image.all, Frame_Cursor + 10, 0);
             Put_U32 (Image.all, Frame_Cursor + 12, Interfaces.Unsigned_32 (Item.Key_Byte_Total));
-            Put_U32
-              (Image.all, Frame_Cursor + 16, Interfaces.Unsigned_32 (Item.Value_Byte_Total));
+            Put_U32 (Image.all, Frame_Cursor + 16, Interfaces.Unsigned_32 (Item.Value_Byte_Total));
             Frame_Cursor := Frame_Cursor + SST_V2_Frame_Header_Length;
             for Offset in Natural range 1 .. Item.Key_Byte_Total loop
                Image (Frame_Cursor + Offset - 1) := Value.Payload (Item.Key_Offset + Offset - 1);
@@ -2806,10 +2697,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Put_U32
         (Image.all,
          Index_Cursor,
-         Formats.CRC_32C
-           (Image
-              (Natural (Read_U64 (Image.all, 112))
-               .. Index_Cursor - 1)));
+         Formats.CRC_32C (Image (Natural (Read_U64 (Image.all, 112)) .. Index_Cursor - 1)));
       Put_U32 (Image.all, Object_CRC, Formats.CRC_32C (Image (0 .. Object_CRC - 1)));
       Status := Encoded;
    exception
@@ -3036,9 +2924,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Previous_Sequence  : Interfaces.Unsigned_64 := 0;
    begin
       Value := null;
-      if Image'Length
-        < SST_V2_Header_Length + SST_V2_Index_Trailer_Length + LSM.Object_Trailer_Length
-      then
+      if Image'Length < SST_V2_Header_Length + SST_V2_Index_Trailer_Length + LSM.Object_Trailer_Length then
          Status := Invalid_Length;
          return;
       end if;
@@ -3054,8 +2940,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
          return;
       end if;
       Object_CRC := Image'Length - LSM.Object_Trailer_Length;
-      if Read_U32 (Image, Object_CRC)
-        /= Formats.CRC_32C (Image (Image'First .. Image'First + Object_CRC - 1))
+      if Read_U32 (Image, Object_CRC) /= Formats.CRC_32C (Image (Image'First .. Image'First + Object_CRC - 1))
       then
          Status := Object_Checksum_Failed;
          return;
@@ -3065,10 +2950,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Index_Cursor := Admission.Index_Offset;
       Index_Data_End := Object_CRC - SST_V2_Index_Trailer_Length;
       if Read_U32 (Image, Index_Data_End)
-        /= Formats.CRC_32C
-             (Image
-                (Image'First + Admission.Index_Offset
-                 .. Image'First + Index_Data_End - 1))
+        /= Formats.CRC_32C (Image (Image'First + Admission.Index_Offset .. Image'First + Index_Data_End - 1))
       then
          Status := Index_Checksum_Failed;
          return;
@@ -3079,23 +2961,21 @@ package body Flyology.DB.LSM_Runtime_Formats is
       --  allocating descriptors or logical payload bytes.
       for Index in Positive range 1 .. Admission.Entry_Total loop
          declare
-            Frame_Start   : constant Natural := Frame_Cursor;
-            Sequence      : Interfaces.Unsigned_64;
-            Operation     : Formats.Byte;
-            Key_Wire      : Interfaces.Unsigned_32;
-            Value_Wire    : Interfaces.Unsigned_32;
-            Key_Total     : Natural;
-            Value_Total   : Natural;
-            Key_Start     : Natural;
-            Frame_CRC     : Natural;
-            Frame_Extent  : Natural;
-            Index_Key     : Natural;
-            Item_Bytes    : Interfaces.Unsigned_64;
+            Frame_Start  : constant Natural := Frame_Cursor;
+            Sequence     : Interfaces.Unsigned_64;
+            Operation    : Formats.Byte;
+            Key_Wire     : Interfaces.Unsigned_32;
+            Value_Wire   : Interfaces.Unsigned_32;
+            Key_Total    : Natural;
+            Value_Total  : Natural;
+            Key_Start    : Natural;
+            Frame_CRC    : Natural;
+            Frame_Extent : Natural;
+            Index_Key    : Natural;
+            Item_Bytes   : Interfaces.Unsigned_64;
          begin
             if Frame_Cursor > Frame_End
-              or else
-                SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length
-                > Frame_End - Frame_Cursor
+              or else SST_V2_Frame_Header_Length + SST_V2_Frame_Trailer_Length > Frame_End - Frame_Cursor
             then
                Status := Invalid_Entry;
                return;
@@ -3127,8 +3007,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
             Frame_Cursor := Frame_Cursor + SST_V2_Frame_Header_Length;
             if Key_Total > Frame_End - Frame_Cursor
               or else Value_Total > Frame_End - Frame_Cursor - Key_Total
-              or else SST_V2_Frame_Trailer_Length
-                      > Frame_End - Frame_Cursor - Key_Total - Value_Total
+              or else SST_V2_Frame_Trailer_Length > Frame_End - Frame_Cursor - Key_Total - Value_Total
             then
                Status := Invalid_Entry;
                return;
@@ -3136,10 +3015,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
             Key_Start := Frame_Cursor;
             Frame_CRC := Frame_Cursor + Key_Total + Value_Total;
             if Read_U32 (Image, Frame_CRC)
-              /= Formats.CRC_32C
-                   (Image
-                      (Image'First + Frame_Start
-                       .. Image'First + Frame_CRC - 1))
+              /= Formats.CRC_32C (Image (Image'First + Frame_Start .. Image'First + Frame_CRC - 1))
             then
                Status := Frame_Checksum_Failed;
                return;
@@ -3154,8 +3030,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
                return;
             end if;
             if Read_U64 (Image, Index_Cursor) /= Interfaces.Unsigned_64 (Frame_Start)
-              or else Read_U64 (Image, Index_Cursor + 8)
-                      /= Interfaces.Unsigned_64 (Frame_Extent)
+              or else Read_U64 (Image, Index_Cursor + 8) /= Interfaces.Unsigned_64 (Frame_Extent)
               or else Read_U64 (Image, Index_Cursor + 16) /= Sequence
               or else Byte_At (Image, Index_Cursor + 24) /= Operation
               or else Byte_At (Image, Index_Cursor + 25) /= 0

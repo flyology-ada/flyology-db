@@ -2,13 +2,15 @@
 
 This document is normative for HEAD versions 1 and 2 and the independent version-1 commit-batch and
 column-family-manifest encodings. Each object kind advances its own version constant: the HEAD kind accepts versions
-1 and 2, batch accepts version 1, manifest accepts versions 1 through 3, and operational recovery accepts SST versions
-1 and 2. New run publication selects SST version 2. All multibyte integers are unsigned big-endian.
+1 and 2, batch accepts version 1, manifest accepts versions 1 through 4, and operational recovery accepts SST versions
+1 and 2. Manifest version 4 is reserved for the new-root-only independent-coalescing experiment; ordinary databases
+continue to emit version 3. New run publication selects SST version 2. All multibyte integers are unsigned big-endian.
 Byte strings are length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is
 persisted.
 
-The first-LSM format unit freezes current manifest version 3, readable predecessor version 2, and operational SST
-versions 1 and 2 below. Its private generic codec remains the bounded reference/proof implementation. Operational
+The first-LSM format unit freezes ordinary manifest version 3, experimental manifest version 4, readable predecessor
+version 2, and operational SST versions 1 and 2 below. Its private generic codec remains the bounded reference/proof
+implementation. Operational
 codecs admit headers before whole-object allocation and retain exact dynamically sized run, identity, entry, key,
 and value extents. See [`lsm-checkpoint-publication.md`](lsm-checkpoint-publication.md).
 
@@ -297,10 +299,25 @@ in-place upgrade and no library-selected replacement value. A serializable Begin
 as unsupported until a separately specified immutable migration publishes explicit authority. Flush likewise
 rejects a v2 root as unsupported rather than silently choosing limits while creating a v3 successor.
 
-The operational decoder probes up to the current 228-byte prefix, selects the exact 220- or 228-byte header from the
+The operational decoder probes up to the maximum supported prefix, selects the exact versioned header from the
 authenticated version, and derives whole-object allocation bounds from that selected width and authenticated counts.
 The bounded SPARK reference codec encodes and decodes only current version 3; the operational decoder owns the exact
 version-2 backward-read golden. Every new allocation remains checked, lazy, and unpublished on failure.
+
+### Checkpoint manifest version 4
+
+Operational checkpoint-manifest version 4 retains the complete version-3 header and payload unchanged, appends one
+unsigned 32-bit commit-publication profile code at offset 228, and therefore has a 232-byte header. Code `1` denotes
+`Independent_Coalescing`; zero and every unknown code are invalid in version 4. The ordinary
+`Standard_Publication` profile continues to encode as version 3 and therefore stays byte-for-byte compatible with
+existing roots.
+
+Version 4 is reserved for new roots using the separately documented independent-coalescing experiment. The
+operational decoder authenticates and retains its profile selector; the later coordinator stage is responsible for
+enforcing that profile's publication semantics. Cohort width and admission timing are runtime experiment inputs, not
+persisted defaults or wire-format policy. No existing manifest is reinterpreted or migrated in place. An independent
+Python generator, an exact 370-byte golden, round-trip decoding, and repaired-checksum invalid-profile cases gate the
+new selector.
 
 ## Immutable SST run version 1
 
@@ -393,10 +410,11 @@ selector after transaction-local and committed-suffix lookup; the established st
 
 Batch version 1 remains the transaction-log encoding. Manifest version 1 is the legacy log-only registry encoding and
 remains readable. Manifest version 2 remains readable as the first-LSM predecessor but has no serializable
-observation authority. New databases use manifest version 3 from their root: the root has replay boundary zero, no
-runs, and no checkpoint identities, while persisting every explicit LSM and serializable-tracking limit. A nonempty
-current manifest is a later checkpoint successor and never rewrites or implicitly migrates a reachable older
-manifest. SST begins at version 1 under its independent kind. New run publication selects version 2, while recovery
+observation authority. Ordinary new databases use manifest version 3 from their root: the root has replay boundary
+zero, no runs, and no checkpoint identities, while persisting every explicit LSM and serializable-tracking limit.
+New-root-only independent-coalescing experiments use manifest version 4. A nonempty current manifest is a later
+checkpoint successor and never rewrites or implicitly migrates a reachable older manifest. SST begins at version 1
+under its independent kind. New run publication selects version 2, while recovery
 continues to read frozen version 1 and accepts mixed manifests. Activation never rewrites a reachable immutable
 object in place; a normal later compaction may replace current inputs with a fresh immutable v2 output under a new
 identity. Golden byte fixtures and explicit corruption cases gate each supported version.

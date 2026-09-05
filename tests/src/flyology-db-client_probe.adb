@@ -7,6 +7,7 @@ with Flyology.Buffers;
 with Flyology.Bytes;
 with Flyology.Cancellation;
 with Flyology.DB.Object_Storage;
+with Flyology.DB.Testing;
 with Flyology.HTTP;
 with Flyology.HTTP.Client;
 with Flyology.IO.Sockets;
@@ -19,6 +20,7 @@ with Refresh_Proxy_Testing;
 
 procedure Flyology.DB.Client_Probe is
    package Binding renames Flyology.DB.Object_Storage;
+   package Testing renames Flyology.DB.Testing;
    package Buckets renames Flyology.Object_Storage.Client.Buckets;
    package HTTP renames Flyology.HTTP;
    package HTTP_Client renames Flyology.HTTP.Client;
@@ -3374,6 +3376,89 @@ begin
    Close (Reopened, Close_Result);
    Expect (Close_Result, Success, "reopened client-backed close failed");
    Flyology.Buffers.Release (Restored_Buffer);
+
+   --  A one-byte family name makes the frozen v1 root exactly 229 bytes. The
+   --  composable client must accept S3's clipped 0..228 response to its wider
+   --  header request rather than requiring the untrimmed requested interval.
+   declare
+      Short_Context : aliased Storage_Context;
+      Short_Item    : aliased Database;
+      Short_Set     : aliased Flyology.Operations.Completion_Set (6);
+      Short_Pool    : aliased Flyology.Buffers.Pool
+        (Block_Size => Positive (Limits.Maximum_Live_State_Bytes), Capacity => 1);
+      Short_Buffer   : Flyology.Buffers.Unique_Buffer (Short_Pool'Access);
+      Short_Restored : Flyology.Buffers.Unique_Buffer (Short_Pool'Access);
+      Batch_Puts     : Natural;
+      Manifest_Puts  : Natural;
+      Head_Puts      : Natural;
+      Short_Work     : Open_Operation
+        (Short_Set'Access, Short_Item'Access, Short_Context'Access, Client'Access, Short_Pool'Access, null);
+      Short_Families : constant Column_Family_Configuration_Array :=
+        [Configure_Column_Family
+           (1,
+            Bytes ("s"),
+            Max_Key_Bytes        => 16,
+            Max_Value_Bytes      => 96,
+            Memtable_Max_Bytes   => 384,
+            Memtable_Max_Entries => 3,
+            Maximum_L0_Runs      => 1)];
+   begin
+      Binding.Bind_Client
+        (Short_Context,
+         Client'Access,
+         Origin,
+         Identity'Access,
+         Bucket,
+         "short-v1",
+         "us-east-1",
+         Low_Level.Path_Style,
+         "application/octet-stream",
+         "",
+         "",
+         False);
+      Testing.Install_V1_Root
+        (Short_Context,
+         Probe_Database_ID,
+         Root_Manifest_ID,
+         Root_Transition_ID,
+         Limits,
+         Short_Families,
+         Test_Operation_Timeout,
+         Result  => Result);
+      Testing.Publication_Counts (Short_Context, Batch_Puts, Manifest_Puts, Head_Puts);
+      if Result /= Success or else Batch_Puts /= 0 or else Manifest_Puts /= 1 or else Head_Puts /= 1 then
+         raise Program_Error
+           with
+             "short-v1 client root installation failed: "
+             & Outcome_Code'Image (Result)
+             & " batch="
+             & Natural'Image (Batch_Puts)
+             & " manifest="
+             & Natural'Image (Manifest_Puts)
+             & " head="
+             & Natural'Image (Head_Puts);
+      end if;
+      Flyology.Buffers.Acquire (Short_Buffer);
+      Open (Probe_Database_ID, Short_Buffer, Test_Operation_Timeout, Short_Work);
+      Flyology.Operations.Wait_All (Short_Set);
+      Finish (Short_Work, Result, Short_Restored);
+      Flyology.Operations.Release (Short_Work);
+      Expect (Result, Success, "229-byte client manifest did not reopen through a clipped range");
+      if Flyology.Buffers.Has_Buffer (Short_Buffer)
+        or else not Flyology.Buffers.Has_Buffer (Short_Restored)
+      then
+         raise Program_Error with "short-v1 composable open lost its scratch token";
+      end if;
+      Close (Short_Item, Result);
+      Expect (Result, Success, "short-v1 client reopen did not close");
+      Flyology.Buffers.Release (Short_Restored);
+   exception
+      when others =>
+         Flyology.Buffers.Release (Short_Buffer);
+         Flyology.Buffers.Release (Short_Restored);
+         raise;
+   end;
+
    Refresh_Proxy_Testing.Stop;
    Ada.Text_IO.Put_Line ("Flyology.DB client-backed create/commit/Flush/compaction/refresh/reopen passed");
 exception

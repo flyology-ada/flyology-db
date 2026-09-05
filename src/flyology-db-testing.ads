@@ -91,6 +91,15 @@ private package Flyology.DB.Testing is
       Transition_ID : Identifier;
       Legacy        : Boolean;
       Result        : out Outcome_Code);
+   procedure Install_V1_Root
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Limits                : Database_Limits;
+      Initial_Families      : Column_Family_Configuration_Array;
+      Timeout               : Duration;
+      Result                : out Outcome_Code);
    procedure Install_Unsupported_Head
      (Item          : in out Storage_Context;
       Database_ID   : Database_Identifier;
@@ -130,6 +139,11 @@ private package Flyology.DB.Testing is
       Drop_Last_Family     : Boolean;
       Restricted_Family    : Interfaces.Unsigned_32;
       Restricted_Max_Key   : Interfaces.Unsigned_64;
+      Result               : out Outcome_Code);
+   procedure Rewrite_Manifest_Profile
+     (Item                 : in out Storage_Context;
+      Manifest_ID          : Identifier;
+      Expected_Database_ID : Database_Identifier;
       Result               : out Outcome_Code);
    procedure Extend_Manifest_Chain
      (Item        : in out Storage_Context;

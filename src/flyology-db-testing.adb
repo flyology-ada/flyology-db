@@ -1,3 +1,5 @@
+with Ada.Real_Time;
+
 package body Flyology.DB.Testing is
 
    procedure Fail_Next_Allocation (Point : Allocation_Fault_Point) is
@@ -167,8 +169,23 @@ package body Flyology.DB.Testing is
       Legacy        : Boolean;
       Result        : out Outcome_Code) is
    begin
-      Install_Test_Head (Item, Database_ID, Manifest_ID, Transition_ID, Legacy, Result);
+      Install_Test_Head
+        (Item, Database_ID, Manifest_ID, Transition_ID, Legacy, Ada.Real_Time.Time_Last, Result);
    end Install_Head;
+
+   procedure Install_V1_Root
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Limits                : Database_Limits;
+      Initial_Families      : Column_Family_Configuration_Array;
+      Timeout               : Duration;
+      Result                : out Outcome_Code) is
+   begin
+      Install_Test_V1_Root
+        (Item, Database_ID, Manifest_ID, Initial_Transition_ID, Limits, Initial_Families, Timeout, Result);
+   end Install_V1_Root;
 
    procedure Install_Unsupported_Head
      (Item          : in out Storage_Context;
@@ -221,8 +238,8 @@ package body Flyology.DB.Testing is
       Rewrite_Test_Run_Family (Item, Run_ID, Family_ID, Result);
    end Rewrite_Run_Family;
 
-   procedure Convert_Run_To_V1
-     (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code) is
+   procedure Convert_Run_To_V1 (Item : in out Storage_Context; Run_ID : Identifier; Result : out Outcome_Code)
+   is
    begin
       --  The established public testing adapter is backend-only, so this
       --  client timeout formal is unused. Duration'Last preserves its former
@@ -262,6 +279,15 @@ package body Flyology.DB.Testing is
          Restricted_Max_Key,
          Result);
    end Restrict_Manifest;
+
+   procedure Rewrite_Manifest_Profile
+     (Item                 : in out Storage_Context;
+      Manifest_ID          : Identifier;
+      Expected_Database_ID : Database_Identifier;
+      Result               : out Outcome_Code) is
+   begin
+      Rewrite_Test_Manifest_Profile (Item, Manifest_ID, Expected_Database_ID, Result);
+   end Rewrite_Manifest_Profile;
 
    procedure Extend_Manifest_Chain
      (Item        : in out Storage_Context;
@@ -441,14 +467,7 @@ package body Flyology.DB.Testing is
       Result        : out Outcome_Code) is
    begin
       Publish_Test_Adjacent_Merge
-        (Item,
-         Older_Run_ID,
-         Newer_Run_ID,
-         Output_Run_ID,
-         Manifest_ID,
-         Transition_ID,
-         Receipt,
-         Result);
+        (Item, Older_Run_ID, Newer_Run_ID, Output_Run_ID, Manifest_ID, Transition_ID, Receipt, Result);
    end Publish_Adjacent_Merge;
 
    procedure Publish_Three_Run_Merge

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate independent checkpoint-manifest-v2/v3 and SST-v1/v2 goldens.
+"""Generate independent checkpoint-manifest-v2/v3/v4 and SST-v1/v2 goldens.
 
 This script deliberately does not import or invoke the Ada codec. The small
 fixture counts and byte strings exercise ordering, tombstones, empty values,
@@ -73,6 +73,11 @@ assert len(checkpoint_v2_header) == 220 - 44
 checkpoint_v3_header = checkpoint_v2_header + struct.pack(">2I", 8, 4)
 assert len(checkpoint_v3_header) == 228 - 44
 
+# Experimental manifest-v4 appends only the exact independent-coalescing
+# profile selector. Cohort width and admission timing remain runtime inputs.
+checkpoint_v4_header = checkpoint_v3_header + struct.pack(">I", 1)
+assert len(checkpoint_v4_header) == 232 - 44
+
 # One family/run frame exercises every persisted v2 field. The 8-byte key/value
 # bounds and 4096/16 memtable values are fixture dimensions only; changing them
 # requires regenerating both goldens and reviewing their expected semantics.
@@ -87,8 +92,12 @@ manifest_payload = family_header + b"cf" + run_descriptor + identifier(10) + ide
 # and kind 3 while adding only the two authenticated U32 limit fields.
 manifest_v2 = envelope(b"FLYCFM01", 2, 3, database_id, checkpoint_v2_header, manifest_payload)
 manifest = envelope(b"FLYCFM01", 3, 3, database_id, checkpoint_v3_header, manifest_payload)
+experimental_manifest = envelope(
+    b"FLYCFM01", 4, 3, database_id, checkpoint_v4_header, manifest_payload
+)
 assert len(manifest_v2) == 358
 assert len(manifest) == 366
+assert len(experimental_manifest) == 370
 
 # The SST header must exactly match the manifest descriptor: family 1,
 # sequences 1..2, three entries, zero reserved bits, and four logical bytes.
@@ -140,5 +149,6 @@ assert len(sst_v2) == 323
 
 print("MANIFEST_V2_HEX=" + manifest_v2.hex().upper())
 print("MANIFEST_HEX=" + manifest.hex().upper())
+print("EXPERIMENTAL_MANIFEST_HEX=" + experimental_manifest.hex().upper())
 print("SST_HEX=" + sst.hex().upper())
 print("SST_V2_HEX=" + sst_v2.hex().upper())

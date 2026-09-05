@@ -1,10 +1,12 @@
+with Flyology.DB.Commit_Profiles;
+with Flyology.DB.Commit_Profile_Formats;
 with Flyology.DB.Formats;
 with Flyology.DB.Head_Policy;
 with Flyology.DB.LSM_Formats;
 with Flyology.DB.Manifest_Formats;
 with Interfaces;
 
---  Provides the operational checkpoint-manifest-v2/v3 and SST-v1/v2 codecs. Unlike
+--  Provides the operational checkpoint-manifest-v2/v3/v4 and SST-v1/v2 codecs. Unlike
 --  the bounded proof oracle, retained arrays are sized exactly from validated
 --  persisted state and no library-selected key, value, run, or ledger ceiling
 --  is introduced.
@@ -12,6 +14,8 @@ with Interfaces;
 private package Flyology.DB.LSM_Runtime_Formats is
 
    package Formats renames Flyology.DB.Formats;
+   package Commit_Profiles renames Flyology.DB.Commit_Profiles;
+   package Profile_Formats renames Flyology.DB.Commit_Profile_Formats;
    package Head_Policy renames Flyology.DB.Head_Policy;
    package LSM renames Flyology.DB.LSM_Formats;
    package Manifests renames Flyology.DB.Manifest_Formats;
@@ -55,16 +59,18 @@ private package Flyology.DB.LSM_Runtime_Formats is
    --  Maximum_Object_Length is derived from the authenticated family count,
    --  database run ceiling, actual identity count, and frozen field widths.
    type Checkpoint_Header_Admission is record
-      Object_Length                 : Natural := 0;
-      Format_Version                : Interfaces.Unsigned_16 := 0;
-      Header_Length                 : Natural := 0;
-      Family_Total                  : Natural := 0;
-      Identity_Total                : Natural := 0;
-      Maximum_Total_L0_Runs         : Interfaces.Unsigned_32 := 0;
-      Maximum_Checkpoint_Identities : Interfaces.Unsigned_32 := 0;
+      Object_Length                       : Natural := 0;
+      Format_Version                      : Interfaces.Unsigned_16 := 0;
+      Header_Length                       : Natural := 0;
+      Family_Total                        : Natural := 0;
+      Identity_Total                      : Natural := 0;
+      Maximum_Total_L0_Runs               : Interfaces.Unsigned_32 := 0;
+      Maximum_Checkpoint_Identities       : Interfaces.Unsigned_32 := 0;
       Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32 := 0;
       Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32 := 0;
-      Maximum_Object_Length         : Interfaces.Unsigned_64 := 0;
+      Commit_Profile                      : Commit_Profiles.Commit_Publication_Profile :=
+        Commit_Profiles.Standard_Publication;
+      Maximum_Object_Length               : Interfaces.Unsigned_64 := 0;
    end record;
 
    --  Canonical no-admission output. Zero fields never authorize a read or a
@@ -101,15 +107,17 @@ private package Flyology.DB.LSM_Runtime_Formats is
    --  The fixed Base registry is the current public 64-family compatibility
    --  boundary; all LSM collections themselves are dynamically sized.
    type Checkpoint_Manifest (Family_Total, Run_Total, Identity_Total : Natural) is record
-      Base                          : Manifests.Manifest := Manifests.Empty_Manifest;
-      Replay_Boundary               : Interfaces.Unsigned_64 := 0;
-      Maximum_Total_L0_Runs         : Interfaces.Unsigned_32 := 0;
-      Maximum_Checkpoint_Identities : Interfaces.Unsigned_32 := 0;
+      Base                                : Manifests.Manifest := Manifests.Empty_Manifest;
+      Replay_Boundary                     : Interfaces.Unsigned_64 := 0;
+      Maximum_Total_L0_Runs               : Interfaces.Unsigned_32 := 0;
+      Maximum_Checkpoint_Identities       : Interfaces.Unsigned_32 := 0;
       Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32 := 0;
       Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32 := 0;
-      Families                      : Family_LSM_Array (1 .. Family_Total);
-      Runs                          : Run_Array (1 .. Run_Total);
-      Identities                    : Identity_Array (1 .. Identity_Total);
+      Commit_Profile                      : Commit_Profiles.Commit_Publication_Profile :=
+        Commit_Profiles.Standard_Publication;
+      Families                            : Family_LSM_Array (1 .. Family_Total);
+      Runs                                : Run_Array (1 .. Run_Total);
+      Identities                          : Identity_Array (1 .. Identity_Total);
    end record;
 
    type Checkpoint_Manifest_Access is access all Checkpoint_Manifest;
@@ -127,7 +135,7 @@ private package Flyology.DB.LSM_Runtime_Formats is
 
    function Structurally_Valid (Value : Checkpoint_Manifest) return Boolean;
 
-   --  Encode current immutable manifest-v3 objects and decode v2/v3. Decode performs a
+   --  Encode immutable manifest-v3/v4 objects and decode v2/v3/v4. Decode performs a
    --  nonallocating structural pass first and publishes Value only after the
    --  exact allocation has been populated and revalidated.
    procedure Encode_Checkpoint_Manifest
@@ -138,6 +146,14 @@ private package Flyology.DB.LSM_Runtime_Formats is
       Expected_Database : Head_Policy.Identifier;
       Value             : out Checkpoint_Manifest_Access;
       Status            : out Decode_Status);
+
+   --  Manifest-v4 appends one U32 publication-profile selector to the exact
+   --  v3 header. Version 4 is emitted only for the experimental profile;
+   --  standard databases remain byte-identical v3 objects.
+   Experimental_Checkpoint_Manifest_Format_Version : constant Interfaces.Unsigned_16 :=
+     Profile_Formats.Experimental_Manifest_Format_Version;
+   Experimental_Checkpoint_Manifest_Header_Length  : constant :=
+     Profile_Formats.Experimental_Manifest_Header_Length;
 
    --  SST-v2 retains the SST object family and advances its format selector.
    --  Version 2 is persisted compatibility authority; changing it would make
@@ -159,9 +175,9 @@ private package Flyology.DB.LSM_Runtime_Formats is
    type SST_Header_Admission is record
       --  Exact extent follows from the authenticated header and the manifest's
       --  exact descriptor; it is the only whole-object allocation authority.
-      Object_Length : Natural := 0;
-      Entry_Total   : Natural := 0;
-      Payload_Bytes : Natural := 0;
+      Object_Length  : Natural := 0;
+      Entry_Total    : Natural := 0;
+      Payload_Bytes  : Natural := 0;
       --  Versioned authenticated extents. Version 1 reports its single entry
       --  stream as the frame region and has no index region.
       Format_Version : Interfaces.Unsigned_16 := 0;
@@ -206,17 +222,14 @@ private package Flyology.DB.LSM_Runtime_Formats is
       Value_Byte_Total : Natural := 0;
    end record;
 
-   type SST_V2_Index_Entry_Array is
-     array (Positive range <>) of SST_V2_Index_Entry;
+   type SST_V2_Index_Entry_Array is array (Positive range <>) of SST_V2_Index_Entry;
 
    --  An authenticated index retains exact descriptor and frame-region
    --  authority plus only the canonical index keys. Its discriminants derive
    --  from the admitted header and authenticated index bytes, not a cache cap.
    type SST_V2_Index (Entry_Total, Key_Byte_Total : Natural) is record
-      Database_ID           : Head_Policy.Identifier :=
-        Head_Policy.Zero_Identifier;
-      Run_ID                : Head_Policy.Identifier :=
-        Head_Policy.Zero_Identifier;
+      Database_ID           : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Run_ID                : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
       Family_ID             : Interfaces.Unsigned_32 := 0;
       Lowest_Sequence       : Interfaces.Unsigned_64 := 0;
       Highest_Sequence      : Interfaces.Unsigned_64 := 0;
@@ -370,24 +383,24 @@ private package Flyology.DB.LSM_Runtime_Formats is
    --  or capacity policy. All versions and tombstones remain in the exact
    --  output allocation; no pairwise temporary SST is constructed.
    procedure Merge_Three_Consecutive_SSTs
-     (First_Run      : SST;
-      Middle_Run     : SST;
-      Last_Run       : SST;
-      Output_Run_ID  : Head_Policy.Identifier;
-      Value          : out SST_Access;
-      Status         : out Merge_Status);
+     (First_Run     : SST;
+      Middle_Run    : SST;
+      Last_Run      : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status);
 
    --  Admit the exact three-run merge only for three adjacent authenticated
    --  descriptors in one family of Current. The caller still selects the
    --  slice and must bind Current to HEAD before any publication effects.
    procedure Merge_Manifest_Three_Adjacent_SSTs
-     (Current        : Checkpoint_Manifest;
-      First_Run      : SST;
-      Middle_Run     : SST;
-      Last_Run       : SST;
-      Output_Run_ID  : Head_Policy.Identifier;
-      Value          : out SST_Access;
-      Status         : out Merge_Status);
+     (Current       : Checkpoint_Manifest;
+      First_Run     : SST;
+      Middle_Run    : SST;
+      Last_Run      : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status);
 
    --  Replace only the admitted three-descriptor slice with one fresh run.
    --  This effect-free builder preserves all other family slices, replay and
