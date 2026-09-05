@@ -1,10 +1,11 @@
 # Persisted formats
 
-This document is normative for HEAD versions 1 and 2 and the independent version-1 commit-batch and
-column-family-manifest encodings. Each object kind advances its own version constant: the HEAD kind accepts versions
-1 and 2, batch accepts version 1, manifest accepts versions 1 through 4, and operational recovery accepts SST versions
-1 and 2. Manifest version 4 is reserved for the new-root-only independent-coalescing experiment; ordinary databases
-continue to emit version 3. New run publication selects SST version 2. All multibyte integers are unsigned big-endian.
+This document is normative for HEAD versions 1 and 2, commit-batch versions 1 and 2, and the
+column-family-manifest encodings. Each object kind advances its own version constant: the HEAD kind accepts
+versions 1 and 2, batch accepts versions 1 and 2, manifest accepts versions 1 through 4, and operational recovery
+accepts SST versions 1 and 2. Manifest version 4 is reserved for the new-root-only independent-coalescing
+experiment; ordinary databases continue to emit version 3. New run publication selects SST version 2. All
+multibyte integers are unsigned big-endian.
 Byte strings are length-prefixed and contain arbitrary bytes. No Ada record image or enumeration position is
 persisted.
 
@@ -80,9 +81,10 @@ Commit batches use magic `FLYBATC1`, kind code `2`, and a 156-byte header. The c
 | mutation count | 152 | 4 |
 
 The two transition identities are exact `(number, ID)` pairs. The expected number is nonzero and below the maximum;
-the publication number is its exact successor. A first batch has expected number equal to its writer epoch. Every
-later batch has expected number greater than its epoch. The first batch has an all-zero predecessor; every later batch
-names the exact prior reachable batch. Each transaction frame has a 32-byte prefix: idempotency ID (16 bytes), assigned
+the publication number is its exact successor. A first batch has expected number equal to its writer epoch. A later
+version-1 batch has expected number greater than its epoch. A later version-2 member may retain equality only while
+sharing the first cohort's transition. The first batch has an all-zero predecessor; every later batch names the exact
+prior reachable batch. Each transaction frame has a 32-byte prefix: idempotency ID (16 bytes), assigned
 sequence (8), mutation count (4), and exact byte length of all following mutation frames in that transaction (4). Each
 mutation frame has a 14-byte prefix: stable nonzero column-family ID (4), operation code (`1` for Put or `2` for
 Delete), zero flags (1), key length (4), and value length (4), followed by the exact key and value bytes. Delete has
@@ -105,11 +107,20 @@ or transition IDs disagree with the head that references it. Recovery validates 
 identity, sequence adjacency, and checksum before following it. Sequence decreases strictly during the backward walk,
 so a valid chain cannot cycle.
 
-The version-1 wire widths permit 32-bit counts and key/value lengths and a 64-bit payload length. The private SPARK
-reference codec remains deliberately small: at most 16 transactions, 64 mutations, 64 bytes per key, 256 bytes per
-value, 21,888 payload bytes, and 22,048 total bytes. These are reference/proof-instance limits, not production
-backpressure or wire-format changes. Its total image admission limit is checked before copying into the bounded
-representation. For an admitted image, exact extent,
+Version 2 keeps every version-1 offset and framing width. It is admitted only under the new-root-only
+`Independent_Coalescing` manifest profile and contains exactly one transaction whose transaction ID equals its batch
+ID. Adjacent version-2 batches belong to one publication cohort only when their ordinary previous-batch and sequence
+edges are contiguous and their complete expected/publication transition identities and writer epoch are equal. The
+live HEAD names the cohort's final batch and final sequence; earlier members carry no future final-member identity or
+persisted cohort count. Recovery walks backward from that final member and accepts the maximal exact same-transition
+version-2 prefix. A missing, swapped, duplicate, cross-profile, cross-database, noncontiguous, or invalid transition
+boundary fails closed. Standard-profile roots continue to emit and accept only version 1.
+
+The version-1 and version-2 wire widths permit 32-bit counts and key/value lengths and a 64-bit payload length. The
+private SPARK reference codec remains deliberately small: at most 16 transactions, 64 mutations, 64 bytes per key,
+256 bytes per value, 21,888 payload bytes, and 22,048 total bytes. These are reference/proof-instance limits, not
+production backpressure or wire-format changes. Its total image admission limit is checked before copying into the
+bounded representation. For an admitted image, exact extent,
 magic, version, kind, flags, database identity, and both checksums are checked before declared reader caps. A
 `Limit_Exceeded` result reports a declared reference-instance requirement; it does not certify transaction or mutation
 structure that the reader deliberately skipped. Corruption has separate results, and every decode failure returns an

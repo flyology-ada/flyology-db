@@ -18,10 +18,13 @@ chain; a missing, swapped, duplicated, cross-database, or noncontiguous member r
 ## Deliberate semantic boundary
 
 Pre-freeze behavior remains independent. Invalid, conflicting, cancelled, expired, or otherwise
-rejected work is removed before the cohort is frozen and does not reject another member. The first
-prototype does not admit finite-deadline operations into a cohort; those operations retain the
-current singleton path. Cancellation after existing coordinator admission retains the current
-Commit rule and cannot withdraw admitted work.
+rejected work is removed before the cohort is frozen and does not reject another member. The
+current model excludes finite-deadline operations. Before runtime activation, a reviewed model
+extension must decide whether such work fails unsupported or bypasses cohort waiting through a
+one-member version-2 publication; the compatibility layer does not choose silently. Cancellation
+after existing coordinator admission retains the current Commit rule and cannot withdraw admitted
+work. Explicit `Commit_Group` remains a standard-profile operation and is rejected under this
+independent-singleton experiment rather than being silently mixed into a transparent cohort.
 
 Once the single HEAD attempt begins, every frozen member necessarily shares that transition's
 success, unknown-response, or conclusive stale/precondition-rejection fate. One authoritative
@@ -85,3 +88,8 @@ The reserved persisted selector is checkpoint-manifest version 4 with profile co
 `Independent_Coalescing` selector. This records semantic compatibility without freezing a cohort
 width or admission delay. Those two values remain explicit private runtime experiment inputs and
 must be reported with every benchmark.
+
+The compatibility layer may decode an empty independent-profile root before the publication
+driver and durable-authority extension are enabled, but it rejects every `Commit` and
+`Commit_Group` without writing a batch or HEAD. Enabling publication is one later semantic unit;
+there is no mixed version-1 fallback for an independent-profile root.

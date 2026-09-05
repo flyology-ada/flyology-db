@@ -3225,6 +3225,26 @@ private
       Initial_Families      : Column_Family_Configuration_Array;
       Timeout               : Duration;
       Result                : out Outcome_Code);
+   type Test_Cohort_History_Case is
+     (Valid_Cohort_History,
+      Consecutive_Cohort_History,
+      Missing_Cohort_Member,
+      Swapped_Cohort_Link,
+      Cyclic_Cohort_Link,
+      Gapped_Cohort_Sequence,
+      Wrong_Cohort_Database,
+      Version_One_First_Member,
+      Version_One_Final_Member,
+      Discontinuous_Cohort_Transition,
+      Mismatched_Cohort_Head);
+   procedure Install_Test_Cohort_History
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Members               : Positive;
+      History_Case          : Test_Cohort_History_Case;
+      Result                : out Outcome_Code);
    procedure Install_Test_Unsupported_Head
      (Item          : in out Storage_Context;
       Database_ID   : Database_Identifier;

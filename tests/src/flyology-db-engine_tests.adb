@@ -1427,6 +1427,18 @@ package body Flyology.DB.Engine_Tests is
       --  Natural'Last is below U32'Last on the qualified runtime, so a
       --  representable one-over value does not exist in this campaign.
       Expect_Runtime (Golden, Success, "independent golden runtime decode");
+      declare
+         Cohort : Byte_Array := Golden;
+      begin
+         Cohort (Cohort'First + 9) := 2;
+         Cohort (Cohort'First + 171) := Cohort (Cohort'First + 67);
+         Repair_Checksums (Cohort);
+         Expect_Runtime (Cohort, Success, "coalesced singleton runtime decode");
+
+         Cohort (Cohort'First + 171) := Cohort (Cohort'First + 171) xor 1;
+         Repair_Checksums (Cohort);
+         Expect_Runtime (Cohort, Corrupt, "coalesced singleton identity mismatch");
+      end;
       Testing.Check_Runtime_Reference_Parity (Result);
       Expect (Result, Success, "generated operational/reference codec parity");
 
@@ -5434,13 +5446,185 @@ package body Flyology.DB.Engine_Tests is
 
    procedure Test_Recovery_Format_Edges (Backend : not null access Backends.Backend'Class) is
       Result : Outcome_Code;
+
+      procedure Run_Cohort_Recovery_Case
+        (Label_Text          : String;
+         Members             : Positive;
+         Independent_Profile : Boolean;
+         History_Case        : Test_Cohort_History_Case;
+         Expected            : Outcome_Code)
+      is
+         Context                                    : aliased Storage_Context;
+         Item                                       : Database;
+         Reader                                     : Transaction;
+         Create_Info                                : Create_Receipt;
+         Family                                     : Column_Family;
+         Data                                       : Value;
+         Batch_Before, Manifest_Before, Head_Before : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
+         Families                                   : constant Column_Family_Configuration_Array :=
+           [Configure_Test_Family (1, [16#63#], 8, 8)];
+      begin
+         Bind_Context (Context, Backend, Label_Text);
+         Create
+           (Item,
+            Context'Access,
+            DB_ID (230),
+            ID (231),
+            ID (232),
+            Default_Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, Label_Text & " root create failed");
+         Close (Item, Result);
+         Expect (Result, Success, Label_Text & " root close failed");
+         if Independent_Profile then
+            Testing.Rewrite_Manifest_Profile (Context, ID (231), DB_ID (230), Result);
+            Expect (Result, Success, Label_Text & " profile rewrite failed");
+         end if;
+         Testing.Install_Cohort_History
+           (Context, DB_ID (230), ID (231), ID (232), Members, History_Case, Result);
+         Expect (Result, Success, Label_Text & " cohort fixture installation failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Open (Item, Context'Access, DB_ID (230), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Expected, Label_Text & " recovery result");
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with Label_Text & " recovery changed object storage";
+         end if;
+         if Result = Success then
+            Open_Column_Family (Item, 1, Family, Result);
+            Expect (Result, Success, Label_Text & " recovered family did not open");
+            Begin_Transaction (Item, TX_ID (233), Reader, Result);
+            Expect (Result, Success, Label_Text & " reader begin failed");
+            for Index in Positive range 1 .. Members loop
+               Get (Item, Reader, Family, To_Key ([Byte (Index)]), Data, Result);
+               Expect (Result, Success, Label_Text & " recovered member was not visible");
+               if Data /= To_Value ([Byte (Index)]) then
+                  raise Program_Error with Label_Text & " recovered member value changed";
+               end if;
+            end loop;
+            Rollback (Reader, Result);
+            Expect (Result, Success, Label_Text & " reader rollback failed");
+            Close (Item, Result);
+            Expect (Result, Success, Label_Text & " recovered root close failed");
+         end if;
+      end Run_Cohort_Recovery_Case;
    begin
+      Run_Cohort_Recovery_Case ("cohort-v2-one", 1, True, Valid_Cohort_History, Success);
+      Run_Cohort_Recovery_Case ("cohort-v2-two", 2, True, Valid_Cohort_History, Success);
+      Run_Cohort_Recovery_Case ("cohort-v2-four", 4, True, Valid_Cohort_History, Success);
+      Run_Cohort_Recovery_Case ("cohort-v2-consecutive", 4, True, Consecutive_Cohort_History, Success);
+      Run_Cohort_Recovery_Case ("cohort-missing", 3, True, Missing_Cohort_Member, Corrupt);
+      Run_Cohort_Recovery_Case ("cohort-swapped", 3, True, Swapped_Cohort_Link, Corrupt);
+      Run_Cohort_Recovery_Case ("cohort-cycle", 2, True, Cyclic_Cohort_Link, Corrupt);
+      Run_Cohort_Recovery_Case ("cohort-gap", 2, True, Gapped_Cohort_Sequence, Corrupt);
+      Run_Cohort_Recovery_Case ("cohort-wrong-db", 2, True, Wrong_Cohort_Database, Corrupt);
+      Run_Cohort_Recovery_Case ("cohort-v1-first", 2, True, Version_One_First_Member, Corrupt);
+      Run_Cohort_Recovery_Case ("cohort-v1-final", 2, True, Version_One_Final_Member, Corrupt);
+      Run_Cohort_Recovery_Case ("cohort-transition", 2, True, Discontinuous_Cohort_Transition, Corrupt);
+      Run_Cohort_Recovery_Case ("cohort-head", 2, True, Mismatched_Cohort_Head, Corrupt);
+      Run_Cohort_Recovery_Case ("standard-rejects-v2", 1, False, Valid_Cohort_History, Corrupt);
+      Run_Cohort_Recovery_Case ("standard-v1", 1, False, Version_One_First_Member, Success);
+
       declare
-         Context     : aliased Storage_Context;
-         Item        : Database;
-         Create_Info : Create_Receipt;
-         Version     : Interfaces.Unsigned_16;
-         Families    : constant Column_Family_Configuration_Array :=
+         Context                                    : aliased Storage_Context;
+         Item                                       : Database;
+         Txn                                        : Transaction;
+         Reader                                     : Transaction;
+         Commit_Info                                : Commit_Receipt;
+         Flush_Info                                 : Flush_Receipt;
+         Create_Info                                : Create_Receipt;
+         Family                                     : Column_Family;
+         Data                                       : Value;
+         Batch_Before, Manifest_Before, Head_Before : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
+         Families                                   : constant Column_Family_Configuration_Array :=
+           [Configure_Test_Family (1, [16#70#], 8, 8)];
+         Runs                                       : constant Checkpoint_Run_Identity_Array :=
+           [Configure_Checkpoint_Run (1, ID (244))];
+      begin
+         Bind_Context (Context, Backend, "cohort-after-checkpoint");
+         Create
+           (Item,
+            Context'Access,
+            DB_ID (240),
+            ID (241),
+            ID (242),
+            Default_Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "checkpoint cohort root create failed");
+         Begin_Transaction (Item, TX_ID (243), Txn, Result);
+         Expect (Result, Success, "checkpoint cohort transaction begin failed");
+         Put (Item, Txn, 1, To_Key ([16#70#]), To_Value ([16#71#]), Result);
+         Expect (Result, Success, "checkpoint cohort mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Commit_Info, Result => Result);
+         Expect (Result, Success, "checkpoint cohort commit failed");
+         Flush
+           (Item, Runs, ID (245), ID (246), Test_Operation_Timeout, Receipt => Flush_Info, Result => Result);
+         Expect (Result, Success, "checkpoint cohort Flush failed");
+         Close (Item, Result);
+         Expect (Result, Success, "checkpoint cohort close failed");
+         Testing.Rewrite_Manifest_Profile (Context, ID (241), DB_ID (240), Result);
+         Expect (Result, Success, "checkpoint cohort root profile rewrite failed");
+         Testing.Rewrite_Manifest_Profile (Context, ID (245), DB_ID (240), Result);
+         Expect (Result, Success, "checkpoint cohort successor profile rewrite failed");
+         Testing.Install_Cohort_History
+           (Context, DB_ID (240), ID (245), ID (246), 2, Valid_Cohort_History, Result);
+         Expect (Result, Success, "checkpoint cohort fixture installation failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Open (Item, Context'Access, DB_ID (240), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "cohort after retained checkpoint did not reopen");
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "checkpoint cohort recovery changed object storage";
+         end if;
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "checkpoint cohort family did not open");
+         Begin_Transaction (Item, TX_ID (247), Reader, Result);
+         Expect (Result, Success, "checkpoint cohort reader begin failed");
+         Get (Item, Reader, Family, To_Key ([16#70#]), Data, Result);
+         Expect (Result, Success, "checkpoint cohort lost retained-checkpoint value");
+         if Data /= To_Value ([16#71#]) then
+            raise Program_Error with "checkpoint cohort changed retained-checkpoint value";
+         end if;
+         for Index in Positive range 1 .. 2 loop
+            Get (Item, Reader, Family, To_Key ([Byte (Index)]), Data, Result);
+            Expect (Result, Success, "checkpoint cohort suffix member was not visible");
+            if Data /= To_Value ([Byte (Index)]) then
+               raise Program_Error with "checkpoint cohort suffix member value changed";
+            end if;
+         end loop;
+         Rollback (Reader, Result);
+         Expect (Result, Success, "checkpoint cohort reader rollback failed");
+         Close (Item, Result);
+         Expect (Result, Success, "checkpoint cohort recovered root close failed");
+      end;
+
+      declare
+         Context                                    : aliased Storage_Context;
+         Item                                       : Database;
+         Txn                                        : Transaction;
+         Group                                      : Transaction_Array (1 .. 2);
+         Receipt                                    : Commit_Receipt;
+         Receipts                                   : Commit_Receipt_Array (Group'Range);
+         Create_Info                                : Create_Receipt;
+         Family                                     : Column_Family;
+         Batch_Before, Manifest_Before, Head_Before : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
+         Version                                    : Interfaces.Unsigned_16;
+         Families                                   : constant Column_Family_Configuration_Array :=
            [Configure_Test_Family (1, [16#76#, 16#34#], 8, 8)];
       begin
          Bind_Context (Context, Backend, "open-v4-profile-root");
@@ -5467,8 +5651,60 @@ package body Flyology.DB.Engine_Tests is
          end if;
          Open (Item, Context'Access, DB_ID (210), Test_Operation_Timeout, Result => Result);
          Expect (Result, Success, "profile-v4 root did not reopen through the widest header path");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "profile-v4 root family did not open");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Begin_Transaction (Item, TX_ID (216), Txn, Result);
+         Expect (Result, Success, "profile-v4 singleton begin failed");
+         Put (Item, Txn, Family, To_Key ([1]), To_Value ([2]), Result);
+         Expect (Result, Success, "profile-v4 singleton mutation failed");
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Unsupported_Format, "profile-v4 singleton reached the version-1 publisher");
+         if Receipt_Outcome (Receipt) /= Unsupported_Format
+           or else Receipt_Transaction_ID (Receipt) /= TX_ID (216)
+           or else Receipt_Batch_ID (Receipt) /= ID (216)
+           or else Commit_Resolution_Authority_Length (Receipt) /= 0
+         then
+            raise Program_Error with "profile-v4 singleton lost its admitted failure identity";
+         end if;
+         Rollback (Txn, Result);
+         Expect (Result, Invalid_State, "profile-v4 singleton transaction remained active");
+
+         for Index in Group'Range loop
+            Begin_Transaction (Item, TX_ID (216 + Byte (Index)), Group (Index), Result);
+            Expect (Result, Success, "profile-v4 explicit-group begin failed");
+            Put (Item, Group (Index), Family, To_Key ([Byte (Index + 2)]), To_Value ([3]), Result);
+            Expect (Result, Success, "profile-v4 explicit-group mutation failed");
+         end loop;
+         Commit_Group (Item, ID (219), Group, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
+         Expect (Result, Unsupported_Format, "profile-v4 explicit group reached the version-1 publisher");
+         for Index in Group'Range loop
+            if Receipt_Outcome (Receipts (Index)) /= Unsupported_Format
+              or else Receipt_Transaction_ID (Receipts (Index)) /= TX_ID (216 + Byte (Index))
+              or else Receipt_Batch_ID (Receipts (Index)) /= ID (219)
+              or else Commit_Resolution_Authority_Length (Receipts (Index)) /= 0
+            then
+               raise Program_Error with "profile-v4 group lost an admitted failure identity";
+            end if;
+            Rollback (Group (Index), Result);
+            Expect (Result, Invalid_State, "profile-v4 group transaction remained active");
+         end loop;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "profile-v4 rejected writes changed object storage";
+         end if;
          Close (Item, Result);
          Expect (Result, Success, "profile-v4 reopened root did not close");
+         Open (Item, Context'Access, DB_ID (210), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "profile-v4 rejected-write root did not reopen");
+         if Visible (Item) /= 0 then
+            raise Program_Error with "profile-v4 rejected writes became visible after reopen";
+         end if;
+         Close (Item, Result);
+         Expect (Result, Success, "profile-v4 rejected-write root did not close");
       end;
 
       declare
@@ -10290,10 +10526,10 @@ package body Flyology.DB.Engine_Tests is
       declare
          --  Memory-backend test capacity: four buckets, the established 512-object
          --  corpus, ten durable-authority fixture keys, and eleven exact
-         --  coalescing-profile compatibility keys. Eight million bytes cover the
-         --  complete deterministic engine corpus while retaining explicit backend
-         --  backpressure.
-         Store : aliased Memory.Store (4, 533, 8_000_000);
+         --  coalescing-profile keys plus 69 version-2 recovery-matrix objects.
+         --  Eight million bytes cover the complete deterministic engine corpus
+         --  while retaining explicit backend backpressure.
+         Store : aliased Memory.Store (4, 602, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then

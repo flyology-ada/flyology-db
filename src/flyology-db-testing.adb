@@ -187,6 +187,19 @@ package body Flyology.DB.Testing is
         (Item, Database_ID, Manifest_ID, Initial_Transition_ID, Limits, Initial_Families, Timeout, Result);
    end Install_V1_Root;
 
+   procedure Install_Cohort_History
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Members               : Positive;
+      History_Case          : Test_Cohort_History_Case;
+      Result                : out Outcome_Code) is
+   begin
+      Install_Test_Cohort_History
+        (Item, Database_ID, Manifest_ID, Initial_Transition_ID, Members, History_Case, Result);
+   end Install_Cohort_History;
+
    procedure Install_Unsupported_Head
      (Item          : in out Storage_Context;
       Database_ID   : Database_Identifier;

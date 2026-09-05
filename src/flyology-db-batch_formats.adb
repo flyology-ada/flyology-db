@@ -12,57 +12,46 @@ is
 
    --  Frozen batch-v1 magic and kind; changes are wire-incompatible.
    Magic : constant Formats.Byte_Array (0 .. 7) :=
-     [Character'Pos ('F'), Character'Pos ('L'), Character'Pos ('Y'), Character'Pos ('B'),
-      Character'Pos ('A'), Character'Pos ('T'), Character'Pos ('C'), Character'Pos ('1')];
+     [Character'Pos ('F'),
+      Character'Pos ('L'),
+      Character'Pos ('Y'),
+      Character'Pos ('B'),
+      Character'Pos ('A'),
+      Character'Pos ('T'),
+      Character'Pos ('C'),
+      Character'Pos ('1')];
 
-   Batch_Kind : constant Formats.Byte := 2;
+   Batch_Kind                : constant Formats.Byte := 2;
    --  Derived largest reference mutation frame: frozen prefix plus maintained
    --  reference key/value dimensions; it is not an operational payload limit.
-   Max_Mutation_Image_Length : constant :=
-     Mutation_Frame_Header_Length + Max_Key_Bytes + Max_Value_Bytes;
+   Max_Mutation_Image_Length : constant := Mutation_Frame_Header_Length + Max_Key_Bytes + Max_Value_Bytes;
 
    procedure Put_U16
-     (Image    : in out Batch_Image;
-      Position : Batch_Image_Index;
-      Value    : Interfaces.Unsigned_16)
+     (Image : in out Batch_Image; Position : Batch_Image_Index; Value : Interfaces.Unsigned_16)
    with Pre => Position <= Batch_Image_Index'Last - 1;
 
    procedure Put_U32
-     (Image    : in out Batch_Image;
-      Position : Batch_Image_Index;
-      Value    : Interfaces.Unsigned_32)
+     (Image : in out Batch_Image; Position : Batch_Image_Index; Value : Interfaces.Unsigned_32)
    with Pre => Position <= Batch_Image_Index'Last - 3;
 
    procedure Put_U64
-     (Image    : in out Batch_Image;
-      Position : Batch_Image_Index;
-      Value    : Interfaces.Unsigned_64)
+     (Image : in out Batch_Image; Position : Batch_Image_Index; Value : Interfaces.Unsigned_64)
    with Pre => Position <= Batch_Image_Index'Last - 7;
 
-   function Read_U16
-     (Image    : Batch_Image;
-      Position : Batch_Image_Index) return Interfaces.Unsigned_16
+   function Read_U16 (Image : Batch_Image; Position : Batch_Image_Index) return Interfaces.Unsigned_16
    with Pre => Position <= Batch_Image_Index'Last - 1;
 
-   function Read_U32
-     (Image    : Batch_Image;
-      Position : Batch_Image_Index) return Interfaces.Unsigned_32
+   function Read_U32 (Image : Batch_Image; Position : Batch_Image_Index) return Interfaces.Unsigned_32
    with Pre => Position <= Batch_Image_Index'Last - 3;
 
-   function Read_U64
-     (Image    : Batch_Image;
-      Position : Batch_Image_Index) return Interfaces.Unsigned_64
+   function Read_U64 (Image : Batch_Image; Position : Batch_Image_Index) return Interfaces.Unsigned_64
    with Pre => Position <= Batch_Image_Index'Last - 7;
 
    procedure Put_Identifier
-     (Image    : in out Batch_Image;
-      Position : Batch_Image_Index;
-      Value    : Head_Policy.Identifier)
+     (Image : in out Batch_Image; Position : Batch_Image_Index; Value : Head_Policy.Identifier)
    with Pre => Position <= Batch_Image_Index'Last - Head_Policy.Identifier_Length + 1;
 
-   function Read_Identifier
-     (Image    : Batch_Image;
-      Position : Batch_Image_Index) return Head_Policy.Identifier
+   function Read_Identifier (Image : Batch_Image; Position : Batch_Image_Index) return Head_Policy.Identifier
    with Pre => Position <= Batch_Image_Index'Last - Head_Policy.Identifier_Length + 1;
 
    function Header_Checksum (Image : Batch_Image) return Interfaces.Unsigned_32;
@@ -78,48 +67,30 @@ is
       Valid   : out Boolean)
    with
      Post =>
-       (if Valid then Result <= Maximum and then Interfaces.Unsigned_32 (Result) = Wire
-        else Result = 0);
+       (if Valid then Result <= Maximum and then Interfaces.Unsigned_32 (Result) = Wire else Result = 0);
 
    procedure Decode_Extent
-     (Wire    : Interfaces.Unsigned_32;
-      Maximum : Payload_Count;
-      Result  : out Payload_Count;
-      Valid   : out Boolean)
+     (Wire : Interfaces.Unsigned_32; Maximum : Payload_Count; Result : out Payload_Count; Valid : out Boolean)
    with
      Post =>
-       (if Valid then Result <= Maximum and then Interfaces.Unsigned_32 (Result) = Wire
-        else Result = 0);
+       (if Valid then Result <= Maximum and then Interfaces.Unsigned_32 (Result) = Wire else Result = 0);
 
-   procedure Copy_Key
-     (Image  : Batch_Image;
-      Start  : Natural;
-      Count  : Key_Length;
-      Target : in out Key_Bytes)
+   procedure Copy_Key (Image : Batch_Image; Start : Natural; Count : Key_Length; Target : in out Key_Bytes)
    with Pre => Start <= Max_Batch_Image_Length - Count;
 
    procedure Copy_Value
-     (Image  : Batch_Image;
-      Start  : Natural;
-      Count  : Value_Length;
-      Target : in out Value_Bytes)
+     (Image : Batch_Image; Start : Natural; Count : Value_Length; Target : in out Value_Bytes)
    with Pre => Start <= Max_Batch_Image_Length - Count;
 
    procedure Put_U16
-     (Image    : in out Batch_Image;
-      Position : Batch_Image_Index;
-      Value    : Interfaces.Unsigned_16)
-   is
+     (Image : in out Batch_Image; Position : Batch_Image_Index; Value : Interfaces.Unsigned_16) is
    begin
       Image (Position) := Formats.Byte (Interfaces.Shift_Right (Value, 8) and 16#FF#);
       Image (Position + 1) := Formats.Byte (Value and 16#FF#);
    end Put_U16;
 
    procedure Put_U32
-     (Image    : in out Batch_Image;
-      Position : Batch_Image_Index;
-      Value    : Interfaces.Unsigned_32)
-   is
+     (Image : in out Batch_Image; Position : Batch_Image_Index; Value : Interfaces.Unsigned_32) is
    begin
       for Offset in Natural range 0 .. 3 loop
          Image (Position + Offset) :=
@@ -128,10 +99,7 @@ is
    end Put_U32;
 
    procedure Put_U64
-     (Image    : in out Batch_Image;
-      Position : Batch_Image_Index;
-      Value    : Interfaces.Unsigned_64)
-   is
+     (Image : in out Batch_Image; Position : Batch_Image_Index; Value : Interfaces.Unsigned_64) is
    begin
       for Offset in Natural range 0 .. 7 loop
          Image (Position + Offset) :=
@@ -139,55 +107,40 @@ is
       end loop;
    end Put_U64;
 
-   function Read_U16
-     (Image    : Batch_Image;
-      Position : Batch_Image_Index) return Interfaces.Unsigned_16
-   is
+   function Read_U16 (Image : Batch_Image; Position : Batch_Image_Index) return Interfaces.Unsigned_16 is
    begin
-      return Interfaces.Shift_Left (Interfaces.Unsigned_16 (Image (Position)), 8)
+      return
+        Interfaces.Shift_Left (Interfaces.Unsigned_16 (Image (Position)), 8)
         or Interfaces.Unsigned_16 (Image (Position + 1));
    end Read_U16;
 
-   function Read_U32
-     (Image    : Batch_Image;
-      Position : Batch_Image_Index) return Interfaces.Unsigned_32
-   is
+   function Read_U32 (Image : Batch_Image; Position : Batch_Image_Index) return Interfaces.Unsigned_32 is
       Result : Interfaces.Unsigned_32 := 0;
    begin
       for Offset in Natural range 0 .. 3 loop
-         Result := Interfaces.Shift_Left (Result, 8)
-           or Interfaces.Unsigned_32 (Image (Position + Offset));
+         Result := Interfaces.Shift_Left (Result, 8) or Interfaces.Unsigned_32 (Image (Position + Offset));
       end loop;
       return Result;
    end Read_U32;
 
-   function Read_U64
-     (Image    : Batch_Image;
-      Position : Batch_Image_Index) return Interfaces.Unsigned_64
-   is
+   function Read_U64 (Image : Batch_Image; Position : Batch_Image_Index) return Interfaces.Unsigned_64 is
       Result : Interfaces.Unsigned_64 := 0;
    begin
       for Offset in Natural range 0 .. 7 loop
-         Result := Interfaces.Shift_Left (Result, 8)
-           or Interfaces.Unsigned_64 (Image (Position + Offset));
+         Result := Interfaces.Shift_Left (Result, 8) or Interfaces.Unsigned_64 (Image (Position + Offset));
       end loop;
       return Result;
    end Read_U64;
 
    procedure Put_Identifier
-     (Image    : in out Batch_Image;
-      Position : Batch_Image_Index;
-      Value    : Head_Policy.Identifier)
-   is
+     (Image : in out Batch_Image; Position : Batch_Image_Index; Value : Head_Policy.Identifier) is
    begin
       for Index in Head_Policy.Identifier_Index loop
          Image (Position + (Index - Head_Policy.Identifier_Index'First)) := Value (Index);
       end loop;
    end Put_Identifier;
 
-   function Read_Identifier
-     (Image    : Batch_Image;
-      Position : Batch_Image_Index) return Head_Policy.Identifier
+   function Read_Identifier (Image : Batch_Image; Position : Batch_Image_Index) return Head_Policy.Identifier
    is
       Result : Head_Policy.Identifier;
    begin
@@ -198,8 +151,7 @@ is
    end Read_Identifier;
 
    function Header_Checksum (Image : Batch_Image) return Interfaces.Unsigned_32 is
-      Header : Formats.Byte_Array (0 .. Batch_Header_Length - 1) :=
-        Image (0 .. Batch_Header_Length - 1);
+      Header : Formats.Byte_Array (0 .. Batch_Header_Length - 1) := Image (0 .. Batch_Header_Length - 1);
    begin
       --  Common-envelope bytes 40..43 are the frozen header CRC field.
       Header (40 .. 43) := [others => 0];
@@ -208,9 +160,7 @@ is
 
    function Same_Key (Left, Right : Mutation) return Boolean is
    begin
-      if Left.Column_Family /= Right.Column_Family
-        or else Left.Key_Size /= Right.Key_Size
-      then
+      if Left.Column_Family /= Right.Column_Family or else Left.Key_Size /= Right.Key_Size then
          return False;
       end if;
 
@@ -226,8 +176,7 @@ is
      (Wire    : Interfaces.Unsigned_32;
       Maximum : Mutation_Count;
       Result  : out Mutation_Count;
-      Valid   : out Boolean)
-   is
+      Valid   : out Boolean) is
    begin
       if Wire <= Interfaces.Unsigned_32 (Maximum) then
          Result := Mutation_Count (Wire);
@@ -239,10 +188,7 @@ is
    end Decode_Mutation_Count;
 
    procedure Decode_Extent
-     (Wire    : Interfaces.Unsigned_32;
-      Maximum : Payload_Count;
-      Result  : out Payload_Count;
-      Valid   : out Boolean)
+     (Wire : Interfaces.Unsigned_32; Maximum : Payload_Count; Result : out Payload_Count; Valid : out Boolean)
    is
    begin
       if Wire <= Interfaces.Unsigned_32 (Maximum) then
@@ -254,12 +200,7 @@ is
       end if;
    end Decode_Extent;
 
-   procedure Copy_Key
-     (Image  : Batch_Image;
-      Start  : Natural;
-      Count  : Key_Length;
-      Target : in out Key_Bytes)
-   is
+   procedure Copy_Key (Image : Batch_Image; Start : Natural; Count : Key_Length; Target : in out Key_Bytes) is
    begin
       for Index in Positive range 1 .. Count loop
          Target (Index) := Image (Start + (Index - 1));
@@ -267,11 +208,7 @@ is
    end Copy_Key;
 
    procedure Copy_Value
-     (Image  : Batch_Image;
-      Start  : Natural;
-      Count  : Value_Length;
-      Target : in out Value_Bytes)
-   is
+     (Image : Batch_Image; Start : Natural; Count : Value_Length; Target : in out Value_Bytes) is
    begin
       for Index in Positive range 1 .. Count loop
          Target (Index) := Image (Start + (Index - 1));
@@ -281,12 +218,12 @@ is
    function Structurally_Valid (Value : Commit_Batch) return Boolean is
       Next_Mutation : Natural := 1;
    begin
-      if Head_Policy.Is_Zero (Value.Database_ID)
+      if Value.Format_Version not in Batch_Format_Version | Cohort_Batch_Format_Version
+        or else Head_Policy.Is_Zero (Value.Database_ID)
         or else Value.Epoch = 0
         or else Head_Policy.Is_Zero (Value.Batch_ID)
-        or else
-          (not Head_Policy.Is_Zero (Value.Previous_Batch_ID)
-           and then Value.Batch_ID = Value.Previous_Batch_ID)
+        or else (not Head_Policy.Is_Zero (Value.Previous_Batch_ID)
+                 and then Value.Batch_ID = Value.Previous_Batch_ID)
         or else Head_Policy.Is_Zero (Value.Expected_Transition_ID)
         or else Head_Policy.Is_Zero (Value.Publication_Transition_ID)
         or else Value.Expected_Transition_ID = Value.Publication_Transition_ID
@@ -297,29 +234,39 @@ is
         or else Value.Transaction_Total = 0
         or else Value.Mutation_Total = 0
         or else Interfaces.Unsigned_64 (Value.Last_Sequence - Value.First_Sequence) + 1
-          /= Interfaces.Unsigned_64 (Value.Transaction_Total)
-        or else
-          (Head_Policy.Is_Zero (Value.Previous_Batch_ID) /= (Value.First_Sequence = 1))
-        or else
-          (if Value.First_Sequence = 1 then
-             Interfaces.Unsigned_64 (Value.Expected_Transition_Number) /=
-               Interfaces.Unsigned_64 (Value.Epoch)
-           else
-             Interfaces.Unsigned_64 (Value.Expected_Transition_Number) <=
-               Interfaces.Unsigned_64 (Value.Epoch))
+                /= Interfaces.Unsigned_64 (Value.Transaction_Total)
+        or else (Head_Policy.Is_Zero (Value.Previous_Batch_ID) /= (Value.First_Sequence = 1))
+        or else (if Value.First_Sequence = 1
+                 then
+                   Interfaces.Unsigned_64 (Value.Expected_Transition_Number)
+                   /= Interfaces.Unsigned_64 (Value.Epoch)
+                 elsif Value.Format_Version = Cohort_Batch_Format_Version
+                 then
+                   Interfaces.Unsigned_64 (Value.Expected_Transition_Number)
+                   < Interfaces.Unsigned_64 (Value.Epoch)
+                 else
+                   Interfaces.Unsigned_64 (Value.Expected_Transition_Number)
+                   <= Interfaces.Unsigned_64 (Value.Epoch))
+      then
+         return False;
+      end if;
+
+      if Value.Format_Version = Cohort_Batch_Format_Version
+        and then (Value.Transaction_Total /= 1
+                  or else Value.First_Sequence /= Value.Last_Sequence
+                  or else Value.Batch_ID /= Value.Transactions (1).Transaction_ID)
       then
          return False;
       end if;
 
       for Transaction_Index in Transaction_Slot range 1 .. Value.Transaction_Total loop
-         pragma Loop_Invariant
-           (Next_Mutation in 1 .. Value.Mutation_Total + 1);
+         pragma Loop_Invariant (Next_Mutation in 1 .. Value.Mutation_Total + 1);
          declare
             Item : Transaction renames Value.Transactions (Transaction_Index);
          begin
             if Head_Policy.Is_Zero (Item.Transaction_ID)
-              or else Item.Sequence /=
-                Value.First_Sequence + Head_Policy.Commit_Sequence (Transaction_Index - 1)
+              or else Item.Sequence
+                      /= Value.First_Sequence + Head_Policy.Commit_Sequence (Transaction_Index - 1)
               or else Item.Mutations = 0
               or else Next_Mutation > Value.Mutation_Total
               or else Item.First_Mutation /= Next_Mutation
@@ -335,8 +282,7 @@ is
             end loop;
 
             for Offset in Natural range 0 .. Item.Mutations - 1 loop
-               pragma Loop_Invariant
-               (Next_Mutation + Offset <= Value.Mutation_Total);
+               pragma Loop_Invariant (Next_Mutation + Offset <= Value.Mutation_Total);
                declare
                   --  Derived active mutation slot from the transaction's first
                   --  validated slot and local offset; no extra count is chosen.
@@ -350,11 +296,8 @@ is
                   end if;
 
                   for Earlier in Natural range 0 .. Offset - 1 loop
-                     pragma Loop_Invariant
-                       (Next_Mutation + Earlier <= Value.Mutation_Total);
-                     if Same_Key
-                       (Value.Mutations (Mutation_Slot (Next_Mutation + Earlier)), Change)
-                     then
+                     pragma Loop_Invariant (Next_Mutation + Earlier <= Value.Mutation_Total);
+                     if Same_Key (Value.Mutations (Mutation_Slot (Next_Mutation + Earlier)), Change) then
                         return False;
                      end if;
                   end loop;
@@ -370,7 +313,7 @@ is
    function Encoded_Length (Value : Commit_Batch) return Natural is
       --  Derived exact fixed framing from the frozen object/transaction/mutation
       --  widths and the batch's validated active counts; payload follows below.
-      Base   : constant Natural :=
+      Base      : constant Natural :=
         ((Batch_Header_Length + Batch_Trailer_Length)
          + Value.Transaction_Total * Transaction_Frame_Header_Length)
         + Value.Mutation_Total * Mutation_Frame_Header_Length;
@@ -380,36 +323,27 @@ is
       for Index in Mutation_Slot range 1 .. Value.Mutation_Total loop
          pragma Loop_Invariant (Processed = Index - 1);
          pragma Loop_Invariant (Result >= Base);
-         pragma Loop_Invariant
-           (Result <= Base + Processed * (Max_Key_Bytes + Max_Value_Bytes));
-         Result := Result
-           + (Value.Mutations (Index).Key_Size + Value.Mutations (Index).Value_Size);
+         pragma Loop_Invariant (Result <= Base + Processed * (Max_Key_Bytes + Max_Value_Bytes));
+         Result := Result + (Value.Mutations (Index).Key_Size + Value.Mutations (Index).Value_Size);
          Processed := Processed + 1;
       end loop;
       pragma Assert (Processed = Value.Mutation_Total);
-      pragma Assert
-        (Base + Processed * (Max_Key_Bytes + Max_Value_Bytes) <= Max_Batch_Image_Length);
+      pragma Assert (Base + Processed * (Max_Key_Bytes + Max_Value_Bytes) <= Max_Batch_Image_Length);
       pragma Assert (Result >= Batch_Header_Length + Batch_Trailer_Length);
       pragma Assert (Result <= Max_Batch_Image_Length);
       return Result;
    end Encoded_Length;
 
-   procedure Encode_Mutation
-     (Change : Mutation;
-      Image  : in out Batch_Image;
-      Cursor : in out Natural)
+   procedure Encode_Mutation (Change : Mutation; Image : in out Batch_Image; Cursor : in out Natural)
    with
-     Pre => Cursor <= Max_Batch_Image_Length
-       - (Mutation_Frame_Header_Length + (Change.Key_Size + Change.Value_Size)),
-     Post => Cursor = Cursor'Old
-       + (Mutation_Frame_Header_Length + (Change.Key_Size + Change.Value_Size))
+     Pre  =>
+       Cursor
+       <= Max_Batch_Image_Length - (Mutation_Frame_Header_Length + (Change.Key_Size + Change.Value_Size)),
+     Post =>
+       Cursor = Cursor'Old + (Mutation_Frame_Header_Length + (Change.Key_Size + Change.Value_Size))
        and then Cursor <= Max_Batch_Image_Length;
 
-   procedure Encode_Mutation
-     (Change : Mutation;
-      Image  : in out Batch_Image;
-      Cursor : in out Natural)
-   is
+   procedure Encode_Mutation (Change : Mutation; Image : in out Batch_Image; Cursor : in out Natural) is
       Data_Start : Natural;
    begin
       Put_U32 (Image, Batch_Image_Index (Cursor), Change.Column_Family);
@@ -434,18 +368,22 @@ is
       Image             : in out Batch_Image;
       Cursor            : in out Natural)
    with
-     Pre => Transaction_Index <= Value.Transaction_Total
+     Pre  =>
+       Transaction_Index <= Value.Transaction_Total
        and then Value.Transactions (Transaction_Index).First_Mutation > 0
        and then Value.Transactions (Transaction_Index).Mutations > 0
-       and then Value.Transactions (Transaction_Index).First_Mutation <=
-         (Max_Mutations - Value.Transactions (Transaction_Index).Mutations) + 1
-       and then Cursor <= Max_Batch_Image_Length
-         - (Transaction_Frame_Header_Length
-            + Value.Transactions (Transaction_Index).Mutations * Max_Mutation_Image_Length),
-     Post => Cursor >= Cursor'Old
-       and then Cursor <= Cursor'Old
-         + (Transaction_Frame_Header_Length
-            + Value.Transactions (Transaction_Index).Mutations * Max_Mutation_Image_Length);
+       and then Value.Transactions (Transaction_Index).First_Mutation
+                <= (Max_Mutations - Value.Transactions (Transaction_Index).Mutations) + 1
+       and then Cursor
+                <= Max_Batch_Image_Length
+                   - (Transaction_Frame_Header_Length
+                      + Value.Transactions (Transaction_Index).Mutations * Max_Mutation_Image_Length),
+     Post =>
+       Cursor >= Cursor'Old
+       and then Cursor
+                <= Cursor'Old
+                   + (Transaction_Frame_Header_Length
+                      + Value.Transactions (Transaction_Index).Mutations * Max_Mutation_Image_Length);
 
    procedure Encode_Transaction
      (Value             : Commit_Batch;
@@ -458,13 +396,12 @@ is
       Data_Start  : Natural;
    begin
       for Offset in Natural range 0 .. Item.Mutations - 1 loop
-         pragma Loop_Invariant
-           (Body_Length <= Offset * Max_Mutation_Image_Length);
+         pragma Loop_Invariant (Body_Length <= Offset * Max_Mutation_Image_Length);
          declare
             Change : Mutation renames Value.Mutations (Mutation_Slot (Item.First_Mutation + Offset));
          begin
-            Body_Length := Body_Length
-              + (Mutation_Frame_Header_Length + (Change.Key_Size + Change.Value_Size));
+            Body_Length :=
+              Body_Length + (Mutation_Frame_Header_Length + (Change.Key_Size + Change.Value_Size));
          end;
       end loop;
 
@@ -477,18 +414,13 @@ is
 
       for Offset in Natural range 0 .. Item.Mutations - 1 loop
          pragma Loop_Invariant (Cursor >= Data_Start);
-         pragma Loop_Invariant
-           (Cursor <= Data_Start + Offset * Max_Mutation_Image_Length);
-         Encode_Mutation
-           (Value.Mutations (Mutation_Slot (Item.First_Mutation + Offset)), Image, Cursor);
+         pragma Loop_Invariant (Cursor <= Data_Start + Offset * Max_Mutation_Image_Length);
+         Encode_Mutation (Value.Mutations (Mutation_Slot (Item.First_Mutation + Offset)), Image, Cursor);
       end loop;
    end Encode_Transaction;
 
    procedure Encode_Batch
-     (Value  : Commit_Batch;
-      Image  : out Batch_Image;
-      Length : out Natural;
-      Status : out Encode_Status)
+     (Value : Commit_Batch; Image : out Batch_Image; Length : out Natural; Status : out Encode_Status)
    is
       Object_Length : Natural;
       Cursor        : Natural := Batch_Header_Length;
@@ -504,15 +436,13 @@ is
       --  Frozen batch-v1 header map: envelope 0..43, epoch/IDs/counters 44..147,
       --  transaction/mutation counts 148..155, then framed body and trailer.
       Image (0 .. 7) := Magic;
-      Put_U16 (Image, 8, Batch_Format_Version);
+      Put_U16 (Image, 8, Value.Format_Version);
       Image (10) := Batch_Kind;
       Image (11) := 0;
       Put_Identifier (Image, 12, Value.Database_ID);
       Put_U32 (Image, 28, Interfaces.Unsigned_32 (Batch_Header_Length));
       Put_U64
-        (Image, 32,
-         Interfaces.Unsigned_64
-           (Object_Length - (Batch_Header_Length + Batch_Trailer_Length)));
+        (Image, 32, Interfaces.Unsigned_64 (Object_Length - (Batch_Header_Length + Batch_Trailer_Length)));
       Put_U64 (Image, 44, Interfaces.Unsigned_64 (Value.Epoch));
       Put_Identifier (Image, 52, Value.Batch_ID);
       Put_Identifier (Image, 68, Value.Previous_Batch_ID);
@@ -529,15 +459,16 @@ is
       for Transaction_Index in Transaction_Slot range 1 .. Value.Transaction_Total loop
          if Value.Transactions (Transaction_Index).First_Mutation = 0
            or else Value.Transactions (Transaction_Index).Mutations = 0
-           or else Value.Transactions (Transaction_Index).First_Mutation >
-             (Max_Mutations - Value.Transactions (Transaction_Index).Mutations) + 1
+           or else Value.Transactions (Transaction_Index).First_Mutation
+                   > (Max_Mutations - Value.Transactions (Transaction_Index).Mutations) + 1
          then
             Image := [others => 0];
             Status := Invalid_Value;
             return;
-         elsif Cursor > Max_Batch_Image_Length
-           - (Transaction_Frame_Header_Length
-              + Value.Transactions (Transaction_Index).Mutations * Max_Mutation_Image_Length)
+         elsif Cursor
+           > Max_Batch_Image_Length
+             - (Transaction_Frame_Header_Length
+                + Value.Transactions (Transaction_Index).Mutations * Max_Mutation_Image_Length)
          then
             Image := [others => 0];
             Status := Invalid_Value;
@@ -560,12 +491,10 @@ is
       Status := Encoded;
    end Encode_Batch;
 
-   function Published_By
-     (Value            : Commit_Batch;
-      Referencing_Head : Head_Policy.Head_State) return Boolean
-   is
+   function Published_By (Value : Commit_Batch; Referencing_Head : Head_Policy.Head_State) return Boolean is
    begin
-      return Head_Policy.Structurally_Valid (Referencing_Head)
+      return
+        Head_Policy.Structurally_Valid (Referencing_Head)
         and then Structurally_Valid (Value)
         and then Referencing_Head.Database_ID = Value.Database_ID
         and then Referencing_Head.Epoch = Value.Epoch
@@ -576,10 +505,7 @@ is
         and then Referencing_Head.Highest_Visible = Value.Last_Sequence;
    end Published_By;
 
-   function Valid_Predecessor
-     (Current  : Commit_Batch;
-      Previous : Commit_Batch) return Boolean
-   is
+   function Valid_Predecessor (Current : Commit_Batch; Previous : Commit_Batch) return Boolean is
    begin
       if not Structurally_Valid (Current)
         or else not Structurally_Valid (Previous)
@@ -589,9 +515,14 @@ is
         or else Previous.Last_Sequence = Head_Policy.Commit_Sequence'Last
         or else Current.First_Sequence /= Previous.Last_Sequence + 1
         or else Current.Epoch < Previous.Epoch
-        or else Current.Expected_Transition_Number < Previous.Publication_Transition_Number
+        or else (not Shares_Publication_Cohort (Current, Previous)
+                 and then Current.Expected_Transition_Number < Previous.Publication_Transition_Number)
       then
          return False;
+      end if;
+
+      if Shares_Publication_Cohort (Current, Previous) then
+         return True;
       end if;
 
       declare
@@ -600,35 +531,58 @@ is
          Ordinal_Gap : constant Interfaces.Unsigned_64 :=
            Interfaces.Unsigned_64
              (Current.Expected_Transition_Number - Previous.Publication_Transition_Number);
-         Epoch_Gap : constant Interfaces.Unsigned_64 :=
+         Epoch_Gap   : constant Interfaces.Unsigned_64 :=
            Interfaces.Unsigned_64 (Current.Epoch - Previous.Epoch);
       begin
-         return Epoch_Gap <= Ordinal_Gap
-           and then
-             (if Ordinal_Gap = 0 then
-                Current.Expected_Transition_ID = Previous.Publication_Transition_ID
-              elsif Ordinal_Gap = 1 then
-                Current.Expected_Transition_ID /= Previous.Publication_Transition_ID);
+         return
+           Epoch_Gap <= Ordinal_Gap
+           and then (if Ordinal_Gap = 0
+                     then Current.Expected_Transition_ID = Previous.Publication_Transition_ID
+                     elsif Ordinal_Gap = 1
+                     then Current.Expected_Transition_ID /= Previous.Publication_Transition_ID);
       end;
    end Valid_Predecessor;
 
-   procedure Decode_Batch
+   function Shares_Publication_Cohort (Current : Commit_Batch; Previous : Commit_Batch) return Boolean is
+   begin
+      return
+        Structurally_Valid (Current)
+        and then Structurally_Valid (Previous)
+        and then Current.Format_Version = Cohort_Batch_Format_Version
+        and then Previous.Format_Version = Cohort_Batch_Format_Version
+        and then Current.Database_ID = Previous.Database_ID
+        and then Current.Epoch = Previous.Epoch
+        and then Current.Previous_Batch_ID = Previous.Batch_ID
+        and then Previous.Last_Sequence < Head_Policy.Commit_Sequence'Last
+        and then Current.First_Sequence = Previous.Last_Sequence + 1
+        and then Current.Expected_Transition_ID = Previous.Expected_Transition_ID
+        and then Current.Expected_Transition_Number = Previous.Expected_Transition_Number
+        and then Current.Publication_Transition_ID = Previous.Publication_Transition_ID
+        and then Current.Publication_Transition_Number = Previous.Publication_Transition_Number;
+   end Shares_Publication_Cohort;
+
+   procedure Decode_Batch_Candidate
      (Image             : Formats.Byte_Array;
       Expected_Database : Head_Policy.Identifier;
       Limits            : Reader_Caps;
       Value             : out Commit_Batch;
       Status            : out Decode_Status)
+   with
+     Pre  => not Head_Policy.Is_Zero (Expected_Database),
+     Post =>
+       (if Status = Decoded
+        then Value.Database_ID = Expected_Database and then Structurally_Valid (Value))
    is
-      Fixed             : Batch_Image := [others => 0];
-      Candidate         : Commit_Batch := Empty_Batch;
-      Cursor            : Natural := Batch_Header_Length;
-      Payload_End       : Natural;
-      Payload_Length    : Interfaces.Unsigned_64;
-      Transaction_Wire  : Interfaces.Unsigned_32;
-      Mutation_Wire     : Interfaces.Unsigned_32;
+      Fixed                   : Batch_Image := [others => 0];
+      Candidate               : Commit_Batch := Empty_Batch;
+      Cursor                  : Natural := Batch_Header_Length;
+      Payload_End             : Natural;
+      Payload_Length          : Interfaces.Unsigned_64;
+      Transaction_Wire        : Interfaces.Unsigned_32;
+      Mutation_Wire           : Interfaces.Unsigned_32;
       Expected_Number_Wire    : Interfaces.Unsigned_64;
       Publication_Number_Wire : Interfaces.Unsigned_64;
-      Parsed_Mutations  : Natural := 0;
+      Parsed_Mutations        : Natural := 0;
    begin
       Value := Empty_Batch;
 
@@ -645,15 +599,15 @@ is
       --  Decode the exact frozen offsets emitted above; moving any field is a
       --  persisted-format revision, not an implementation refactor.
       Payload_Length := Read_U64 (Fixed, 32);
-      if Payload_Length /= Interfaces.Unsigned_64
-        (Image'Length - (Batch_Header_Length + Batch_Trailer_Length))
+      if Payload_Length
+        /= Interfaces.Unsigned_64 (Image'Length - (Batch_Header_Length + Batch_Trailer_Length))
       then
          Status := Invalid_Length;
          return;
       elsif Fixed (0 .. 7) /= Magic then
          Status := Invalid_Magic;
          return;
-      elsif Read_U16 (Fixed, 8) /= Batch_Format_Version then
+      elsif Read_U16 (Fixed, 8) not in Batch_Format_Version | Cohort_Batch_Format_Version then
          Status := Unsupported_Version;
          return;
       elsif Fixed (10) /= Batch_Kind then
@@ -672,8 +626,7 @@ is
          Status := Header_Checksum_Failed;
          return;
       elsif Read_U32 (Fixed, Batch_Image_Index (Image'Length - Batch_Trailer_Length))
-        /= Formats.CRC_32C
-          (Fixed (0 .. Image'Length - (Batch_Trailer_Length + 1)))
+        /= Formats.CRC_32C (Fixed (0 .. Image'Length - (Batch_Trailer_Length + 1)))
       then
          Status := Object_Checksum_Failed;
          return;
@@ -684,8 +637,11 @@ is
 
       Transaction_Wire := Read_U32 (Fixed, 148);
       Mutation_Wire := Read_U32 (Fixed, 152);
-      if Transaction_Wire = 0
-        or else Mutation_Wire = 0
+      if Transaction_Wire = 0 or else Mutation_Wire = 0 then
+         Status := Invalid_Batch_State;
+         return;
+      elsif Read_U16 (Fixed, 8) = Cohort_Batch_Format_Version
+        and then (Transaction_Wire /= 1 or else Read_U64 (Fixed, 132) /= Read_U64 (Fixed, 140))
       then
          Status := Invalid_Batch_State;
          return;
@@ -698,6 +654,7 @@ is
          return;
       end if;
 
+      Candidate.Format_Version := Read_U16 (Fixed, 8);
       Candidate.Database_ID := Read_Identifier (Fixed, 12);
       Candidate.Epoch := Head_Policy.Writer_Epoch (Read_U64 (Fixed, 44));
       Candidate.Batch_ID := Read_Identifier (Fixed, 52);
@@ -714,9 +671,8 @@ is
       if Head_Policy.Is_Zero (Candidate.Database_ID)
         or else Candidate.Epoch = 0
         or else Head_Policy.Is_Zero (Candidate.Batch_ID)
-        or else
-          (not Head_Policy.Is_Zero (Candidate.Previous_Batch_ID)
-           and then Candidate.Batch_ID = Candidate.Previous_Batch_ID)
+        or else (not Head_Policy.Is_Zero (Candidate.Previous_Batch_ID)
+                 and then Candidate.Batch_ID = Candidate.Previous_Batch_ID)
         or else Head_Policy.Is_Zero (Candidate.Expected_Transition_ID)
         or else Head_Policy.Is_Zero (Candidate.Publication_Transition_ID)
         or else Candidate.Expected_Transition_ID = Candidate.Publication_Transition_ID
@@ -726,21 +682,19 @@ is
         or else Candidate.First_Sequence = 0
         or else Candidate.Last_Sequence < Candidate.First_Sequence
         or else Interfaces.Unsigned_64 (Candidate.Last_Sequence - Candidate.First_Sequence) + 1
-          /= Interfaces.Unsigned_64 (Candidate.Transaction_Total)
-        or else
-          (Head_Policy.Is_Zero (Candidate.Previous_Batch_ID) /= (Candidate.First_Sequence = 1))
-        or else
-          (if Candidate.First_Sequence = 1 then
-             Expected_Number_Wire /= Interfaces.Unsigned_64 (Candidate.Epoch)
-           else
-             Expected_Number_Wire <= Interfaces.Unsigned_64 (Candidate.Epoch))
+                /= Interfaces.Unsigned_64 (Candidate.Transaction_Total)
+        or else (Head_Policy.Is_Zero (Candidate.Previous_Batch_ID) /= (Candidate.First_Sequence = 1))
+        or else (if Candidate.First_Sequence = 1
+                 then Expected_Number_Wire /= Interfaces.Unsigned_64 (Candidate.Epoch)
+                 elsif Candidate.Format_Version = Cohort_Batch_Format_Version
+                 then Expected_Number_Wire < Interfaces.Unsigned_64 (Candidate.Epoch)
+                 else Expected_Number_Wire <= Interfaces.Unsigned_64 (Candidate.Epoch))
       then
          Status := Invalid_Batch_State;
          return;
       end if;
       Candidate.Expected_Transition_Number := Head_Policy.Transition_Ordinal (Expected_Number_Wire);
-      Candidate.Publication_Transition_Number :=
-        Head_Policy.Transition_Ordinal (Publication_Number_Wire);
+      Candidate.Publication_Transition_Number := Head_Policy.Transition_Ordinal (Publication_Number_Wire);
 
       Payload_End := Image'Length - Batch_Trailer_Length;
       for Transaction_Index in Transaction_Slot range 1 .. Candidate.Transaction_Total loop
@@ -754,11 +708,9 @@ is
             Body_Length                : Payload_Count;
             Count_Valid                : Boolean;
             Extent_Valid               : Boolean;
-            Transaction_End       : Natural;
+            Transaction_End            : Natural;
          begin
-            if Cursor > Payload_End
-              or else Transaction_Frame_Header_Length > Payload_End - Cursor
-            then
+            if Cursor > Payload_End or else Transaction_Frame_Header_Length > Payload_End - Cursor then
                Status := Invalid_Transaction;
                return;
             end if;
@@ -775,15 +727,11 @@ is
                Candidate.Mutation_Total - Parsed_Mutations,
                Transaction_Mutations,
                Count_Valid);
-            Decode_Extent
-              (Body_Length_Wire,
-               Payload_Count (Payload_End - Cursor),
-               Body_Length,
-               Extent_Valid);
+            Decode_Extent (Body_Length_Wire, Payload_Count (Payload_End - Cursor), Body_Length, Extent_Valid);
 
             if Head_Policy.Is_Zero (Candidate.Transactions (Transaction_Index).Transaction_ID)
-              or else Candidate.Transactions (Transaction_Index).Sequence /=
-                Candidate.First_Sequence + Head_Policy.Commit_Sequence (Transaction_Index - 1)
+              or else Candidate.Transactions (Transaction_Index).Sequence
+                      /= Candidate.First_Sequence + Head_Policy.Commit_Sequence (Transaction_Index - 1)
               or else not Count_Valid
               or else not Extent_Valid
               or else Transaction_Mutations = 0
@@ -793,8 +741,8 @@ is
             end if;
 
             for Earlier in Transaction_Slot range 1 .. Transaction_Index - 1 loop
-               if Candidate.Transactions (Earlier).Transaction_ID =
-                 Candidate.Transactions (Transaction_Index).Transaction_ID
+               if Candidate.Transactions (Earlier).Transaction_ID
+                 = Candidate.Transactions (Transaction_Index).Transaction_ID
                then
                   Status := Duplicate_Transaction;
                   return;
@@ -808,17 +756,14 @@ is
             pragma Assert (Transaction_End <= Payload_End);
 
             for Offset in Natural range 0 .. Transaction_Mutations - 1 loop
-               pragma Loop_Invariant
-                 (Parsed_Mutations + Transaction_Mutations <= Candidate.Mutation_Total);
-               pragma Loop_Invariant
-                 (Parsed_Mutations + Offset < Candidate.Mutation_Total);
+               pragma Loop_Invariant (Parsed_Mutations + Transaction_Mutations <= Candidate.Mutation_Total);
+               pragma Loop_Invariant (Parsed_Mutations + Offset < Candidate.Mutation_Total);
                pragma Loop_Invariant (Cursor <= Transaction_End);
                pragma Loop_Invariant (Transaction_End <= Payload_End);
                declare
                   --  Derived next global slot from already parsed mutations and
                   --  this transaction's local offset.
-                  Mutation_Index : constant Mutation_Slot :=
-                    Mutation_Slot (Parsed_Mutations + (Offset + 1));
+                  Mutation_Index : constant Mutation_Slot := Mutation_Slot (Parsed_Mutations + (Offset + 1));
                   Key_Wire       : Interfaces.Unsigned_32;
                   Value_Wire     : Interfaces.Unsigned_32;
                   Operation_Code : Formats.Byte;
@@ -826,8 +771,7 @@ is
                   Key_Count      : Key_Length;
                   Value_Count    : Value_Length;
                begin
-                  if Cursor > Transaction_End
-                    or else Mutation_Frame_Header_Length > Transaction_End - Cursor
+                  if Cursor > Transaction_End or else Mutation_Frame_Header_Length > Transaction_End - Cursor
                   then
                      Status := Invalid_Mutation;
                      return;
@@ -872,9 +816,7 @@ is
                   Candidate.Mutations (Mutation_Index).Operation :=
                     (if Operation_Code = 1 then Put else Delete);
                   Candidate.Mutations (Mutation_Index).Key_Size := Key_Count;
-                  Copy_Key
-                    (Fixed, Cursor, Key_Count,
-                     Candidate.Mutations (Mutation_Index).Key);
+                  Copy_Key (Fixed, Cursor, Key_Count, Candidate.Mutations (Mutation_Index).Key);
                   Cursor := Cursor + Key_Count;
 
                   if Natural (Value_Count) > Transaction_End - Cursor then
@@ -882,19 +824,15 @@ is
                      return;
                   end if;
                   Candidate.Mutations (Mutation_Index).Value_Size := Value_Count;
-                  Copy_Value
-                    (Fixed, Cursor, Value_Count,
-                     Candidate.Mutations (Mutation_Index).Value);
+                  Copy_Value (Fixed, Cursor, Value_Count, Candidate.Mutations (Mutation_Index).Value);
                   Cursor := Cursor + Value_Count;
                   pragma Assert (Cursor <= Transaction_End);
 
                   for Earlier in Natural range 0 .. Offset - 1 loop
-                     pragma Loop_Invariant
-                       (Parsed_Mutations + Earlier < Candidate.Mutation_Total);
+                     pragma Loop_Invariant (Parsed_Mutations + Earlier < Candidate.Mutation_Total);
                      if Same_Key
-                       (Candidate.Mutations
-                          (Mutation_Slot (Parsed_Mutations + (Earlier + 1))),
-                        Candidate.Mutations (Mutation_Index))
+                          (Candidate.Mutations (Mutation_Slot (Parsed_Mutations + (Earlier + 1))),
+                           Candidate.Mutations (Mutation_Index))
                      then
                         Status := Duplicate_Key;
                         return;
@@ -912,12 +850,28 @@ is
       end loop;
 
       if Cursor /= Payload_End or else Parsed_Mutations /= Candidate.Mutation_Total then
+         Value := Empty_Batch;
          Status := Invalid_Length;
       elsif not Structurally_Valid (Candidate) then
+         Value := Empty_Batch;
          Status := Invalid_Batch_State;
       else
          Value := Candidate;
          Status := Decoded;
+      end if;
+   end Decode_Batch_Candidate;
+
+   procedure Decode_Batch
+     (Image             : Formats.Byte_Array;
+      Expected_Database : Head_Policy.Identifier;
+      Limits            : Reader_Caps;
+      Value             : out Commit_Batch;
+      Status            : out Decode_Status) is
+   begin
+      Decode_Batch_Candidate (Image, Expected_Database, Limits, Value, Status);
+      --  Keep failure canonicalization independent of the parser's branch count.
+      if Status /= Decoded then
+         Value := Empty_Batch;
       end if;
    end Decode_Batch;
 
@@ -927,8 +881,7 @@ is
       Referencing_Head  : Head_Policy.Head_State;
       Limits            : Reader_Caps;
       Value             : out Commit_Batch;
-      Status            : out Decode_Status)
-   is
+      Status            : out Decode_Status) is
    begin
       Decode_Batch (Image, Expected_Database, Limits, Value, Status);
       if Status = Decoded and then not Published_By (Value, Referencing_Head) then

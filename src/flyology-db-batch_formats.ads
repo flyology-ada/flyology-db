@@ -5,6 +5,7 @@ with Interfaces;
 --  Defines the deliberately small bounded reference/proof representation and wire codec
 --  for commit batches.  The operational runtime codec accepts manifest-declared counts
 --  and byte limits within the wire widths and the host address space.
+
 private package Flyology.DB.Batch_Formats
   with SPARK_Mode => On
 is
@@ -15,29 +16,33 @@ is
    use type Head_Policy.Identifier;
    use type Head_Policy.Commit_Sequence;
 
-   --  Frozen batch-v1 wire authority: version 1, 156-byte header, 32-byte
-   --  transaction prefix, 14-byte mutation prefix, and 4-byte CRC trailer.
-   --  Changing any value is persisted-format incompatible.
-   Batch_Format_Version : constant Interfaces.Unsigned_16 := 1;
-   Batch_Header_Length : constant := 156;
-   Batch_Trailer_Length : constant := 4;
+   --  Frozen batch-v1 wire authority and additive coalesced-singleton v2.
+   --  Both use the same 156-byte header, 32-byte transaction prefix, 14-byte
+   --  mutation prefix, and 4-byte CRC trailer. Version 2 changes only the
+   --  authenticated relationship between adjacent singleton batches and one
+   --  shared HEAD transition; version 1 bytes and semantics remain unchanged.
+   Batch_Format_Version            : constant Interfaces.Unsigned_16 := 1;
+   Cohort_Batch_Format_Version     : constant Interfaces.Unsigned_16 := 2;
+   Batch_Header_Length             : constant := 156;
+   Batch_Trailer_Length            : constant := 4;
    Transaction_Frame_Header_Length : constant := 32;
-   Mutation_Frame_Header_Length : constant := 14;
+   Mutation_Frame_Header_Length    : constant := 14;
 
    --  Maintained reference/proof dimensions. They are not wire limits,
    --  production backpressure, or persisted database/family defaults; changes
    --  alter fixture coverage and proof cost only.
-   Max_Transactions : constant := 16;
-   Max_Mutations : constant := 64;
-   Max_Key_Bytes : constant := 64;
-   Max_Value_Bytes : constant := 256;
+   Max_Transactions       : constant := 16;
+   Max_Mutations          : constant := 64;
+   Max_Key_Bytes          : constant := 64;
+   Max_Value_Bytes        : constant := 256;
    --  Derived reference image/payload ceilings from the exact widths above.
    --  Formula changes require reference goldens and proof to move together.
    Max_Batch_Image_Length : constant :=
-     Batch_Header_Length + Batch_Trailer_Length
+     Batch_Header_Length
+     + Batch_Trailer_Length
      + Max_Transactions * Transaction_Frame_Header_Length
      + Max_Mutations * (Mutation_Frame_Header_Length + Max_Key_Bytes + Max_Value_Bytes);
-   Max_Payload_Bytes : constant := Max_Batch_Image_Length - Batch_Header_Length - Batch_Trailer_Length;
+   Max_Payload_Bytes      : constant := Max_Batch_Image_Length - Batch_Header_Length - Batch_Trailer_Length;
 
    subtype Transaction_Slot is Positive range 1 .. Max_Transactions;
    subtype Mutation_Slot is Positive range 1 .. Max_Mutations;
@@ -58,9 +63,9 @@ is
       Column_Family : Interfaces.Unsigned_32 := 0;
       Operation     : Mutation_Kind := Put;
       Key_Size      : Key_Length := 0;
-      Key            : Key_Bytes := [others => 0];
+      Key           : Key_Bytes := [others => 0];
       Value_Size    : Value_Length := 0;
-      Value          : Value_Bytes := [others => 0];
+      Value         : Value_Bytes := [others => 0];
    end record;
 
    type Transaction is record
@@ -76,22 +81,21 @@ is
    --  Commit_Batch likewise starts unpublishable; structural validation supplies
    --  every exact identity, counter, and transition relationship.
    type Commit_Batch is record
-      Database_ID                    : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
-      Epoch                          : Head_Policy.Writer_Epoch := 0;
-      Batch_ID                       : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
-      Previous_Batch_ID              : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
-      Expected_Transition_ID         : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
-      Expected_Transition_Number     : Head_Policy.Transition_Ordinal :=
-        Head_Policy.Transition_Ordinal'First;
-      Publication_Transition_ID      : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
-      Publication_Transition_Number : Head_Policy.Transition_Ordinal :=
-        Head_Policy.Transition_Ordinal'First;
-      First_Sequence                 : Head_Policy.Commit_Sequence := 0;
-      Last_Sequence                  : Head_Policy.Commit_Sequence := 0;
-      Transaction_Total              : Transaction_Count := 0;
-      Mutation_Total                 : Mutation_Count := 0;
-      Transactions                   : Transaction_Array := [others => <>];
-      Mutations                      : Mutation_Array := [others => <>];
+      Format_Version                : Interfaces.Unsigned_16 := Batch_Format_Version;
+      Database_ID                   : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Epoch                         : Head_Policy.Writer_Epoch := 0;
+      Batch_ID                      : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Previous_Batch_ID             : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Expected_Transition_ID        : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Expected_Transition_Number    : Head_Policy.Transition_Ordinal := Head_Policy.Transition_Ordinal'First;
+      Publication_Transition_ID     : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Publication_Transition_Number : Head_Policy.Transition_Ordinal := Head_Policy.Transition_Ordinal'First;
+      First_Sequence                : Head_Policy.Commit_Sequence := 0;
+      Last_Sequence                 : Head_Policy.Commit_Sequence := 0;
+      Transaction_Total             : Transaction_Count := 0;
+      Mutation_Total                : Mutation_Count := 0;
+      Transactions                  : Transaction_Array := [others => <>];
+      Mutations                     : Mutation_Array := [others => <>];
    end record;
 
    --  Canonical decoder rejection/unused-tail value, never a valid batch.
@@ -133,43 +137,41 @@ is
 
    type Encode_Status is (Encoded, Invalid_Value);
 
-   --  Whether Value has a complete, unambiguous version-1 operational shape.
+   --  Whether Value has a complete, unambiguous version-1 or version-2 shape.
+   --  Version 2 is exactly one transaction whose transaction and batch IDs
+   --  are equal; a cohort is authenticated by the shared transition fields
+   --  and the ordinary previous-batch chain, never a persisted member count.
    function Structurally_Valid (Value : Commit_Batch) return Boolean;
 
    --  Number of meaningful bytes written by Encode_Batch.
    function Encoded_Length (Value : Commit_Batch) return Natural
    with
-     Pre => Structurally_Valid (Value),
-     Post => Encoded_Length'Result in Batch_Header_Length + Batch_Trailer_Length
-       .. Max_Batch_Image_Length;
+     Pre  => Structurally_Valid (Value),
+     Post => Encoded_Length'Result in Batch_Header_Length + Batch_Trailer_Length .. Max_Batch_Image_Length;
 
    --  Encode Value at Image (0 .. Length - 1); bytes after Length are zero.
    procedure Encode_Batch
-     (Value  : Commit_Batch;
-      Image  : out Batch_Image;
-      Length : out Natural;
-      Status : out Encode_Status)
+     (Value : Commit_Batch; Image : out Batch_Image; Length : out Natural; Status : out Encode_Status)
    with
      Post =>
-       (if Status = Encoded then
-          Length in Batch_Header_Length + Batch_Trailer_Length .. Max_Batch_Image_Length
+       (if Status = Encoded
+        then Length in Batch_Header_Length + Batch_Trailer_Length .. Max_Batch_Image_Length
         else Length = 0);
 
    --  Whether the referencing head publishes this exact batch and transition.
-   function Published_By
-     (Value            : Commit_Batch;
-      Referencing_Head : Head_Policy.Head_State) return Boolean;
+   function Published_By (Value : Commit_Batch; Referencing_Head : Head_Policy.Head_State) return Boolean;
 
    --  Whether Value is the first batch in a reachable commit chain.
-   function Is_First_Batch (Value : Commit_Batch) return Boolean is
-     (Value.First_Sequence = 1
-      and then Head_Policy.Is_Zero (Value.Previous_Batch_ID));
+   function Is_First_Batch (Value : Commit_Batch) return Boolean
+   is (Value.First_Sequence = 1 and then Head_Policy.Is_Zero (Value.Previous_Batch_ID));
 
    --  Whether Current immediately follows Previous in the immutable batch chain.
    --  HEAD transitions may intervene; an exact ordinal edge also requires its ID.
-   function Valid_Predecessor
-     (Current  : Commit_Batch;
-      Previous : Commit_Batch) return Boolean;
+   function Valid_Predecessor (Current : Commit_Batch; Previous : Commit_Batch) return Boolean;
+
+   --  Whether two adjacent version-2 singleton batches share one exact HEAD
+   --  publication. The previous-batch and sequence edge remains authoritative.
+   function Shares_Publication_Cohort (Current : Commit_Batch; Previous : Commit_Batch) return Boolean;
 
    --  Decode one exact batch without requiring a retained historical HEAD.
    --  Every non-Decoded result leaves Value equal to Empty_Batch.
@@ -180,11 +182,10 @@ is
       Value             : out Commit_Batch;
       Status            : out Decode_Status)
    with
-     Pre => not Head_Policy.Is_Zero (Expected_Database),
+     Pre  => not Head_Policy.Is_Zero (Expected_Database),
      Post =>
-       (if Status = Decoded then
-          Value.Database_ID = Expected_Database
-          and then Structurally_Valid (Value)
+       (if Status = Decoded
+        then Value.Database_ID = Expected_Database and then Structurally_Valid (Value)
         else Value = Empty_Batch);
 
    --  Decode the latest batch and bind it to the live HEAD that made it visible.
@@ -197,9 +198,10 @@ is
       Value             : out Commit_Batch;
       Status            : out Decode_Status)
    with
-     Pre => not Head_Policy.Is_Zero (Expected_Database),
+     Pre  => not Head_Policy.Is_Zero (Expected_Database),
      Post =>
-       (if Status = Decoded then
+       (if Status = Decoded
+        then
           Value.Database_ID = Expected_Database
           and then Structurally_Valid (Value)
           and then Published_By (Value, Referencing_Head)

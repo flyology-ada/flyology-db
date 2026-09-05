@@ -100,6 +100,14 @@ private package Flyology.DB.Testing is
       Initial_Families      : Column_Family_Configuration_Array;
       Timeout               : Duration;
       Result                : out Outcome_Code);
+   procedure Install_Cohort_History
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Members               : Positive;
+      History_Case          : Test_Cohort_History_Case;
+      Result                : out Outcome_Code);
    procedure Install_Unsupported_Head
      (Item          : in out Storage_Context;
       Database_ID   : Database_Identifier;

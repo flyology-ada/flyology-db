@@ -416,6 +416,152 @@ package body Flyology.DB.Batch_Format_Tests is
       end;
    end Test_Golden_And_Extent;
 
+   procedure Test_Coalesced_Singleton_Chain is
+      Previous        : Batches.Commit_Batch := Fixture;
+      Current         : Batches.Commit_Batch;
+      Bad             : Batches.Commit_Batch;
+      Image           : Batches.Batch_Image;
+      Length          : Natural;
+      Decoded         : Batches.Commit_Batch;
+      Status          : Batches.Decode_Status;
+      Encode_Status   : Batches.Encode_Status;
+      Final_Head      : Head.Head_State := Referencing_Head;
+      First_Head      : Head.Head_State := Referencing_Head;
+      Expected_Golden : Batches.Batch_Image := [others => 0];
+      Corrupt         : Batches.Batch_Image := [others => 0];
+   begin
+      Previous.Format_Version := Batches.Cohort_Batch_Format_Version;
+      Previous.Batch_ID := Previous.Transactions (1).Transaction_ID;
+      Encode_Checked (Previous, Image, Length);
+      Expected_Golden (0 .. Fixture_Length - 1) := Golden;
+      Expected_Golden (9) := 2;
+      Expected_Golden (67) := 5;
+      Expected_Golden (40 .. 43) := [16#5E#, 16#17#, 16#F6#, 16#09#];
+      Expected_Golden (Fixture_Length - 4 .. Fixture_Length - 1) := [16#E5#, 16#5A#, 16#AF#, 16#8C#];
+      if Length /= Fixture_Length or else Image (0 .. Length - 1) /= Expected_Golden (0 .. Length - 1) then
+         raise Program_Error with "coalesced singleton differs from the independent version-2 golden";
+      end if;
+      First_Head.Latest_Batch := Previous.Batch_ID;
+      Batches.Decode_Latest_Batch
+        (Expected_Golden (0 .. Fixture_Length - 1),
+         Previous.Database_ID,
+         First_Head,
+         Batches.Default_Reader_Caps,
+         Decoded,
+         Status);
+      if Status /= Batches.Decoded or else Decoded /= Previous then
+         raise Program_Error with "independent version-2 golden did not decode";
+      end if;
+
+      Corrupt (0 .. Fixture_Length - 1) := Expected_Golden (0 .. Fixture_Length - 1);
+      Put_U32 (Corrupt, 148, 2);
+      Repair_Checksums (Corrupt, Fixture_Length);
+      Expect_Decode
+        (Corrupt (0 .. Fixture_Length - 1),
+         First_Head,
+         Batches.Default_Reader_Caps,
+         Batches.Invalid_Batch_State,
+         "version-2 transaction count was not intrinsic");
+
+      Corrupt (0 .. Fixture_Length - 1) := Expected_Golden (0 .. Fixture_Length - 1);
+      Put_U64 (Corrupt, 140, 2);
+      Repair_Checksums (Corrupt, Fixture_Length);
+      Expect_Decode
+        (Corrupt (0 .. Fixture_Length - 1),
+         First_Head,
+         Batches.Default_Reader_Caps,
+         Batches.Invalid_Batch_State,
+         "version-2 sequence span was accepted");
+
+      Corrupt (0 .. Fixture_Length - 1) := Expected_Golden (0 .. Fixture_Length - 1);
+      Corrupt (67) := 3;
+      Repair_Checksums (Corrupt, Fixture_Length);
+      Expect_Decode
+        (Corrupt (0 .. Fixture_Length - 1),
+         First_Head,
+         Batches.Default_Reader_Caps,
+         Batches.Invalid_Batch_State,
+         "version-2 batch and transaction IDs diverged");
+
+      Corrupt (0 .. Fixture_Length - 1) := Expected_Golden (0 .. Fixture_Length - 1);
+      Put_U64 (Corrupt, 172, 2);
+      Repair_Checksums (Corrupt, Fixture_Length);
+      Expect_Decode
+        (Corrupt (0 .. Fixture_Length - 1),
+         First_Head,
+         Batches.Default_Reader_Caps,
+         Batches.Invalid_Transaction,
+         "version-2 transaction sequence diverged");
+
+      Corrupt (0 .. Fixture_Length - 1) := Expected_Golden (0 .. Fixture_Length - 1);
+      Put_U64 (Corrupt, 44, 2);
+      Repair_Checksums (Corrupt, Fixture_Length);
+      Expect_Decode
+        (Corrupt (0 .. Fixture_Length - 1),
+         First_Head,
+         Batches.Default_Reader_Caps,
+         Batches.Invalid_Batch_State,
+         "version-2 transition and epoch diverged");
+
+      Current := Previous;
+      Current.Batch_ID := ID (6);
+      Current.Previous_Batch_ID := Previous.Batch_ID;
+      Current.First_Sequence := 2;
+      Current.Last_Sequence := 2;
+      Current.Transactions (1).Transaction_ID := Current.Batch_ID;
+      Current.Transactions (1).Sequence := 2;
+      if not Batches.Structurally_Valid (Current)
+        or else not Batches.Shares_Publication_Cohort (Current, Previous)
+        or else not Batches.Valid_Predecessor (Current, Previous)
+      then
+         raise Program_Error with "valid coalesced singleton predecessor edge was rejected";
+      end if;
+
+      Final_Head.Highest_Visible := Current.Last_Sequence;
+      Final_Head.Latest_Batch := Current.Batch_ID;
+      Encode_Checked (Current, Image, Length);
+      Batches.Decode_Latest_Batch
+        (Image (0 .. Length - 1),
+         Current.Database_ID,
+         Final_Head,
+         Batches.Default_Reader_Caps,
+         Decoded,
+         Status);
+      if Status /= Batches.Decoded or else Decoded /= Current then
+         raise Program_Error with "final coalesced singleton did not round-trip against HEAD";
+      elsif Batches.Published_By (Previous, Final_Head) then
+         raise Program_Error with "nonfinal coalesced singleton was directly HEAD-published";
+      end if;
+
+      Bad := Previous;
+      Bad.Batch_ID := ID (9);
+      Batches.Encode_Batch (Bad, Image, Length, Encode_Status);
+      if Encode_Status /= Batches.Invalid_Value or else Length /= 0 then
+         raise Program_Error with "version-2 transaction and batch identity mismatch encoded";
+      end if;
+
+      Bad := Previous;
+      Bad.Transaction_Total := 2;
+      Bad.Last_Sequence := 2;
+      Bad.Transactions (2) := (Transaction_ID => ID (9), Sequence => 2, First_Mutation => 2, Mutations => 1);
+      Batches.Encode_Batch (Bad, Image, Length, Encode_Status);
+      if Encode_Status /= Batches.Invalid_Value or else Length /= 0 then
+         raise Program_Error with "multi-transaction version-2 batch encoded";
+      end if;
+
+      Bad := Current;
+      Bad.Format_Version := Batches.Batch_Format_Version;
+      if Batches.Valid_Predecessor (Bad, Previous) then
+         raise Program_Error with "mixed-version same-transition edge was accepted";
+      end if;
+      Bad := Current;
+      Bad.Publication_Transition_ID := ID (9);
+      if Batches.Shares_Publication_Cohort (Bad, Previous) or else Batches.Valid_Predecessor (Bad, Previous)
+      then
+         raise Program_Error with "mismatched coalesced publication identity was accepted";
+      end if;
+   end Test_Coalesced_Singleton_Chain;
+
    procedure Test_Envelope_And_Semantics is
       Corrupt               : Batches.Batch_Image := [others => 0];
       --  Frozen batch-v1 offsets of required nonzero identities/counters. The
@@ -431,7 +577,7 @@ package body Flyology.DB.Batch_Format_Tests is
         (Corrupt (0 .. Fixture_Length - 1), Batches.Invalid_Magic, "invalid magic survived repair");
 
       Corrupt (0 .. Fixture_Length - 1) := Golden;
-      Corrupt (9) := 2;
+      Corrupt (9) := 3;
       Repair_Checksums (Corrupt, Fixture_Length);
       Expect_Default_Decode
         (Corrupt (0 .. Fixture_Length - 1), Batches.Unsupported_Version, "version survived repair");
@@ -1060,6 +1206,7 @@ package body Flyology.DB.Batch_Format_Tests is
    procedure Run is
    begin
       Test_Golden_And_Extent;
+      Test_Coalesced_Singleton_Chain;
       Test_Envelope_And_Semantics;
       Test_Caps;
       Test_Head_Binding;

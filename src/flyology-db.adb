@@ -104,17 +104,18 @@ package body Flyology.DB is
    --  Operational batch-v1 codec widths copied from the normative persisted
    --  table: object header 156, trailer 4, transaction prefix 32, mutation
    --  prefix 14. Divergence from the reference codec is wire-incompatible.
-   Batch_Header_Length             : constant := 156;
-   Batch_Trailer_Length            : constant := 4;
-   Transaction_Frame_Header_Length : constant := 32;
-   Mutation_Frame_Header_Length    : constant := 14;
-   --  Frozen operational batch-v1 version/kind and mutation tags. Naming them
-   --  keeps the dynamic codec visibly tied to the persisted table; changing a
-   --  value is wire-incompatible and requires a new format version.
-   Batch_Format_Version_Code       : constant Interfaces.Unsigned_16 := 1;
-   Batch_Object_Kind_Code          : constant Byte := 2;
-   Put_Operation_Code              : constant Byte := 1;
-   Delete_Operation_Code           : constant Byte := 2;
+   Batch_Header_Length              : constant := 156;
+   Batch_Trailer_Length             : constant := 4;
+   Transaction_Frame_Header_Length  : constant := 32;
+   Mutation_Frame_Header_Length     : constant := 14;
+   --  Frozen operational batch-v1 and additive coalesced-singleton v2 tags.
+   --  The private coalescing profile is the sole authority for v2 admission;
+   --  ordinary roots continue to emit and recover only version 1.
+   Batch_Format_Version_Code        : constant Interfaces.Unsigned_16 := 1;
+   Cohort_Batch_Format_Version_Code : constant Interfaces.Unsigned_16 := 2;
+   Batch_Object_Kind_Code           : constant Byte := 2;
+   Put_Operation_Code               : constant Byte := 1;
+   Delete_Operation_Code            : constant Byte := 2;
 
    type Stored_Object_Kind is (Batch_Object, Manifest_Object, Run_Object, Head_Object);
 
@@ -2070,6 +2071,7 @@ package body Flyology.DB is
    type Runtime_Mutation_Lookup_Array_Access is access Runtime_Mutation_Lookup_Array;
 
    type Runtime_Batch is record
+      Format_Version                : Interfaces.Unsigned_16 := Batch_Format_Version_Code;
       Database_ID                   : Database_Identifier := Zero_Database_ID;
       Epoch                         : Interfaces.Unsigned_64 := 0;
       Batch_ID                      : Identifier := Zero_Identifier;
@@ -5701,6 +5703,7 @@ package body Flyology.DB is
                Result := Corrupt;
                return;
             end if;
+            Batch.Format_Version := Source.Format_Version;
             Batch.Database_ID := Source.Database_ID;
             Batch.Epoch := Source.Epoch;
             Batch.Batch_ID := Source.Batch_ID;
@@ -7781,7 +7784,7 @@ package body Flyology.DB is
                     Character'Pos ('T'),
                     Character'Pos ('C'),
                     Character'Pos ('1')]
-        or else Read_U16 (Data, 8) /= Batch_Format_Version_Code
+        or else Read_U16 (Data, 8) not in Batch_Format_Version_Code | Cohort_Batch_Format_Version_Code
         or else Header (10) /= Batch_Object_Kind_Code
         or else Header (11) /= 0
         or else Read_Identifier (Data, 12) /= Identifier (Expected_Database)
@@ -7805,7 +7808,12 @@ package body Flyology.DB is
         Interfaces.Unsigned_64 (Transaction_Wire)
         * Transaction_Frame_Header_Length
         + Interfaces.Unsigned_64 (Mutation_Wire) * Mutation_Frame_Header_Length;
-      if Transaction_Wire > Limits.Maximum_Transactions_Per_Batch
+      if Read_U16 (Data, 8) = Cohort_Batch_Format_Version_Code
+        and then (Transaction_Wire /= 1 or else Read_U64 (Data, 132) /= Read_U64 (Data, 140))
+      then
+         Result := Corrupt;
+         return;
+      elsif Transaction_Wire > Limits.Maximum_Transactions_Per_Batch
         or else Mutation_Wire > Limits.Maximum_Mutations_Per_Batch
         or else Interfaces.Unsigned_64 (Transaction_Wire) > Interfaces.Unsigned_64 (Natural'Last)
         or else Interfaces.Unsigned_64 (Mutation_Wire) > Interfaces.Unsigned_64 (Natural'Last)
@@ -7832,6 +7840,7 @@ package body Flyology.DB is
 
       Batch.Image := Allocate_Shared_Image;
       Flyology.Bytes.Move (Batch.Image.Data, Data);
+      Batch.Format_Version := Read_U16 (Batch.Image.Data, 8);
       Batch.Database_ID := Expected_Database;
       Batch.Epoch := Read_U64 (Batch.Image.Data, 44);
       Batch.Batch_ID := Read_Identifier (Batch.Image.Data, 52);
@@ -7861,6 +7870,8 @@ package body Flyology.DB is
         or else Batch.Epoch > Batch.Expected_Transition_Number
         or else (if Batch.First_Sequence = 1
                  then Batch.Expected_Transition_Number /= Batch.Epoch
+                 elsif Batch.Format_Version = Cohort_Batch_Format_Version_Code
+                 then Batch.Expected_Transition_Number < Batch.Epoch
                  else Batch.Expected_Transition_Number <= Batch.Epoch)
       then
          Release_Runtime_Batch (Batch);
@@ -7992,6 +8003,13 @@ package body Flyology.DB is
       if Parsed_Mutations /= Batch.Mutation_Total or else Cursor /= Length - Batch_Trailer_Length then
          Release_Runtime_Batch (Batch);
          Result := Corrupt;
+      elsif Batch.Format_Version = Cohort_Batch_Format_Version_Code
+        and then (Batch.Transaction_Total /= 1
+                  or else Batch.First_Sequence /= Batch.Last_Sequence
+                  or else Batch.Batch_ID /= Identifier (Batch.Transactions (1).Transaction_ID))
+      then
+         Release_Runtime_Batch (Batch);
+         Result := Corrupt;
       else
          Build_Runtime_Mutation_Lookup (Batch, Result);
          if Result /= Success then
@@ -8047,8 +8065,16 @@ package body Flyology.DB is
    end Runtime_Anchored_By_Manifest_Chain;
 
    function Runtime_Valid_Predecessor (Current, Previous : Runtime_Batch) return Boolean is
-      Gap       : Interfaces.Unsigned_64;
-      Epoch_Gap : Interfaces.Unsigned_64;
+      Gap         : Interfaces.Unsigned_64;
+      Epoch_Gap   : Interfaces.Unsigned_64;
+      Same_Cohort : constant Boolean :=
+        Current.Format_Version = Cohort_Batch_Format_Version_Code
+        and then Previous.Format_Version = Cohort_Batch_Format_Version_Code
+        and then Current.Epoch = Previous.Epoch
+        and then Current.Expected_Transition_ID = Previous.Expected_Transition_ID
+        and then Current.Expected_Transition_Number = Previous.Expected_Transition_Number
+        and then Current.Publication_Transition_ID = Previous.Publication_Transition_ID
+        and then Current.Publication_Transition_Number = Previous.Publication_Transition_Number;
    begin
       if Current.Image = null
         or else Previous.Image = null
@@ -8058,9 +8084,13 @@ package body Flyology.DB is
         or else Previous.Last_Sequence = Sequence_Number'Last
         or else Current.First_Sequence /= Previous.Last_Sequence + 1
         or else Current.Epoch < Previous.Epoch
-        or else Current.Expected_Transition_Number < Previous.Publication_Transition_Number
+        or else (not Same_Cohort
+                 and then Current.Expected_Transition_Number < Previous.Publication_Transition_Number)
       then
          return False;
+      end if;
+      if Same_Cohort then
+         return True;
       end if;
       Gap := Current.Expected_Transition_Number - Previous.Publication_Transition_Number;
       Epoch_Gap := Current.Epoch - Previous.Epoch;
@@ -8202,6 +8232,13 @@ package body Flyology.DB is
       elsif Deadline <= Ada.Real_Time.Clock then
          Release_Work_Arenas;
          Finish_Work (State, Tokens, Receipts, Count, Timed_Out);
+         return;
+      elsif State.LSM_Authority.Commit_Profile = LSM_Runtime.Commit_Profiles.Independent_Coalescing then
+         --  The persisted profile is readable before its publication driver
+         --  is enabled, but must never publish version-1 work into a root
+         --  whose recovery contract requires version 2.
+         Release_Work_Arenas;
+         Finish_Work (State, Tokens, Receipts, Count, Unsupported_Format);
          return;
       end if;
 
@@ -8464,6 +8501,15 @@ package body Flyology.DB is
       then
          return False;
       end if;
+      for Index in Positive range 1 .. Count loop
+         if (Checkpoint.Commit_Profile = LSM_Runtime.Commit_Profiles.Standard_Publication
+             and then History (Index).Format_Version /= Batch_Format_Version_Code)
+           or else (Checkpoint.Commit_Profile = LSM_Runtime.Commit_Profiles.Independent_Coalescing
+                    and then History (Index).Format_Version /= Cohort_Batch_Format_Version_Code)
+         then
+            return False;
+         end if;
+      end loop;
       declare
          Oldest : Runtime_Batch renames History (Count);
       begin
@@ -10091,8 +10137,7 @@ package body Flyology.DB is
          State.LSM_Authority := Decoded_Authority;
          State.Checkpoint.Manifest := Decoded_Checkpoint;
          Decoded_Checkpoint := null;
-      elsif Decoded_Authority.Commit_Profile /= State.LSM_Authority.Commit_Profile
-      then
+      elsif Decoded_Authority.Commit_Profile /= State.LSM_Authority.Commit_Profile then
          LSM_Runtime.Release (Decoded_Checkpoint);
          Fail_Recovery (State, Corrupt);
          return;
@@ -10272,6 +10317,13 @@ package body Flyology.DB is
          Batch_Result);
       if Batch_Result /= Success then
          Fail_Recovery (State, Batch_Result);
+         return;
+      elsif (State.LSM_Authority.Commit_Profile = LSM_Runtime.Commit_Profiles.Standard_Publication
+             and then State.History (State.Count).Format_Version /= Batch_Format_Version_Code)
+        or else (State.LSM_Authority.Commit_Profile = LSM_Runtime.Commit_Profiles.Independent_Coalescing
+                 and then State.History (State.Count).Format_Version /= Cohort_Batch_Format_Version_Code)
+      then
+         Fail_Recovery (State, Corrupt);
          return;
       elsif State.Count = 1
         and then not Runtime_Published_By (State.History (State.Count), State.Head)
@@ -26711,9 +26763,7 @@ package body Flyology.DB is
                Read_Length,
                Ignored_Read_Generation,
                Read_Result);
-            if Read_Result /= Object_Read
-              or else not Exact_Bytes (Data, Length, Read_Data, Read_Length)
-            then
+            if Read_Result /= Object_Read or else not Exact_Bytes (Data, Length, Read_Data, Read_Length) then
                Result := (if Read_Result = Object_Read then Conflict else Outcome_Unknown);
                return;
             end if;
@@ -26729,6 +26779,234 @@ package body Flyology.DB is
       end if;
       Install_Test_Head (Item, Database_ID, Manifest_ID, Initial_Transition_ID, False, Deadline, Result);
    end Install_Test_V1_Root;
+
+   procedure Install_Test_Cohort_History
+     (Item                  : in out Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Initial_Transition_ID : Identifier;
+      Members               : Positive;
+      History_Case          : Test_Cohort_History_Case;
+      Result                : out Outcome_Code)
+   is
+      use type Heads.Transition_Ordinal;
+
+      Deadline               : constant Ada.Real_Time.Time := Ada.Real_Time.Time_Last;
+      Publication_ID         : constant Identifier := Structural_ID (16#C2#, 1);
+      Successor_Publication  : constant Identifier := Structural_ID (16#C2#, 2);
+      Final_Sequence         : Sequence_Number;
+      Batch                  : Batches.Commit_Batch;
+      Image                  : Batches.Batch_Image;
+      Length                 : Natural;
+      Encode_Result          : Batches.Encode_Status;
+      Data                   : Small_Metadata_Buffer;
+      Ignored_Generation     : Generation_Value;
+      Put_Result             : Put_Outcome;
+      Existing_Head          : Small_Metadata_Buffer;
+      Head_Length            : Natural;
+      Existing_Generation    : Generation_Value;
+      Read_Result            : Read_Outcome;
+      Current_Head           : Head_Snapshot;
+      Final_Head             : Head_Snapshot;
+      Head_Image             : Formats.Head_Image;
+      Ignored_New_Generation : Generation_Value;
+
+      function Member_ID (Index : Positive) return Identifier
+      is (Structural_ID (16#B2#, Interfaces.Unsigned_64 (Index)));
+
+      procedure Repair_Batch_Checksums is
+      begin
+         Image (40 .. 43) := [others => 0];
+         Put_U32 (Image, 40, Formats.CRC_32C (Image (0 .. Batch_Header_Length - 1)));
+         Put_U32 (Image, Length - 4, Formats.CRC_32C (Image (0 .. Length - 5)));
+      end Repair_Batch_Checksums;
+   begin
+      Result := Invalid_State;
+      if Members > Maximum_History_Batches
+        or else
+          (History_Case in Missing_Cohort_Member | Swapped_Cohort_Link and then Members < 3)
+        or else
+          (History_Case
+             in Consecutive_Cohort_History
+              | Cyclic_Cohort_Link
+              | Gapped_Cohort_Sequence
+              | Wrong_Cohort_Database
+              | Discontinuous_Cohort_Transition
+           and then Members < 2)
+      then
+         return;
+      end if;
+
+      Storage_Port.Get_Whole
+        (Item,
+         Full_Key (Item, Head_Key_Suffix),
+         Head_Object,
+         Deadline,
+         null,
+         Existing_Head,
+         Head_Length,
+         Existing_Generation,
+         Read_Result);
+      if Read_Result /= Object_Read then
+         Result := Storage_Failure;
+         return;
+      end if;
+      Decode_Recovery_Head (Existing_Head, Head_Length, Database_ID, Current_Head, Result);
+      if Result /= Success
+        or else Current_Head.Latest_Manifest /= Manifest_ID
+        or else Current_Head.Transition_ID /= Initial_Transition_ID
+        or else Current_Head.Highest > Sequence_Number'Last - Sequence_Number (Members)
+        or else Heads.Transition_Ordinal (Current_Head.Transition_Number)
+                > Heads.Transition_Ordinal'Last
+                    - Heads.Transition_Ordinal'
+                        (if History_Case
+                              in Consecutive_Cohort_History
+                               | Version_One_Final_Member
+                               | Discontinuous_Cohort_Transition
+                         then 2
+                         else 1)
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+      Final_Sequence := Current_Head.Highest + Sequence_Number (Members);
+
+      for Index in Positive range 1 .. Members loop
+         Batch := Batches.Empty_Batch;
+         Batch.Format_Version :=
+           (if (History_Case = Version_One_First_Member and then Index = 1)
+              or else (History_Case = Version_One_Final_Member and then Index = Members)
+            then Batches.Batch_Format_Version
+            else Batches.Cohort_Batch_Format_Version);
+         Batch.Database_ID :=
+           (if History_Case = Wrong_Cohort_Database and then Index = Members
+            then To_Head_ID (Structural_ID (16#D2#, 1))
+            else To_Head_ID (Database_ID));
+         Batch.Epoch := Heads.Writer_Epoch (Current_Head.Epoch);
+         Batch.Batch_ID := To_Head_ID (Member_ID (Index));
+         Batch.Previous_Batch_ID :=
+           (if Index = 1
+            then To_Head_ID (Current_Head.Latest_Batch)
+            elsif History_Case = Swapped_Cohort_Link and then Index = Members
+            then To_Head_ID (Member_ID (1))
+            else To_Head_ID (Member_ID (Index - 1)));
+         Batch.Expected_Transition_ID :=
+            (if History_Case = Version_One_Final_Member and then Index = Members
+            then To_Head_ID (Publication_ID)
+            elsif History_Case = Consecutive_Cohort_History and then Index > Members / 2
+            then To_Head_ID (Publication_ID)
+            elsif History_Case = Discontinuous_Cohort_Transition and then Index = Members
+            then To_Head_ID (Structural_ID (16#E2#, 2))
+            else To_Head_ID (Current_Head.Transition_ID));
+         Batch.Expected_Transition_Number :=
+           (if (History_Case = Version_One_Final_Member and then Index = Members)
+              or else (History_Case = Consecutive_Cohort_History and then Index > Members / 2)
+              or else (History_Case = Discontinuous_Cohort_Transition and then Index = Members)
+            then Heads.Transition_Ordinal (Current_Head.Transition_Number) + 1
+            else Heads.Transition_Ordinal (Current_Head.Transition_Number));
+         Batch.Publication_Transition_ID :=
+           (if (History_Case = Version_One_Final_Member and then Index = Members)
+              or else (History_Case = Consecutive_Cohort_History and then Index > Members / 2)
+            then To_Head_ID (Successor_Publication)
+            else To_Head_ID (Publication_ID));
+         Batch.Publication_Transition_Number :=
+           (if (History_Case = Version_One_Final_Member and then Index = Members)
+              or else (History_Case = Consecutive_Cohort_History and then Index > Members / 2)
+              or else (History_Case = Discontinuous_Cohort_Transition and then Index = Members)
+            then Heads.Transition_Ordinal (Current_Head.Transition_Number) + 2
+            else Heads.Transition_Ordinal (Current_Head.Transition_Number) + 1);
+         Batch.First_Sequence :=
+           Heads.Commit_Sequence (Current_Head.Highest)
+           + Heads.Commit_Sequence
+               (if History_Case = Gapped_Cohort_Sequence and then Index = Members then Index + 1 else Index);
+         Batch.Last_Sequence := Batch.First_Sequence;
+         Batch.Transaction_Total := 1;
+         Batch.Mutation_Total := 1;
+         Batch.Transactions (1) :=
+           (Transaction_ID => Batch.Batch_ID,
+            Sequence       => Batch.First_Sequence,
+            First_Mutation => 1,
+            Mutations      => 1);
+         Batch.Mutations (1).Column_Family := 1;
+         Batch.Mutations (1).Operation := Batches.Put;
+         Batch.Mutations (1).Key_Size := 1;
+         Batch.Mutations (1).Key (1) := Formats.Byte (Index);
+         Batch.Mutations (1).Value_Size := 1;
+         Batch.Mutations (1).Value (1) := Formats.Byte (Index);
+         Batches.Encode_Batch (Batch, Image, Length, Encode_Result);
+         if Encode_Result /= Batches.Encoded then
+            Result := Corrupt;
+            return;
+         end if;
+         if History_Case = Cyclic_Cohort_Link and then Index = Members then
+            Put_Identifier (Image, 68, Member_ID (Index));
+            Repair_Batch_Checksums;
+         end if;
+         if not (History_Case = Missing_Cohort_Member and then Index = 2) then
+            Data := [others => 0];
+            for Offset in Natural range 0 .. Length - 1 loop
+               Data (Offset) := Image (Offset);
+            end loop;
+            Storage_Port.Put_Create
+              (Item,
+               Batch_Key (Item, Member_ID (Index)),
+               Data,
+               Length,
+               Batch_Object,
+               Deadline,
+               null,
+               Ignored_Generation,
+               Put_Result);
+            if Put_Result /= Object_Published then
+               Result := Storage_Failure;
+               return;
+            end if;
+         end if;
+      end loop;
+
+      if History_Case = Gapped_Cohort_Sequence then
+         Final_Sequence := Final_Sequence + 1;
+      end if;
+      Final_Head :=
+        (Database_ID            => Database_ID,
+         Version                => Interfaces.Unsigned_16 (Heads.Current_Format),
+         Epoch                  => Current_Head.Epoch,
+         Highest                =>
+           (if History_Case = Mismatched_Cohort_Head then Final_Sequence + 1 else Final_Sequence),
+         Latest_Batch           => Member_ID (Members),
+         Latest_Manifest        => Manifest_ID,
+         Transition_ID          =>
+           (if History_Case in Consecutive_Cohort_History | Version_One_Final_Member
+            then Successor_Publication
+            else Publication_ID),
+         Predecessor_Transition =>
+           (if History_Case = Discontinuous_Cohort_Transition
+            then Structural_ID (16#E2#, 2)
+            elsif History_Case in Consecutive_Cohort_History | Version_One_Final_Member
+            then Publication_ID
+            else Current_Head.Transition_ID),
+         Transition_Number      =>
+           Current_Head.Transition_Number
+           + (if History_Case
+                   in Consecutive_Cohort_History
+                    | Version_One_Final_Member
+                    | Discontinuous_Cohort_Transition
+              then 2
+              else 1));
+      Head_Image := Formats.Encode_Head (To_Head (Final_Head));
+      Copy_Head_Image (Head_Image, Data);
+      Storage_Port.Put_Replace
+        (Item,
+         Full_Key (Item, Head_Key_Suffix),
+         Data,
+         Formats.Head_Image_Length,
+         Existing_Generation,
+         Deadline,
+         null,
+         Ignored_New_Generation,
+         Put_Result);
+      Result := (if Put_Result = Object_Published then Success else Storage_Failure);
+   end Install_Test_Cohort_History;
 
    procedure Install_Test_Unsupported_Head
      (Item          : in out Storage_Context;
