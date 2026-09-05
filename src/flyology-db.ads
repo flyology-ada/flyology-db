@@ -3025,12 +3025,21 @@ private
       --  exact-byte read-only observation. It introduces no retry policy.
       Before_Immutable_Reconciliation,
       Before_Local_Activation);
-   type Storage_Fault_Mode is (No_Fault, Definite_Failure, Unknown_After_Entry);
+   type Storage_Fault_Mode is
+     (No_Fault,
+      Definite_Failure,
+      Precondition_Failure,
+      Unknown_After_Entry,
+      Conflicting_Immutable_Read);
    type Storage_Fault_Count is array (Storage_Fault_Point) of Natural;
    type Storage_Fault_Modes is array (Storage_Fault_Point) of Storage_Fault_Mode;
 
    protected type Storage_Test_Control is
-      procedure Arm (Point : Storage_Fault_Point; Mode : Storage_Fault_Mode; Count : Positive);
+      procedure Arm
+        (Point : Storage_Fault_Point;
+         Mode  : Storage_Fault_Mode;
+         Count : Positive;
+         Skip  : Natural := 0);
       procedure Clear;
       procedure Consume (Point : Storage_Fault_Point; Mode : out Storage_Fault_Mode);
       procedure Record_Put (Is_Head, Is_Manifest, Is_Run : Boolean);
@@ -3048,6 +3057,7 @@ private
       function Get_Waiting return Boolean;
    private
       Fault_Counts  : Storage_Fault_Count := [others => 0];
+      Fault_Skips   : Storage_Fault_Count := [others => 0];
       Fault_Modes   : Storage_Fault_Modes := [others => No_Fault];
       Batch_Puts    : Natural := 0;
       Run_Puts      : Natural := 0;
@@ -3205,6 +3215,9 @@ private
    procedure Finalize (Item : in out Database);
 
    procedure Set_Test_Paused (Item : in out Database; Value : Boolean; Result : out Outcome_Code);
+   procedure Set_Test_Independent_Cohort_Width
+     (Item : in out Database; Width : Positive; Result : out Outcome_Code);
+   procedure Abort_Test_Independent_Cohort (Item : in out Database; Result : out Outcome_Code);
    procedure Test_Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
    procedure Fail_Next_Test_Install (Item : in out Database; Result : out Outcome_Code);
    procedure Set_Test_Get_Paused (Item : in out Storage_Context; Value : Boolean);

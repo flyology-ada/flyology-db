@@ -2374,8 +2374,8 @@ do
       ;;
   esac
 done
-if test "$independent_coalescing_generated" -ne 5400897 || \
-  test "$independent_coalescing_states" -ne 459627 || \
+if test "$independent_coalescing_generated" -ne 1959420 || \
+  test "$independent_coalescing_states" -ne 168545 || \
   test "$independent_coalescing_depth" -ne 30
 then
   printf '%s\n' \
@@ -2426,8 +2426,8 @@ fi
 independent_coalescing_action_report="$temporary_root/independent-coalescing-action-coverage.txt"
 : >"$independent_coalescing_action_report"
 for action in AdmitSingleton RejectConflict CancelBeforeAdmission \
-  ExpireBeforeAdmission FallbackFiniteDeadline FreezeCohort \
-  PublishMemberBatch ConfirmAmbiguousBatch SplitFailedMember \
+  RejectFiniteDeadline FreezeCohort PublishMemberBatch \
+  ConfirmAmbiguousBatch FailFrozenCohort \
   PublishCohortHead LoseHeadResponse ObserveSuccess \
   ObserveHeadPreconditionFailure RetainUnknownAtPredecessor \
   ObserveConclusiveSuccessor ResolveMember ExportMemberAuthority \
@@ -2487,30 +2487,29 @@ do
 done
 independent_expected_action_report="$temporary_root/independent-coalescing-action-coverage.expected.txt"
 cat >"$independent_expected_action_report" <<'EOF'
-    AdmitSingleton 2075
-    RejectConflict 29734
-    CancelBeforeAdmission 29722
-    ExpireBeforeAdmission 22050
-    FallbackFiniteDeadline 22050
-    FreezeCohort 2090
-    PublishMemberBatch 12120
-    ConfirmAmbiguousBatch 6060
-    SplitFailedMember 2910
-    PublishCohortHead 3030
-    LoseHeadResponse 6060
-    ObserveSuccess 3855
-    ObserveHeadPreconditionFailure 3030
-    RetainUnknownAtPredecessor 23740
-    ObserveConclusiveSuccessor 10395
-    ResolveMember 24260
-    ExportMemberAuthority 16800
-    CrashLoseVolatileReceipts 13645
-    ImportMemberAuthority 44535
-    RejectMalformedAuthority 26065
-    RejectSwappedAuthority 26065
-    RecoverCohortChain 34210
-    RejectMalformedRecovery 91270
-    CompleteCohort 3855
+    AdmitSingleton 842
+    RejectConflict 3734
+    CancelBeforeAdmission 3734
+    RejectFiniteDeadline 21616
+    FreezeCohort 842
+    PublishMemberBatch 4872
+    ConfirmAmbiguousBatch 2436
+    FailFrozenCohort 1160
+    PublishCohortHead 1166
+    LoseHeadResponse 2332
+    ObserveSuccess 1490
+    ObserveHeadPreconditionFailure 1166
+    RetainUnknownAtPredecessor 9178
+    ObserveConclusiveSuccessor 3980
+    ResolveMember 9498
+    ExportMemberAuthority 6574
+    CrashLoseVolatileReceipts 5324
+    ImportMemberAuthority 17546
+    RejectMalformedAuthority 10196
+    RejectSwappedAuthority 10196
+    RecoverCohortChain 13430
+    RejectMalformedRecovery 35742
+    CompleteCohort 1490
 EOF
 if ! cmp "$independent_expected_action_report" \
   "$independent_coalescing_action_report"
@@ -2528,7 +2527,8 @@ for probe in \
   IndependentCommitCoalescingAuthorityProbe:ImportedAuthorityIsValid \
   IndependentCommitCoalescingResolvedAuthorityProbe:ResolvedImportedAuthorityIsExact \
   IndependentCommitCoalescingRecoveryProbe:RecoveryIsExact \
-  IndependentCommitCoalescingParkedLeakProbe:ParkedSuffixWaitsForPrefix
+  IndependentCommitCoalescingFiniteDeadlineProbe:FiniteDeadlinesRejectBeforeAdmission \
+  IndependentCommitCoalescingCohortFailureProbe:WholeFrozenCohortFailure
 do
   probe_module=${probe%%:*}
   probe_invariant=${probe#*:}
@@ -2569,14 +2569,13 @@ do
 done
 
 for witness in \
-  IndependentCommitCoalescingSplitWitness:SplitPending \
-  IndependentCommitCoalescingParkedSplitWitness:ParkedSplitPending \
+  IndependentCommitCoalescingCohortFailureWitness:CohortFailurePending \
+  IndependentCommitCoalescingFiniteDeadlineWitness:FiniteDeadlinePending \
   IndependentCommitCoalescingAuthorityWitness:AuthorityRecoveryPending \
   IndependentCommitCoalescingSiblingAuthorityWitness:SiblingAuthorityPending \
   IndependentCommitCoalescingEmptyRecoveryWitness:EmptyRecoveryPending \
-  IndependentCommitCoalescingParkedPreconditionWitness:ParkedPreconditionPending \
-  IndependentCommitCoalescingParkedResolutionWitness:ParkedResolutionPending \
-  IndependentCommitCoalescingParkedSuccessorWitness:ParkedSuccessorPending
+  IndependentCommitCoalescingPreconditionWitness:PreconditionPending \
+  IndependentCommitCoalescingSuccessorWitness:SuccessorPending
 do
   witness_module=${witness%%:*}
   witness_invariant=${witness#*:}
@@ -2666,7 +2665,6 @@ then
   cat "$temporary_root/tlaps-independent-coalescing.log" >&2
   exit 1
 fi
-
 if test "${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}" = 1
 then
   trace_inventory_before_copy="$temporary_root/trace-inventory.before-copy"
@@ -2736,9 +2734,9 @@ cat "$independent_coalescing_action_report"
 printf '%s\n' \
   "  Independent coalescing TLAPS $independent_coalescing_obligations/16 obligations"
 printf '%s\n' \
-  "  Independent coalescing split/authority/empty-recovery/parked-resolution/fence witnesses reached"
+  "  Independent coalescing failure/deadline/authority/empty-recovery/fence witnesses reached"
 printf '%s\n' \
-  "  Negative independent-coalescing visibility/replay/fence/authority/recovery probes detected"
+  "  Negative independent-coalescing visibility/replay/fence/authority/recovery/deadline/failure probes detected"
 printf '%s\n' "  Negative stale-publication probe detected"
 printf '%s\n' "  Negative overlapping-transaction ownership probe detected"
 printf '%s\n' "  Deep committed/failed reconciliation traces canonical"

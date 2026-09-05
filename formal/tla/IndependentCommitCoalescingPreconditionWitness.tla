@@ -1,8 +1,8 @@
--------- MODULE IndependentCommitCoalescingParkedSuccessorWitness --------
+------- MODULE IndependentCommitCoalescingPreconditionWitness -------
 EXTENDS IndependentCommitCoalescing
 
-ParkedSuccessorComplete ==
-    /\ lastAction = "ObserveConclusiveSuccessor"
+PreconditionComplete ==
+    /\ lastAction = "ObserveHeadPreconditionFailure"
     /\ fenced
     /\ cohort = {}
     /\ visible = {}
@@ -10,12 +10,10 @@ ParkedSuccessorComplete ==
     /\ receipt[T1] = "Failed"
     /\ txnState[T2] = "Failed"
     /\ receipt[T2] = "Failed"
-    /\ txnState[T4] = "Failed"
-    /\ receipt[T4] = "Failed"
     /\ batchPutCalls = 2
     /\ headPutCalls = 1
     /\ resolutionPutCalls = 0
 
-ParkedSuccessorPending == ~ParkedSuccessorComplete
+PreconditionPending == ~PreconditionComplete
 
 =============================================================================

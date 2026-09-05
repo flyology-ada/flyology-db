@@ -5486,14 +5486,7 @@ package body Flyology.DB.Engine_Tests is
             Expect (Result, Success, Label_Text & " profile rewrite failed");
          end if;
          Testing.Install_Cohort_History
-           (Context,
-            DB_ID (230),
-            ID (231),
-            ID (232),
-            Members,
-            History_Case,
-            Test_Operation_Timeout,
-            Result);
+           (Context, DB_ID (230), ID (231), ID (232), Members, History_Case, Test_Operation_Timeout, Result);
          Expect (Result, Success, Label_Text & " cohort fixture installation failed");
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          Open (Item, Context'Access, DB_ID (230), Test_Operation_Timeout, Result => Result);
@@ -5539,6 +5532,487 @@ package body Flyology.DB.Engine_Tests is
       Run_Cohort_Recovery_Case ("cohort-head", 2, True, Mismatched_Cohort_Head, Corrupt);
       Run_Cohort_Recovery_Case ("standard-rejects-v2", 1, False, Valid_Cohort_History, Corrupt);
       Run_Cohort_Recovery_Case ("standard-v1", 1, False, Version_One_First_Member, Success);
+
+      --  The private exact-width publisher preserves one immutable batch per
+      --  independently submitted transaction and amortizes only HEAD. Widths
+      --  are test inputs, not defaults or persisted scheduling policy.
+      declare
+         Context       : aliased Storage_Context;
+         Item          : aliased Database;
+         Family        : Column_Family;
+         Reader        : Transaction;
+         Data          : Value;
+         Visible_Total : Natural := 0;
+
+         procedure Wait_For_Cohort_Queue (Minimum : Natural) is
+            Depth : Natural := 0;
+            Query : Outcome_Code;
+         begin
+            for Attempt in 1 .. 2_000 loop
+               Testing.Queue_Depth (Item, Depth, Query);
+               Expect (Query, Success, "independent cohort queue-depth query failed");
+               exit when Depth >= Minimum;
+               delay 0.001;
+            end loop;
+            if Depth < Minimum then
+               raise Program_Error with "independent cohort queue did not reach expected depth";
+            end if;
+         end Wait_For_Cohort_Queue;
+
+         procedure Run_Width
+           (Width            : Positive;
+            Transaction_Base : Natural;
+            Expected         : Outcome_Code;
+            Batch_Delta      : Natural;
+            Head_Delta       : Natural;
+            Resolve_Unknown  : Boolean := False;
+            Check_Visible    : Boolean := True)
+         is
+            Batch_Before, Manifest_Before, Head_Before : Natural;
+            Batch_After, Manifest_After, Head_After    : Natural;
+            type Operation_Access is access Commit_Operation;
+            procedure Free is new Ada.Unchecked_Deallocation
+              (Object => Commit_Operation, Name => Operation_Access);
+            type Operation_Array is array (Positive range <>) of Operation_Access;
+            type Receipt_Array is array (Positive range <>) of Commit_Receipt;
+            type Boolean_Array is array (Positive range <>) of Boolean;
+            Set      : aliased Flyology.Operations.Completion_Set (Width);
+            Work     : Operation_Array (1 .. Width) := [others => null];
+            Active   : Boolean_Array (1 .. Width) := [others => False];
+            Receipts : Receipt_Array (1 .. Width);
+            Results  : array (Positive range 1 .. Width) of Outcome_Code;
+
+            procedure Release_Work is
+            begin
+               for Index in Work'Range loop
+                  if Work (Index) /= null then
+                     Free (Work (Index));
+                  end if;
+               end loop;
+            end Release_Work;
+         begin
+            Testing.Configure_Independent_Cohort (Item, Width, Result);
+            Expect (Result, Success, "independent cohort width configuration failed");
+            Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+            for Index in Work'Range loop
+               Work (Index) := new Commit_Operation (Set'Access, Item'Access, null);
+            end loop;
+            for Index in Work'Range loop
+               declare
+                  Txn : Transaction;
+               begin
+                  Begin_Transaction (Item, Numbered_TX_ID (Transaction_Base + Index), Txn, Result);
+                  Expect (Result, Success, "independent cohort transaction begin failed");
+                  Put
+                    (Item,
+                     Txn,
+                     Family,
+                     To_Key ([Byte (Index), Byte (Width), Byte (Transaction_Base mod 256)]),
+                     To_Value ([Byte (Transaction_Base mod 256), Byte (Index)]),
+                     Result);
+                  Expect (Result, Success, "independent cohort mutation failed");
+                  Commit (Txn, Duration'Last, Work (Index).all);
+                  Active (Index) := True;
+               exception
+                  when others =>
+                     Rollback (Txn, Result);
+                     raise;
+               end;
+            end loop;
+            Flyology.Operations.Wait_All (Set);
+            for Index in Work'Range loop
+               Finish (Work (Index).all, Receipts (Index), Results (Index));
+               Flyology.Operations.Release (Work (Index).all);
+               Active (Index) := False;
+               Expect (Results (Index), Expected, "independent cohort member outcome changed");
+               if Receipt_Outcome (Receipts (Index)) /= Expected
+                 or else Receipt_Transaction_ID (Receipts (Index))
+                         /= Numbered_TX_ID (Transaction_Base + Index)
+                 or else Receipt_Batch_ID (Receipts (Index)) /= Numbered_ID (Transaction_Base + Index)
+                 or else Receipt_Sequence (Receipts (Index)) < Sequence_Number (Visible_Total + 1)
+                 or else Receipt_Sequence (Receipts (Index)) > Sequence_Number (Visible_Total + Width)
+               then
+                  raise Program_Error with "independent cohort member lost its exact identity";
+               end if;
+               for Earlier in Positive range 1 .. Index - 1 loop
+                  if Receipt_Sequence (Receipts (Earlier)) = Receipt_Sequence (Receipts (Index)) then
+                     raise Program_Error with "independent cohort member sequence was reused";
+                  end if;
+               end loop;
+               if Index > 1
+                 and then Testing.Attempted_Transition_Number (Receipts (Index))
+                          /= Testing.Attempted_Transition_Number (Receipts (1))
+               then
+                  raise Program_Error with "independent cohort members did not share one exact HEAD range";
+               end if;
+            end loop;
+            Release_Work;
+            if Resolve_Unknown then
+               for Index in Receipts'Range loop
+                  if Commit_Resolution_Authority_Length (Receipts (Index)) = 0 then
+                     raise Program_Error with "independent unknown member lost its resolution authority";
+                  end if;
+                  Resolve (Item, Receipts (Index), Test_Operation_Timeout, Result => Results (Index));
+                  Expect (Results (Index), Success, "independent unknown member did not resolve");
+                  if Receipt_Outcome (Receipts (Index)) /= Success
+                    or else Receipt_Transaction_ID (Receipts (Index))
+                            /= Numbered_TX_ID (Transaction_Base + Index)
+                  then
+                     raise Program_Error with "independent resolution changed member identity";
+                  end if;
+               end loop;
+            end if;
+            Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+            if Batch_After /= Batch_Before + Batch_Delta
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before + Head_Delta
+            then
+               raise Program_Error
+                 with
+                   "independent cohort width"
+                   & Positive'Image (Width)
+                   & " publication geometry changed: batch"
+                   & Natural'Image (Batch_Before)
+                   & "->"
+                   & Natural'Image (Batch_After)
+                   & ", manifest"
+                   & Natural'Image (Manifest_Before)
+                   & "->"
+                   & Natural'Image (Manifest_After)
+                   & ", head"
+                   & Natural'Image (Head_Before)
+                   & "->"
+                   & Natural'Image (Head_After);
+            end if;
+            if Expected = Success or else Resolve_Unknown then
+               Visible_Total := Visible_Total + Width;
+               if Check_Visible and then Visible (Item) /= Sequence_Number (Visible_Total) then
+                  raise Program_Error with "independent cohort installed an inexact sequence range";
+               end if;
+            end if;
+         exception
+            when others =>
+               Testing.Abort_Independent_Cohort (Item, Result);
+               for Index in Work'Range loop
+                  if Work (Index) /= null and then Active (Index)
+                    and then Flyology.Operations.Is_Active (Work (Index).all)
+                  then
+                     Flyology.Operations.Cancel (Work (Index).all);
+                  end if;
+               end loop;
+               if (for some Index in Active'Range => Active (Index)) then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               for Index in Work'Range loop
+                  if Work (Index) /= null and then Active (Index)
+                    and then Flyology.Operations.Is_Terminal (Work (Index).all)
+                  then
+                     Finish (Work (Index).all, Receipts (Index), Results (Index));
+                     Flyology.Operations.Release (Work (Index).all);
+                  end if;
+               end loop;
+               Release_Work;
+               raise;
+         end Run_Width;
+      begin
+         Bind_Context (Context, Backend, "independent-cohort-publisher");
+         Create_DB (Item, Context'Access, DB_ID (221), ID (222), Result);
+         Expect (Result, Success, "independent cohort root create failed");
+         Close (Item, Result);
+         Expect (Result, Success, "independent cohort root close failed");
+         Testing.Rewrite_Manifest_Profile (Context, Manifest_ID_For (ID (222)), DB_ID (221), Result);
+         Expect (Result, Success, "independent cohort profile rewrite failed");
+         Open (Item, Context'Access, DB_ID (221), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "independent cohort root reopen failed");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "independent cohort family open failed");
+
+         Testing.Configure_Independent_Cohort (Item, 2, Result);
+         Expect (Result, Success, "independent finite-deadline width configuration failed");
+         declare
+            Txn                                               : Transaction;
+            Receipt                                           : Commit_Receipt;
+            Before_Batch, Before_Manifest, Before_Head         : Natural;
+            After_Batch, After_Manifest, After_Head            : Natural;
+         begin
+            Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
+            Begin_Transaction (Item, Numbered_TX_ID (60_000), Txn, Result);
+            Put (Item, Txn, Family, To_Key ([0]), To_Value ([0]), Result);
+            Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+            Expect (Result, Unsupported_Format, "independent finite deadline entered cohort admission");
+            if Receipt_Outcome (Receipt) /= Invalid_State
+              or else Receipt_Transaction_ID (Receipt) /= Zero_Transaction_ID
+              or else Receipt_Sequence (Receipt) /= 0
+              or else Receipt_Batch_ID (Receipt) /= Zero_Identifier
+              or else Testing.Receipt_Retains_Image (Receipt)
+              or else Commit_Resolution_Authority_Length (Receipt) /= 0
+              or else Testing.Attempted_Transition_Number (Receipt) /= 1
+            then
+               raise Program_Error with "independent finite deadline exposed receipt authority";
+            end if;
+            Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+            if After_Batch /= Before_Batch
+              or else After_Manifest /= Before_Manifest
+              or else After_Head /= Before_Head
+            then
+               raise Program_Error with "independent finite deadline reached publication";
+            end if;
+            Rollback (Txn, Result);
+            Expect (Result, Success, "independent finite-deadline rejection consumed its transaction");
+         end;
+
+         --  Exact-width admission deliberately has no implicit tail timer.
+         --  The private harness abort makes an underfilled tail terminal
+         --  without publishing or losing the admitted receipt identity.
+         declare
+            Set     : aliased Flyology.Operations.Completion_Set (1);
+            Work    : Commit_Operation (Set'Access, Item'Access, null);
+            Txn     : Transaction;
+            Receipt : Commit_Receipt;
+            Before_Batch, Before_Manifest, Before_Head : Natural;
+            After_Batch, After_Manifest, After_Head    : Natural;
+         begin
+            Testing.Configure_Independent_Cohort (Item, 2, Result);
+            Expect (Result, Success, "independent underfilled-tail width configuration failed");
+            Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
+            Begin_Transaction (Item, Numbered_TX_ID (60_001), Txn, Result);
+            Put (Item, Txn, Family, To_Key ([250, 1]), To_Value ([1]), Result);
+            Commit (Txn, Duration'Last, Work);
+            Wait_For_Cohort_Queue (1);
+            Testing.Abort_Independent_Cohort (Item, Result);
+            Expect (Result, Success, "independent underfilled-tail abort failed");
+            Flyology.Operations.Wait_All (Set);
+            Finish (Work, Receipt, Result);
+            Flyology.Operations.Release (Work);
+            Expect (Result, Storage_Failure, "independent underfilled tail did not terminate");
+            if Receipt_Outcome (Receipt) /= Storage_Failure
+              or else Receipt_Transaction_ID (Receipt) /= Numbered_TX_ID (60_001)
+              or else Receipt_Batch_ID (Receipt) /= Numbered_ID (60_001)
+            then
+               raise Program_Error with "independent underfilled tail lost receipt identity";
+            end if;
+            Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+            if After_Batch /= Before_Batch
+              or else After_Manifest /= Before_Manifest
+              or else After_Head /= Before_Head
+            then
+               raise Program_Error with "independent underfilled tail reached publication";
+            end if;
+         end;
+
+         --  A conflict removed during cohort selection may leave one valid
+         --  queued member. Prove that the same private abort drains that tail
+         --  while preserving the conflict result and publishing nothing.
+         declare
+            Set          : aliased Flyology.Operations.Completion_Set (2);
+            First        : Commit_Operation (Set'Access, Item'Access, null);
+            Second       : Commit_Operation (Set'Access, Item'Access, null);
+            First_Txn    : Transaction;
+            Second_Txn   : Transaction;
+            First_Receipt, Second_Receipt : Commit_Receipt;
+            Before_Batch, Before_Manifest, Before_Head : Natural;
+            After_Batch, After_Manifest, After_Head    : Natural;
+            Completed : Flyology.Operations.Completion_Batch (Set.Capacity);
+         begin
+            Testing.Configure_Independent_Cohort (Item, 2, Result);
+            Expect (Result, Success, "independent conflict-tail width configuration failed");
+            Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
+            Testing.Pause_Coordinator (Item, Result);
+            Expect (Result, Success, "independent conflict-tail coordinator pause failed");
+            Begin_Transaction (Item, Numbered_TX_ID (60_002), First_Txn, Result);
+            Put (Item, First_Txn, Family, To_Key ([250, 2]), To_Value ([2]), Result);
+            Begin_Transaction (Item, Numbered_TX_ID (60_003), Second_Txn, Result);
+            Put (Item, Second_Txn, Family, To_Key ([250, 2]), To_Value ([3]), Result);
+            Commit (First_Txn, Duration'Last, First);
+            Commit (Second_Txn, Duration'Last, Second);
+            Wait_For_Cohort_Queue (2);
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "independent conflict-tail coordinator resume failed");
+            Flyology.Operations.Wait_Some (Set, Completed);
+            if Completed.Count /= 1 then
+               raise Program_Error with "independent conflict pruning completed an inexact member set";
+            end if;
+            Testing.Abort_Independent_Cohort (Item, Result);
+            Expect (Result, Success, "independent conflict-tail abort failed");
+            Flyology.Operations.Wait_All (Set);
+            Finish (First, First_Receipt, Result);
+            Flyology.Operations.Release (First);
+            Expect (Result, Storage_Failure, "independent conflict tail did not drain");
+            Finish (Second, Second_Receipt, Result);
+            Flyology.Operations.Release (Second);
+            Expect (Result, Conflict, "independent conflicting member was not rejected");
+            if Receipt_Transaction_ID (First_Receipt) /= Numbered_TX_ID (60_002)
+              or else Receipt_Batch_ID (First_Receipt) /= Numbered_ID (60_002)
+              or else Receipt_Transaction_ID (Second_Receipt) /= Numbered_TX_ID (60_003)
+              or else Receipt_Batch_ID (Second_Receipt) /= Numbered_ID (60_003)
+            then
+               raise Program_Error with "independent conflict tail lost receipt identity";
+            end if;
+            Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+            if After_Batch /= Before_Batch
+              or else After_Manifest /= Before_Manifest
+              or else After_Head /= Before_Head
+            then
+               raise Program_Error with "independent conflict tail reached publication";
+            end if;
+         end;
+
+         Run_Width (1, 60_010, Success, 1, 1);
+         Run_Width (2, 60_020, Success, 2, 1);
+         Run_Width (4, 60_030, Success, 4, 1);
+         Run_Width (8, 60_040, Success, 8, 1);
+
+         Testing.Arm (Context, After_Batch_Put, Unknown_After_Entry);
+         Run_Width (2, 60_050, Success, 2, 1);
+
+         Testing.Arm (Context, Before_Batch_Put, Precondition_Failure);
+         Run_Width (2, 60_055, Stale_Writer, 0, 0);
+         declare
+            Fenced : Transaction;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (60_057), Fenced, Result);
+            Expect (Result, Stale_Writer, "independent batch precondition did not fence reuse");
+         end;
+         Close (Item, Result);
+         Expect (Result, Success, "independent batch-precondition root close failed");
+         Open (Item, Context'Access, DB_ID (221), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "independent batch-precondition root did not reopen");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "independent batch-precondition family did not reopen");
+
+         Testing.Arm (Context, After_Batch_Put, Unknown_After_Entry);
+         Testing.Arm (Context, Before_Immutable_Reconciliation, Conflicting_Immutable_Read);
+         Run_Width (2, 60_058, Stale_Writer, 1, 0);
+         declare
+            Fenced : Transaction;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (60_059), Fenced, Result);
+            Expect (Result, Stale_Writer, "independent conflicting batch read did not fence reuse");
+         end;
+         Close (Item, Result);
+         Expect (Result, Success, "independent conflicting-read root close failed");
+         Open (Item, Context'Access, DB_ID (221), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "independent conflicting-read root did not reopen");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "independent conflicting-read family did not reopen");
+
+         Testing.Arm (Context, Before_Batch_Put, Definite_Failure, Skip => 1);
+         Run_Width (2, 60_060, Storage_Failure, 1, 0);
+         Run_Width (1, 60_070, Success, 1, 1);
+
+         Testing.Arm (Context, Before_Head_Put, Precondition_Failure);
+         Run_Width (2, 60_120, Stale_Writer, 2, 0);
+         declare
+            Fenced : Transaction;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (60_121), Fenced, Result);
+            Expect (Result, Stale_Writer, "independent HEAD precondition failure did not fence reuse");
+         end;
+         Close (Item, Result);
+         Expect (Result, Success, "independent precondition-fenced root close failed");
+         Open (Item, Context'Access, DB_ID (221), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "independent precondition-fenced root did not reopen");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "independent precondition-fenced family did not reopen");
+
+         Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+         Run_Width (2, 60_090, Outcome_Unknown, 2, 1, Resolve_Unknown => True);
+
+         Testing.Fail_Next_Install (Item, Result);
+         Expect (Result, Success, "independent local-install fault setup failed");
+         Run_Width (2, 60_100, Success, 2, 1, Check_Visible => False);
+         declare
+            Fenced : Transaction;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (60_110), Fenced, Result);
+            Expect (Result, Stale_Writer, "independent local-install failure did not fence reuse");
+         end;
+
+         Close (Item, Result);
+         Expect (Result, Success, "independent cohort published root close failed");
+         Open (Item, Context'Access, DB_ID (221), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "independent cohort published root did not recover");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "independent cohort recovered family did not open");
+         Begin_Transaction (Item, Numbered_TX_ID (60_080), Reader, Result);
+         Expect (Result, Success, "independent cohort verification begin failed");
+         for Width in Positive range 1 .. 8 loop
+            if Width = 1 or else Width = 2 or else Width = 4 or else Width = 8 then
+               declare
+                  Base : constant Natural :=
+                    (case Width is
+                       when 1      => 60_010,
+                       when 2      => 60_020,
+                       when 4      => 60_030,
+                       when others => 60_040);
+               begin
+                  for Member in Positive range 1 .. Width loop
+                     Get
+                       (Item,
+                        Reader,
+                        Family,
+                        To_Key ([Byte (Member), Byte (Width), Byte (Base mod 256)]),
+                        Data,
+                        Result);
+                     Expect (Result, Success, "independent cohort recovery lost a member");
+                     if Data /= To_Value ([Byte (Base mod 256), Byte (Member)]) then
+                        raise Program_Error with "independent cohort recovery changed a member value";
+                     end if;
+                  end loop;
+               end;
+            end if;
+         end loop;
+         Get (Item, Reader, Family, To_Key ([1, 1, Byte (60_070 mod 256)]), Data, Result);
+         Expect (Result, Success, "independent cohort writer reuse was not durable");
+         if Data /= To_Value ([Byte (60_070 mod 256), 1]) then
+            raise Program_Error with "independent cohort writer reuse changed its value";
+         end if;
+         for Member in Positive range 1 .. 2 loop
+            Get
+              (Item,
+               Reader,
+               Family,
+               To_Key ([Byte (Member), 2, Byte (60_050 mod 256)]),
+               Data,
+               Result);
+            Expect (Result, Success, "independent reconciled batch member was not durable");
+         end loop;
+         declare
+            type Base_Array is array (Positive range <>) of Natural;
+            Bases : constant Base_Array := [60_055, 60_058, 60_060, 60_120];
+         begin
+            for Base of Bases loop
+               for Member in Positive range 1 .. 2 loop
+                  Get
+                    (Item,
+                     Reader,
+                     Family,
+                     To_Key ([Byte (Member), 2, Byte (Base mod 256)]),
+                     Data,
+                     Result);
+                  Expect (Result, Not_Found, "independent failed cohort member became visible after reopen");
+               end loop;
+            end loop;
+         end;
+         declare
+            type Base_Array is array (Positive range <>) of Natural;
+            Bases : constant Base_Array := [60_090, 60_100];
+         begin
+            for Base of Bases loop
+               for Member in Positive range 1 .. 2 loop
+                  Get (Item, Reader, Family, To_Key ([Byte (Member), 2, Byte (Base mod 256)]), Data, Result);
+                  Expect (Result, Success, "independent exceptional cohort member was not durable");
+                  if Data /= To_Value ([Byte (Base mod 256), Byte (Member)]) then
+                     raise Program_Error with "independent exceptional cohort member value changed";
+                  end if;
+               end loop;
+            end loop;
+         end;
+         Rollback (Reader, Result);
+         Expect (Result, Success, "independent cohort verification rollback failed");
+         Close (Item, Result);
+         Expect (Result, Success, "independent cohort recovered root close failed");
+      end;
 
       declare
          Context                                    : aliased Storage_Context;
@@ -5694,15 +6168,15 @@ package body Flyology.DB.Engine_Tests is
          Commit_Group (Item, ID (219), Group, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
          Expect (Result, Unsupported_Format, "profile-v4 explicit group reached the version-1 publisher");
          for Index in Group'Range loop
-            if Receipt_Outcome (Receipts (Index)) /= Unsupported_Format
-              or else Receipt_Transaction_ID (Receipts (Index)) /= TX_ID (216 + Byte (Index))
-              or else Receipt_Batch_ID (Receipts (Index)) /= ID (219)
+            if Receipt_Outcome (Receipts (Index)) /= Invalid_State
+              or else Receipt_Transaction_ID (Receipts (Index)) /= Zero_Transaction_ID
+              or else Receipt_Batch_ID (Receipts (Index)) /= Zero_Identifier
               or else Commit_Resolution_Authority_Length (Receipts (Index)) /= 0
             then
-               raise Program_Error with "profile-v4 group lost an admitted failure identity";
+               raise Program_Error with "profile-v4 group exposed a pre-admission identity";
             end if;
             Rollback (Group (Index), Result);
-            Expect (Result, Invalid_State, "profile-v4 group transaction remained active");
+            Expect (Result, Success, "profile-v4 group pre-admission rejection consumed a transaction");
          end loop;
          Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
          if Batch_After /= Batch_Before
@@ -6375,8 +6849,7 @@ package body Flyology.DB.Engine_Tests is
          Result : Interfaces.Unsigned_64 := 0;
       begin
          for Offset in Natural range 0 .. 7 loop
-            Result :=
-              Interfaces.Shift_Left (Result, 8) or Interfaces.Unsigned_64 (Image (Position + Offset));
+            Result := Interfaces.Shift_Left (Result, 8) or Interfaces.Unsigned_64 (Image (Position + Offset));
          end loop;
          return Result;
       end Authority_U64;
@@ -6592,12 +7065,7 @@ package body Flyology.DB.Engine_Tests is
             Status       : Commit_Authorities.Decode_Status;
          begin
             Commit_Authorities.Decode
-              (Authority,
-               Authority_Database (Authority),
-               Metadata,
-               Batch_First,
-               Batch_Length,
-               Status);
+              (Authority, Authority_Database (Authority), Metadata, Batch_First, Batch_Length, Status);
             if Status /= Commit_Authorities.Decoded then
                raise Program_Error with "commit authority v1 golden did not decode";
             end if;
@@ -7187,12 +7655,7 @@ package body Flyology.DB.Engine_Tests is
            (Cohort_Item, Authority (1 .. Authority_Length), Imported, Result);
          Expect (Result, Success, "rejected cohort authority import failed");
          Testing.Install_Cohort_Rival_Head
-           (Cohort_Context,
-            Cohort_DB,
-            Manifest_ID,
-            Transition_ID,
-            Test_Operation_Timeout,
-            Result);
+           (Cohort_Context, Cohort_DB, Manifest_ID, Transition_ID, Test_Operation_Timeout, Result);
          Expect (Result, Success, "cohort rival HEAD installation failed");
          Testing.Publication_Counts (Cohort_Context, Batch_Before, Manifest_Before, Head_Before);
          Resolve (Cohort_Item, Imported, Test_Operation_Timeout, Result => Result);
@@ -10898,10 +11361,10 @@ package body Flyology.DB.Engine_Tests is
       declare
          --  Memory-backend test capacity: four buckets, the established 512-object
          --  corpus, ten durable-authority fixture keys, seven cohort-authority
-         --  keys, and eleven coalescing-profile keys plus 69 v2 recovery objects.
+         --  keys, and 39 coalescing-profile keys plus 69 v2 recovery objects.
          --  Eight million bytes cover the complete deterministic engine corpus
          --  while retaining explicit backend backpressure.
-         Store : aliased Memory.Store (4, 609, 8_000_000);
+         Store : aliased Memory.Store (4, 637, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then

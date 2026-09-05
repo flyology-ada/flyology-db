@@ -3,10 +3,10 @@ EXTENDS FiniteSets, Naturals
 
 (***************************************************************************
 This arbitrary-domain kernel proves the central safety cut for the private
-independent-commit coalescing experiment. Pre-HEAD exclusion and failed-member
-splitting remain independent. A published cohort becomes visible atomically
-only after all retained members exist. Acknowledgement and recovery are rooted
-in authoritative visibility, and receipt resolution performs no publication.
+independent-commit coalescing experiment. Pre-HEAD exclusion and whole-cohort
+failure remain independent. A published cohort becomes visible atomically only
+after all retained members exist. Acknowledgement and recovery are rooted in
+authoritative visibility, and receipt resolution performs no publication.
 
 It omits byte formats, sequence arithmetic, provider behavior, finite-deadline
 scheduling, Ada ownership, progress, and refinement to the finite model or an
@@ -18,7 +18,7 @@ CONSTANT Transactions
 ASSUME Transactions # {}
 
 States == {
-    "Idle", "Admitted", "Parked", "Excluded", "Frozen", "Unknown", "Committed", "Failed"
+    "Idle", "Admitted", "Excluded", "Frozen", "Unknown", "Committed", "Failed"
 }
 HeadStates == {"Collecting", "Publishing", "Unknown", "Committed", "Rejected"}
 
@@ -108,26 +108,14 @@ Store(t) ==
         staleAdmissionObserved, headWrites, resolutionWrites,
         invalidImportAccepted>>
 
-SplitFailed(t, prefix, suffix) ==
+FailCohort(t) ==
     /\ headState = "Publishing"
     /\ t \in cohort \ stored
-    /\ prefix \subseteq cohort
-    /\ suffix \subseteq cohort
-    /\ prefix \intersect suffix = {}
-    /\ prefix \intersect {t} = {}
-    /\ suffix \intersect {t} = {}
-    /\ prefix \cup suffix \cup {t} = cohort
-    /\ prefix \subseteq stored
-    /\ suffix \intersect stored = {}
-    /\ cohort' = prefix
+    /\ cohort' = {}
     /\ state' =
-        [u \in Transactions |->
-            IF u = t THEN "Failed"
-            ELSE IF u \in suffix
-                 THEN IF prefix = {} THEN "Admitted" ELSE "Parked"
-            ELSE state[u]]
-    /\ excluded' = excluded \cup {t}
-    /\ headState' = IF prefix = {} THEN "Collecting" ELSE "Publishing"
+        [u \in Transactions |-> IF u \in cohort THEN "Failed" ELSE state[u]]
+    /\ excluded' = excluded \cup cohort
+    /\ headState' = "Collecting"
     /\ UNCHANGED <<stored, visible, publishedCohorts, acknowledged, recovered,
         authority, fenced, staleAdmissionObserved, batchWrites, headWrites,
         resolutionWrites, invalidImportAccepted>>
@@ -151,10 +139,8 @@ RejectHead ==
     /\ cohort # {}
     /\ cohort \subseteq stored
     /\ state' =
-        [t \in Transactions |->
-            IF t \in cohort \/ state[t] = "Parked" THEN "Failed" ELSE state[t]]
-    /\ excluded' =
-        excluded \cup cohort \cup {t \in Transactions : state[t] = "Parked"}
+        [t \in Transactions |-> IF t \in cohort THEN "Failed" ELSE state[t]]
+    /\ excluded' = excluded \cup cohort
     /\ cohort' = {}
     /\ headState' = "Rejected"
     /\ fenced' = TRUE
@@ -177,12 +163,7 @@ Resolve(t) ==
     /\ state[t] = "Unknown"
     /\ t \in visible
     /\ (t \in cohort => headState = "Unknown")
-    /\ state' =
-        [u \in Transactions |->
-            IF u = t THEN "Committed"
-            ELSE IF t \in cohort /\ state[u] = "Parked"
-                 THEN "Admitted"
-                 ELSE state[u]]
+    /\ state' = [state EXCEPT ![t] = "Committed"]
     /\ acknowledged' = acknowledged \cup {t}
     /\ cohort' = IF t \in cohort THEN {} ELSE cohort
     /\ headState' = IF t \in cohort THEN "Collecting" ELSE headState
@@ -229,9 +210,7 @@ Complete ==
     /\ \A t \in cohort : state[t] = "Committed"
     /\ cohort' = {}
     /\ headState' = "Collecting"
-    /\ state' =
-        [t \in Transactions |-> IF state[t] = "Parked" THEN "Admitted" ELSE state[t]]
-    /\ UNCHANGED <<stored, visible, publishedCohorts, acknowledged,
+    /\ UNCHANGED <<state, stored, visible, publishedCohorts, acknowledged,
         excluded, recovered, authority, fenced, staleAdmissionObserved,
         batchWrites, headWrites, resolutionWrites, invalidImportAccepted>>
 
@@ -262,7 +241,7 @@ FencingStopsAdmission ==
     /\ ~staleAdmissionObserved
     /\ fenced =>
         /\ cohort = {}
-        /\ {t \in Transactions : state[t] \in {"Admitted", "Parked", "Frozen"}} = {}
+        /\ {t \in Transactions : state[t] \in {"Admitted", "Frozen"}} = {}
 AuthorityNamesStoredFinal ==
     authority \subseteq
         {t \in Transactions : state[t] \in {"Unknown", "Committed"}} \X stored
@@ -271,10 +250,10 @@ MalformedImportIsNoOp == ~invalidImportAccepted
 
 Safety ==
     /\ TypeOK
-    /\ {t \in Transactions : state[t] \in {"Idle", "Admitted", "Parked"}}
+    /\ {t \in Transactions : state[t] \in {"Idle", "Admitted"}}
         \intersect visible = {}
     /\ excluded \intersect
-        {t \in Transactions : state[t] \in {"Idle", "Admitted", "Parked"}} = {}
+        {t \in Transactions : state[t] \in {"Idle", "Admitted"}} = {}
     /\ ({t \in Transactions : state[t] = "Admitted"} # {} =>
         headState = "Collecting")
     /\ {t \in Transactions : state[t] = "Frozen"} \subseteq cohort
@@ -282,16 +261,6 @@ Safety ==
         headState = "Publishing")
     /\ (headState = "Publishing" =>
         cohort \subseteq {t \in Transactions : state[t] = "Frozen"})
-    /\ ({t \in Transactions : state[t] = "Parked"} # {} =>
-        /\ {t \in Transactions : state[t] = "Parked"} \intersect cohort = {}
-        /\ {t \in Transactions : state[t] = "Parked"} \intersect stored = {}
-        /\ {t \in Transactions : state[t] = "Parked"} \intersect visible = {}
-        /\ cohort # {}
-        /\ cohort \subseteq stored
-        /\ headState \in {"Publishing", "Unknown", "Committed"}
-        /\ ~fenced
-        /\ \A parked \in {t \in Transactions : state[t] = "Parked"} :
-            \A final \in Transactions : <<parked, final>> \notin authority)
     /\ (headState = "Publishing" => cohort \intersect visible = {})
     /\ StoredBeforeVisible
     /\ WholeCohortsVisible
@@ -341,11 +310,9 @@ THEOREM StorePreservesSafety ==
     AuthorityNamesStoredFinal, RecoverySound, MalformedImportIsNoOp, States,
     HeadStates
 
-THEOREM SplitFailedPreservesSafety ==
-    \A t \in Transactions :
-        \A prefix, suffix \in SUBSET Transactions :
-            Safety /\ SplitFailed(t, prefix, suffix) => Safety'
-<1> QED BY DEF SplitFailed, Safety, TypeOK, StoredBeforeVisible,
+THEOREM FailCohortPreservesSafety ==
+    \A t \in Transactions : Safety /\ FailCohort(t) => Safety'
+<1> QED BY DEF FailCohort, Safety, TypeOK, StoredBeforeVisible,
     WholeCohortsVisible, AcknowledgementSound, ExcludedStayInvisible,
     ResolutionDoesNotPublish, FencingStopsAdmission,
     AuthorityNamesStoredFinal, RecoverySound, MalformedImportIsNoOp, States,

@@ -6,8 +6,9 @@ This finite model asks whether independently submitted singleton transactions
 can retain distinct logical batch identities while sharing one authoritative
 HEAD transition. T1..T4 and their scheduling are qualification geometry only.
 
-Finite-deadline work is deliberately excluded from this experimental path.
-The existing singleton implementation remains responsible for that work.
+Finite-deadline work is rejected as unsupported before this experimental path
+can take ownership. The existing singleton implementation remains responsible
+for deadlines with ordinary scheduling semantics.
 ***************************************************************************)
 
 CONSTANTS T1, T2, T3, T4, NoTxn, DB, OtherDB, NoAuthority
@@ -34,7 +35,7 @@ PreviousMember(group, t) ==
     ELSE FinalMember(Earlier(group, t))
 
 TxnStates == {
-    "Idle", "Admitted", "Parked", "Rejected", "Cancelled", "Expired", "Fallback",
+    "Idle", "Admitted", "Rejected", "Cancelled", "Unsupported",
     "Frozen", "Accepted", "Unknown", "Committed", "Failed"
 }
 BatchStates == {"None", "Confirmed", "Ambiguous", "Failed"}
@@ -44,8 +45,8 @@ AuthorityStates == {"None", "Exported", "Lost", "Imported", "Resolved"}
 
 ActionNames == {
     "Init", "AdmitSingleton", "RejectConflict", "CancelBeforeAdmission",
-    "ExpireBeforeAdmission", "FallbackFiniteDeadline", "FreezeCohort",
-    "PublishMemberBatch", "ConfirmAmbiguousBatch", "SplitFailedMember",
+    "RejectFiniteDeadline", "FreezeCohort", "PublishMemberBatch",
+    "ConfirmAmbiguousBatch", "FailFrozenCohort",
     "PublishCohortHead", "LoseHeadResponse", "ObserveSuccess",
     "ObserveHeadPreconditionFailure", "RetainUnknownAtPredecessor",
     "ObserveConclusiveSuccessor", "ResolveMember", "ExportMemberAuthority",
@@ -166,6 +167,7 @@ AdmitSingleton(t) ==
 
 RejectConflict(t) ==
     /\ txnState[t] \in {"Idle", "Admitted"}
+    /\ t \notin FiniteDeadlineTxns
     /\ txnState' = [txnState EXCEPT ![t] = "Rejected"]
     /\ lastAction' = "RejectConflict"
     /\ UNCHANGED <<cohort, sequence, latestBatch, memberSequence, memberBatch,
@@ -177,6 +179,7 @@ RejectConflict(t) ==
 
 CancelBeforeAdmission(t) ==
     /\ txnState[t] = "Idle"
+    /\ t \notin FiniteDeadlineTxns
     /\ txnState' = [txnState EXCEPT ![t] = "Cancelled"]
     /\ lastAction' = "CancelBeforeAdmission"
     /\ UNCHANGED <<cohort, sequence, latestBatch, memberSequence, memberBatch,
@@ -186,23 +189,11 @@ CancelBeforeAdmission(t) ==
         batchPutCalls, headPutCalls, resolutionPutCalls, fenced,
         staleAdmissionObserved, crashObserved>>
 
-ExpireBeforeAdmission(t) ==
+RejectFiniteDeadline(t) ==
     /\ t \in FiniteDeadlineTxns
     /\ txnState[t] = "Idle"
-    /\ txnState' = [txnState EXCEPT ![t] = "Expired"]
-    /\ lastAction' = "ExpireBeforeAdmission"
-    /\ UNCHANGED <<cohort, sequence, latestBatch, memberSequence, memberBatch,
-        batchPrevious, batchState, storedBatches, visible, publishedCohorts,
-        headState, headAttemptEntered, receipt, durableAuthority,
-        authorityState, importedAuthority, recovered, recoveryImage,
-        batchPutCalls, headPutCalls, resolutionPutCalls, fenced,
-        staleAdmissionObserved, crashObserved>>
-
-FallbackFiniteDeadline(t) ==
-    /\ t \in FiniteDeadlineTxns
-    /\ txnState[t] = "Idle"
-    /\ txnState' = [txnState EXCEPT ![t] = "Fallback"]
-    /\ lastAction' = "FallbackFiniteDeadline"
+    /\ txnState' = [txnState EXCEPT ![t] = "Unsupported"]
+    /\ lastAction' = "RejectFiniteDeadline"
     /\ UNCHANGED <<cohort, sequence, latestBatch, memberSequence, memberBatch,
         batchPrevious, batchState, storedBatches, visible, publishedCohorts,
         headState, headAttemptEntered, receipt, durableAuthority,
@@ -279,33 +270,21 @@ ConfirmAmbiguousBatch(t) ==
         batchPutCalls, headPutCalls, resolutionPutCalls, fenced,
         staleAdmissionObserved, crashObserved>>
 
-SplitFailedMember(t) ==
-    LET prefix == Earlier(cohort, t)
-        suffix == Later(cohort, t)
-    IN
+FailFrozenCohort(t) ==
     /\ headState = "Publishing"
     /\ t \in cohort
     /\ batchState[t] = "Failed"
-    /\ cohort' = prefix
     /\ txnState' =
-        [u \in Txns |->
-            IF u = t THEN "Failed"
-            ELSE IF u \in suffix
-                 THEN IF prefix = {} THEN "Admitted" ELSE "Parked"
-            ELSE txnState[u]]
-    /\ receipt' = [receipt EXCEPT ![t] = "Failed"]
-    /\ memberSequence' =
-        [u \in Txns |-> IF u \in suffix THEN 0 ELSE memberSequence[u]]
-    /\ memberBatch' =
-        [u \in Txns |-> IF u \in suffix THEN NoTxn ELSE memberBatch[u]]
-    /\ batchPrevious' =
-        [u \in Txns |-> IF u \in suffix THEN NoTxn ELSE batchPrevious[u]]
-    /\ batchState' =
-        [u \in Txns |-> IF u \in suffix THEN "None" ELSE batchState[u]]
-    /\ headState' = IF prefix = {} THEN "Collecting" ELSE "Publishing"
-    /\ lastAction' = "SplitFailedMember"
-    /\ UNCHANGED <<sequence, latestBatch, storedBatches, visible,
-        publishedCohorts, headAttemptEntered, durableAuthority,
+        [u \in Txns |-> IF u \in cohort THEN "Failed" ELSE txnState[u]]
+    /\ receipt' =
+        [u \in Txns |-> IF u \in cohort THEN "Failed" ELSE receipt[u]]
+    /\ cohort' = {}
+    /\ headState' = "Collecting"
+    /\ headAttemptEntered' = FALSE
+    /\ lastAction' = "FailFrozenCohort"
+    /\ UNCHANGED <<sequence, latestBatch, memberSequence, memberBatch,
+        batchPrevious, batchState, storedBatches, visible, publishedCohorts,
+        durableAuthority,
         authorityState, importedAuthority, recovered, recoveryImage,
         batchPutCalls, headPutCalls, resolutionPutCalls, fenced,
         staleAdmissionObserved, crashObserved>>
@@ -373,11 +352,9 @@ ObserveHeadPreconditionFailure ==
     /\ headState = "Publishing"
     /\ CohortReady
     /\ txnState' =
-        [t \in Txns |->
-            IF t \in cohort \/ txnState[t] = "Parked" THEN "Failed" ELSE txnState[t]]
+        [t \in Txns |-> IF t \in cohort THEN "Failed" ELSE txnState[t]]
     /\ receipt' =
-        [t \in Txns |->
-            IF t \in cohort \/ txnState[t] = "Parked" THEN "Failed" ELSE receipt[t]]
+        [t \in Txns |-> IF t \in cohort THEN "Failed" ELSE receipt[t]]
     /\ cohort' = {}
     /\ headState' = "Rejected"
     /\ headAttemptEntered' = FALSE
@@ -405,11 +382,9 @@ ObserveConclusiveSuccessor ==
     /\ headState = "Unknown"
     /\ ~headAttemptEntered
     /\ txnState' =
-        [t \in Txns |->
-            IF t \in cohort \/ txnState[t] = "Parked" THEN "Failed" ELSE txnState[t]]
+        [t \in Txns |-> IF t \in cohort THEN "Failed" ELSE txnState[t]]
     /\ receipt' =
-        [t \in Txns |->
-            IF t \in cohort \/ txnState[t] = "Parked" THEN "Failed" ELSE receipt[t]]
+        [t \in Txns |-> IF t \in cohort THEN "Failed" ELSE receipt[t]]
     /\ authorityState' =
         [t \in Txns |-> IF t \in cohort THEN "None" ELSE authorityState[t]]
     /\ importedAuthority' =
@@ -552,12 +527,7 @@ ResolveMember(t) ==
     /\ t \in visible
     /\ (authorityState[t] = "Imported" =>
         ResolutionObservationValidFor(t, importedAuthority[t]))
-    /\ txnState' =
-        [u \in Txns |->
-            IF u = t THEN "Committed"
-            ELSE IF t \in cohort /\ txnState[u] = "Parked"
-                 THEN "Admitted"
-                 ELSE txnState[u]]
+    /\ txnState' = [txnState EXCEPT ![t] = "Committed"]
     /\ receipt' = [receipt EXCEPT ![t] = "Committed"]
     /\ authorityState' =
         [authorityState EXCEPT ![t] = IF @ = "Imported" THEN "Resolved" ELSE @]
@@ -749,10 +719,8 @@ CompleteCohort ==
     /\ cohort' = {}
     /\ headState' = "Collecting"
     /\ headAttemptEntered' = FALSE
-    /\ txnState' =
-        [t \in Txns |-> IF txnState[t] = "Parked" THEN "Admitted" ELSE txnState[t]]
     /\ lastAction' = "CompleteCohort"
-    /\ UNCHANGED <<sequence, latestBatch, memberSequence,
+    /\ UNCHANGED <<txnState, sequence, latestBatch, memberSequence,
         memberBatch, batchPrevious, batchState, storedBatches, visible,
         publishedCohorts, receipt, durableAuthority, authorityState,
         importedAuthority, recovered, recoveryImage, batchPutCalls,
@@ -763,14 +731,13 @@ Next ==
     \/ \E t \in Txns : AdmitSingleton(t)
     \/ \E t \in Txns : RejectConflict(t)
     \/ \E t \in Txns : CancelBeforeAdmission(t)
-    \/ \E t \in Txns : ExpireBeforeAdmission(t)
-    \/ \E t \in Txns : FallbackFiniteDeadline(t)
+    \/ \E t \in Txns : RejectFiniteDeadline(t)
     \/ FreezeCohort
     \/ \E t \in Txns,
           outcome \in {"Confirmed", "Ambiguous", "Failed"},
           entered \in BOOLEAN : PublishMemberBatch(t, outcome, entered)
     \/ \E t \in Txns : ConfirmAmbiguousBatch(t)
-    \/ \E t \in Txns : SplitFailedMember(t)
+    \/ \E t \in Txns : FailFrozenCohort(t)
     \/ PublishCohortHead
     \/ \E entered \in BOOLEAN : LoseHeadResponse(entered)
     \/ ObserveSuccess
@@ -858,10 +825,12 @@ NoEarlyAcknowledgement ==
 
 PreFreezeExclusion ==
     {t \in Txns :
-        txnState[t] \in {"Rejected", "Cancelled", "Expired", "Fallback", "Failed"}}
+        txnState[t] \in {"Rejected", "Cancelled", "Unsupported", "Failed"}}
         \intersect (cohort \union visible) = {}
 
-FiniteDeadlinesStaySingleton == FiniteDeadlineTxns \intersect cohort = {}
+FiniteDeadlinesRejectBeforeAdmission ==
+    \A t \in FiniteDeadlineTxns :
+        txnState[t] \notin {"Admitted", "Frozen", "Accepted", "Unknown", "Committed"}
 
 ResolutionDoesNotReplay ==
     /\ resolutionPutCalls = 0
@@ -872,7 +841,7 @@ FencingStopsAdmission ==
     /\ ~staleAdmissionObserved
     /\ fenced =>
         /\ cohort = {}
-        /\ {t \in Txns : txnState[t] \in {"Admitted", "Parked", "Frozen"}} = {}
+        /\ {t \in Txns : txnState[t] \in {"Admitted", "Frozen"}} = {}
 
 PhaseStateAlignment ==
     /\ ({t \in Txns : txnState[t] = "Admitted"} # {} => headState = "Collecting")
@@ -881,26 +850,14 @@ PhaseStateAlignment ==
     /\ (headState = "Publishing" =>
         cohort \subseteq {t \in Txns : txnState[t] = "Frozen"})
 
-ParkedSuffixWaitsForPrefix ==
-    LET parked == {t \in Txns : txnState[t] = "Parked"}
-    IN
-        parked # {} =>
-            /\ parked \intersect cohort = {}
-            /\ parked \intersect visible = {}
-            /\ parked \intersect storedBatches = {}
-            /\ cohort # {}
-            /\ cohort \subseteq storedBatches
-            /\ headState \in {"Publishing", "Accepted", "Unknown", "Committed"}
-            /\ ~fenced
-            /\ \A t \in parked :
-                /\ receipt[t] = "None"
-                /\ authorityState[t] = "None"
-                /\ durableAuthority[t] = NoAuthority
-                /\ importedAuthority[t] = NoAuthority
-                /\ memberSequence[t] = 0
-                /\ memberBatch[t] = NoTxn
-                /\ batchPrevious[t] = NoTxn
-                /\ batchState[t] = "None"
+WholeFrozenCohortFailure ==
+    lastAction = "FailFrozenCohort" =>
+        /\ cohort = {}
+        /\ headState = "Collecting"
+        /\ ~headAttemptEntered
+        /\ {t \in Txns : txnState[t] = "Frozen"} = {}
+        /\ {t \in Txns : memberSequence[t] > sequence}
+            \subseteq {t \in Txns : txnState[t] = "Failed" /\ receipt[t] = "Failed"}
 
 DurableAuthorityIsExact ==
     \A t \in Txns :
@@ -934,11 +891,11 @@ Safety ==
     /\ WholeCohortVisibility
     /\ NoEarlyAcknowledgement
     /\ PreFreezeExclusion
-    /\ FiniteDeadlinesStaySingleton
+    /\ FiniteDeadlinesRejectBeforeAdmission
     /\ ResolutionDoesNotReplay
     /\ FencingStopsAdmission
     /\ PhaseStateAlignment
-    /\ ParkedSuffixWaitsForPrefix
+    /\ WholeFrozenCohortFailure
     /\ DurableAuthorityIsExact
     /\ ImportedAuthorityIsValid
     /\ ResolvedImportedAuthorityIsExact

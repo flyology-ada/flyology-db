@@ -30,6 +30,7 @@ procedure Flyology_DB_Benchmark_Panel is
 
    Flyology_Singleton_Prefix : constant String := "flyology-db-files-singleton-depth";
    Flyology_Group_Prefix : constant String := "flyology-db-files-explicit-group";
+   Flyology_Cohort_Prefix : constant String := "flyology-db-files-independent-cohort-width";
    SlateDB_Depth_Prefix : constant String := "slatedb-1ms-depth";
 
    Reference_Name : constant String := Ada.Command_Line.Argument (1);
@@ -69,6 +70,9 @@ procedure Flyology_DB_Benchmark_Panel is
 
    procedure Configure_Flyology_Profile (Name : String) is
    begin
+      --  Every named panel profile defines the complete scheduling shape so
+      --  an ambient experimental setting cannot silently relabel a result.
+      Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH", "0");
       if Name = "flyology-db-files" then
          Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP", "0");
          Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_GROUP_SIZE", "1");
@@ -84,7 +88,7 @@ procedure Flyology_DB_Benchmark_Panel is
             Ada.Environment_Variables.Set
               ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Depth));
          end;
-      else
+      elsif Has_Profile_Prefix (Name, Flyology_Group_Prefix) then
          declare
             Profile : constant String :=
               Name (Name'First + Flyology_Group_Prefix'Length .. Name'Last);
@@ -108,6 +112,19 @@ procedure Flyology_DB_Benchmark_Panel is
                Ada.Environment_Variables.Set
                  ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Depth));
             end;
+         end;
+      else
+         declare
+            Width_Text : constant String :=
+              Name (Name'First + Flyology_Cohort_Prefix'Length .. Name'Last);
+            Width : constant Positive := Profile_Value (Width_Text, "Flyology cohort width");
+         begin
+            Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP", "0");
+            Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_GROUP_SIZE", "1");
+            Ada.Environment_Variables.Set
+              ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Width));
+            Ada.Environment_Variables.Set
+              ("FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH", Image (Width));
          end;
       end if;
    end Configure_Flyology_Profile;
@@ -183,6 +200,7 @@ procedure Flyology_DB_Benchmark_Panel is
       if Name = "flyology-db-files"
         or else Has_Profile_Prefix (Name, Flyology_Singleton_Prefix)
         or else Has_Profile_Prefix (Name, Flyology_Group_Prefix)
+        or else Has_Profile_Prefix (Name, Flyology_Cohort_Prefix)
       then
          Configure_Flyology_Profile (Name);
          Flyology_DB_Benchmark_Flyology.Run_Local

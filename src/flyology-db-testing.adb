@@ -51,9 +51,13 @@ package body Flyology.DB.Testing is
    is (Flyology.DB.Group_Mutation_Total_Fits_Wire (Value));
 
    procedure Arm
-     (Item : in out Storage_Context; Point : Fault_Point; Mode : Fault_Mode; Count : Positive := 1) is
+     (Item  : in out Storage_Context;
+      Point : Fault_Point;
+      Mode  : Fault_Mode;
+      Count : Positive := 1;
+      Skip  : Natural := 0) is
    begin
-      Item.Test_Control.Arm (Point, Mode, Count);
+      Item.Test_Control.Arm (Point, Mode, Count, Skip);
    end Arm;
 
    procedure Clear (Item : in out Storage_Context) is
@@ -118,6 +122,17 @@ package body Flyology.DB.Testing is
    begin
       Set_Test_Paused (Item, False, Result);
    end Resume_Coordinator;
+
+   procedure Configure_Independent_Cohort
+     (Item : in out Database; Width : Positive; Result : out Outcome_Code) is
+   begin
+      Set_Test_Independent_Cohort_Width (Item, Width, Result);
+   end Configure_Independent_Cohort;
+
+   procedure Abort_Independent_Cohort (Item : in out Database; Result : out Outcome_Code) is
+   begin
+      Abort_Test_Independent_Cohort (Item, Result);
+   end Abort_Independent_Cohort;
 
    procedure Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code) is
    begin
@@ -218,8 +233,7 @@ package body Flyology.DB.Testing is
       Timeout               : Duration;
       Result                : out Outcome_Code) is
    begin
-      Install_Test_Cohort_Rival_Head
-        (Item, Database_ID, Manifest_ID, Initial_Transition_ID, Timeout, Result);
+      Install_Test_Cohort_Rival_Head (Item, Database_ID, Manifest_ID, Initial_Transition_ID, Timeout, Result);
    end Install_Cohort_Rival_Head;
 
    procedure Build_Cohort_Authority

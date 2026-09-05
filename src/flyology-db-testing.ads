@@ -41,11 +41,14 @@ private package Flyology.DB.Testing is
    subtype Fault_Point is Storage_Fault_Point;
    subtype Fault_Mode is Storage_Fault_Mode;
 
-   --  Arm one deterministic storage fault for the next Count matching calls.
-   --  Count defaults to one as test-harness convenience only; it does not
-   --  define production retry or fault policy.
+   --  Arm one deterministic storage fault after Skip matching calls and for
+   --  the next Count matches. These are test inputs, not production policy.
    procedure Arm
-     (Item : in out Storage_Context; Point : Fault_Point; Mode : Fault_Mode; Count : Positive := 1);
+     (Item  : in out Storage_Context;
+      Point : Fault_Point;
+      Mode  : Fault_Mode;
+      Count : Positive := 1;
+      Skip  : Natural := 0);
 
    --  Clear every deterministic storage fault.
    procedure Clear (Item : in out Storage_Context);
@@ -73,6 +76,9 @@ private package Flyology.DB.Testing is
 
    procedure Pause_Coordinator (Item : in out Database; Result : out Outcome_Code);
    procedure Resume_Coordinator (Item : in out Database; Result : out Outcome_Code);
+   procedure Configure_Independent_Cohort
+     (Item : in out Database; Width : Positive; Result : out Outcome_Code);
+   procedure Abort_Independent_Cohort (Item : in out Database; Result : out Outcome_Code);
    procedure Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
    procedure Fail_Next_Install (Item : in out Database; Result : out Outcome_Code);
    procedure Pause_Gets (Item : in out Storage_Context);

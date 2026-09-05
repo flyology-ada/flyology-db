@@ -3,6 +3,7 @@ with Ada.Real_Time;
 with Ada.Unchecked_Deallocation;
 with Flyology.Bytes;
 with Flyology.DB;
+with Flyology.DB.Benchmark_Controls;
 with Flyology.DB.Object_Storage;
 with Flyology.HTTP;
 with Flyology.HTTP.Client;
@@ -14,6 +15,7 @@ with Interfaces;
 
 package body Flyology_DB_Benchmark_Flyology is
    package DB renames Flyology.DB;
+   package Benchmark_Controls renames Flyology.DB.Benchmark_Controls;
    package Binding renames Flyology.DB.Object_Storage;
    package Files renames Flyology.Object_Storage.Backends.Files;
    package HTTP renames Flyology.HTTP;
@@ -100,6 +102,15 @@ package body Flyology_DB_Benchmark_Flyology is
       when Constraint_Error =>
          raise Program_Error with "FLYOLOGY_DB_BENCH_PIPELINE_DEPTH must be a positive integer";
    end Requested_Pipeline_Depth;
+
+   function Requested_Independent_Cohort_Width return Natural is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH");
+   begin
+      return (if Raw'Length = 0 then 0 else Natural'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with "FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH must be a natural number";
+   end Requested_Independent_Cohort_Width;
 
    function Numbered_ID (Value : Interfaces.Unsigned_64) return DB.Identifier
    is
@@ -211,7 +222,8 @@ package body Flyology_DB_Benchmark_Flyology is
       Index        : Positive;
       Mutations    : Positive;
       Key_Length   : Positive;
-      Value_Length : Positive)
+      Value_Length : Positive;
+      Deadline     : Duration)
    is
       Transaction : DB.Transaction;
       Receipt     : DB.Commit_Receipt;
@@ -220,7 +232,7 @@ package body Flyology_DB_Benchmark_Flyology is
       Prepare_Transaction
         (Item, Family, Index, Mutations, Key_Length, Value_Length, Transaction);
       DB.Commit
-        (Item, Transaction, Timeout, Receipt => Receipt, Result => Result);
+        (Item, Transaction, Deadline, Receipt => Receipt, Result => Result);
       if Result = DB.Outcome_Unknown then
          DB.Resolve (Item, Receipt, Timeout, Result => Result);
       end if;
@@ -240,7 +252,9 @@ package body Flyology_DB_Benchmark_Flyology is
       Pipeline_Depth : Positive;
       Mutations      : Positive;
       Key_Length     : Positive;
-      Value_Length   : Positive)
+      Value_Length   : Positive;
+      Deadline       : Duration;
+      Cohort_Width   : Natural)
    is
       type Operation_Access is access DB.Commit_Operation;
       procedure Free is new Ada.Unchecked_Deallocation
@@ -249,16 +263,19 @@ package body Flyology_DB_Benchmark_Flyology is
       type Boolean_Array is array (Positive range <>) of Boolean;
       type Positive_Array is array (Positive range <>) of Positive;
       type Sequence_Array is array (Positive range <>) of DB.Sequence_Number;
+      type Transition_Array is array (Positive range <>) of Interfaces.Unsigned_64;
 
       Set            : aliased Operations.Completion_Set (Pipeline_Depth);
       Work           : Operation_Array (1 .. Pipeline_Depth) := [others => null];
       Active         : Boolean_Array (Work'Range) := [others => False];
       Index_For      : Positive_Array (Work'Range) := [others => First_Index];
       Sequences      : Sequence_Array (First_Index .. First_Index + Count - 1) := [others => 0];
+      Transitions    : Transition_Array (Sequences'Range) := [others => 0];
       Completed      : Operations.Completion_Batch (Set.Capacity);
       Submitted      : Natural := 0;
       Finished       : Natural := 0;
       Active_Count   : Natural := 0;
+      Abort_Result   : DB.Outcome_Code;
 
       procedure Finish_Slot (Slot : Positive) is
          Receipt     : DB.Commit_Receipt;
@@ -285,6 +302,7 @@ package body Flyology_DB_Benchmark_Flyology is
            (DB.Receipt_Sequence (Receipt) > 0,
             "pipelined singleton receipt sequence is absent");
          Sequences (Index) := DB.Receipt_Sequence (Receipt);
+         Transitions (Index) := Benchmark_Controls.Attempted_Transition_Number (Receipt);
       end Finish_Slot;
 
       procedure Drain_Ready is
@@ -328,7 +346,7 @@ package body Flyology_DB_Benchmark_Flyology is
                end loop;
                Prepare_Transaction
                  (Item, Family, Index, Mutations, Key_Length, Value_Length, Transaction);
-               DB.Commit (Transaction, Timeout, Work (Slot).all);
+               DB.Commit (Transaction, Deadline, Work (Slot).all);
                Index_For (Slot) := Index;
                Active (Slot) := True;
                Active_Count := Active_Count + 1;
@@ -349,9 +367,30 @@ package body Flyology_DB_Benchmark_Flyology is
                  or else Sequences (Index) = Sequences (Index - 1) + 1),
             "pipelined singleton receipt sequence mismatch");
       end loop;
+      if Cohort_Width > 0 then
+         for First in Sequences'First .. Sequences'Last loop
+            if (First - Sequences'First) mod Cohort_Width = 0 then
+               for Offset in Natural range 0 .. Cohort_Width - 1 loop
+                  Require
+                    (First + Offset <= Sequences'Last
+                       and then Transitions (First + Offset) = Transitions (First),
+                     "independent cohort receipts did not share one exact HEAD transition");
+               end loop;
+               if First > Sequences'First then
+                  Require
+                    (Transitions (First) = Transitions (First - 1) + 1,
+                     "independent cohort HEAD transition sequence changed");
+               end if;
+            end if;
+         end loop;
+      end if;
       Release_All;
    exception
       when others =>
+         if Cohort_Width > 0 then
+            Benchmark_Controls.Abort_Independent_Coalescing (Item, Abort_Result);
+            Require (Abort_Result = DB.Success, "independent cohort abort failed during cleanup");
+         end if;
          for Slot in Work'Range loop
             if Work (Slot) /= null and then Active (Slot)
               and then Operations.Is_Active (Work (Slot).all)
@@ -607,6 +646,9 @@ package body Flyology_DB_Benchmark_Flyology is
       Group_Size         : constant Positive := Requested_Group_Size;
       Explicit_Group     : constant Boolean := Requested_Explicit_Group;
       Pipeline_Depth     : constant Positive := Requested_Pipeline_Depth;
+      Cohort_Width       : constant Natural := Requested_Independent_Cohort_Width;
+      Commit_Deadline    : constant Duration :=
+        (if Cohort_Width > 0 then Duration'Last else Timeout);
       Total_Transactions : constant Positive := Warmup + Measured;
       Total_Keys         : constant Positive :=
         Total_Transactions * Mutations;
@@ -658,6 +700,22 @@ package body Flyology_DB_Benchmark_Flyology is
       Result              : DB.Outcome_Code;
       Started             : Ada.Real_Time.Time;
       Finished            : Ada.Real_Time.Time;
+      Warmup_Batch_Before, Warmup_Manifest_Before, Warmup_Head_Before : Natural := 0;
+      Warmup_Batch_After, Warmup_Manifest_After, Warmup_Head_After    : Natural := 0;
+      Measured_Batch_After, Measured_Manifest_After, Measured_Head_After : Natural := 0;
+
+      procedure Require_Cohort_Geometry
+        (Batch_Before, Manifest_Before, Head_Before : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
+         Transactions                               : Natural;
+         Context                                    : String) is
+      begin
+         Require
+           (Batch_After = Batch_Before + Transactions
+              and then Manifest_After = Manifest_Before
+              and then Head_After = Head_Before + Transactions / Cohort_Width,
+            Context & " independent-cohort publication geometry changed");
+      end Require_Cohort_Geometry;
    begin
       Require
         (Total_Transactions <= Maximum_Operations,
@@ -668,6 +726,17 @@ package body Flyology_DB_Benchmark_Flyology is
       Require
         (Pipeline_Depth <= Maximum_Pipeline_Depth,
          "benchmark pipeline depth exceeds the eight-slot fixture capacity");
+      Require
+        (Cohort_Width <= Maximum_Pipeline_Depth,
+         "independent cohort width exceeds the eight-slot fixture capacity");
+      Require
+        (Cohort_Width = 0
+           or else
+             (not Explicit_Group
+              and then Pipeline_Depth = Cohort_Width
+              and then Warmup mod Cohort_Width = 0
+              and then Measured mod Cohort_Width = 0),
+         "independent cohort width requires equal pipeline depth and divisible transaction counts");
       Require
         ((Explicit_Group
             and then Group_Size >= 2
@@ -703,8 +772,24 @@ package body Flyology_DB_Benchmark_Flyology is
            (Ignored_Item, Storage, Create_Info, Timeout, Result => Result);
       end if;
       Expect (Result, "create failed");
+      if Cohort_Width > 0 then
+         Benchmark_Controls.Enable_Independent_Coalescing
+           (Ignored_Item,
+            Storage,
+            DB.Database_Identifier (Numbered_ID (1)),
+            Numbered_ID (2),
+            Positive (Cohort_Width),
+            Timeout,
+            Result);
+         Expect (Result, "independent-coalescing profile setup failed");
+      end if;
       DB.Open_Column_Family (Ignored_Item, 1, Family, Result);
       Expect (Result, "family open failed");
+
+      if Cohort_Width > 0 then
+         Benchmark_Controls.Publication_Counts
+           (Storage.all, Warmup_Batch_Before, Warmup_Manifest_Before, Warmup_Head_Before);
+      end if;
 
       if Warmup > 0 then
          if Explicit_Group then
@@ -718,10 +803,16 @@ package body Flyology_DB_Benchmark_Flyology is
                Mutations,
                Key_Length,
                Value_Length);
-         elsif Pipeline_Depth = 1 then
+         elsif Pipeline_Depth = 1 and then Cohort_Width = 0 then
             for Index in 1 .. Warmup loop
                Put_Transaction
-                 (Ignored_Item, Family, Index, Mutations, Key_Length, Value_Length);
+                 (Ignored_Item,
+                  Family,
+                  Index,
+                  Mutations,
+                  Key_Length,
+                  Value_Length,
+                  Commit_Deadline);
             end loop;
          else
             Put_Singletons_Pipelined
@@ -732,8 +823,23 @@ package body Flyology_DB_Benchmark_Flyology is
                Pipeline_Depth,
                Mutations,
                Key_Length,
-               Value_Length);
+               Value_Length,
+               Commit_Deadline,
+               Cohort_Width);
          end if;
+      end if;
+      if Cohort_Width > 0 then
+         Benchmark_Controls.Publication_Counts
+           (Storage.all, Warmup_Batch_After, Warmup_Manifest_After, Warmup_Head_After);
+         Require_Cohort_Geometry
+           (Warmup_Batch_Before,
+            Warmup_Manifest_Before,
+            Warmup_Head_Before,
+            Warmup_Batch_After,
+            Warmup_Manifest_After,
+            Warmup_Head_After,
+            Warmup,
+            "warmup");
       end if;
       Started := Ada.Real_Time.Clock;
       if Explicit_Group then
@@ -747,10 +853,16 @@ package body Flyology_DB_Benchmark_Flyology is
             Mutations,
             Key_Length,
             Value_Length);
-      elsif Pipeline_Depth = 1 then
+      elsif Pipeline_Depth = 1 and then Cohort_Width = 0 then
          for Index in Warmup + 1 .. Total_Transactions loop
             Put_Transaction
-              (Ignored_Item, Family, Index, Mutations, Key_Length, Value_Length);
+              (Ignored_Item,
+               Family,
+               Index,
+               Mutations,
+               Key_Length,
+               Value_Length,
+               Commit_Deadline);
          end loop;
       else
          Put_Singletons_Pipelined
@@ -761,9 +873,24 @@ package body Flyology_DB_Benchmark_Flyology is
             Pipeline_Depth,
             Mutations,
             Key_Length,
-            Value_Length);
+            Value_Length,
+            Commit_Deadline,
+            Cohort_Width);
       end if;
       Finished := Ada.Real_Time.Clock;
+      if Cohort_Width > 0 then
+         Benchmark_Controls.Publication_Counts
+           (Storage.all, Measured_Batch_After, Measured_Manifest_After, Measured_Head_After);
+         Require_Cohort_Geometry
+           (Warmup_Batch_After,
+            Warmup_Manifest_After,
+            Warmup_Head_After,
+            Measured_Batch_After,
+            Measured_Manifest_After,
+            Measured_Head_After,
+            Measured,
+            "measured");
+      end if;
 
       DB.Close (Ignored_Item, Result);
       Expect (Result, "close failed");
