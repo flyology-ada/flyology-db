@@ -6014,6 +6014,787 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, "independent cohort recovered root close failed");
       end;
 
+      --  The aggregate profile preserves independent pre-freeze admission but
+      --  publishes one physical batch and one HEAD for the frozen cohort.
+      declare
+         Context                                    : aliased Storage_Context;
+         Standard_Context                           : aliased Storage_Context;
+         Item                                       : aliased Database;
+         Standard_Item                              : Database;
+         Family                                     : Column_Family;
+         Reader                                     : Transaction;
+         Data                                       : Value;
+         Batch_Before, Manifest_Before, Head_Before : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
+         type Operation_Access is access Commit_Operation;
+         procedure Free is new Ada.Unchecked_Deallocation
+           (Object => Commit_Operation, Name => Operation_Access);
+         subtype Authority_Buffer is Byte_Array (1 .. 4_096);
+         Work        : array (Positive range 1 .. 4) of Operation_Access := [others => null];
+         Active      : array (Positive range 1 .. 4) of Boolean := [others => False];
+         Receipts    : array (Positive range 1 .. 4) of Commit_Receipt;
+         Authorities : array (Positive range 1 .. 4) of Authority_Buffer := [others => [others => 0]];
+         Lengths     : array (Positive range 1 .. 4) of Natural := [others => 0];
+         Results     : array (Positive range 1 .. 4) of Outcome_Code;
+         Set         : aliased Flyology.Operations.Completion_Set (4);
+      begin
+         Bind_Context (Context, Backend, "aggregate-cohort-publisher");
+         Bind_Context (Standard_Context, Backend, "aggregate-cohort-standard");
+         Create_DB (Item, Context'Access, DB_ID (223), ID (224), Result);
+         Expect (Result, Success, "aggregate cohort root create failed");
+         Create_DB (Standard_Item, Standard_Context'Access, DB_ID (223), ID (226), Result);
+         Expect (Result, Success, "aggregate standard-profile fixture create failed");
+         Close (Item, Result);
+         Expect (Result, Success, "aggregate cohort root close failed");
+         Testing.Rewrite_Manifest_Profile
+           (Context, Manifest_ID_For (ID (224)), DB_ID (223), Result, Aggregate_Profile => True);
+         Expect (Result, Success, "aggregate cohort profile rewrite failed");
+         Open (Item, Context'Access, DB_ID (223), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "aggregate cohort root reopen failed");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "aggregate cohort family open failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         declare
+            Unconfigured : Transaction;
+            Receipt      : Commit_Receipt;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (60_999), Unconfigured, Result);
+            Expect (Result, Success, "unconfigured aggregate transaction begin failed");
+            Put (Item, Unconfigured, Family, To_Key ([0]), To_Value ([0]), Result);
+            Expect (Result, Success, "unconfigured aggregate mutation failed");
+            Commit
+              (Item,
+               Unconfigured,
+               Duration'Last,
+               Receipt => Receipt,
+               Result  => Result);
+            Expect
+              (Result,
+               Unsupported_Format,
+               "aggregate root admitted work before its private identity range was configured");
+            Rollback (Unconfigured, Result);
+            Expect (Result, Success, "unconfigured aggregate transaction rollback failed");
+         end;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "unconfigured aggregate admission changed object storage";
+         end if;
+         Testing.Configure_Aggregate_Cohort (Item, 4, 1_000_000, Result);
+         Expect (Result, Success, "aggregate cohort configuration failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+         for Index in Work'Range loop
+            Work (Index) := new Commit_Operation (Set'Access, Item'Access, null);
+            declare
+               Txn : Transaction;
+            begin
+               Begin_Transaction (Item, Numbered_TX_ID (61_000 + Index), Txn, Result);
+               Expect (Result, Success, "aggregate cohort transaction begin failed");
+               Put (Item, Txn, Family, To_Key ([Byte (Index)]), To_Value ([Byte (Index)]), Result);
+               Expect (Result, Success, "aggregate cohort mutation failed");
+               Commit (Txn, Duration'Last, Work (Index).all);
+               Active (Index) := True;
+            exception
+               when others =>
+                  Rollback (Txn, Result);
+                  raise;
+            end;
+         end loop;
+         Flyology.Operations.Wait_All (Set);
+         for Index in Work'Range loop
+            Finish (Work (Index).all, Receipts (Index), Results (Index));
+            Flyology.Operations.Release (Work (Index).all);
+            Active (Index) := False;
+            Free (Work (Index));
+            Expect (Results (Index), Outcome_Unknown, "aggregate cohort member did not retain uncertainty");
+            if Receipt_Transaction_ID (Receipts (Index)) /= Numbered_TX_ID (61_000 + Index)
+              or else Receipt_Sequence (Receipts (Index)) /= Sequence_Number (Index)
+              or else Receipt_Batch_ID (Receipts (Index)) /= Receipt_Batch_ID (Receipts (1))
+              or else Receipt_Batch_ID (Receipts (Index)) = Numbered_ID (61_000 + Index)
+            then
+               raise Program_Error with "aggregate cohort member identity changed";
+            end if;
+            Lengths (Index) := Commit_Resolution_Authority_Length (Receipts (Index));
+            if Lengths (Index) = 0 or else Lengths (Index) > Authorities (Index)'Length then
+               raise Program_Error with "aggregate cohort member authority length changed";
+            end if;
+            Export_Commit_Resolution_Authority
+              (Receipts (Index), Authorities (Index), Lengths (Index), Result);
+            Expect (Result, Success, "aggregate cohort member authority export failed");
+            if Authorities (Index) (10) /= Byte (Commit_Authorities.Aggregate_Authority_Format_Version) then
+               raise Program_Error with "aggregate cohort authority used the wrong format version";
+            end if;
+         end loop;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 1
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 1
+         then
+            raise Program_Error with "aggregate cohort publication geometry changed";
+         end if;
+         Close (Item, Result);
+         Expect (Result, Success, "aggregate cohort close failed");
+         Open (Item, Context'Access, DB_ID (223), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "aggregate cohort recovery failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         declare
+            Imported          : Commit_Receipt;
+            Corrupt_Image     : Authority_Buffer := Authorities (1);
+            Reexported        : Authority_Buffer := [others => 0];
+            Reexported_Length : Natural;
+            Imported_Txn      : Transaction_Identifier;
+            Imported_Batch    : Identifier;
+
+            procedure Expect_Imported_Unchanged (Message : String) is
+            begin
+               if Receipt_Outcome (Imported) /= Outcome_Unknown
+                 or else Receipt_Transaction_ID (Imported) /= Imported_Txn
+                 or else Receipt_Batch_ID (Imported) /= Imported_Batch
+                 or else Commit_Resolution_Authority_Length (Imported) /= Lengths (2)
+               then
+                  raise Program_Error with Message;
+               end if;
+            end Expect_Imported_Unchanged;
+         begin
+            Import_Commit_Resolution_Authority
+              (Item, Authorities (2) (1 .. Lengths (2)), Imported, Result);
+            Expect (Result, Success, "aggregate authority replacement fixture import failed");
+            Imported_Txn := Receipt_Transaction_ID (Imported);
+            Imported_Batch := Receipt_Batch_ID (Imported);
+            Export_Commit_Resolution_Authority
+              (Imported, Reexported, Reexported_Length, Result);
+            Expect (Result, Success, "imported aggregate authority re-export failed");
+            if Reexported_Length /= Lengths (2)
+              or else Reexported (10) /= Byte (Commit_Authorities.Aggregate_Authority_Format_Version)
+              or else Reexported (1 .. Reexported_Length)
+                        /= Authorities (2) (1 .. Lengths (2))
+            then
+               raise Program_Error with "imported aggregate authority lost its exact version-3 image";
+            end if;
+
+            Corrupt_Image (Lengths (1)) := Corrupt_Image (Lengths (1)) xor 1;
+            Import_Commit_Resolution_Authority
+              (Item, Corrupt_Image (1 .. Lengths (1)), Imported, Result);
+            Expect (Result, Corrupt, "corrupt aggregate authority was accepted");
+            Expect_Imported_Unchanged ("corrupt aggregate import changed its destination receipt");
+
+            Set_Test_Allocation_Fault (Commit_Authority_Image_Allocation);
+            Import_Commit_Resolution_Authority
+              (Item, Authorities (1) (1 .. Lengths (1)), Imported, Result);
+            Expect (Result, Capacity_Exceeded, "aggregate authority allocation failure was not typed");
+            Expect_Imported_Unchanged ("aggregate allocation failure changed its destination receipt");
+
+            Import_Commit_Resolution_Authority
+              (Standard_Item, Authorities (1) (1 .. Lengths (1)), Imported, Result);
+            Expect (Result, Unsupported_Format, "standard profile accepted aggregate authority");
+            Expect_Imported_Unchanged ("cross-profile aggregate import changed its destination receipt");
+         end;
+         for Index in Receipts'Range loop
+            Receipts (Index) := (others => <>);
+            Import_Commit_Resolution_Authority
+              (Item, Authorities (Index) (1 .. Lengths (Index)), Receipts (Index), Result);
+            Expect (Result, Success, "aggregate cohort member authority import failed");
+            if Receipt_Transaction_ID (Receipts (Index)) /= Numbered_TX_ID (61_000 + Index)
+              or else Receipt_Sequence (Receipts (Index)) /= Sequence_Number (Index)
+              or else Receipt_Batch_ID (Receipts (Index)) /= Receipt_Batch_ID (Receipts (1))
+            then
+               raise Program_Error with "aggregate cohort imported authority lost member identity";
+            end if;
+            Resolve (Item, Receipts (Index), Test_Operation_Timeout, Result => Result);
+            Expect (Result, Success, "aggregate cohort imported authority did not resolve");
+         end loop;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "aggregate cohort authority import or resolution replayed publication";
+         end if;
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "aggregate cohort recovered family open failed");
+         Begin_Transaction (Item, Numbered_TX_ID (61_010), Reader, Result);
+         Expect (Result, Success, "aggregate cohort reader begin failed");
+         for Index in Work'Range loop
+            Get (Item, Reader, Family, To_Key ([Byte (Index)]), Data, Result);
+            Expect (Result, Success, "aggregate cohort recovery lost a member");
+            if Data /= To_Value ([Byte (Index)]) then
+               raise Program_Error with "aggregate cohort recovery changed a value";
+            end if;
+         end loop;
+         Rollback (Reader, Result);
+         Expect (Result, Success, "aggregate cohort reader rollback failed");
+
+         --  Five transactions admitted at one snapshot prove selection-time
+         --  revalidation across two physical cohorts. The third member
+         --  conflicts only after the first cohort commits; members four and
+         --  five must still publish together instead of inheriting its fate.
+         declare
+            type Revalidation_Operation_Access is access Commit_Operation;
+            procedure Free_Revalidation is new Ada.Unchecked_Deallocation
+              (Object => Commit_Operation, Name => Revalidation_Operation_Access);
+            Revalidation_Set : aliased Flyology.Operations.Completion_Set (5);
+            Revalidation_Work : array (Positive range 1 .. 5) of Revalidation_Operation_Access :=
+              [others => null];
+            Revalidation_Active : array (Positive range 1 .. 5) of Boolean := [others => False];
+            Revalidation_Receipts : array (Positive range 1 .. 5) of Commit_Receipt;
+            Revalidation_Results : array (Positive range 1 .. 5) of Outcome_Code;
+            Depth                : Natural := 0;
+            Query_Result         : Outcome_Code;
+            Coordinator_Paused  : Boolean := False;
+         begin
+            Testing.Configure_Aggregate_Cohort (Item, 2, 1_000_001, Result);
+            Expect (Result, Success, "aggregate revalidation configuration failed");
+            Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+            Testing.Pause_Coordinator (Item, Result);
+            Expect (Result, Success, "aggregate revalidation coordinator pause failed");
+            Coordinator_Paused := True;
+            for Index in Revalidation_Work'Range loop
+               Revalidation_Work (Index) :=
+                 new Commit_Operation (Revalidation_Set'Access, Item'Access, null);
+               declare
+                  Txn : Transaction;
+                  Key_Byte : constant Byte :=
+                    (case Index is
+                       when 1 | 3 => 20,
+                       when 2     => 21,
+                       when 4     => 22,
+                       when others => 23);
+               begin
+                  Begin_Transaction (Item, Numbered_TX_ID (62_000 + Index), Txn, Result);
+                  Expect (Result, Success, "aggregate revalidation transaction begin failed");
+                  Put (Item, Txn, Family, To_Key ([Key_Byte]), To_Value ([Byte (20 + Index)]), Result);
+                  Expect (Result, Success, "aggregate revalidation mutation failed");
+                  Commit (Txn, Duration'Last, Revalidation_Work (Index).all);
+                  Revalidation_Active (Index) := True;
+               exception
+                  when others =>
+                     Rollback (Txn, Result);
+                     raise;
+               end;
+            end loop;
+            for Attempt in 1 .. 2_000 loop
+               Testing.Queue_Depth (Item, Depth, Query_Result);
+               Expect (Query_Result, Success, "aggregate revalidation queue-depth query failed");
+               exit when Depth = Revalidation_Work'Length;
+               delay 0.001;
+            end loop;
+            if Depth /= Revalidation_Work'Length then
+               raise Program_Error with "aggregate revalidation queue did not reach exact depth";
+            end if;
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "aggregate revalidation coordinator resume failed");
+            Coordinator_Paused := False;
+            Flyology.Operations.Wait_All (Revalidation_Set);
+            for Index in Revalidation_Work'Range loop
+               Finish
+                 (Revalidation_Work (Index).all,
+                  Revalidation_Receipts (Index),
+                  Revalidation_Results (Index));
+               Flyology.Operations.Release (Revalidation_Work (Index).all);
+               Revalidation_Active (Index) := False;
+               Free_Revalidation (Revalidation_Work (Index));
+            end loop;
+            for Index in Revalidation_Results'Range loop
+               Expect
+                 (Revalidation_Results (Index),
+                  (if Index = 3 then Conflict else Success),
+                  "aggregate selection-time revalidation result changed");
+            end loop;
+            if Receipt_Batch_ID (Revalidation_Receipts (1))
+                 /= Receipt_Batch_ID (Revalidation_Receipts (2))
+              or else Receipt_Batch_ID (Revalidation_Receipts (4))
+                        /= Receipt_Batch_ID (Revalidation_Receipts (5))
+              or else Receipt_Batch_ID (Revalidation_Receipts (1))
+                        = Receipt_Batch_ID (Revalidation_Receipts (4))
+              or else Receipt_Batch_ID (Revalidation_Receipts (3)) /= Numbered_ID (62_003)
+              or else Receipt_Sequence (Revalidation_Receipts (1)) + 1
+                        /= Receipt_Sequence (Revalidation_Receipts (2))
+              or else Receipt_Sequence (Revalidation_Receipts (2)) + 1
+                        /= Receipt_Sequence (Revalidation_Receipts (4))
+              or else Receipt_Sequence (Revalidation_Receipts (4)) + 1
+                        /= Receipt_Sequence (Revalidation_Receipts (5))
+            then
+               raise Program_Error with "aggregate selection-time revalidation changed cohort identity";
+            end if;
+            Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+            if Batch_After /= Batch_Before + 2
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before + 2
+            then
+               raise Program_Error with "aggregate revalidation publication geometry changed";
+            end if;
+            Begin_Transaction (Item, Numbered_TX_ID (62_010), Reader, Result);
+            Expect (Result, Success, "aggregate revalidation reader begin failed");
+            for Key_Byte in Byte range 20 .. 23 loop
+               Get (Item, Reader, Family, To_Key ([Key_Byte]), Data, Result);
+               Expect (Result, Success, "aggregate revalidation lost a successful member");
+            end loop;
+            if Data /= To_Value ([25]) then
+               raise Program_Error with "aggregate revalidation changed the final member value";
+            end if;
+            Get (Item, Reader, Family, To_Key ([20]), Data, Result);
+            Expect (Result, Success, "aggregate revalidation lost its first cohort value");
+            if Data /= To_Value ([21]) then
+               raise Program_Error with "aggregate conflicting member overwrote the committed value";
+            end if;
+            Rollback (Reader, Result);
+            Expect (Result, Success, "aggregate revalidation reader rollback failed");
+         exception
+            when others =>
+               Testing.Abort_Independent_Cohort (Item, Result);
+               if Coordinator_Paused then
+                  Testing.Resume_Coordinator (Item, Result);
+               end if;
+               for Index in Revalidation_Work'Range loop
+                  if Revalidation_Work (Index) /= null
+                    and then Revalidation_Active (Index)
+                    and then Flyology.Operations.Is_Active (Revalidation_Work (Index).all)
+                  then
+                     Flyology.Operations.Cancel (Revalidation_Work (Index).all);
+                  end if;
+               end loop;
+               if (for some Index in Revalidation_Active'Range => Revalidation_Active (Index)) then
+                  Flyology.Operations.Wait_All (Revalidation_Set);
+               end if;
+               for Index in Revalidation_Work'Range loop
+                  if Revalidation_Work (Index) /= null then
+                     if Revalidation_Active (Index)
+                       and then Flyology.Operations.Is_Terminal (Revalidation_Work (Index).all)
+                     then
+                        Finish
+                          (Revalidation_Work (Index).all,
+                           Revalidation_Receipts (Index),
+                           Revalidation_Results (Index));
+                        Flyology.Operations.Release (Revalidation_Work (Index).all);
+                     end if;
+                     Free_Revalidation (Revalidation_Work (Index));
+                  end if;
+               end loop;
+               raise;
+         end;
+
+         --  The private aggregate identity range must never alias a caller
+         --  transaction identity already reserved by an admitted member.
+         --  Detection fences the writer and publishes neither object.
+         declare
+            Collision_Ordinal : constant Interfaces.Unsigned_64 := 2_000_000;
+            Collision_ID      : constant Transaction_Identifier :=
+              Transaction_Identifier (Testing.Test_Structural_ID (16#C5#, Collision_Ordinal));
+            Collision_Set     : aliased Flyology.Operations.Completion_Set (2);
+            First             : Commit_Operation (Collision_Set'Access, Item'Access, null);
+            Second            : Commit_Operation (Collision_Set'Access, Item'Access, null);
+            First_Txn         : Transaction;
+            Second_Txn        : Transaction;
+            First_Receipt     : Commit_Receipt;
+            Second_Receipt    : Commit_Receipt;
+            First_Result      : Outcome_Code;
+            Second_Result     : Outcome_Code;
+         begin
+            Testing.Configure_Aggregate_Cohort (Item, 2, Collision_Ordinal, Result);
+            Expect (Result, Success, "aggregate collision configuration failed");
+            Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+            Begin_Transaction (Item, Collision_ID, First_Txn, Result);
+            Expect (Result, Success, "aggregate collision first transaction begin failed");
+            Put (Item, First_Txn, Family, To_Key ([30]), To_Value ([30]), Result);
+            Expect (Result, Success, "aggregate collision first mutation failed");
+            Begin_Transaction (Item, Numbered_TX_ID (62_020), Second_Txn, Result);
+            Expect (Result, Success, "aggregate collision second transaction begin failed");
+            Put (Item, Second_Txn, Family, To_Key ([31]), To_Value ([31]), Result);
+            Expect (Result, Success, "aggregate collision second mutation failed");
+            Commit (First_Txn, Duration'Last, First);
+            Commit (Second_Txn, Duration'Last, Second);
+            Flyology.Operations.Wait_All (Collision_Set);
+            Finish (First, First_Receipt, First_Result);
+            Flyology.Operations.Release (First);
+            Finish (Second, Second_Receipt, Second_Result);
+            Flyology.Operations.Release (Second);
+            Expect (First_Result, Stale_Writer, "aggregate identity collision did not fence first member");
+            Expect (Second_Result, Stale_Writer, "aggregate identity collision did not fence second member");
+            if Receipt_Transaction_ID (First_Receipt) /= Collision_ID
+              or else Receipt_Transaction_ID (Second_Receipt) /= Numbered_TX_ID (62_020)
+            then
+               raise Program_Error with "aggregate identity collision lost caller identity";
+            end if;
+            Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+            if Batch_After /= Batch_Before
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before
+            then
+               raise Program_Error with "aggregate identity collision reached publication";
+            end if;
+         end;
+         Close (Item, Result);
+         Expect (Result, Success, "aggregate cohort recovered root close failed");
+         Close (Standard_Item, Result);
+         Expect (Result, Success, "aggregate standard-profile fixture close failed");
+      exception
+         when others =>
+            Testing.Abort_Independent_Cohort (Item, Result);
+            for Index in Work'Range loop
+               if Work (Index) /= null
+                 and then Active (Index)
+                 and then Flyology.Operations.Is_Active (Work (Index).all)
+               then
+                  Flyology.Operations.Cancel (Work (Index).all);
+               end if;
+            end loop;
+            if (for some Index in Active'Range => Active (Index)) then
+               Flyology.Operations.Wait_All (Set);
+            end if;
+            for Index in Work'Range loop
+               if Work (Index) /= null then
+                  if Active (Index) and then Flyology.Operations.Is_Terminal (Work (Index).all) then
+                     Finish (Work (Index).all, Receipts (Index), Results (Index));
+                     Flyology.Operations.Release (Work (Index).all);
+                  end if;
+                  Free (Work (Index));
+               end if;
+            end loop;
+            raise;
+      end;
+
+      --  Aggregate cancellation stops at the same coordinator-admission cut
+      --  as ordinary Commit. A requested token before admission consumes no
+      --  transaction or identity; cancellation of queued or frozen members is
+      --  drain-only and cannot split the shared publication outcome.
+      declare
+         Context                                    : aliased Storage_Context;
+         Item                                       : aliased Database;
+         Family                                     : Column_Family;
+         Before_Batch, Before_Manifest, Before_Head : Natural;
+         After_Batch, After_Manifest, After_Head    : Natural;
+      begin
+         Bind_Context (Context, Backend, "aggregate-cancellation");
+         Create_DB (Item, Context'Access, DB_ID (227), ID (228), Result);
+         Expect (Result, Success, "aggregate cancellation root create failed");
+         Close (Item, Result);
+         Expect (Result, Success, "aggregate cancellation root close failed");
+         Testing.Rewrite_Manifest_Profile
+           (Context, Manifest_ID_For (ID (228)), DB_ID (227), Result, Aggregate_Profile => True);
+         Expect (Result, Success, "aggregate cancellation profile rewrite failed");
+         Open (Item, Context'Access, DB_ID (227), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "aggregate cancellation root reopen failed");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "aggregate cancellation family open failed");
+         Testing.Configure_Aggregate_Cohort (Item, 2, 3_000_000, Result);
+         Expect (Result, Success, "aggregate cancellation configuration failed");
+
+         declare
+            Stop    : aliased Flyology.Cancellation.Token;
+            Txn     : Transaction;
+            Receipt : Commit_Receipt;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (63_001), Txn, Result);
+            Expect (Result, Success, "aggregate pre-admission cancellation begin failed");
+            Put (Item, Txn, Family, To_Key ([40]), To_Value ([40]), Result);
+            Expect (Result, Success, "aggregate pre-admission cancellation mutation failed");
+            Stop.Request;
+            Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
+            Commit (Item, Txn, Duration'Last, Stop'Access, Receipt, Result);
+            Expect (Result, Cancelled, "aggregate pre-admission cancellation was not classified");
+            if Receipt_Transaction_ID (Receipt) /= Zero_Transaction_ID
+              or else Receipt_Batch_ID (Receipt) /= Zero_Identifier
+            then
+               raise Program_Error with "aggregate pre-admission cancellation exposed an identity";
+            end if;
+            Rollback (Txn, Result);
+            Expect (Result, Success, "aggregate pre-admission cancellation consumed its transaction");
+            Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+            if After_Batch /= Before_Batch
+              or else After_Manifest /= Before_Manifest
+              or else After_Head /= Before_Head
+            then
+               raise Program_Error with "aggregate pre-admission cancellation reached publication";
+            end if;
+         end;
+
+         declare
+            Set                : aliased Flyology.Operations.Completion_Set (2);
+            First              : Commit_Operation (Set'Access, Item'Access, null);
+            Second             : Commit_Operation (Set'Access, Item'Access, null);
+            First_Txn          : Transaction;
+            Second_Txn         : Transaction;
+            First_Receipt      : Commit_Receipt;
+            Second_Receipt     : Commit_Receipt;
+            First_Result       : Outcome_Code;
+            Second_Result      : Outcome_Code;
+            Depth              : Natural := 0;
+            Arrived            : Boolean := False;
+            Coordinator_Paused : Boolean := False;
+            Gets_Paused        : Boolean := False;
+         begin
+            Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
+            Testing.Pause_Coordinator (Item, Result);
+            Expect (Result, Success, "aggregate cancellation coordinator pause failed");
+            Coordinator_Paused := True;
+            Testing.Arm (Context, After_Batch_Put, Unknown_After_Entry);
+            Testing.Pause_Gets (Context);
+            Gets_Paused := True;
+            Begin_Transaction (Item, Numbered_TX_ID (63_002), First_Txn, Result);
+            Expect (Result, Success, "aggregate queued cancellation first begin failed");
+            Put (Item, First_Txn, Family, To_Key ([41]), To_Value ([41]), Result);
+            Expect (Result, Success, "aggregate queued cancellation first mutation failed");
+            Begin_Transaction (Item, Numbered_TX_ID (63_003), Second_Txn, Result);
+            Expect (Result, Success, "aggregate frozen cancellation second begin failed");
+            Put (Item, Second_Txn, Family, To_Key ([42]), To_Value ([42]), Result);
+            Expect (Result, Success, "aggregate frozen cancellation second mutation failed");
+            Commit (First_Txn, Duration'Last, First);
+            Commit (Second_Txn, Duration'Last, Second);
+            for Attempt in 1 .. 2_000 loop
+               Testing.Queue_Depth (Item, Depth, Result);
+               Expect (Result, Success, "aggregate cancellation queue-depth query failed");
+               exit when Depth = 2;
+               delay 0.001;
+            end loop;
+            if Depth /= 2 then
+               raise Program_Error with "aggregate cancellation queue did not reach exact width";
+            end if;
+            Flyology.Operations.Cancel (First);
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "aggregate cancellation coordinator resume failed");
+            Coordinator_Paused := False;
+            Testing.Wait_For_Get (Context, Test_Operation_Timeout, Arrived);
+            if not Arrived then
+               raise Program_Error with "aggregate cancellation did not reach frozen reconciliation";
+            end if;
+            Testing.Queue_Depth (Item, Depth, Result);
+            Expect (Result, Success, "aggregate frozen cancellation queue-depth query failed");
+            if Depth /= 0
+              or else not Flyology.Operations.Is_Active (First)
+              or else not Flyology.Operations.Is_Active (Second)
+            then
+               raise Program_Error with "aggregate cancellation changed admitted operation ownership";
+            end if;
+            Flyology.Operations.Cancel (Second);
+            Testing.Resume_Gets (Context);
+            Gets_Paused := False;
+            Flyology.Operations.Wait_All (Set);
+            Finish (First, First_Receipt, First_Result);
+            Flyology.Operations.Release (First);
+            Finish (Second, Second_Receipt, Second_Result);
+            Flyology.Operations.Release (Second);
+            Expect (First_Result, Success, "queued aggregate cancellation replaced publication outcome");
+            Expect (Second_Result, Success, "frozen aggregate cancellation replaced publication outcome");
+            if Receipt_Transaction_ID (First_Receipt) /= Numbered_TX_ID (63_002)
+              or else Receipt_Transaction_ID (Second_Receipt) /= Numbered_TX_ID (63_003)
+              or else Receipt_Batch_ID (First_Receipt) /= Receipt_Batch_ID (Second_Receipt)
+              or else Receipt_Sequence (First_Receipt) + 1 /= Receipt_Sequence (Second_Receipt)
+            then
+               raise Program_Error with "aggregate cancellation changed shared cohort identity";
+            end if;
+            Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+            if After_Batch /= Before_Batch + 1
+              or else After_Manifest /= Before_Manifest
+              or else After_Head /= Before_Head + 1
+            then
+               raise Program_Error with "aggregate cancellation changed publication geometry";
+            end if;
+         exception
+            when others =>
+               if Coordinator_Paused then
+                  Testing.Resume_Coordinator (Item, Result);
+               end if;
+               if Gets_Paused then
+                  Testing.Resume_Gets (Context);
+               end if;
+               Testing.Abort_Independent_Cohort (Item, Result);
+               if Flyology.Operations.Is_Active (First) then
+                  Flyology.Operations.Cancel (First);
+               end if;
+               if Flyology.Operations.Is_Active (Second) then
+                  Flyology.Operations.Cancel (Second);
+               end if;
+               if Flyology.Operations.Is_Active (First)
+                 or else Flyology.Operations.Is_Active (Second)
+               then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               raise;
+         end;
+         Close (Item, Result);
+         Expect (Result, Success, "aggregate cancellation root final close failed");
+      end;
+
+      --  If an aggregate batch survives but its HEAD does not, reopening loses
+      --  the local reservation. Reusing that caller-supplied physical ordinal
+      --  reaches conditional create, which rejects the existing immutable key,
+      --  fences the writer, and never makes either cohort visible.
+      declare
+         Context                                    : aliased Storage_Context;
+         Item                                       : aliased Database;
+         Family                                     : Column_Family;
+         Reader                                     : Transaction;
+         Data                                       : Value;
+         Before_Batch, Before_Manifest, Before_Head : Natural;
+         After_Batch, After_Manifest, After_Head    : Natural;
+         Aggregate_Ordinal                          : constant Interfaces.Unsigned_64 := 4_000_000;
+         Aggregate_ID                               : constant Identifier :=
+           Testing.Test_Structural_ID (16#C5#, Aggregate_Ordinal);
+      begin
+         Bind_Context (Context, Backend, "aggregate-orphan-reuse");
+         Create_DB (Item, Context'Access, DB_ID (229), ID (230), Result);
+         Expect (Result, Success, "aggregate orphan root create failed");
+         Close (Item, Result);
+         Expect (Result, Success, "aggregate orphan root close failed");
+         Testing.Rewrite_Manifest_Profile
+           (Context, Manifest_ID_For (ID (230)), DB_ID (229), Result, Aggregate_Profile => True);
+         Expect (Result, Success, "aggregate orphan profile rewrite failed");
+         Open (Item, Context'Access, DB_ID (229), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "aggregate orphan root reopen failed");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "aggregate orphan family open failed");
+         Testing.Configure_Aggregate_Cohort (Item, 2, Aggregate_Ordinal, Result);
+         Expect (Result, Success, "aggregate orphan configuration failed");
+         Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
+         Testing.Arm (Context, After_Batch_Put, Unknown_After_Entry);
+         Testing.Arm (Context, Before_Get, Definite_Failure);
+         declare
+            Set            : aliased Flyology.Operations.Completion_Set (2);
+            First          : Commit_Operation (Set'Access, Item'Access, null);
+            Second         : Commit_Operation (Set'Access, Item'Access, null);
+            First_Txn      : Transaction;
+            Second_Txn     : Transaction;
+            First_Receipt  : Commit_Receipt;
+            Second_Receipt : Commit_Receipt;
+            First_Result   : Outcome_Code;
+            Second_Result  : Outcome_Code;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (64_001), First_Txn, Result);
+            Expect (Result, Success, "aggregate orphan first begin failed");
+            Put (Item, First_Txn, Family, To_Key ([50]), To_Value ([50]), Result);
+            Expect (Result, Success, "aggregate orphan first mutation failed");
+            Begin_Transaction (Item, Numbered_TX_ID (64_002), Second_Txn, Result);
+            Expect (Result, Success, "aggregate orphan second begin failed");
+            Put (Item, Second_Txn, Family, To_Key ([51]), To_Value ([51]), Result);
+            Expect (Result, Success, "aggregate orphan second mutation failed");
+            Commit (First_Txn, Duration'Last, First);
+            Rollback (First_Txn, Result);
+            Expect (Result, Invalid_State, "aggregate orphan first admission retained ownership");
+            Commit (Second_Txn, Duration'Last, Second);
+            Rollback (Second_Txn, Result);
+            Expect (Result, Invalid_State, "aggregate orphan second admission retained ownership");
+            Flyology.Operations.Wait_All (Set);
+            Finish (First, First_Receipt, First_Result);
+            Flyology.Operations.Release (First);
+            Finish (Second, Second_Receipt, Second_Result);
+            Flyology.Operations.Release (Second);
+            Expect (First_Result, Storage_Failure, "aggregate orphan first outcome changed");
+            Expect (Second_Result, Storage_Failure, "aggregate orphan second outcome changed");
+            if Receipt_Transaction_ID (First_Receipt) /= Numbered_TX_ID (64_001)
+              or else Receipt_Transaction_ID (Second_Receipt) /= Numbered_TX_ID (64_002)
+              or else Receipt_Batch_ID (First_Receipt) /= Aggregate_ID
+              or else Receipt_Batch_ID (Second_Receipt) /= Aggregate_ID
+            then
+               raise Program_Error with "aggregate orphan failure lost cohort identity";
+            end if;
+         exception
+            when others =>
+               Testing.Abort_Independent_Cohort (Item, Result);
+               if Flyology.Operations.Is_Active (First)
+                 or else Flyology.Operations.Is_Active (Second)
+               then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               raise;
+         end;
+         Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+         if After_Batch /= Before_Batch + 1
+           or else After_Manifest /= Before_Manifest
+           or else After_Head /= Before_Head
+           or else Visible (Item) /= 0
+         then
+            raise Program_Error with "aggregate orphan failure changed durable visibility";
+         end if;
+         Close (Item, Result);
+         Expect (Result, Success, "aggregate orphan failure close failed");
+         Open (Item, Context'Access, DB_ID (229), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "aggregate orphan failure reopen failed");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "aggregate orphan recovered family open failed");
+         Testing.Configure_Aggregate_Cohort (Item, 2, Aggregate_Ordinal, Result);
+         Expect (Result, Success, "aggregate orphan reuse configuration failed");
+         Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
+         declare
+            Set            : aliased Flyology.Operations.Completion_Set (2);
+            First          : Commit_Operation (Set'Access, Item'Access, null);
+            Second         : Commit_Operation (Set'Access, Item'Access, null);
+            First_Txn      : Transaction;
+            Second_Txn     : Transaction;
+            First_Receipt  : Commit_Receipt;
+            Second_Receipt : Commit_Receipt;
+            First_Result   : Outcome_Code;
+            Second_Result  : Outcome_Code;
+            Fenced_Txn     : Transaction;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (64_003), First_Txn, Result);
+            Expect (Result, Success, "aggregate orphan retry first begin failed");
+            Put (Item, First_Txn, Family, To_Key ([50]), To_Value ([60]), Result);
+            Expect (Result, Success, "aggregate orphan retry first mutation failed");
+            Begin_Transaction (Item, Numbered_TX_ID (64_004), Second_Txn, Result);
+            Expect (Result, Success, "aggregate orphan retry second begin failed");
+            Put (Item, Second_Txn, Family, To_Key ([51]), To_Value ([61]), Result);
+            Expect (Result, Success, "aggregate orphan retry second mutation failed");
+            Commit (First_Txn, Duration'Last, First);
+            Rollback (First_Txn, Result);
+            Expect (Result, Invalid_State, "aggregate orphan retry first retained ownership");
+            Commit (Second_Txn, Duration'Last, Second);
+            Rollback (Second_Txn, Result);
+            Expect (Result, Invalid_State, "aggregate orphan retry second retained ownership");
+            Flyology.Operations.Wait_All (Set);
+            Finish (First, First_Receipt, First_Result);
+            Flyology.Operations.Release (First);
+            Finish (Second, Second_Receipt, Second_Result);
+            Flyology.Operations.Release (Second);
+            Expect (First_Result, Conflict, "aggregate orphan reuse did not reject first member");
+            Expect (Second_Result, Conflict, "aggregate orphan reuse did not reject second member");
+            if Receipt_Transaction_ID (First_Receipt) /= Numbered_TX_ID (64_003)
+              or else Receipt_Transaction_ID (Second_Receipt) /= Numbered_TX_ID (64_004)
+              or else Receipt_Batch_ID (First_Receipt) /= Aggregate_ID
+              or else Receipt_Batch_ID (Second_Receipt) /= Aggregate_ID
+            then
+               raise Program_Error with "aggregate orphan reuse lost cohort identity";
+            end if;
+            Begin_Transaction (Item, Numbered_TX_ID (64_005), Fenced_Txn, Result);
+            Expect (Result, Stale_Writer, "aggregate orphan reuse did not fence the writer");
+         exception
+            when others =>
+               Testing.Abort_Independent_Cohort (Item, Result);
+               if Flyology.Operations.Is_Active (First)
+                 or else Flyology.Operations.Is_Active (Second)
+               then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               raise;
+         end;
+         Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+         if After_Batch /= Before_Batch + 1
+           or else After_Manifest /= Before_Manifest
+           or else After_Head /= Before_Head
+           or else Visible (Item) /= 0
+         then
+            raise Program_Error with "aggregate orphan reuse changed publication geometry";
+         end if;
+         Close (Item, Result);
+         Expect (Result, Success, "aggregate orphan reuse close failed");
+         Open (Item, Context'Access, DB_ID (229), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "aggregate orphan reuse final reopen failed");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "aggregate orphan final family open failed");
+         Begin_Transaction (Item, Numbered_TX_ID (64_006), Reader, Result);
+         Expect (Result, Success, "aggregate orphan final reader begin failed");
+         Get (Item, Reader, Family, To_Key ([50]), Data, Result);
+         Expect (Result, Not_Found, "aggregate orphan first value became visible");
+         Get (Item, Reader, Family, To_Key ([51]), Data, Result);
+         Expect (Result, Not_Found, "aggregate orphan second value became visible");
+         Rollback (Reader, Result);
+         Expect (Result, Success, "aggregate orphan final reader rollback failed");
+         Close (Item, Result);
+         Expect (Result, Success, "aggregate orphan final close failed");
+      end;
+
       declare
          Context                                    : aliased Storage_Context;
          Item                                       : Database;
@@ -7159,7 +7940,7 @@ package body Flyology.DB.Engine_Tests is
          Expect_Imported_Unchanged ("trailing authority changed the old destination receipt");
 
          Unsupported := Authority;
-         Unsupported (Unsupported'First + 9) := 3;
+         Unsupported (Unsupported'First + 9) := 4;
          Import_Commit_Resolution_Authority (Item, Unsupported, Imported, Result);
          Expect (Result, Unsupported_Format, "commit authority version mismatch was not typed");
          Expect_Imported_Unchanged ("unsupported authority changed the old destination receipt");
@@ -11361,10 +12142,11 @@ package body Flyology.DB.Engine_Tests is
       declare
          --  Memory-backend test capacity: four buckets, the established 512-object
          --  corpus, ten durable-authority fixture keys, seven cohort-authority
-         --  keys, and 39 coalescing-profile keys plus 69 v2 recovery objects.
+         --  keys, 46 coalescing-profile keys, six aggregate cancellation/orphan
+         --  keys, and 69 v2 recovery objects.
          --  Eight million bytes cover the complete deterministic engine corpus
          --  while retaining explicit backend backpressure.
-         Store : aliased Memory.Store (4, 637, 8_000_000);
+         Store : aliased Memory.Store (4, 650, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then

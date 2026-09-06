@@ -890,6 +890,33 @@ package body Flyology.DB.LSM_Format_Tests is
       end if;
       Runtime.Release (Manifest_Read);
       Runtime.Release (Experimental_Image);
+
+      Manifest_Value.Commit_Profile := Runtime.Commit_Profiles.Aggregate_Coalescing;
+      Runtime.Encode_Checkpoint_Manifest (Manifest_Value.all, Experimental_Image, Encode_Status);
+      if Encode_Status /= Runtime.Encoded or else Experimental_Image = null then
+         raise Program_Error with "runtime aggregate manifest did not encode";
+      end if;
+      Runtime.Inspect_Checkpoint_Manifest_Header
+        (Experimental_Image.all (0 .. Runtime.Experimental_Checkpoint_Manifest_Header_Length - 1),
+         ID (1),
+         Experimental_Image.all'Length,
+         Manifest_Head,
+         Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Manifest_Head.Commit_Profile /= Runtime.Commit_Profiles.Aggregate_Coalescing
+      then
+         raise Program_Error with "runtime aggregate manifest header admission mismatch";
+      end if;
+      Runtime.Decode_Checkpoint_Manifest (Experimental_Image.all, ID (1), Manifest_Read, Decode_Status);
+      if Decode_Status /= Runtime.Decoded
+        or else Manifest_Read = null
+        or else not Runtime.Structurally_Valid (Manifest_Read.all)
+        or else Manifest_Read.all /= Manifest_Value.all
+      then
+         raise Program_Error with "runtime aggregate manifest did not round-trip";
+      end if;
+      Runtime.Release (Manifest_Read);
+      Runtime.Release (Experimental_Image);
       declare
          Corrupt_Profile : Formats.Byte_Array := Experimental_Manifest_Golden;
 
@@ -938,7 +965,7 @@ package body Flyology.DB.LSM_Format_Tests is
          Put_U32 (Corrupt_Profile, 228, 0);
          Repair_Checksums (Corrupt_Profile, Runtime.Experimental_Checkpoint_Manifest_Header_Length);
          Expect_Experimental (Corrupt_Profile, Runtime.Invalid_Manifest_State);
-         Put_U32 (Corrupt_Profile, 228, 2);
+         Put_U32 (Corrupt_Profile, 228, 3);
          Repair_Checksums (Corrupt_Profile, Runtime.Experimental_Checkpoint_Manifest_Header_Length);
          Expect_Experimental (Corrupt_Profile, Runtime.Invalid_Manifest_State);
       end;

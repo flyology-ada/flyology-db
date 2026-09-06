@@ -1652,7 +1652,10 @@ package Flyology.DB is
    --  Sequence assigned to the receipt's transaction, or zero before confirmation.
    function Receipt_Sequence (Item : Commit_Receipt) return Sequence_Number;
 
-   --  Immutable batch identity retained by the receipt.
+   --  Immutable physical batch identity retained by the receipt. Ordinary
+   --  singleton Commit keeps this equal to its transaction identity. The
+   --  private aggregate experiment deliberately returns one shared physical
+   --  identity for every independently submitted member in the frozen cohort.
    function Receipt_Batch_ID (Item : Commit_Receipt) return Identifier;
 
    --  Exact caller-buffer extent required to export one unresolved Commit
@@ -1674,8 +1677,9 @@ package Flyology.DB is
    --  request, changes no receipt, and introduces no retry or replacement
    --  identity. Version 1 carries an exact ordinary batch-v1 image. Version 2
    --  carries one exact batch-v2 singleton and the complete shared cohort HEAD
-   --  range. Individual Commit_Group and independent-cohort member receipts
-   --  retain their member-specific transaction identity and sequence.
+   --  range. Version 3 identifies the private aggregate profile and carries
+   --  its complete batch-v1 image, including every sibling member's keys and
+   --  values. Individual receipts retain their member transaction and sequence.
    --  @param Receipt Complete unresolved commit authority
    --  @param Authority Caller-owned destination retained by the caller
    --  @param Length Exact meaningful prefix on Success, zero on failure
@@ -1691,7 +1695,9 @@ package Flyology.DB is
    --  authenticated persisted limits and validates the exact database, batch,
    --  HEAD transition, member transaction, member sequence, format pair, and
    --  profile before the receipt is replaced. Version 2 also bounds the claimed
-   --  cohort by the authenticated retained-history limit. Authority is borrowed
+   --  cohort by the authenticated retained-history limit. Version 3 deliberately
+   --  grants full-cohort bearer authority within one caller-approved trust domain.
+   --  Authority is borrowed
    --  only for this call. Item and Receipt are unchanged on every failure.
    --  Success performs no storage request; the resulting receipt is usable only
    --  by the existing read-only Resolve operation, which authenticates the
@@ -2580,14 +2586,15 @@ private
    type Receipt_Phase is (No_Publication, Head_Publication_Unknown, Resolved);
 
    type Commit_Receipt is record
-      Current_Outcome   : Outcome_Code := Invalid_State;
-      Phase             : Receipt_Phase := No_Publication;
-      Transaction_ID    : Transaction_Identifier := Zero_Transaction_ID;
-      Assigned_Sequence : Sequence_Number := 0;
-      Batch_ID          : Identifier := Zero_Identifier;
-      Retained_Image    : Shared_Image_Lease;
-      Expected_Head     : Head_Snapshot;
-      Attempted_Head    : Head_Snapshot;
+      Current_Outcome     : Outcome_Code := Invalid_State;
+      Phase               : Receipt_Phase := No_Publication;
+      Aggregate_Authority : Boolean := False;
+      Transaction_ID      : Transaction_Identifier := Zero_Transaction_ID;
+      Assigned_Sequence   : Sequence_Number := 0;
+      Batch_ID            : Identifier := Zero_Identifier;
+      Retained_Image      : Shared_Image_Lease;
+      Expected_Head       : Head_Snapshot;
+      Attempted_Head      : Head_Snapshot;
    end record;
 
    type Create_Receipt_Phase is
@@ -3217,6 +3224,11 @@ private
    procedure Set_Test_Paused (Item : in out Database; Value : Boolean; Result : out Outcome_Code);
    procedure Set_Test_Independent_Cohort_Width
      (Item : in out Database; Width : Positive; Result : out Outcome_Code);
+   procedure Set_Test_Aggregate_Cohort_Width
+     (Item                : in out Database;
+      Width               : Positive;
+      First_Batch_Ordinal : Interfaces.Unsigned_64;
+      Result              : out Outcome_Code);
    procedure Abort_Test_Independent_Cohort (Item : in out Database; Result : out Outcome_Code);
    procedure Test_Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
    procedure Fail_Next_Test_Install (Item : in out Database; Result : out Outcome_Code);
@@ -3328,7 +3340,8 @@ private
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;
       Expected_Database_ID : Database_Identifier;
-      Result               : out Outcome_Code);
+      Result               : out Outcome_Code;
+      Aggregate_Profile    : Boolean := False);
    procedure Extend_Test_Manifest_Chain
      (Item        : in out Storage_Context;
       Database_ID : Database_Identifier;

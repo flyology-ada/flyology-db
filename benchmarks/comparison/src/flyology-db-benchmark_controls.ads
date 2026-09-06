@@ -13,6 +13,19 @@ package Flyology.DB.Benchmark_Controls is
       Timeout     : Duration;
       Result      : out Outcome_Code);
 
+   --  Rewrite a fresh benchmark root to the private aggregate-coalescing
+   --  profile. First_Batch_Ordinal selects a caller-owned never-reused
+   --  physical identity range; the runtime derives no hardware policy.
+   procedure Enable_Aggregate_Coalescing
+     (Item                : in out Database;
+      Storage             : not null access Storage_Context;
+      Database_ID         : Database_Identifier;
+      Manifest_ID         : Identifier;
+      Width               : Positive;
+      First_Batch_Ordinal : Interfaces.Unsigned_64;
+      Timeout             : Duration;
+      Result              : out Outcome_Code);
+
    --  Terminalize only queued members after a benchmark-harness failure so
    --  exact-width tail waiting cannot trap exception cleanup.
    procedure Abort_Independent_Coalescing
@@ -25,5 +38,7 @@ package Flyology.DB.Benchmark_Controls is
       Head_Puts     : out Natural);
 
    function Attempted_Transition_Number (Item : Commit_Receipt) return Interfaces.Unsigned_64;
+
+   function Aggregate_Batch_ID (Ordinal : Interfaces.Unsigned_64) return Identifier;
 
 end Flyology.DB.Benchmark_Controls;

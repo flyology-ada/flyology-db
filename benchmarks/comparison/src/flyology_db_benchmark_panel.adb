@@ -31,6 +31,8 @@ procedure Flyology_DB_Benchmark_Panel is
    Flyology_Singleton_Prefix : constant String := "flyology-db-files-singleton-depth";
    Flyology_Group_Prefix : constant String := "flyology-db-files-explicit-group";
    Flyology_Cohort_Prefix : constant String := "flyology-db-files-independent-cohort-width";
+   Flyology_Aggregate_Prefix : constant String :=
+     "flyology-db-files-aggregate-cohort-width";
    SlateDB_Depth_Prefix : constant String := "slatedb-1ms-depth";
 
    Reference_Name : constant String := Ada.Command_Line.Argument (1);
@@ -73,6 +75,8 @@ procedure Flyology_DB_Benchmark_Panel is
       --  Every named panel profile defines the complete scheduling shape so
       --  an ambient experimental setting cannot silently relabel a result.
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH", "0");
+      Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_AGGREGATE_COHORT_WIDTH", "0");
+      Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_AGGREGATE_FIRST_BATCH_ORDINAL", "0");
       if Name = "flyology-db-files" then
          Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP", "0");
          Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_GROUP_SIZE", "1");
@@ -113,7 +117,7 @@ procedure Flyology_DB_Benchmark_Panel is
                  ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Depth));
             end;
          end;
-      else
+      elsif Has_Profile_Prefix (Name, Flyology_Cohort_Prefix) then
          declare
             Width_Text : constant String :=
               Name (Name'First + Flyology_Cohort_Prefix'Length .. Name'Last);
@@ -125,6 +129,37 @@ procedure Flyology_DB_Benchmark_Panel is
               ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Width));
             Ada.Environment_Variables.Set
               ("FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH", Image (Width));
+         end;
+      else
+         declare
+            Profile : constant String :=
+              Name (Name'First + Flyology_Aggregate_Prefix'Length .. Name'Last);
+            Separator : constant Natural := Fixed.Index (Profile, "-depth");
+         begin
+            if Separator = 0
+              or else Separator = Profile'First
+              or else Separator + 6 > Profile'Last
+            then
+               raise Program_Error with
+                 "invalid Flyology aggregate-cohort benchmark profile " & Name;
+            end if;
+            declare
+               Width_Text : constant String := Profile (Profile'First .. Separator - 1);
+               Depth_Text : constant String := Profile (Separator + 6 .. Profile'Last);
+               Width : constant Positive := Profile_Value (Width_Text, "Flyology aggregate width");
+               Depth : constant Positive := Profile_Value (Depth_Text, "Flyology aggregate depth");
+            begin
+               if Depth mod Width /= 0 then
+                  raise Program_Error with "Flyology aggregate depth must be a multiple of its width";
+               end if;
+               Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP", "0");
+               Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_GROUP_SIZE", "1");
+               Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Depth));
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_AGGREGATE_COHORT_WIDTH", Image (Width));
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_AGGREGATE_FIRST_BATCH_ORDINAL", "1");
+            end;
          end;
       end if;
    end Configure_Flyology_Profile;
@@ -201,6 +236,7 @@ procedure Flyology_DB_Benchmark_Panel is
         or else Has_Profile_Prefix (Name, Flyology_Singleton_Prefix)
         or else Has_Profile_Prefix (Name, Flyology_Group_Prefix)
         or else Has_Profile_Prefix (Name, Flyology_Cohort_Prefix)
+        or else Has_Profile_Prefix (Name, Flyology_Aggregate_Prefix)
       then
          Configure_Flyology_Profile (Name);
          Flyology_DB_Benchmark_Flyology.Run_Local
@@ -252,6 +288,7 @@ procedure Flyology_DB_Benchmark_Panel is
             Verified_Keys,
             State_SHA256);
       elsif Name = "flyology-db-rustfs" then
+         Configure_Flyology_Profile ("flyology-db-files");
          Flyology_DB_Benchmark_Flyology.Run_S3
            (Ada.Environment_Variables.Value ("FLYOLOGY_DB_BENCH_ENDPOINT"),
             Ada.Environment_Variables.Value ("FLYOLOGY_DB_BENCH_BUCKET"),

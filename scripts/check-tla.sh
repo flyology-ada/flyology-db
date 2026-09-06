@@ -127,7 +127,8 @@ check_trace() {
   elif test "$trace_update_mode" = 1
   then
     case "$module" in
-      LiveSuffixRegistryRecoveryWitness|LiveSuffixRegistryCancellationWitness)
+      LiveSuffixRegistryRecoveryWitness|LiveSuffixRegistryCancellationWitness|\
+      AggregateCommitCoalescingAuthorityReplay)
         ;;
       *)
         printf '%s\n' \
@@ -2665,13 +2666,554 @@ then
   cat "$temporary_root/tlaps-independent-coalescing.log" >&2
   exit 1
 fi
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 \
+  -metadir "$temporary_root/tlc-aggregate-coalescing-states" \
+  -config AggregateCommitCoalescing.cfg AggregateCommitCoalescing \
+  >"$temporary_root/tlc-aggregate-coalescing.log" 2>&1
+aggregate_coalescing_tlc_status=$?
+set -e
+if test "$aggregate_coalescing_tlc_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA aggregate coalescing positive TLC exited $aggregate_coalescing_tlc_status" \
+    >&2
+  cat "$temporary_root/tlc-aggregate-coalescing.log" >&2
+  exit "$aggregate_coalescing_tlc_status"
+fi
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-aggregate-coalescing.log"
+if grep -q '^Warning:' "$temporary_root/tlc-aggregate-coalescing.log"
+then
+  printf '%s\n' 'Flyology.DB TLA aggregate coalescing TLC warned' >&2
+  cat "$temporary_root/tlc-aggregate-coalescing.log" >&2
+  exit 1
+fi
+aggregate_coalescing_state_lines=$(grep -E \
+  '^[1-9][0-9]* states generated, [1-9][0-9]* distinct states found, 0 states left on queue[.]$' \
+  "$temporary_root/tlc-aggregate-coalescing.log" || :)
+test "$(printf '%s\n' "$aggregate_coalescing_state_lines" | wc -l | tr -d ' ')" -eq 1
+aggregate_coalescing_generated=$(printf '%s\n' "$aggregate_coalescing_state_lines" | awk '{print $1}')
+aggregate_coalescing_states=$(printf '%s\n' "$aggregate_coalescing_state_lines" | awk '{print $4}')
+aggregate_coalescing_depth_lines=$(grep -E \
+  '^The depth of the complete state graph search is [1-9][0-9]*[.]$' \
+  "$temporary_root/tlc-aggregate-coalescing.log" || :)
+test "$(printf '%s\n' "$aggregate_coalescing_depth_lines" | wc -l | tr -d ' ')" -eq 1
+aggregate_coalescing_depth=$(printf '%s\n' "$aggregate_coalescing_depth_lines" | \
+  sed 's/^The depth of the complete state graph search is \([1-9][0-9]*\)[.]$/\1/')
+if test "$aggregate_coalescing_generated" -ne 16895425 || \
+  test "$aggregate_coalescing_states" -ne 2739226 || \
+  test "$aggregate_coalescing_depth" -ne 33
+then
+  printf '%s\n' \
+    'Flyology.DB TLA aggregate coalescing state geometry changed:' \
+    "$aggregate_coalescing_state_lines" \
+    "$aggregate_coalescing_depth_lines" >&2
+  exit 1
+fi
+
+aggregate_coalescing_final_coverage="$temporary_root/aggregate-coalescing-final-coverage.txt"
+if ! awk '
+  /^Model checking completed\. No error has been found\.$/ {
+    completed++
+    next
+  }
+  /^The coverage statistics at / {
+    if (completed == 0) {
+      next
+    }
+    if (completed != 1 || capture || reports != 0) {
+      invalid = 1
+      next
+    }
+    block = ""
+    capture = 1
+    reports++
+  }
+  capture {
+    block = block $0 ORS
+  }
+  capture && /^End of statistics/ {
+    final = block
+    capture = 0
+  }
+  END {
+    if (invalid || completed != 1 || reports != 1 || capture || final == "") {
+      exit 1
+    }
+    printf "%s", final
+  }
+' "$temporary_root/tlc-aggregate-coalescing.log" \
+  >"$aggregate_coalescing_final_coverage"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA aggregate coalescing final coverage report missing or incomplete' >&2
+  exit 1
+fi
+aggregate_coalescing_action_report="$temporary_root/aggregate-coalescing-action-coverage.txt"
+: >"$aggregate_coalescing_action_report"
+for action in SupplyAggregateID AdmitSingleton RejectBeforeAdmission \
+  RequestAdmittedCancellation RejectQueuedConflict FreezeCohort PublishAggregate ConfirmAggregate \
+  FailFrozenCohort RivalHead PublishHead ObserveSuccess RejectHead \
+  ResolveMember ResolveRejected RetainUnknown ExportAuthority \
+  ImportAuthority RejectMalformedAuthority RejectInexactResolution Crash \
+  ReopenFromHead Close ProbeConfirmedOrphanCollision ObserveMissingIdentityBoundary
+do
+  aggregate_coalescing_action_lines=$(grep -E "^<$action " \
+    "$aggregate_coalescing_final_coverage" || :)
+  if test -z "$aggregate_coalescing_action_lines"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate coalescing action $action failed: missing" >&2
+    exit 1
+  fi
+  aggregate_coalescing_action_unique_lines=$(
+    printf '%s\n' "$aggregate_coalescing_action_lines" |
+      LC_ALL=C sort -u
+  )
+  if test "$(printf '%s\n' "$aggregate_coalescing_action_unique_lines" | \
+    wc -l | tr -d ' ')" -ne 1
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate coalescing action $action failed: conflicting coverage" \
+      >&2
+    printf '%s\n' "$aggregate_coalescing_action_lines" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$aggregate_coalescing_action_unique_lines" |
+    grep -Eq "^<$action .*: [0-9][0-9]*(:[0-9]+)?$"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate coalescing action $action failed: malformed or nonnumeric" \
+      >&2
+    printf '%s\n' "$aggregate_coalescing_action_lines" >&2
+    exit 1
+  fi
+  aggregate_coalescing_action_counts=${aggregate_coalescing_action_unique_lines##*: }
+  aggregate_coalescing_action_count=${aggregate_coalescing_action_counts%%:*}
+  case "$aggregate_coalescing_action_count" in
+    ''|*[!0-9]*)
+      printf '%s\n' \
+        "Flyology.DB TLA aggregate coalescing action $action failed: malformed or nonnumeric" \
+        >&2
+      printf '%s\n' "$aggregate_coalescing_action_lines" >&2
+      exit 1
+      ;;
+    0*)
+      printf '%s\n' \
+        "Flyology.DB TLA aggregate coalescing action $action failed: zero coverage" >&2
+      printf '%s\n' "$aggregate_coalescing_action_lines" >&2
+      exit 1
+      ;;
+  esac
+  printf '    %s %s\n' "$action" "$aggregate_coalescing_action_count" \
+    >>"$aggregate_coalescing_action_report"
+done
+aggregate_expected_action_report="$temporary_root/aggregate-coalescing-action-coverage.expected.txt"
+cat >"$aggregate_expected_action_report" <<'EOF'
+    SupplyAggregateID 56288
+    AdmitSingleton 27082
+    RejectBeforeAdmission 88894
+    RequestAdmittedCancellation 58343
+    RejectQueuedConflict 26522
+    FreezeCohort 1786
+    PublishAggregate 7372
+    ConfirmAggregate 3686
+    FailFrozenCohort 6654
+    RivalHead 5655
+    PublishHead 5529
+    ObserveSuccess 1843
+    RejectHead 1074
+    ResolveMember 138668
+    ResolveRejected 64336
+    RetainUnknown 30370
+    ExportAuthority 32103
+    ImportAuthority 697688
+    RejectMalformedAuthority 142256
+    RejectInexactResolution 372576
+    Crash 1661
+    ReopenFromHead 1661
+    Close 710786
+    ProbeConfirmedOrphanCollision 247881
+    ObserveMissingIdentityBoundary 8511
+EOF
+if ! cmp "$aggregate_expected_action_report" \
+  "$aggregate_coalescing_action_report"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA aggregate coalescing action coverage changed:' >&2
+  cat "$aggregate_coalescing_action_report" >&2
+  exit 1
+fi
+
+for probe in \
+  AggregateCommitCoalescingVisibilityProbe:WholeCohortVisibility \
+  AggregateCommitCoalescingReplayProbe:ResolutionDoesNotReplay \
+  AggregateCommitCoalescingAuthorityProbe:ResolvedAuthorityIsExact \
+  AggregateCommitCoalescingCancellationProbe:AdmittedCancellationDoesNotClassify \
+  AggregateCommitCoalescingIdentityProbe:CallerIdentityContract \
+  AggregateCommitCoalescingOrphanProbe:ConfirmedOrphanBarrier
+do
+  probe_module=${probe%%:*}
+  probe_invariant=${probe#*:}
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-$probe_module-states" \
+    -config "$probe_module.cfg" AggregateCommitCoalescingProbes \
+    >"$temporary_root/tlc-$probe_module.log" 2>&1
+  probe_status=$?
+  set -e
+  if test "$probe_status" -ne 12
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate coalescing probe $probe_module exited $probe_status" >&2
+    cat "$temporary_root/tlc-$probe_module.log" >&2
+    if test "$probe_status" -eq 0
+    then
+      exit 1
+    fi
+    exit "$probe_status"
+  fi
+  grep -q "Invariant $probe_invariant is violated." \
+    "$temporary_root/tlc-$probe_module.log"
+  if grep -q '^Warning:' "$temporary_root/tlc-$probe_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate coalescing probe $probe_module warned" >&2
+    cat "$temporary_root/tlc-$probe_module.log" >&2
+    exit 1
+  fi
+done
+
+for witness in \
+  AggregateCommitCoalescingAuthorityWitness:AuthorityRecoveryPending \
+  AggregateCommitCoalescingCancellationWitness:WitnessPending \
+  AggregateCommitCoalescingOrphanWitness:ConfirmedOrphanPending \
+  AggregateCommitCoalescingMissingIdentityWitness:MissingIdentityPending
+do
+  witness_module=${witness%%:*}
+  witness_invariant=${witness#*:}
+  aggregate_witness_source=AggregateCommitCoalescingWitnesses
+  if test "$witness_module" = AggregateCommitCoalescingCancellationWitness
+  then
+    aggregate_witness_source=$witness_module
+  fi
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-$witness_module-states" \
+    -config "$witness_module.cfg" "$aggregate_witness_source" \
+    >"$temporary_root/tlc-$witness_module.log" 2>&1
+  witness_status=$?
+  set -e
+  if test "$witness_status" -ne 12
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate coalescing witness $witness_module exited $witness_status" >&2
+    cat "$temporary_root/tlc-$witness_module.log" >&2
+    if test "$witness_status" -eq 0
+    then
+      exit 1
+    fi
+    exit "$witness_status"
+  fi
+  grep -q "Invariant $witness_invariant is violated." \
+    "$temporary_root/tlc-$witness_module.log"
+  if grep -q '^Warning:' "$temporary_root/tlc-$witness_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate coalescing witness $witness_module warned" >&2
+    cat "$temporary_root/tlc-$witness_module.log" >&2
+    exit 1
+  fi
+done
+
+set +e
+"$tlapm" --cache-dir "$temporary_root/tlapm-aggregate-coalescing-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/AggregateCommitCoalescingSafetyProof.tla" \
+  >"$temporary_root/tlaps-aggregate-coalescing.log" 2>&1
+aggregate_coalescing_tlaps_status=$?
+set -e
+if test "$aggregate_coalescing_tlaps_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA aggregate coalescing TLAPS exited $aggregate_coalescing_tlaps_status" \
+    >&2
+  cat "$temporary_root/tlaps-aggregate-coalescing.log" >&2
+  exit "$aggregate_coalescing_tlaps_status"
+fi
+if grep -q '^Warning:' "$temporary_root/tlaps-aggregate-coalescing.log"
+then
+  printf '%s\n' 'Flyology.DB TLA aggregate coalescing TLAPS warned' >&2
+  cat "$temporary_root/tlaps-aggregate-coalescing.log" >&2
+  exit 1
+fi
+aggregate_coalescing_tlaps_lines=$(grep -E \
+  '^(\[INFO\]: )?All [1-9][0-9]* obligations proved[.]$' \
+  "$temporary_root/tlaps-aggregate-coalescing.log" || :)
+test -n "$aggregate_coalescing_tlaps_lines"
+test "$(printf '%s\n' "$aggregate_coalescing_tlaps_lines" | wc -l | tr -d ' ')" -eq 1
+aggregate_coalescing_obligations=$(printf '%s\n' \
+  "$aggregate_coalescing_tlaps_lines" | \
+  sed -E 's/^(\[INFO\]: )?All ([1-9][0-9]*) obligations proved[.]$/\2/')
+case "$aggregate_coalescing_obligations" in
+  ''|0|*[!0-9]*)
+    printf '%s\n' \
+      'Flyology.DB TLA aggregate coalescing TLAPS total is not positive numeric' >&2
+    exit 1
+    ;;
+esac
+if test "$aggregate_coalescing_obligations" -ne 127
+then
+  printf '%s\n' \
+    'Flyology.DB TLA aggregate coalescing obligation total changed:' >&2
+  cat "$temporary_root/tlaps-aggregate-coalescing.log" >&2
+  exit 1
+fi
+
+aggregate_identity_report="$temporary_root/aggregate-identity-coverage.txt"
+: >"$aggregate_identity_report"
+for identity_case in normal collision
+do
+  case "$identity_case" in
+    normal)
+      identity_config=AggregateCommitIdentityReservationNormal.cfg
+      identity_actions="Admit Freeze PublishBatch PublishHead"
+      identity_expected_generated=8
+      identity_expected_states=7
+      identity_expected_depth=6
+      ;;
+    collision)
+      identity_config=AggregateCommitIdentityReservationCollision.cfg
+      identity_actions="Admit RejectCollision"
+      identity_expected_generated=6
+      identity_expected_states=5
+      identity_expected_depth=4
+      ;;
+  esac
+  identity_log="$temporary_root/tlc-aggregate-identity-$identity_case.log"
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -coverage 1 \
+    -metadir "$temporary_root/tlc-aggregate-identity-$identity_case-states" \
+    -config "$identity_config" AggregateCommitIdentityReservation \
+    >"$identity_log" 2>&1
+  identity_status=$?
+  set -e
+  if test "$identity_status" -ne 0
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate identity $identity_case TLC exited $identity_status" >&2
+    cat "$identity_log" >&2
+    exit "$identity_status"
+  fi
+  grep -q 'Model checking completed. No error has been found.' "$identity_log"
+  if grep -q '^Warning:' "$identity_log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate identity $identity_case TLC warned" >&2
+    cat "$identity_log" >&2
+    exit 1
+  fi
+  identity_state_lines=$(grep -E \
+    '^[1-9][0-9]* states generated, [1-9][0-9]* distinct states found, 0 states left on queue[.]$' \
+    "$identity_log" || :)
+  test -n "$identity_state_lines"
+  test "$(printf '%s\n' "$identity_state_lines" | wc -l | tr -d ' ')" -eq 1
+  identity_generated=$(printf '%s\n' "$identity_state_lines" | awk '{print $1}')
+  identity_states=$(printf '%s\n' "$identity_state_lines" | awk '{print $4}')
+  identity_depth_lines=$(grep -E \
+    '^The depth of the complete state graph search is [1-9][0-9]*[.]$' \
+    "$identity_log" || :)
+  test -n "$identity_depth_lines"
+  test "$(printf '%s\n' "$identity_depth_lines" | wc -l | tr -d ' ')" -eq 1
+  identity_depth=$(printf '%s\n' "$identity_depth_lines" | \
+    sed 's/^The depth of the complete state graph search is \([1-9][0-9]*\)[.]$/\1/')
+  if test "$identity_generated" -ne "$identity_expected_generated" || \
+    test "$identity_states" -ne "$identity_expected_states" || \
+    test "$identity_depth" -ne "$identity_expected_depth"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA aggregate identity $identity_case geometry changed" >&2
+    cat "$identity_log" >&2
+    exit 1
+  fi
+  printf '    %s %s generated, %s distinct, depth %s\n' \
+    "$identity_case" "$identity_generated" "$identity_states" "$identity_depth" \
+    >>"$aggregate_identity_report"
+  for action in $identity_actions
+  do
+    identity_action_lines=$(grep -E "^<$action .*: [1-9][0-9]*(:[0-9]+)?$" \
+      "$identity_log" || :)
+    if test -z "$identity_action_lines"
+    then
+      printf '%s\n' \
+        "Flyology.DB TLA aggregate identity $identity_case action $action missing" >&2
+      exit 1
+    fi
+    printf '      %s reached\n' "$action" >>"$aggregate_identity_report"
+  done
+done
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-aggregate-identity-probe-states" \
+  -config AggregateCommitIdentityReservationProbe.cfg \
+  AggregateCommitIdentityReservationProbes \
+  >"$temporary_root/tlc-aggregate-identity-probe.log" 2>&1
+aggregate_identity_probe_status=$?
+set -e
+if test "$aggregate_identity_probe_status" -ne 12
+then
+  printf '%s\n' \
+    "Flyology.DB TLA aggregate identity probe exited $aggregate_identity_probe_status" >&2
+  cat "$temporary_root/tlc-aggregate-identity-probe.log" >&2
+  if test "$aggregate_identity_probe_status" -eq 0
+  then
+    exit 1
+  fi
+  exit "$aggregate_identity_probe_status"
+fi
+grep -q 'Invariant NoAliasedFreeze is violated.' \
+  "$temporary_root/tlc-aggregate-identity-probe.log"
+if grep -q '^Warning:' "$temporary_root/tlc-aggregate-identity-probe.log"
+then
+  printf '%s\n' 'Flyology.DB TLA aggregate identity probe warned' >&2
+  cat "$temporary_root/tlc-aggregate-identity-probe.log" >&2
+  exit 1
+fi
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-aggregate-identity-witness-states" \
+  -config AggregateCommitIdentityReservationWitness.cfg \
+  AggregateCommitIdentityReservationWitness \
+  >"$temporary_root/tlc-aggregate-identity-witness.log" 2>&1
+aggregate_identity_witness_status=$?
+set -e
+if test "$aggregate_identity_witness_status" -ne 12
+then
+  printf '%s\n' \
+    "Flyology.DB TLA aggregate identity witness exited $aggregate_identity_witness_status" >&2
+  cat "$temporary_root/tlc-aggregate-identity-witness.log" >&2
+  if test "$aggregate_identity_witness_status" -eq 0
+  then
+    exit 1
+  fi
+  exit "$aggregate_identity_witness_status"
+fi
+grep -q 'Invariant CollisionPending is violated.' \
+  "$temporary_root/tlc-aggregate-identity-witness.log"
+if grep -q '^Warning:' "$temporary_root/tlc-aggregate-identity-witness.log"
+then
+  printf '%s\n' 'Flyology.DB TLA aggregate identity witness warned' >&2
+  cat "$temporary_root/tlc-aggregate-identity-witness.log" >&2
+  exit 1
+fi
+
+set +e
+"$tlapm" --cache-dir "$temporary_root/tlapm-aggregate-identity-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/AggregateCommitIdentityReservationSafetyProof.tla" \
+  >"$temporary_root/tlaps-aggregate-identity.log" 2>&1
+aggregate_identity_tlaps_status=$?
+set -e
+if test "$aggregate_identity_tlaps_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA aggregate identity TLAPS exited $aggregate_identity_tlaps_status" >&2
+  cat "$temporary_root/tlaps-aggregate-identity.log" >&2
+  exit "$aggregate_identity_tlaps_status"
+fi
+if grep -q '^Warning:' "$temporary_root/tlaps-aggregate-identity.log"
+then
+  printf '%s\n' 'Flyology.DB TLA aggregate identity TLAPS warned' >&2
+  cat "$temporary_root/tlaps-aggregate-identity.log" >&2
+  exit 1
+fi
+aggregate_identity_tlaps_lines=$(grep -E \
+  '^(\[INFO\]: )?All [1-9][0-9]* obligations proved[.]$' \
+  "$temporary_root/tlaps-aggregate-identity.log" || :)
+if test -z "$aggregate_identity_tlaps_lines" || \
+  test "$(printf '%s\n' "$aggregate_identity_tlaps_lines" | wc -l | tr -d ' ')" -ne 1
+then
+  printf '%s\n' \
+    'Flyology.DB TLA aggregate identity TLAPS summary missing or ambiguous' >&2
+  cat "$temporary_root/tlaps-aggregate-identity.log" >&2
+  exit 1
+fi
+aggregate_identity_obligations=$(printf '%s\n' "$aggregate_identity_tlaps_lines" | \
+  sed -E 's/^(\[INFO\]: )?All ([1-9][0-9]*) obligations proved[.]$/\2/')
+if test "$aggregate_identity_obligations" -ne 12
+then
+  printf '%s\n' \
+    'Flyology.DB TLA aggregate identity obligation total changed:' >&2
+  cat "$temporary_root/tlaps-aggregate-identity.log" >&2
+  exit 1
+fi
+
+#  Replay the real two-member aggregate API boundary after complete quiescent
+#  context/database/receipt loss. This adds one adapter trace; the four policy
+#  replays above retain their existing arguments, behavior, and divergence.
+aggregate_replay_module=AggregateCommitCoalescingAuthorityReplay
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -noGenerateSpecTE \
+  -metadir "$temporary_root/tlc-aggregate-authority-replay-states" \
+  -config "$aggregate_replay_module.cfg" \
+  -dumpTrace json "$temporary_root/aggregate-authority-replay.json" \
+  "$aggregate_replay_module" \
+  >"$temporary_root/tlc-aggregate-authority-replay.log" 2>&1
+aggregate_replay_status=$?
+set -e
+if test "$aggregate_replay_status" -ne 12
+then
+  printf '%s\n' "Flyology.DB TLA aggregate authority witness exited $aggregate_replay_status" >&2
+  cat "$temporary_root/tlc-aggregate-authority-replay.log" >&2
+  exit 1
+fi
+grep -q 'Invariant WitnessPending is violated.' "$temporary_root/tlc-aggregate-authority-replay.log"
+if grep -q '^Warning:' "$temporary_root/tlc-aggregate-authority-replay.log"
+then
+  printf '%s\n' 'Flyology.DB TLA aggregate authority replay warned' >&2
+  cat "$temporary_root/tlc-aggregate-authority-replay.log" >&2
+  exit 1
+fi
+check_trace "$temporary_root/aggregate-authority-replay.json" "$aggregate_replay_module"
+aggregate_replay_trace=$(trace_path "$aggregate_replay_module")
+aggregate_replay_result="$temporary_root/aggregate-authority-replay.result.json"
+"$conformance_runner" --aggregate-authority --max-steps 8 \
+  --format terse --result-json "$aggregate_replay_result" "$aggregate_replay_trace"
+grep -q '"format":"flyology.tla.result/1","verdict":"conformant"' "$aggregate_replay_result"
+grep -q '"compared_steps":8' "$aggregate_replay_result"
+aggregate_replay_hash=$(sha256_file "$aggregate_replay_trace")
+grep -q "\"trace_sha256\":\"$aggregate_replay_hash\"" "$aggregate_replay_result"
+
+set +e
+"$conformance_runner" --aggregate-authority --buggy --max-steps 8 \
+  --format terse --result-json "$temporary_root/aggregate-authority-divergence.result.json" \
+  "$aggregate_replay_trace" >"$temporary_root/aggregate-authority-divergence.log" 2>&1
+aggregate_divergence_status=$?
+set -e
+test "$aggregate_divergence_status" -ne 0
+grep -q '"verdict":"diverged"' "$temporary_root/aggregate-authority-divergence.result.json"
+grep -q '"property":"tla-conformance"' "$temporary_root/aggregate-authority-divergence.result.json"
+grep -q '"fingerprint":"state:AggregateCommitCoalescingAuthorityReplay!ResolveMember"' \
+  "$temporary_root/aggregate-authority-divergence.result.json"
+
 if test "${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}" = 1
 then
   trace_inventory_before_copy="$temporary_root/trace-inventory.before-copy"
   write_trace_inventory "$trace_inventory_before_copy"
   cmp "$trace_inventory_before" "$trace_inventory_before_copy"
   for trace_module in LiveSuffixRegistryRecoveryWitness \
-    LiveSuffixRegistryCancellationWitness
+    LiveSuffixRegistryCancellationWitness AggregateCommitCoalescingAuthorityReplay
   do
     normalized_trace="$temporary_root/$trace_module.trace.json"
     canonical_trace="$trace_root/$trace_module.trace.json"
@@ -2687,7 +3229,7 @@ then
   trace_inventory_expected="$temporary_root/trace-inventory.expected"
   cp "$trace_inventory_before" "$trace_inventory_expected.unsorted"
   for trace_module in LiveSuffixRegistryRecoveryWitness \
-    LiveSuffixRegistryCancellationWitness
+    LiveSuffixRegistryCancellationWitness AggregateCommitCoalescingAuthorityReplay
   do
     normalized_trace="$temporary_root/$trace_module.trace.json"
     canonical_trace="$trace_root/$trace_module.trace.json"
@@ -2701,7 +3243,7 @@ then
   LC_ALL=C sort -k2,2 \
     "$trace_inventory_expected.unsorted" >"$trace_inventory_expected"
   for trace_module in LiveSuffixRegistryRecoveryWitness \
-    LiveSuffixRegistryCancellationWitness
+    LiveSuffixRegistryCancellationWitness AggregateCommitCoalescingAuthorityReplay
   do
     normalized_trace="$temporary_root/$trace_module.trace.json"
     canonical_trace="$trace_root/$trace_module.trace.json"
@@ -2737,6 +3279,24 @@ printf '%s\n' \
   "  Independent coalescing failure/deadline/authority/empty-recovery/fence witnesses reached"
 printf '%s\n' \
   "  Negative independent-coalescing visibility/replay/fence/authority/recovery/deadline/failure probes detected"
+printf '%s\n' \
+  "  Aggregate coalescing TLC $aggregate_coalescing_generated generated," \
+  "        $aggregate_coalescing_states distinct, depth $aggregate_coalescing_depth"
+printf '%s\n' "  Aggregate coalescing action coverage"
+cat "$aggregate_coalescing_action_report"
+printf '%s\n' \
+  "  Aggregate coalescing TLAPS $aggregate_coalescing_obligations obligations proved"
+printf '%s\n' \
+  "  Aggregate coalescing authority/cancellation/orphan/absent-identity witnesses reached"
+printf '%s\n' \
+  "  Negative aggregate visibility/replay/authority/cancellation/identity/orphan probes detected"
+printf '%s\n' "  Aggregate encoded-identity reservation TLC"
+cat "$aggregate_identity_report"
+printf '%s\n' \
+  "  Aggregate encoded-identity TLAPS $aggregate_identity_obligations obligations proved"
+printf '%s\n' \
+  "  Aggregate encoded-identity collision witness/probe detected before publication"
+printf '%s\n' "  Aggregate authority eight-step Ada recovery replay and sibling divergence passed"
 printf '%s\n' "  Negative stale-publication probe detected"
 printf '%s\n' "  Negative overlapping-transaction ownership probe detected"
 printf '%s\n' "  Deep committed/failed reconciliation traces canonical"

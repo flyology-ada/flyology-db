@@ -319,16 +319,16 @@ version-2 backward-read golden. Every new allocation remains checked, lazy, and 
 
 Operational checkpoint-manifest version 4 retains the complete version-3 header and payload unchanged, appends one
 unsigned 32-bit commit-publication profile code at offset 228, and therefore has a 232-byte header. Code `1` denotes
-`Independent_Coalescing`; zero and every unknown code are invalid in version 4. The ordinary
+`Independent_Coalescing`; code `2` denotes `Aggregate_Coalescing`. Zero and every unknown code are invalid in
+version 4. The ordinary
 `Standard_Publication` profile continues to encode as version 3 and therefore stays byte-for-byte compatible with
 existing roots.
 
-Version 4 is reserved for new roots using the separately documented independent-coalescing experiment. The
+Version 4 is reserved for new roots using one of the separately documented coalescing experiments. The
 operational decoder authenticates and retains its profile selector; the later coordinator stage is responsible for
-enforcing that profile's publication semantics. Cohort width and admission timing are runtime experiment inputs, not
-persisted defaults or wire-format policy. No existing manifest is reinterpreted or migrated in place. An independent
-Python generator, an exact 370-byte golden, round-trip decoding, and repaired-checksum invalid-profile cases gate the
-new selector.
+enforcing that profile's publication semantics. Cohort width, admission depth, and aggregate physical identity are
+runtime experiment inputs, not persisted defaults or wire-format policy. No existing manifest is reinterpreted or
+migrated in place. Exact goldens, round-trip decoding, and repaired-checksum invalid-profile cases gate the selector.
 
 ## Immutable SST run version 1
 

@@ -112,6 +112,25 @@ package body Flyology_DB_Benchmark_Flyology is
          raise Program_Error with "FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH must be a natural number";
    end Requested_Independent_Cohort_Width;
 
+   function Requested_Aggregate_Cohort_Width return Natural is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_AGGREGATE_COHORT_WIDTH");
+   begin
+      return (if Raw'Length = 0 then 0 else Natural'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with "FLYOLOGY_DB_BENCH_AGGREGATE_COHORT_WIDTH must be a natural number";
+   end Requested_Aggregate_Cohort_Width;
+
+   function Requested_Aggregate_First_Batch_Ordinal return Interfaces.Unsigned_64 is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_AGGREGATE_FIRST_BATCH_ORDINAL");
+   begin
+      return (if Raw'Length = 0 then 0 else Interfaces.Unsigned_64'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with
+           "FLYOLOGY_DB_BENCH_AGGREGATE_FIRST_BATCH_ORDINAL must be an unsigned integer";
+   end Requested_Aggregate_First_Batch_Ordinal;
+
    function Numbered_ID (Value : Interfaces.Unsigned_64) return DB.Identifier
    is
       Result    : DB.Identifier := [others => 0];
@@ -254,7 +273,8 @@ package body Flyology_DB_Benchmark_Flyology is
       Key_Length     : Positive;
       Value_Length   : Positive;
       Deadline       : Duration;
-      Cohort_Width   : Natural)
+      Cohort_Width   : Natural;
+      Aggregate_First_Ordinal : Interfaces.Unsigned_64)
    is
       type Operation_Access is access DB.Commit_Operation;
       procedure Free is new Ada.Unchecked_Deallocation
@@ -284,6 +304,12 @@ package body Flyology_DB_Benchmark_Flyology is
          Expected_ID : constant DB.Transaction_Identifier :=
            DB.Transaction_Identifier
              (Numbered_ID (Interfaces.Unsigned_64 (1_000 + Index)));
+         Expected_Batch_ID : constant DB.Identifier :=
+           (if Aggregate_First_Ordinal = 0
+            then DB.Identifier (Expected_ID)
+            else Benchmark_Controls.Aggregate_Batch_ID
+              (Aggregate_First_Ordinal
+               + Interfaces.Unsigned_64 ((Index - 1) / Cohort_Width)));
       begin
          DB.Finish (Work (Slot).all, Receipt, Result);
          Operations.Release (Work (Slot).all);
@@ -296,7 +322,7 @@ package body Flyology_DB_Benchmark_Flyology is
             "pipelined singleton receipt outcome mismatch");
          Require
            (DB.Receipt_Transaction_ID (Receipt) = Expected_ID
-              and then DB.Receipt_Batch_ID (Receipt) = DB.Identifier (Expected_ID),
+              and then DB.Receipt_Batch_ID (Receipt) = Expected_Batch_ID,
             "pipelined singleton receipt identity mismatch");
          Require
            (DB.Receipt_Sequence (Receipt) > 0,
@@ -646,7 +672,11 @@ package body Flyology_DB_Benchmark_Flyology is
       Group_Size         : constant Positive := Requested_Group_Size;
       Explicit_Group     : constant Boolean := Requested_Explicit_Group;
       Pipeline_Depth     : constant Positive := Requested_Pipeline_Depth;
-      Cohort_Width       : constant Natural := Requested_Independent_Cohort_Width;
+      Independent_Cohort_Width : constant Natural := Requested_Independent_Cohort_Width;
+      Aggregate_Cohort_Width   : constant Natural := Requested_Aggregate_Cohort_Width;
+      Aggregate_First_Ordinal  : constant Interfaces.Unsigned_64 :=
+        Requested_Aggregate_First_Batch_Ordinal;
+      Cohort_Width       : constant Natural := Independent_Cohort_Width + Aggregate_Cohort_Width;
       Commit_Deadline    : constant Duration :=
         (if Cohort_Width > 0 then Duration'Last else Timeout);
       Total_Transactions : constant Positive := Warmup + Measured;
@@ -711,10 +741,12 @@ package body Flyology_DB_Benchmark_Flyology is
          Context                                    : String) is
       begin
          Require
-           (Batch_After = Batch_Before + Transactions
+           (Batch_After
+              = Batch_Before
+                + (if Aggregate_Cohort_Width > 0 then Transactions / Cohort_Width else Transactions)
               and then Manifest_After = Manifest_Before
               and then Head_After = Head_Before + Transactions / Cohort_Width,
-            Context & " independent-cohort publication geometry changed");
+            Context & " cohort publication geometry changed");
       end Require_Cohort_Geometry;
    begin
       Require
@@ -727,16 +759,33 @@ package body Flyology_DB_Benchmark_Flyology is
         (Pipeline_Depth <= Maximum_Pipeline_Depth,
          "benchmark pipeline depth exceeds the eight-slot fixture capacity");
       Require
-        (Cohort_Width <= Maximum_Pipeline_Depth,
-         "independent cohort width exceeds the eight-slot fixture capacity");
+        (Independent_Cohort_Width = 0 or else Aggregate_Cohort_Width = 0,
+         "independent and aggregate cohort profiles are mutually exclusive");
       Require
-        (Cohort_Width = 0
+        (Cohort_Width <= Maximum_Pipeline_Depth,
+         "cohort width exceeds the eight-slot fixture capacity");
+      Require
+        (Independent_Cohort_Width = 0
            or else
              (not Explicit_Group
-              and then Pipeline_Depth = Cohort_Width
-              and then Warmup mod Cohort_Width = 0
-              and then Measured mod Cohort_Width = 0),
+              and then Pipeline_Depth = Independent_Cohort_Width
+              and then Warmup mod Independent_Cohort_Width = 0
+              and then Measured mod Independent_Cohort_Width = 0),
          "independent cohort width requires equal pipeline depth and divisible transaction counts");
+      Require
+        (Aggregate_Cohort_Width = 0
+           or else
+             (not Explicit_Group
+              and then Aggregate_First_Ordinal > 0
+              and then Pipeline_Depth >= Aggregate_Cohort_Width
+              and then Pipeline_Depth mod Aggregate_Cohort_Width = 0
+              and then Warmup mod Aggregate_Cohort_Width = 0
+              and then Measured mod Aggregate_Cohort_Width = 0),
+         "aggregate cohort width requires an identity range and divisible pipeline geometry");
+      Require
+        ((Aggregate_Cohort_Width = 0 and then Aggregate_First_Ordinal = 0)
+           or else (Aggregate_Cohort_Width > 0 and then Aggregate_First_Ordinal > 0),
+         "aggregate identity range requires the aggregate profile");
       Require
         ((Explicit_Group
             and then Group_Size >= 2
@@ -772,16 +821,27 @@ package body Flyology_DB_Benchmark_Flyology is
            (Ignored_Item, Storage, Create_Info, Timeout, Result => Result);
       end if;
       Expect (Result, "create failed");
-      if Cohort_Width > 0 then
+      if Independent_Cohort_Width > 0 then
          Benchmark_Controls.Enable_Independent_Coalescing
            (Ignored_Item,
             Storage,
             DB.Database_Identifier (Numbered_ID (1)),
             Numbered_ID (2),
-            Positive (Cohort_Width),
+            Positive (Independent_Cohort_Width),
             Timeout,
             Result);
          Expect (Result, "independent-coalescing profile setup failed");
+      elsif Aggregate_Cohort_Width > 0 then
+         Benchmark_Controls.Enable_Aggregate_Coalescing
+           (Ignored_Item,
+            Storage,
+            DB.Database_Identifier (Numbered_ID (1)),
+            Numbered_ID (2),
+            Positive (Aggregate_Cohort_Width),
+            Aggregate_First_Ordinal,
+            Timeout,
+            Result);
+         Expect (Result, "aggregate-coalescing profile setup failed");
       end if;
       DB.Open_Column_Family (Ignored_Item, 1, Family, Result);
       Expect (Result, "family open failed");
@@ -825,7 +885,8 @@ package body Flyology_DB_Benchmark_Flyology is
                Key_Length,
                Value_Length,
                Commit_Deadline,
-               Cohort_Width);
+               Cohort_Width,
+               Aggregate_First_Ordinal);
          end if;
       end if;
       if Cohort_Width > 0 then
@@ -875,7 +936,8 @@ package body Flyology_DB_Benchmark_Flyology is
             Key_Length,
             Value_Length,
             Commit_Deadline,
-            Cohort_Width);
+            Cohort_Width,
+            Aggregate_First_Ordinal);
       end if;
       Finished := Ada.Real_Time.Clock;
       if Cohort_Width > 0 then

@@ -184,7 +184,10 @@ is
    function Structurally_Valid (Value : Authority_Metadata) return Boolean is
       Difference : Interfaces.Unsigned_64;
    begin
-      if Value.Format_Version not in Authority_Format_Version | Cohort_Authority_Format_Version
+      if Value.Format_Version
+        not in Authority_Format_Version
+             | Cohort_Authority_Format_Version
+             | Aggregate_Authority_Format_Version
         or else Heads.Is_Zero (Value.Transaction_ID)
         or else Heads.Is_Zero (Value.Batch_ID)
         or else not Heads.Structurally_Valid (Value.Expected_Head)
@@ -204,7 +207,8 @@ is
         and then Value.Expected_Head.Version = Heads.Current_Format
         and then Value.Attempted_Head.Version = Heads.Current_Format
         and then Value.Expected_Head.Epoch = Value.Attempted_Head.Epoch
-        and then (if Value.Format_Version = Authority_Format_Version
+        and then (if Value.Format_Version
+                        in Authority_Format_Version | Aggregate_Authority_Format_Version
                   then Value.Attempted_Head.Latest_Batch = Value.Batch_ID
                   else
                     Value.Transaction_ID = Value.Batch_ID
@@ -256,7 +260,8 @@ is
               Character'Pos ('C'),
               Character'Pos ('1'))
         or else Batch_U16 (Batch, 8)
-                /= (if Value.Format_Version = Authority_Format_Version
+                /= (if Value.Format_Version
+                          in Authority_Format_Version | Aggregate_Authority_Format_Version
                     then Batch_Formats.Batch_Format_Version
                     else Batch_Formats.Cohort_Batch_Format_Version)
         or else Header (10) /= Embedded_Batch_Object_Kind
@@ -289,7 +294,8 @@ is
         or else Batch_U64 (Batch, 100) /= Interfaces.Unsigned_64 (Value.Expected_Head.Transition_Number)
         or else Batch_Identifier (Batch, 108) /= Value.Attempted_Head.Transition_ID
         or else Batch_U64 (Batch, 124) /= Interfaces.Unsigned_64 (Value.Attempted_Head.Transition_Number)
-        or else (if Value.Format_Version = Authority_Format_Version
+        or else (if Value.Format_Version
+                       in Authority_Format_Version | Aggregate_Authority_Format_Version
                  then
                    Interfaces.Unsigned_64 (Transaction_Total) /= Expected_Total
                    or else Batch_Identifier (Batch, 68) /= Value.Expected_Head.Latest_Batch
@@ -454,7 +460,8 @@ is
               Character'Pos ('C'),
               Character'Pos ('1'))
         or else Read_U16_At (8)
-                /= (if Value.Format_Version = Authority_Format_Version
+                /= (if Value.Format_Version
+                          in Authority_Format_Version | Aggregate_Authority_Format_Version
                     then Batch_Formats.Batch_Format_Version
                     else Batch_Formats.Cohort_Batch_Format_Version)
         or else Header (10) /= Embedded_Batch_Object_Kind
@@ -478,7 +485,8 @@ is
         or else Read_U64_At (100) /= Interfaces.Unsigned_64 (Value.Expected_Head.Transition_Number)
         or else Read_Identifier_At (108) /= Value.Attempted_Head.Transition_ID
         or else Read_U64_At (124) /= Interfaces.Unsigned_64 (Value.Attempted_Head.Transition_Number)
-        or else (if Value.Format_Version = Authority_Format_Version
+        or else (if Value.Format_Version
+                       in Authority_Format_Version | Aggregate_Authority_Format_Version
                  then
                    Interfaces.Unsigned_64 (Transaction_Total) /= Expected_Total
                    or else Read_Identifier_At (68) /= Value.Expected_Head.Latest_Batch
@@ -629,7 +637,11 @@ is
       if Header (0 .. 7) /= Magic then
          Status := Invalid_Magic;
          return;
-      elsif Read_U16 (Header, 8) not in Authority_Format_Version | Cohort_Authority_Format_Version then
+      elsif Read_U16 (Header, 8)
+        not in Authority_Format_Version
+             | Cohort_Authority_Format_Version
+             | Aggregate_Authority_Format_Version
+      then
          Status := Unsupported_Version;
          return;
       elsif Header (10) /= Authority_Object_Kind then

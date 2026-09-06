@@ -17,9 +17,11 @@ is
 
    --  Frozen authority envelope: 360-byte header, exact batch bytes, and one
    --  four-byte object CRC. Version 2 binds one batch-v2 singleton to its
-   --  shared cohort HEAD range without changing the envelope layout.
+   --  shared cohort HEAD range. Version 3 binds one member of a complete
+   --  batch-v1 aggregate to the aggregate profile. The layout is unchanged.
    Authority_Format_Version        : constant Interfaces.Unsigned_16 := 1;
    Cohort_Authority_Format_Version : constant Interfaces.Unsigned_16 := 2;
+   Aggregate_Authority_Format_Version : constant Interfaces.Unsigned_16 := 3;
    Authority_Header_Length         : constant := 360;
    Authority_Trailer_Length        : constant := 4;
 

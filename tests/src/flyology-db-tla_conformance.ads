@@ -1,3 +1,3 @@
---  Replays canonical TLA+ checkpoint-selection traces through the private Ada policy.
+--  Replays canonical checkpoint-policy and aggregate authority traces through Ada.
 
 private procedure Flyology.DB.TLA_Conformance;

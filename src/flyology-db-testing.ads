@@ -78,6 +78,11 @@ private package Flyology.DB.Testing is
    procedure Resume_Coordinator (Item : in out Database; Result : out Outcome_Code);
    procedure Configure_Independent_Cohort
      (Item : in out Database; Width : Positive; Result : out Outcome_Code);
+   procedure Configure_Aggregate_Cohort
+     (Item                : in out Database;
+      Width               : Positive;
+      First_Batch_Ordinal : Interfaces.Unsigned_64;
+      Result              : out Outcome_Code);
    procedure Abort_Independent_Cohort (Item : in out Database; Result : out Outcome_Code);
    procedure Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
    procedure Fail_Next_Install (Item : in out Database; Result : out Outcome_Code);
@@ -179,7 +184,8 @@ private package Flyology.DB.Testing is
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;
       Expected_Database_ID : Database_Identifier;
-      Result               : out Outcome_Code);
+      Result               : out Outcome_Code;
+      Aggregate_Profile    : Boolean := False);
    procedure Extend_Manifest_Chain
      (Item        : in out Storage_Context;
       Database_ID : Database_Identifier;

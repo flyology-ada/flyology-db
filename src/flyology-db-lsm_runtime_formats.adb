@@ -380,7 +380,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       end if;
       if Version = Experimental_Checkpoint_Manifest_Format_Version then
          Commit_Profiles.Decode (Read_U32 (Fixed, 228), Commit_Profile, Valid_Profile);
-         if not Valid_Profile or else Commit_Profile /= Commit_Profiles.Independent_Coalescing then
+         if not Valid_Profile or else Commit_Profile = Commit_Profiles.Standard_Publication then
             Status := Invalid_Manifest_State;
             return;
          end if;
@@ -519,7 +519,7 @@ package body Flyology.DB.LSM_Runtime_Formats is
       Put_U32 (Image, 216, 0);
       Put_U32 (Image, 220, Value.Maximum_Point_Reads_Per_Transaction);
       Put_U32 (Image, 224, Value.Maximum_Scan_Ranges_Per_Transaction);
-      if Value.Commit_Profile = Commit_Profiles.Independent_Coalescing then
+      if Value.Commit_Profile /= Commit_Profiles.Standard_Publication then
          Put_U32 (Image, 228, Commit_Profiles.Encode (Value.Commit_Profile));
       end if;
    end Write_Manifest_Base_Header;

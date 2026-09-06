@@ -129,6 +129,15 @@ package body Flyology.DB.Testing is
       Set_Test_Independent_Cohort_Width (Item, Width, Result);
    end Configure_Independent_Cohort;
 
+   procedure Configure_Aggregate_Cohort
+     (Item                : in out Database;
+      Width               : Positive;
+      First_Batch_Ordinal : Interfaces.Unsigned_64;
+      Result              : out Outcome_Code) is
+   begin
+      Set_Test_Aggregate_Cohort_Width (Item, Width, First_Batch_Ordinal, Result);
+   end Configure_Aggregate_Cohort;
+
    procedure Abort_Independent_Cohort (Item : in out Database; Result : out Outcome_Code) is
    begin
       Abort_Test_Independent_Cohort (Item, Result);
@@ -360,9 +369,11 @@ package body Flyology.DB.Testing is
      (Item                 : in out Storage_Context;
       Manifest_ID          : Identifier;
       Expected_Database_ID : Database_Identifier;
-      Result               : out Outcome_Code) is
+      Result               : out Outcome_Code;
+      Aggregate_Profile    : Boolean := False) is
    begin
-      Rewrite_Test_Manifest_Profile (Item, Manifest_ID, Expected_Database_ID, Result);
+      Rewrite_Test_Manifest_Profile
+        (Item, Manifest_ID, Expected_Database_ID, Result, Aggregate_Profile);
    end Rewrite_Manifest_Profile;
 
    procedure Extend_Manifest_Chain

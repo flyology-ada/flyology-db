@@ -5,7 +5,8 @@ is
    function Encode (Value : Commit_Publication_Profile) return Interfaces.Unsigned_32
    is (case Value is
          when Standard_Publication   => Standard_Profile_Code,
-         when Independent_Coalescing => Independent_Coalescing_Profile_Code);
+         when Independent_Coalescing => Independent_Coalescing_Profile_Code,
+         when Aggregate_Coalescing   => Aggregate_Coalescing_Profile_Code);
 
    procedure Decode
      (Code : Interfaces.Unsigned_32; Value : out Commit_Publication_Profile; Valid : out Boolean) is
@@ -15,6 +16,9 @@ is
          Valid := True;
       elsif Code = Independent_Coalescing_Profile_Code then
          Value := Independent_Coalescing;
+         Valid := True;
+      elsif Code = Aggregate_Coalescing_Profile_Code then
+         Value := Aggregate_Coalescing;
          Valid := True;
       else
          Value := Standard_Publication;
