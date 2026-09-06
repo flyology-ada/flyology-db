@@ -1258,6 +1258,9 @@ package body Flyology.DB.Engine_Tests is
       Before_Head  : Natural;
       After_Batch  : Natural;
       After_Head   : Natural;
+      Before_Count : Natural;
+      Before_Bytes : Interfaces.Unsigned_64;
+      Data         : Value;
 
       procedure Expect_Closed_Allocation_Failure
         (Point : Testing.Allocation_Fault_Point; Context_Text : String) is
@@ -1293,6 +1296,49 @@ package body Flyology.DB.Engine_Tests is
       end if;
       Rollback (Txn, Result);
       Expect (Result, Success, "pre-admission allocation failure consumed transaction");
+
+      Before := Current_Ownership;
+      Begin_Transaction (Item, Numbered_TX_ID (27_001), Txn, Result);
+      Expect (Result, Success, "replacement allocation transaction begin failed");
+      Put (Item, Txn, 1, To_Key ([1]), To_Value ([1, 2]), Result);
+      Expect (Result, Success, "replacement allocation fixture put failed");
+      Before_Count := Txn.Owner.Arena.Count;
+      Before_Bytes := Txn.Owner.Arena.Bytes_Used;
+      Testing.Fail_Next_Allocation (Testing.Transaction_Payload);
+      Put (Item, Txn, 1, To_Key ([1]), To_Value ([3, 4, 5]), Result);
+      Expect (Result, Capacity_Exceeded, "replacement payload allocation failure was not typed capacity");
+      if Txn.Owner.Arena.Count /= Before_Count or else Txn.Owner.Arena.Bytes_Used /= Before_Bytes then
+         raise Program_Error with "replacement payload allocation failure changed arena accounting";
+      end if;
+      Get (Item, Txn, 1, To_Key ([1]), Data, Result);
+      if Result /= Success or else Data /= To_Value ([1, 2]) then
+         raise Program_Error with "replacement payload allocation failure changed the retained value";
+      end if;
+      Put (Item, Txn, 1, To_Key ([1]), To_Value ([3, 4, 5]), Result);
+      Expect (Result, Success, "replacement payload did not recover after allocation failure");
+      if Txn.Owner.Arena.Count /= Before_Count or else Txn.Owner.Arena.Bytes_Used /= Before_Bytes + 1 then
+         raise Program_Error with "successful replacement changed arena geometry incorrectly";
+      end if;
+      Get (Item, Txn, 1, To_Key ([1]), Data, Result);
+      if Result /= Success or else Data /= To_Value ([3, 4, 5]) then
+         raise Program_Error with "successful replacement did not install the new value";
+      end if;
+      Delete (Item, Txn, 1, To_Key ([1]), Result);
+      Expect (Result, Success, "replacement payload delete failed");
+      if Txn.Owner.Arena.Count /= Before_Count or else Txn.Owner.Arena.Bytes_Used /= 1 then
+         raise Program_Error with "replacement delete changed arena geometry incorrectly";
+      end if;
+      Get (Item, Txn, 1, To_Key ([1]), Data, Result);
+      Expect (Result, Not_Found, "replacement delete retained its value");
+      Put (Item, Txn, 1, To_Key ([]), To_Value ([]), Result);
+      Expect (Result, Success, "zero-byte mutation payload was rejected");
+      Get (Item, Txn, 1, To_Key ([]), Data, Result);
+      if Result /= Success or else Data /= To_Value ([]) then
+         raise Program_Error with "zero-byte mutation payload did not round trip";
+      end if;
+      Rollback (Txn, Result);
+      Expect (Result, Success, "replacement allocation rollback failed");
+      Expect_No_Owner_Growth (Before, "replacement allocation rollback");
 
       Begin_Transaction (Item, TX_ID (28), Txn, Result);
       Put (Item, Txn, 1, To_Key ([2]), To_Value ([2]), Result);

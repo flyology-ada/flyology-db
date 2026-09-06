@@ -2345,7 +2345,9 @@ private
       Next_In_Bucket : Natural := 0;
       Key_Length     : Natural := 0;
       Value_Length   : Natural := 0;
-      Payload        : Flyology.Bytes.Unbounded_Bytes;
+      --  One exact owned key || value image. Null represents an admitted
+      --  zero-byte payload; no descriptor may share this allocation.
+      Payload        : Owned_Byte_Array_Access := null;
    end record;
    type Owned_Mutation_Array is array (Positive range <>) of Owned_Mutation;
    type Mutation_Bucket_Array is array (Positive range <>) of Natural;

@@ -123,6 +123,16 @@ package body Flyology.DB is
    procedure Free_Shared_Image is new Ada.Unchecked_Deallocation (Shared_Image_Record, Shared_Image_Access);
    procedure Free_Owned_Bytes is new
      Ada.Unchecked_Deallocation (Ada.Streams.Stream_Element_Array, Owned_Byte_Array_Access);
+
+   type Owned_Bytes_Guard is new Ada.Finalization.Limited_Controlled with record
+      Data : Owned_Byte_Array_Access := null;
+   end record;
+
+   overriding
+   procedure Finalize (Item : in out Owned_Bytes_Guard) is
+   begin
+      Free_Owned_Bytes (Item.Data);
+   end Finalize;
    procedure Free_Owned_Point_Read is new
      Ada.Unchecked_Deallocation (Owned_Point_Read, Owned_Point_Read_Access);
    procedure Free_Owned_Scan_Range is new
@@ -414,6 +424,20 @@ package body Flyology.DB is
       end loop;
    end Copy_Growable_Range;
 
+   function Mutation_Payload_Length (Mutation : Owned_Mutation) return Natural is
+     (if Mutation.Payload = null then 0 else Mutation.Payload.all'Length);
+
+   function Mutation_Payload_Element
+     (Mutation : Owned_Mutation; Index : Positive) return Ada.Streams.Stream_Element is
+   begin
+      if Mutation.Payload = null or else Index > Mutation.Payload.all'Length then
+         raise Constraint_Error with "mutation payload index exceeds source length";
+      end if;
+      return
+        Mutation.Payload
+          (Mutation.Payload.all'First + Ada.Streams.Stream_Element_Offset (Index - 1));
+   end Mutation_Payload_Element;
+
    procedure Copy_Image_Range
      (Image         : not null Shared_Image_Access;
       Source_Offset : Natural;
@@ -455,6 +479,9 @@ package body Flyology.DB is
       Scan  : Owned_Scan_Range_Access;
    begin
       if Arena /= null then
+         for Mutation of Arena.Mutations loop
+            Free_Owned_Bytes (Mutation.Payload);
+         end loop;
          while Arena.Point_Reads /= null loop
             Point := Arena.Point_Reads;
             Arena.Point_Reads := Point.Next;
@@ -3307,7 +3334,7 @@ package body Flyology.DB is
                   History_Byte   : constant Ada.Streams.Stream_Element :=
                     Image_Element (Batch.Image, Mutation.Key_Offset + Offset + 1);
                   Candidate_Byte : constant Ada.Streams.Stream_Element :=
-                    Flyology.Bytes.Element (Candidate.Payload, Offset + 1);
+                    Mutation_Payload_Element (Candidate, Offset + 1);
                begin
                   if History_Byte < Candidate_Byte then
                      return -1;
@@ -3485,8 +3512,8 @@ package body Flyology.DB is
          end if;
          if Left.Key_Length > 0 then
             for Offset in Natural range 0 .. Left.Key_Length - 1 loop
-               if Flyology.Bytes.Element (Left.Payload, Offset + 1)
-                 /= Flyology.Bytes.Element (Right.Payload, Offset + 1)
+               if Mutation_Payload_Element (Left, Offset + 1)
+                 /= Mutation_Payload_Element (Right, Offset + 1)
                then
                   return False;
                end if;
@@ -3502,7 +3529,7 @@ package body Flyology.DB is
          end if;
          if Mutation.Key_Length > 0 then
             for Offset in Natural range 0 .. Mutation.Key_Length - 1 loop
-               if Flyology.Bytes.Element (Mutation.Payload, Offset + 1)
+               if Mutation_Payload_Element (Mutation, Offset + 1)
                  /= Flyology.Bytes.Element (Point.Key, Offset + 1)
                then
                   return False;
@@ -3520,11 +3547,11 @@ package body Flyology.DB is
       begin
          if Common > 0 then
             for Offset in Natural range 0 .. Common - 1 loop
-               if Flyology.Bytes.Element (Mutation.Payload, Offset + 1)
+               if Mutation_Payload_Element (Mutation, Offset + 1)
                  < Flyology.Bytes.Element (Bound, Offset + 1)
                then
                   return True;
-               elsif Flyology.Bytes.Element (Mutation.Payload, Offset + 1)
+               elsif Mutation_Payload_Element (Mutation, Offset + 1)
                  > Flyology.Bytes.Element (Bound, Offset + 1)
                then
                   return False;
@@ -8190,7 +8217,7 @@ package body Flyology.DB is
                  or else Key_Bytes > Interfaces.Unsigned_64'Last - Value_Bytes
                  or else Key_Bytes + Value_Bytes
                          > Interfaces.Unsigned_64'Last - Interfaces.Unsigned_64 (Mutation_Frame_Header_Length)
-                 or else Interfaces.Unsigned_64 (Flyology.Bytes.Length (Mutation.Payload))
+                 or else Interfaces.Unsigned_64 (Mutation_Payload_Length (Mutation))
                          /= Key_Bytes + Value_Bytes
                then
                   Result := Capacity_Exceeded;
@@ -8341,19 +8368,16 @@ package body Flyology.DB is
                      Value_Offset       => Cursor + Mutation_Frame_Header_Length + Source.Key_Length,
                      Value_Length       => Source.Value_Length,
                      Matched_Live_Entry => False);
-                  if Flyology.Bytes.Length (Source.Payload) > 0 then
-                     Copy_Growable_Range
-                       (Source.Payload,
-                        0,
-                        Batch.Image.Exact_Data
-                          (Batch.Image.Exact_Data'First
-                           + Ada.Streams.Stream_Element_Offset (Cursor + Mutation_Frame_Header_Length)
-                           .. Batch.Image.Exact_Data'First
-                              + Ada.Streams.Stream_Element_Offset
-                                  (Cursor
-                                   + Mutation_Frame_Header_Length
-                                   + Flyology.Bytes.Length (Source.Payload)
-                                   - 1)));
+                  if Mutation_Payload_Length (Source) > 0 then
+                     Batch.Image.Exact_Data
+                       (Batch.Image.Exact_Data'First
+                        + Ada.Streams.Stream_Element_Offset (Cursor + Mutation_Frame_Header_Length)
+                        .. Batch.Image.Exact_Data'First
+                           + Ada.Streams.Stream_Element_Offset
+                               (Cursor
+                                + Mutation_Frame_Header_Length
+                                + Mutation_Payload_Length (Source)
+                                - 1)) := Source.Payload.all;
                   end if;
                   Target.Key_Hash := Runtime_Key_Hash (Batch.Image, Target.Key_Offset, Target.Key_Length);
                   Cursor := Cursor + Mutation_Frame_Header_Length + Source.Key_Length + Source.Value_Length;
@@ -13193,7 +13217,7 @@ package body Flyology.DB is
          return False;
       end if;
       for Offset in Natural range 0 .. Item_Key'Length - 1 loop
-         if Byte (Flyology.Bytes.Element (Mutation.Payload, Offset + 1)) /= Item_Key (Item_Key'First + Offset)
+         if Byte (Mutation_Payload_Element (Mutation, Offset + 1)) /= Item_Key (Item_Key'First + Offset)
          then
             return False;
          end if;
@@ -13640,7 +13664,8 @@ package body Flyology.DB is
       New_Bytes     : Interfaces.Unsigned_64;
       Item_Hash     : Interfaces.Unsigned_64;
       New_Entry     : Boolean;
-      Candidate     : Flyology.Bytes.Unbounded_Bytes;
+      Candidate     : Owned_Bytes_Guard;
+      Prior_Payload : Owned_Byte_Array_Access := null;
       Configuration : Column_Family_Configuration;
    begin
       if not Txn.Active or else Txn.Owner.Arena = null then
@@ -13718,39 +13743,57 @@ package body Flyology.DB is
       end if;
 
       Allocation_Faults.Check (Transaction_Payload_Allocation);
-      Flyology.Bytes.Reserve_Capacity (Candidate, Natural (New_Bytes));
-      for Value of Item_Key loop
-         Flyology.Bytes.Append (Candidate, Ada.Streams.Stream_Element (Value));
-      end loop;
-      if Operation = Put_Mutation then
-         for Value of Data loop
-            Flyology.Bytes.Append (Candidate, Ada.Streams.Stream_Element (Value));
-         end loop;
+      if New_Bytes > 0 then
+         Candidate.Data :=
+           new Ada.Streams.Stream_Element_Array
+                 (1 .. Ada.Streams.Stream_Element_Offset (New_Bytes));
+         if Item_Key'Length > 0 then
+            for Offset in Natural range 0 .. Item_Key'Length - 1 loop
+               Candidate.Data (Ada.Streams.Stream_Element_Offset (Offset + 1)) :=
+                 Ada.Streams.Stream_Element (Item_Key (Item_Key'First + Offset));
+            end loop;
+         end if;
+         if Operation = Put_Mutation and then Data'Length > 0 then
+            for Offset in Natural range 0 .. Data'Length - 1 loop
+               Candidate.Data
+                 (Ada.Streams.Stream_Element_Offset (Item_Key'Length + Offset + 1)) :=
+                 Ada.Streams.Stream_Element (Data (Data'First + Offset));
+            end loop;
+         end if;
       end if;
-      if New_Entry then
-         Txn.Owner.Arena.Count := Txn.Owner.Arena.Count + 1;
-         Existing := Txn.Owner.Arena.Count;
-      end if;
-      declare
-         Mutation : Owned_Mutation renames Txn.Owner.Arena.Mutations (Existing);
+
+      System.Soft_Links.Abort_Defer.all;
       begin
-         Mutation.Family := Family.Configuration.ID;
-         Mutation.Operation := Operation;
-         Mutation.Key_Hash := Item_Hash;
-         Mutation.Key_Length := Item_Key'Length;
-         Mutation.Value_Length := (if Operation = Put_Mutation then Data'Length else 0);
-         Flyology.Bytes.Move (Mutation.Payload, Candidate);
          if New_Entry then
-            declare
-               Bucket : constant Positive := Mutation_Bucket (Txn.Owner.Arena, Item_Hash);
-            begin
+            Existing := Txn.Owner.Arena.Count + 1;
+         end if;
+         declare
+            Mutation : Owned_Mutation renames Txn.Owner.Arena.Mutations (Existing);
+            Bucket   : constant Positive := Mutation_Bucket (Txn.Owner.Arena, Item_Hash);
+         begin
+            Prior_Payload := Mutation.Payload;
+            Mutation.Family := Family.Configuration.ID;
+            Mutation.Operation := Operation;
+            Mutation.Key_Hash := Item_Hash;
+            Mutation.Key_Length := Item_Key'Length;
+            Mutation.Value_Length := (if Operation = Put_Mutation then Data'Length else 0);
+            Mutation.Payload := Candidate.Data;
+            Candidate.Data := null;
+            if New_Entry then
                Mutation.Next_In_Bucket := Txn.Owner.Arena.Mutation_Buckets (Bucket);
                Txn.Owner.Arena.Mutation_Buckets (Bucket) := Existing;
-            end;
-         end if;
+               Txn.Owner.Arena.Count := Existing;
+            end if;
+         end;
+         Txn.Owner.Arena.Bytes_Used := Txn.Owner.Arena.Bytes_Used - Old_Bytes + New_Bytes;
+         Txn.Owner.Arena.Mutation_Version := Txn.Owner.Arena.Mutation_Version + 1;
+         Free_Owned_Bytes (Prior_Payload);
+      exception
+         when others =>
+            System.Soft_Links.Abort_Undefer.all;
+            raise;
       end;
-      Txn.Owner.Arena.Bytes_Used := Txn.Owner.Arena.Bytes_Used - Old_Bytes + New_Bytes;
-      Txn.Owner.Arena.Mutation_Version := Txn.Owner.Arena.Mutation_Version + 1;
+      System.Soft_Links.Abort_Undefer.all;
       Image_Accounting.Record_Transaction_Copy (Natural (New_Bytes));
       Result := Success;
    exception
@@ -13822,7 +13865,7 @@ package body Flyology.DB is
                   Flyology.Bytes.Reserve_Capacity (Data, Mutation.Value_Length);
                   for Offset in Positive range 1 .. Mutation.Value_Length loop
                      Flyology.Bytes.Append
-                       (Data, Flyology.Bytes.Element (Mutation.Payload, Mutation.Key_Length + Offset));
+                       (Data, Mutation_Payload_Element (Mutation, Mutation.Key_Length + Offset));
                   end loop;
                   Result := Success;
                end if;
@@ -13968,8 +14011,8 @@ package body Flyology.DB is
             else
                return
                  Byte
-                   (Flyology.Bytes.Element
-                      (Txn.Owner.Arena.Mutations (Source.Arena_Index).Payload, Offset + 1));
+                   (Mutation_Payload_Element
+                      (Txn.Owner.Arena.Mutations (Source.Arena_Index), Offset + 1));
             end if;
          end Key_Byte;
 
@@ -14303,7 +14346,7 @@ package body Flyology.DB is
                         for Offset in Positive range 1 .. Mutation.Key_Length + Mutation.Value_Length loop
                            Flyology.Bytes.Append
                              (Candidate.Entries (Entry_Index).Owned,
-                              Flyology.Bytes.Element (Mutation.Payload, Offset));
+                              Mutation_Payload_Element (Mutation, Offset));
                         end loop;
                         Candidate.Entries (Entry_Index).Value_Offset := Mutation.Key_Length;
                      end;
@@ -21048,7 +21091,7 @@ package body Flyology.DB is
                   for Offset in Positive range 1 .. Mutation.Value_Length loop
                      Flyology.Bytes.Append
                        (Operation.Final_Value,
-                        Flyology.Bytes.Element (Mutation.Payload, Mutation.Key_Length + Offset));
+                        Mutation_Payload_Element (Mutation, Mutation.Key_Length + Offset));
                   end loop;
                end if;
                return;
@@ -29771,18 +29814,21 @@ package body Flyology.DB is
                declare
                   Arena : Transaction_Arena_Access := new Transaction_Arena (1);
                begin
+                  Image_Accounting.Record_Arena_Allocation;
                   Arena.Mutations (1).Family := Column_Family_ID (Transaction_Index);
                   Arena.Mutations (1).Operation :=
                     (if Transaction_Index mod 2 = 0 then Delete_Mutation else Put_Mutation);
                   Arena.Mutations (1).Key_Length := 2;
                   Arena.Mutations (1).Value_Length :=
                     (if Arena.Mutations (1).Operation = Put_Mutation then 1 else 0);
-                  Flyology.Bytes.Append
-                    (Arena.Mutations (1).Payload, Ada.Streams.Stream_Element (Transaction_Index));
-                  Flyology.Bytes.Append
-                    (Arena.Mutations (1).Payload, Ada.Streams.Stream_Element (Case_Number));
+                  Arena.Mutations (1).Payload :=
+                    new Ada.Streams.Stream_Element_Array
+                          (1 .. Ada.Streams.Stream_Element_Offset
+                                  (2 + Arena.Mutations (1).Value_Length));
+                  Arena.Mutations (1).Payload (1) := Ada.Streams.Stream_Element (Transaction_Index);
+                  Arena.Mutations (1).Payload (2) := Ada.Streams.Stream_Element (Case_Number);
                   if Arena.Mutations (1).Operation = Put_Mutation then
-                     Flyology.Bytes.Append (Arena.Mutations (1).Payload, Ada.Streams.Stream_Element (16#80#));
+                     Arena.Mutations (1).Payload (3) := Ada.Streams.Stream_Element (16#80#);
                   end if;
                   Items (Transaction_Index).Transaction_ID :=
                     Transaction_Identifier
@@ -29792,10 +29838,9 @@ package body Flyology.DB is
                   Arena.Bytes_Used := Interfaces.Unsigned_64 (2 + Arena.Mutations (1).Value_Length);
                   Items (Transaction_Index).Arena := Arena;
                   Arena := null;
-                  Image_Accounting.Record_Arena_Allocation;
                exception
                   when others =>
-                     Free_Transaction_Arena (Arena);
+                     Release_Arena (Arena);
                      raise;
                end;
             end loop;
