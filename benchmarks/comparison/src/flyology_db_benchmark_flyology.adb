@@ -103,6 +103,17 @@ package body Flyology_DB_Benchmark_Flyology is
          raise Program_Error with "FLYOLOGY_DB_BENCH_PIPELINE_DEPTH must be a positive integer";
    end Requested_Pipeline_Depth;
 
+   function Requested_Wave_Scheduling return Boolean is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_PIPELINE_SCHEDULE");
+   begin
+      if Raw'Length = 0 or else Raw = "rolling" then
+         return False;
+      elsif Raw = "waves" then
+         return True;
+      end if;
+      raise Program_Error with "FLYOLOGY_DB_BENCH_PIPELINE_SCHEDULE must be rolling or waves";
+   end Requested_Wave_Scheduling;
+
    function Requested_Independent_Cohort_Width return Natural is
       Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH");
    begin
@@ -274,7 +285,8 @@ package body Flyology_DB_Benchmark_Flyology is
       Value_Length   : Positive;
       Deadline       : Duration;
       Cohort_Width   : Natural;
-      Aggregate_First_Ordinal : Interfaces.Unsigned_64)
+      Aggregate_First_Ordinal : Interfaces.Unsigned_64;
+      Wave_Scheduling : Boolean)
    is
       type Operation_Access is access DB.Commit_Operation;
       procedure Free is new Ada.Unchecked_Deallocation
@@ -384,6 +396,11 @@ package body Flyology_DB_Benchmark_Flyology is
             end;
          end loop;
          Drain_Ready;
+         if Wave_Scheduling then
+            while Active_Count > 0 loop
+               Drain_Ready;
+            end loop;
+         end if;
       end loop;
       for Index in Sequences'Range loop
          Require
@@ -672,6 +689,7 @@ package body Flyology_DB_Benchmark_Flyology is
       Group_Size         : constant Positive := Requested_Group_Size;
       Explicit_Group     : constant Boolean := Requested_Explicit_Group;
       Pipeline_Depth     : constant Positive := Requested_Pipeline_Depth;
+      Wave_Scheduling    : constant Boolean := Requested_Wave_Scheduling;
       Independent_Cohort_Width : constant Natural := Requested_Independent_Cohort_Width;
       Aggregate_Cohort_Width   : constant Natural := Requested_Aggregate_Cohort_Width;
       Aggregate_First_Ordinal  : constant Interfaces.Unsigned_64 :=
@@ -886,7 +904,8 @@ package body Flyology_DB_Benchmark_Flyology is
                Value_Length,
                Commit_Deadline,
                Cohort_Width,
-               Aggregate_First_Ordinal);
+               Aggregate_First_Ordinal,
+               Wave_Scheduling);
          end if;
       end if;
       if Cohort_Width > 0 then
@@ -937,7 +956,8 @@ package body Flyology_DB_Benchmark_Flyology is
             Value_Length,
             Commit_Deadline,
             Cohort_Width,
-            Aggregate_First_Ordinal);
+            Aggregate_First_Ordinal,
+            Wave_Scheduling);
       end if;
       Finished := Ada.Real_Time.Clock;
       if Cohort_Width > 0 then

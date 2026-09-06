@@ -16,6 +16,7 @@ with GNAT.SHA256;
 
 procedure Flyology_DB_Benchmark_Panel is
    use type Flyology_Bench.Metric_Availability;
+   use type Flyology_Bench.Iteration_Count;
    use type Ada.Streams.Stream_Element_Offset;
 
    package Fixed renames Ada.Strings.Fixed;
@@ -34,6 +35,7 @@ procedure Flyology_DB_Benchmark_Panel is
    Flyology_Aggregate_Prefix : constant String :=
      "flyology-db-files-aggregate-cohort-width";
    SlateDB_Depth_Prefix : constant String := "slatedb-1ms-depth";
+   Waves_Suffix : constant String := "-waves";
 
    Reference_Name : constant String := Ada.Command_Line.Argument (1);
    Contender_Name : constant String := Ada.Command_Line.Argument (2);
@@ -50,6 +52,8 @@ procedure Flyology_DB_Benchmark_Panel is
       else 1);
 
    Sequence : Natural := 0;
+   Execution_Ordinal : Natural := 0;
+   Execution_Axis : Flyology_Bench.Custom_Metric_Index := Flyology_Bench.Custom_Metric_Index'First;
 
    function Image (Value : Integer) return String is
      (Fixed.Trim (Integer'Image (Value), Ada.Strings.Both));
@@ -57,6 +61,15 @@ procedure Flyology_DB_Benchmark_Panel is
    function Has_Profile_Prefix (Name : String; Prefix : String) return Boolean is
      (Name'Length > Prefix'Length
       and then Name (Name'First .. Name'First + Prefix'Length - 1) = Prefix);
+
+   function Uses_Wave_Scheduling (Name : String) return Boolean is
+     (Name'Length > Waves_Suffix'Length
+      and then Name (Name'Last - Waves_Suffix'Length + 1 .. Name'Last) = Waves_Suffix);
+
+   function Scheduling_Profile (Name : String) return String is
+     (if Uses_Wave_Scheduling (Name)
+      then Name (Name'First .. Name'Last - Waves_Suffix'Length)
+      else Name);
 
    function Profile_Value (Text : String; Context : String) return Positive is
       Value : constant Positive := Positive'Value (Text);
@@ -70,13 +83,16 @@ procedure Flyology_DB_Benchmark_Panel is
          raise Program_Error with Context & " must be a canonical integer from 1 through 8";
    end Profile_Value;
 
-   procedure Configure_Flyology_Profile (Name : String) is
+   procedure Configure_Flyology_Profile (Name : String; Wave_Scheduling : Boolean := False) is
    begin
       --  Every named panel profile defines the complete scheduling shape so
       --  an ambient experimental setting cannot silently relabel a result.
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH", "0");
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_AGGREGATE_COHORT_WIDTH", "0");
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_AGGREGATE_FIRST_BATCH_ORDINAL", "0");
+      Ada.Environment_Variables.Set
+        ("FLYOLOGY_DB_BENCH_PIPELINE_SCHEDULE",
+         (if Wave_Scheduling then "waves" else "rolling"));
       if Name = "flyology-db-files" then
          Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP", "0");
          Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_GROUP_SIZE", "1");
@@ -164,6 +180,14 @@ procedure Flyology_DB_Benchmark_Panel is
       end if;
    end Configure_Flyology_Profile;
 
+   procedure Execution_Probe (Snapshot : in out Flyology_Bench.Custom_Snapshot) is
+   begin
+      Snapshot (Execution_Axis) :=
+        (Status        => Flyology_Bench.Metric_Collected,
+         Counter_Value => 0,
+         Sample_Value  => Long_Float (Execution_Ordinal));
+   end Execution_Probe;
+
    function Key_For (Index : Positive) return Ada.Streams.Stream_Element_Array is
       Result : Ada.Streams.Stream_Element_Array (1 .. Ada.Streams.Stream_Element_Offset (Key_Bytes)) :=
         [others => 0];
@@ -224,6 +248,8 @@ procedure Flyology_DB_Benchmark_Panel is
       Status : out Flyology_Bench.Metric_Availability)
    is
       Scratch : constant String := Scratch_Path;
+      Profile : constant String := Scheduling_Profile (Name);
+      Wave_Scheduling : constant Boolean := Uses_Wave_Scheduling (Name);
       Root : constant String := Scratch & "/database";
       Transactions : constant Positive :=
         Positive (Iterations) * Transactions_Per_Operation;
@@ -231,14 +257,23 @@ procedure Flyology_DB_Benchmark_Panel is
       State_SHA256 : GNAT.SHA256.Message_Digest;
       Flush : Flyology_DB_Benchmark_SlateDB.Flush_Profile;
    begin
+      Execution_Ordinal := Sequence;
       Ada.Directories.Create_Directory (Scratch);
-      if Name = "flyology-db-files"
-        or else Has_Profile_Prefix (Name, Flyology_Singleton_Prefix)
-        or else Has_Profile_Prefix (Name, Flyology_Group_Prefix)
-        or else Has_Profile_Prefix (Name, Flyology_Cohort_Prefix)
-        or else Has_Profile_Prefix (Name, Flyology_Aggregate_Prefix)
+      if Wave_Scheduling
+        and then not
+          (Has_Profile_Prefix (Profile, Flyology_Singleton_Prefix)
+           or else Has_Profile_Prefix (Profile, Flyology_Aggregate_Prefix)
+           or else Has_Profile_Prefix (Profile, SlateDB_Depth_Prefix))
       then
-         Configure_Flyology_Profile (Name);
+         raise Program_Error with "wave scheduling is not supported by benchmark participant " & Name;
+      end if;
+      if Profile = "flyology-db-files"
+        or else Has_Profile_Prefix (Profile, Flyology_Singleton_Prefix)
+        or else Has_Profile_Prefix (Profile, Flyology_Group_Prefix)
+        or else Has_Profile_Prefix (Profile, Flyology_Cohort_Prefix)
+        or else Has_Profile_Prefix (Profile, Flyology_Aggregate_Prefix)
+      then
+         Configure_Flyology_Profile (Profile, Wave_Scheduling);
          Flyology_DB_Benchmark_Flyology.Run_Local
            (Root,
             Warmup_Transactions,
@@ -249,20 +284,21 @@ procedure Flyology_DB_Benchmark_Panel is
             Elapsed,
             Verified_Keys,
             State_SHA256);
-      elsif Name = "slatedb-default"
-        or else Name = "slatedb-1ms"
-        or else Has_Profile_Prefix (Name, SlateDB_Depth_Prefix)
+      elsif Profile = "slatedb-default"
+        or else Profile = "slatedb-1ms"
+        or else Has_Profile_Prefix (Profile, SlateDB_Depth_Prefix)
       then
          Ada.Environment_Variables.Set
            ("FLYOLOGY_DB_SLATE_PIPELINE_DEPTH",
-            (if Has_Profile_Prefix (Name, SlateDB_Depth_Prefix)
+            (if Has_Profile_Prefix (Profile, SlateDB_Depth_Prefix)
              then Image
                (Profile_Value
-                  (Name (Name'First + SlateDB_Depth_Prefix'Length .. Name'Last),
+                  (Profile
+                     (Profile'First + SlateDB_Depth_Prefix'Length .. Profile'Last),
                    "SlateDB pipeline depth"))
              else "1"));
          Flush :=
-           (if Name = "slatedb-default"
+           (if Profile = "slatedb-default"
             then Flyology_DB_Benchmark_SlateDB.Default_Flush
             else Flyology_DB_Benchmark_SlateDB.One_Millisecond_Flush);
          Flyology_DB_Benchmark_SlateDB.Run_Local
@@ -276,7 +312,7 @@ procedure Flyology_DB_Benchmark_Panel is
             Elapsed,
             Verified_Keys,
             State_SHA256);
-      elsif Name = "tidesdb-full-sync" then
+      elsif Profile = "tidesdb-full-sync" then
          Flyology_DB_Benchmark_TidesDB.Run_Local
            (Root,
             Warmup_Transactions,
@@ -287,7 +323,7 @@ procedure Flyology_DB_Benchmark_Panel is
             Elapsed,
             Verified_Keys,
             State_SHA256);
-      elsif Name = "flyology-db-rustfs" then
+      elsif Profile = "flyology-db-rustfs" then
          Configure_Flyology_Profile ("flyology-db-files");
          Flyology_DB_Benchmark_Flyology.Run_S3
            (Ada.Environment_Variables.Value ("FLYOLOGY_DB_BENCH_ENDPOINT"),
@@ -303,9 +339,9 @@ procedure Flyology_DB_Benchmark_Panel is
             Elapsed,
             Verified_Keys,
             State_SHA256);
-      elsif Name = "slatedb-rustfs-default" or else Name = "slatedb-rustfs-1ms" then
+      elsif Profile = "slatedb-rustfs-default" or else Profile = "slatedb-rustfs-1ms" then
          Flush :=
-           (if Name = "slatedb-rustfs-default"
+           (if Profile = "slatedb-rustfs-default"
             then Flyology_DB_Benchmark_SlateDB.Default_Flush
             else Flyology_DB_Benchmark_SlateDB.One_Millisecond_Flush);
          Flyology_DB_Benchmark_SlateDB.Run_S3
@@ -356,6 +392,127 @@ procedure Flyology_DB_Benchmark_Panel is
    begin
       Run_Participant (Contender_Name, Iterations, Elapsed, Status);
    end Contender_Batch;
+
+   procedure Put_Paired_Primary_Samples
+     (Result : Flyology_Bench.Comparison;
+      File   : Ada.Text_IO.File_Type)
+   is
+      Reference : constant Flyology_Bench.Measurement := Flyology_Bench.Reference_Measurement (Result);
+      Contender : constant Flyology_Bench.Measurement := Flyology_Bench.Contender_Measurement (Result);
+      Reference_Primary : constant Flyology_Bench.Custom_Metric_Count :=
+        Flyology_Bench.Primary_Timing_Axis (Reference);
+      Contender_Primary : constant Flyology_Bench.Custom_Metric_Count :=
+        Flyology_Bench.Primary_Timing_Axis (Contender);
+      Reference_Iterations : constant Flyology_Bench.Iteration_Count :=
+        Flyology_Bench.Iterations_Per_Sample (Reference);
+      Contender_Iterations : constant Flyology_Bench.Iteration_Count :=
+        Flyology_Bench.Iterations_Per_Sample (Contender);
+      Reference_First : Natural := 0;
+      Contender_First : Natural := 0;
+      Last_Ordinal : Natural := 0;
+
+      function Number (Value : Long_Float) return String is
+        (Fixed.Trim (Long_Float'Image (Value), Ada.Strings.Both));
+   begin
+      if Reference_Primary = 0
+        or else Contender_Primary = 0
+        or else Flyology_Bench.Samples (Reference) /= Flyology_Bench.Samples (Contender)
+        or else Reference_Iterations = 0
+        or else Contender_Iterations = 0
+        or else Reference_Iterations /= Contender_Iterations
+        or else Flyology_Bench.Custom_Metric_Name
+          (Reference, Flyology_Bench.Custom_Metric_Index (Reference_Primary))
+          /= "primary_time"
+        or else Flyology_Bench.Custom_Metric_Name
+          (Contender, Flyology_Bench.Custom_Metric_Index (Contender_Primary))
+          /= "primary_time"
+        or else Flyology_Bench.Custom_Metric_Unit
+          (Reference, Flyology_Bench.Custom_Metric_Index (Reference_Primary))
+          /= "ns/op"
+        or else Flyology_Bench.Custom_Metric_Unit
+          (Contender, Flyology_Bench.Custom_Metric_Index (Contender_Primary))
+          /= "ns/op"
+        or else Flyology_Bench.Custom_Metric_Timing_Source
+          (Reference, Flyology_Bench.Custom_Metric_Index (Reference_Primary))
+          /= "engine_adapter_monotonic_clock"
+        or else Flyology_Bench.Custom_Metric_Timing_Source
+          (Contender, Flyology_Bench.Custom_Metric_Index (Contender_Primary))
+          /= "engine_adapter_monotonic_clock"
+        or else Flyology_Bench.Custom_Metric_Name (Reference, Execution_Axis)
+          /= "execution_ordinal"
+        or else Flyology_Bench.Custom_Metric_Name (Contender, Execution_Axis)
+          /= "execution_ordinal"
+      then
+         raise Program_Error with "paired primary benchmark evidence is incomplete";
+      end if;
+      for Index in 1 .. Flyology_Bench.Samples (Reference) loop
+         declare
+            Sample : constant Flyology_Bench.Sample_Index := Flyology_Bench.Sample_Index (Index);
+            Reference_Time : constant Long_Float :=
+              Flyology_Bench.Custom_Metric_Sample
+                (Reference, Flyology_Bench.Custom_Metric_Index (Reference_Primary), Sample);
+            Contender_Time : constant Long_Float :=
+              Flyology_Bench.Custom_Metric_Sample
+                (Contender, Flyology_Bench.Custom_Metric_Index (Contender_Primary), Sample);
+            Reference_Order : constant Long_Float :=
+              Flyology_Bench.Custom_Metric_Sample (Reference, Execution_Axis, Sample);
+            Contender_Order : constant Long_Float :=
+              Flyology_Bench.Custom_Metric_Sample (Contender, Execution_Axis, Sample);
+         begin
+            if Flyology_Bench.Custom_Metric_Sample_Status
+                 (Reference, Flyology_Bench.Custom_Metric_Index (Reference_Primary), Sample)
+                 /= Flyology_Bench.Metric_Collected
+              or else Flyology_Bench.Custom_Metric_Sample_Status
+                (Contender, Flyology_Bench.Custom_Metric_Index (Contender_Primary), Sample)
+                /= Flyology_Bench.Metric_Collected
+              or else Flyology_Bench.Custom_Metric_Sample_Status (Reference, Execution_Axis, Sample)
+                /= Flyology_Bench.Metric_Collected
+              or else Flyology_Bench.Custom_Metric_Sample_Status (Contender, Execution_Axis, Sample)
+                /= Flyology_Bench.Metric_Collected
+              or else Reference_Time /= Reference_Time
+              or else Contender_Time /= Contender_Time
+              or else Reference_Time <= 0.0
+              or else Contender_Time <= 0.0
+              or else Reference_Order <= 0.0
+              or else Contender_Order <= 0.0
+              or else abs (Reference_Order - Contender_Order) /= 1.0
+              or else Reference_Order /= Long_Float (Natural (Reference_Order))
+              or else Contender_Order /= Long_Float (Natural (Contender_Order))
+              or else Natural'Min (Natural (Reference_Order), Natural (Contender_Order))
+                <= Last_Ordinal
+            then
+               raise Program_Error with "paired primary benchmark sample is invalid";
+            end if;
+            Last_Ordinal := Natural'Max (Natural (Reference_Order), Natural (Contender_Order));
+            if Reference_Order < Contender_Order then
+               Reference_First := Reference_First + 1;
+            else
+               Contender_First := Contender_First + 1;
+            end if;
+            Ada.Text_IO.Put_Line
+              (File,
+               "{""schema"":""flyology.db.benchmark.paired_primary_sample.v1"""
+               & ",""sample"":" & Image (Index)
+               & ",""reference"":""" & Reference_Name & """"
+               & ",""contender"":""" & Contender_Name & """"
+               & ",""reference_primary_ns_per_operation"":" & Number (Reference_Time)
+               & ",""contender_primary_ns_per_operation"":" & Number (Contender_Time)
+               & ",""reference_execution_ordinal"":" & Number (Reference_Order)
+               & ",""contender_execution_ordinal"":" & Number (Contender_Order)
+               & ",""reference_iterations"":" & Image (Integer (Reference_Iterations))
+               & ",""contender_iterations"":" & Image (Integer (Contender_Iterations))
+               & ",""transactions_per_operation"":" & Image (Transactions_Per_Operation)
+               & ",""first"":"""
+               & (if Reference_Order < Contender_Order then "reference" else "contender")
+               & """}");
+         end;
+      end loop;
+      if Reference_First /= Flyology_Bench.Reference_First_Samples (Result)
+        or else Contender_First /= Flyology_Bench.Contender_First_Samples (Result)
+      then
+         raise Program_Error with "paired primary benchmark order summary is inconsistent";
+      end if;
+   end Put_Paired_Primary_Samples;
 
    package Compare is new
      Flyology_Bench.Manual_Timing_Comparison
@@ -414,6 +571,22 @@ begin
       Require_Machine_Scope => True);
    Config.Collect_Process_Telemetry := True;
 
+   Flyology_Bench.Register_Custom_Metric
+     (Config.Custom_Metrics,
+      Name          => "execution_ordinal",
+      Unit          => "ordinal",
+      Scope         => Flyology_Bench.Caller_Defined_Window,
+      Attribution   => Flyology_Bench.Exact_Window,
+      Direction     => Flyology_Bench.Diagnostic,
+      Semantics     => Flyology_Bench.Absolute_Sample,
+      Normalization => Flyology_Bench.Per_Batch,
+      Comparison    => Flyology_Bench.Absolute);
+   Execution_Axis :=
+     Flyology_Bench.Custom_Metric_Index
+       (Flyology_Bench.Custom_Metrics (Config.Custom_Metrics));
+   Flyology_Bench.Set_Custom_Probe
+     (Config.Custom_Metrics, Execution_Probe'Unrestricted_Access);
+
    Compare.Compare (Config, Result);
    Ada.Text_IO.Create (Ignored_JSON_File, Ada.Text_IO.Out_File, JSON_Path);
    Reporters.Put_Comparison_JSON
@@ -422,5 +595,6 @@ begin
    Ada.Text_IO.Create (Ignored_Metrics_File, Ada.Text_IO.Out_File, Metrics_Path);
    Reporters.Put_Comparison_Metrics_NDJSON
      (Reference_Name, Contender_Name, Result, Ignored_Metrics_File);
+   Put_Paired_Primary_Samples (Result, Ignored_Metrics_File);
    Ada.Text_IO.Close (Ignored_Metrics_File);
 end Flyology_DB_Benchmark_Panel;

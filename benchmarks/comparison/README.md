@@ -91,8 +91,16 @@ are benchmark profile choices, not database defaults: the useful balance
 between publication amortization and in-flight overlap can vary by hardware,
 provider latency, key/value geometry, and transaction shape.
 
-The first two participants are the matched successful, conflict-free singleton
-comparison. Ordinary serial singleton `Commit` is the group-size-one geometry;
+The unsuffixed Flyology participant refills after each completion, while the
+SlateDB participant submits and drains fixed waves. Append `-waves` to both
+participant names for an explicitly matched fixed-wave admission boundary, for
+example `slatedb-1ms-depth8-waves` and
+`flyology-db-files-singleton-depth8-waves`. Aggregate profiles accept the same
+suffix, as in `flyology-db-files-aggregate-cohort-width4-depth8-waves`.
+
+The explicitly wave-suffixed first two participants are the matched successful,
+conflict-free singleton comparison. Ordinary serial singleton `Commit` is the
+group-size-one geometry;
 the explicit-group participants start at two because `Commit_Group` deliberately
 rejects a one-member group. They are amortization ceilings with
 caller-visible group identity and shared publication fate; it is not a
@@ -103,10 +111,12 @@ order, matching work and power conditions, close/reopen verification, and an
 identical final state digest.
 
 For these participants, the NDJSON `primary_time` axis is the authoritative
-durable transaction window. The JSON headline is the harness wall clock around
-fresh-root creation, database creation, close/reopen verification, and scratch
-deletion, so it is useful for campaign diagnostics but not for commit-throughput
-decisions.
+durable transaction window. Each `paired_primary_sample` row retains both
+normalized `ns/op` values and their actual execution ordinals; one operation is
+the command's declared transaction count. The JSON headline is the harness wall
+clock around fresh-root creation, database creation, close/reopen verification,
+and scratch deletion, so it is useful for campaign diagnostics but not for
+commit-throughput decisions.
 
 `FLYOLOGY_DB_BENCH_WARMUP` selects the per-sample transaction warmup. The
 profile name selects the exact bounded concurrency geometry; those values are
@@ -118,7 +128,7 @@ warmup and 32 measured transactions of 256 mutations each:
 ```sh
 FLYOLOGY_DB_BENCH_WARMUP=8 \
   benchmarks/comparison/bin/flyology_db_benchmark_panel \
-  slatedb-1ms-depth8 flyology-db-files-singleton-depth8 \
+  slatedb-1ms-depth8-waves flyology-db-files-singleton-depth8-waves \
   16 1024 256 32 \
   benchmarks/comparison/results/slatedb-vs-flyology-depth8.json \
   benchmarks/comparison/results/slatedb-vs-flyology-depth8.ndjson
