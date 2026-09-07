@@ -5328,6 +5328,7 @@ package body Flyology.DB.Engine_Tests is
          Families                                   : constant Column_Family_Configuration_Array :=
            [Configure_Test_Family (1, [16#61#], 2, 3)];
          Old_Key                                    : constant Key := To_Key ([16#00#, 16#FF#]);
+         Earlier_Key                                : constant Key := To_Key ([16#00#, 16#01#]);
          New_Key                                    : constant Key := To_Key ([16#80#, 16#81#]);
          Empty_Key                                  : constant Key := To_Key ([]);
       begin
@@ -5440,6 +5441,27 @@ package body Flyology.DB.Engine_Tests is
          end if;
          Rollback (Reader, Result);
 
+         --  The inserted key sorts before the deleted key.  Exact final-state
+         --  capacity must not depend on that lookup order.
+         Begin_Transaction (Item, TX_ID (191), Group (1), Result);
+         Put (Item, Group (1), Family, Earlier_Key, To_Value ([6, 5, 4]), Result);
+         Begin_Transaction (Item, TX_ID (192), Group (2), Result);
+         Delete (Item, Group (2), Family, New_Key, Result);
+         Commit_Group (Item, ID (193), Group, Test_Operation_Timeout, Receipts => Receipts, Result => Result);
+         Expect (Result, Success, "reverse-ordered replacement group at exact live caps was rejected");
+         if Visible (Item) /= 9 then
+            raise Program_Error with "reverse-ordered replacement assigned an inconsistent sequence range";
+         end if;
+         Begin_Transaction (Item, TX_ID (194), Reader, Result);
+         Get (Item, Reader, Family, New_Key, Data, Result);
+         Expect (Result, Not_Found, "reverse-ordered replacement retained its deleted key");
+         Get (Item, Reader, Family, Earlier_Key, Data, Result);
+         Expect (Result, Success, "reverse-ordered replacement lost its new key");
+         if Data /= To_Value ([6, 5, 4]) then
+            raise Program_Error with "reverse-ordered replacement installed the wrong value";
+         end if;
+         Rollback (Reader, Result);
+
          Begin_Transaction (Item, TX_ID (187), Group (1), Result);
          Put (Item, Group (1), Family, Empty_Key, To_Value ([9, 8, 7]), Result);
          Begin_Transaction (Item, TX_ID (188), Group (2), Result);
@@ -5454,16 +5476,18 @@ package body Flyology.DB.Engine_Tests is
          then
             raise Program_Error with "same-empty-key publication counters were inconsistent";
          end if;
-         if Visible (Item) /= 9 then
+         if Visible (Item) /= 11 then
             raise Program_Error with "same-empty-key group assigned an inconsistent sequence range";
          end if;
          Begin_Transaction (Item, TX_ID (190), Reader, Result);
          Get (Item, Reader, Family, Empty_Key, Data, Result);
          Expect (Result, Not_Found, "same-empty-key group retained its deleted key");
          Get (Item, Reader, Family, New_Key, Data, Result);
-         Expect (Result, Success, "same-empty-key group changed the retained replacement key");
-         if Data /= To_Value ([7, 8, 9]) then
-            raise Program_Error with "same-empty-key group changed the retained replacement value";
+         Expect (Result, Not_Found, "same-empty-key group restored the reverse-replaced key");
+         Get (Item, Reader, Family, Earlier_Key, Data, Result);
+         Expect (Result, Success, "same-empty-key group changed the reverse replacement key");
+         if Data /= To_Value ([6, 5, 4]) then
+            raise Program_Error with "same-empty-key group changed the reverse replacement value";
          end if;
          Rollback (Reader, Result);
 
@@ -5475,9 +5499,11 @@ package body Flyology.DB.Engine_Tests is
          Get (Item, Reader, Family, Old_Key, Data, Result);
          Expect (Result, Not_Found, "reopen restored the distinct replacement's deleted key");
          Get (Item, Reader, Family, New_Key, Data, Result);
-         Expect (Result, Success, "reopen lost the distinct replacement key");
-         if Data /= To_Value ([7, 8, 9]) then
-            raise Program_Error with "reopen changed the distinct replacement value";
+         Expect (Result, Not_Found, "reopen restored the reverse replacement's deleted key");
+         Get (Item, Reader, Family, Earlier_Key, Data, Result);
+         Expect (Result, Success, "reopen lost the reverse replacement key");
+         if Data /= To_Value ([6, 5, 4]) then
+            raise Program_Error with "reopen changed the reverse replacement value";
          end if;
          Get (Item, Reader, Family, Empty_Key, Data, Result);
          Expect (Result, Not_Found, "reopen restored the same-empty-key deletion");
@@ -5485,10 +5511,143 @@ package body Flyology.DB.Engine_Tests is
 
          Close (Item, Result);
       end Run_Projection_Case;
+
+      procedure Run_Index_Collision_Case is
+         Context     : aliased Storage_Context;
+         Item        : Database;
+         Txn         : Transaction;
+         Reader      : Transaction;
+         Receipt     : Commit_Receipt;
+         Create_Info : Create_Receipt;
+         Family      : Column_Family;
+         Data        : Value;
+         Result      : Outcome_Code;
+         Limits      : constant Database_Limits :=
+           (Default_Limits
+            with delta
+              Maximum_Column_Families  => 1,
+              Maximum_Live_Entries     => 3,
+              Maximum_Live_State_Bytes => 6);
+         Families    : constant Column_Family_Configuration_Array :=
+           [Configure_Test_Family (1, [16#69#], 1, 1)];
+         --  FNV-1a modulo the three-entry index maps 0, 7, 11, 13, and
+         --  14 to one bucket; 1 maps elsewhere.  Exact bytes still decide
+         --  identity, so these values exercise chains rather than policy.
+         Key_A       : constant Key := To_Key ([7]);
+         Key_B       : constant Key := To_Key ([0]);
+         Key_C       : constant Key := To_Key ([11]);
+         Key_D       : constant Key := To_Key ([13]);
+         Key_E       : constant Key := To_Key ([1]);
+         Key_F       : constant Key := To_Key ([14]);
+
+         procedure Expect_Index_Sequence
+           (Target        : in out Database;
+            Item_Key      : Key;
+            Expected      : Sequence_Number;
+            Expected_Code : Outcome_Code;
+            Context_Text  : String)
+         is
+            Actual  : Sequence_Number;
+            Inspect : Outcome_Code;
+         begin
+            Testing.Live_Entry_Sequence
+              (Target, 1, Item_Key.Bytes (1 .. Item_Key.Length), Actual, Inspect);
+            if Inspect /= Expected_Code or else (Inspect = Success and then Actual /= Expected) then
+               raise Program_Error with Context_Text & " has the wrong live-index sequence";
+            end if;
+         end Expect_Index_Sequence;
+      begin
+         Bind_Context (Context, Backend, "live-index-collisions");
+         Create
+           (Item,
+            Context'Access,
+            DB_ID (195),
+            ID (196),
+            ID (197),
+            Limits,
+            Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "live-index collision database create failed");
+         Open_Column_Family (Item, 1, Family, Result);
+
+         Begin_Transaction (Item, TX_ID (198), Txn, Result);
+         Put (Item, Txn, Family, Key_A, To_Value ([1]), Result);
+         Put (Item, Txn, Family, Key_B, To_Value ([2]), Result);
+         Put (Item, Txn, Family, Key_C, To_Value ([3]), Result);
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "colliding live-index chain was not installed");
+
+         --  Removing the middle chain member relocates the dense tail within
+         --  the same bucket before another colliding key is inserted.
+         Begin_Transaction (Item, TX_ID (199), Txn, Result);
+         Delete (Item, Txn, Family, Key_B, Result);
+         Put (Item, Txn, Family, Key_D, To_Value ([4]), Result);
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "middle collision-chain replacement failed");
+
+         --  The newest colliding key is both the chain head and dense tail.
+         Begin_Transaction (Item, TX_ID (200), Txn, Result);
+         Delete (Item, Txn, Family, Key_D, Result);
+         Put (Item, Txn, Family, Key_E, To_Value ([5]), Result);
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "collision-chain head replacement failed");
+
+         --  Removing the remaining chain tail moves a dense entry from a
+         --  different bucket into its slot, then adds another collision.
+         Begin_Transaction (Item, TX_ID (201), Txn, Result);
+         Delete (Item, Txn, Family, Key_A, Result);
+         Put (Item, Txn, Family, Key_F, To_Value ([6]), Result);
+         Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+         Expect (Result, Success, "collision-chain tail replacement failed");
+
+         Expect_Index_Sequence (Item, Key_A, 0, Not_Found, "deleted chain-tail key");
+         Expect_Index_Sequence (Item, Key_B, 0, Not_Found, "deleted chain-middle key");
+         Expect_Index_Sequence (Item, Key_C, 1, Success, "retained colliding key");
+         Expect_Index_Sequence (Item, Key_D, 0, Not_Found, "deleted chain-head key");
+         Expect_Index_Sequence (Item, Key_E, 3, Success, "relocated cross-bucket key");
+         Expect_Index_Sequence (Item, Key_F, 4, Success, "replacement colliding key");
+
+         Begin_Transaction (Item, TX_ID (202), Reader, Result);
+         Get (Item, Reader, Family, Key_A, Data, Result);
+         Expect (Result, Not_Found, "deleted chain-tail key remained indexed");
+         Get (Item, Reader, Family, Key_B, Data, Result);
+         Expect (Result, Not_Found, "deleted chain-middle key remained indexed");
+         Get (Item, Reader, Family, Key_D, Data, Result);
+         Expect (Result, Not_Found, "deleted chain-head key remained indexed");
+         Get (Item, Reader, Family, Key_C, Data, Result);
+         Expect (Result, Success, "retained colliding key was not indexed");
+         Get (Item, Reader, Family, Key_E, Data, Result);
+         Expect (Result, Success, "relocated cross-bucket key was not indexed");
+         Get (Item, Reader, Family, Key_F, Data, Result);
+         Expect (Result, Success, "replacement colliding key was not indexed");
+         Rollback (Reader, Result);
+         Close (Item, Result);
+         Open (Item, Context'Access, DB_ID (195), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "collision fixture did not rebuild its index on reopen");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect_Index_Sequence (Item, Key_A, 0, Not_Found, "reopened deleted chain-tail key");
+         Expect_Index_Sequence (Item, Key_B, 0, Not_Found, "reopened deleted chain-middle key");
+         Expect_Index_Sequence (Item, Key_C, 1, Success, "reopened retained colliding key");
+         Expect_Index_Sequence (Item, Key_D, 0, Not_Found, "reopened deleted chain-head key");
+         Expect_Index_Sequence (Item, Key_E, 3, Success, "reopened relocated cross-bucket key");
+         Expect_Index_Sequence (Item, Key_F, 4, Success, "reopened replacement colliding key");
+         Begin_Transaction (Item, TX_ID (203), Reader, Result);
+         Get (Item, Reader, Family, Key_C, Data, Result);
+         Expect (Result, Success, "reopened collision fixture lost its retained chain key");
+         Get (Item, Reader, Family, Key_E, Data, Result);
+         Expect (Result, Success, "reopened collision fixture lost its relocated key");
+         Get (Item, Reader, Family, Key_F, Data, Result);
+         Expect (Result, Success, "reopened collision fixture lost its replacement key");
+         Rollback (Reader, Result);
+         Close (Item, Result);
+      end Run_Index_Collision_Case;
    begin
       Run_Case ("live-entry-budget", 180, 1, 16, "lower live-entry budget");
       Run_Case ("live-byte-budget", 186, 4, 5, "lower live-byte budget");
       Run_Projection_Case;
+      Run_Index_Collision_Case;
    end Test_Lower_Live_Budgets;
 
    procedure Test_Recovery_Format_Edges (Backend : not null access Backends.Backend'Class) is
@@ -12189,10 +12348,11 @@ package body Flyology.DB.Engine_Tests is
          --  Memory-backend test capacity: four buckets, the established 512-object
          --  corpus, ten durable-authority fixture keys, seven cohort-authority
          --  keys, 46 coalescing-profile keys, six aggregate cancellation/orphan
-         --  keys, and 69 v2 recovery objects.
+         --  keys, 69 v2 recovery objects, one reverse-order live-capacity
+         --  batch, and six collision-index fixture objects.
          --  Eight million bytes cover the complete deterministic engine corpus
          --  while retaining explicit backend backpressure.
-         Store : aliased Memory.Store (4, 650, 8_000_000);
+         Store : aliased Memory.Store (4, 657, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then

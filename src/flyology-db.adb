@@ -386,15 +386,14 @@ package body Flyology.DB is
       elsif Left_Image.Storage = Exact_Storage and then Right_Image.Storage = Exact_Storage then
          return
            Left_Image.Exact_Data
-               (Left_Image.Exact_Data'First
-                + Ada.Streams.Stream_Element_Offset (Left_Offset)
-                .. Left_Image.Exact_Data'First
-                   + Ada.Streams.Stream_Element_Offset (Left_Offset + Length - 1))
-             = Right_Image.Exact_Data
-                 (Right_Image.Exact_Data'First
-                  + Ada.Streams.Stream_Element_Offset (Right_Offset)
-                  .. Right_Image.Exact_Data'First
-                     + Ada.Streams.Stream_Element_Offset (Right_Offset + Length - 1));
+             (Left_Image.Exact_Data'First
+              + Ada.Streams.Stream_Element_Offset (Left_Offset)
+              .. Left_Image.Exact_Data'First + Ada.Streams.Stream_Element_Offset (Left_Offset + Length - 1))
+           = Right_Image.Exact_Data
+               (Right_Image.Exact_Data'First
+                + Ada.Streams.Stream_Element_Offset (Right_Offset)
+                .. Right_Image.Exact_Data'First
+                   + Ada.Streams.Stream_Element_Offset (Right_Offset + Length - 1));
       end if;
       for Offset in Natural range 0 .. Length - 1 loop
          if Image_Element (Left_Image, Left_Offset + Offset + 1)
@@ -424,8 +423,8 @@ package body Flyology.DB is
       end loop;
    end Copy_Growable_Range;
 
-   function Mutation_Payload_Length (Mutation : Owned_Mutation) return Natural is
-     (if Mutation.Payload = null then 0 else Mutation.Payload.all'Length);
+   function Mutation_Payload_Length (Mutation : Owned_Mutation) return Natural
+   is (if Mutation.Payload = null then 0 else Mutation.Payload.all'Length);
 
    function Mutation_Payload_Element
      (Mutation : Owned_Mutation; Index : Positive) return Ada.Streams.Stream_Element is
@@ -433,9 +432,7 @@ package body Flyology.DB is
       if Mutation.Payload = null or else Index > Mutation.Payload.all'Length then
          raise Constraint_Error with "mutation payload index exceeds source length";
       end if;
-      return
-        Mutation.Payload
-          (Mutation.Payload.all'First + Ada.Streams.Stream_Element_Offset (Index - 1));
+      return Mutation.Payload (Mutation.Payload.all'First + Ada.Streams.Stream_Element_Offset (Index - 1));
    end Mutation_Payload_Element;
 
    procedure Copy_Image_Range
@@ -952,10 +949,7 @@ package body Flyology.DB is
    protected body Storage_Test_Control is
 
       procedure Arm
-        (Point : Storage_Fault_Point;
-         Mode  : Storage_Fault_Mode;
-         Count : Positive;
-         Skip  : Natural := 0) is
+        (Point : Storage_Fault_Point; Mode : Storage_Fault_Mode; Count : Positive; Skip : Natural := 0) is
       begin
          Fault_Modes (Point) := Mode;
          Fault_Counts (Point) := Count;
@@ -2308,6 +2302,7 @@ package body Flyology.DB is
    end record;
    type State_Entry_Array is array (Positive range <>) of State_Entry;
    type State_Entry_Array_Access is access State_Entry_Array;
+   type State_Entry_Link_Array is array (Positive range <>) of Natural;
    procedure Free_State_Entries is new
      Ada.Unchecked_Deallocation (Object => State_Entry_Array, Name => State_Entry_Array_Access);
 
@@ -2880,27 +2875,28 @@ package body Flyology.DB is
       procedure Prepublication_Check (Items : Work_Group; Count : Group_Count; Result : out Outcome_Code);
 
       procedure Validate_Batch (Batch : Runtime_Batch; Result : out Outcome_Code);
+      procedure Discard_Prepared_Batch;
 
       procedure Prepare_Independent_Cohort
-        (Projection : in out Runtime_Batch;
-         Batches    : in out Runtime_Batch_Array;
-         Count      : Group_Count;
-         Expected   : Head_Snapshot;
-         Published  : Head_Snapshot;
+        (Projection      : in out Runtime_Batch;
+         Batches         : in out Runtime_Batch_Array;
+         Count           : Group_Count;
+         Expected        : Head_Snapshot;
+         Published       : Head_Snapshot;
          Projected_Count : out Natural;
          Projected_Bytes : out Interfaces.Unsigned_64;
-         Result           : out Outcome_Code);
+         Result          : out Outcome_Code);
 
       procedure Install_Independent_Cohort
-        (Batches          : in out Runtime_Batch_Array;
-         Count            : Group_Count;
-         Expected         : Head_Snapshot;
-         Published        : Head_Snapshot;
-         Expected_Generation : Generation_Value;
+        (Batches              : in out Runtime_Batch_Array;
+         Count                : Group_Count;
+         Expected             : Head_Snapshot;
+         Published            : Head_Snapshot;
+         Expected_Generation  : Generation_Value;
          Published_Generation : Generation_Value;
-         Projected_Count  : Natural;
-         Projected_Bytes  : Interfaces.Unsigned_64;
-         Result     : out Outcome_Code);
+         Projected_Count      : Natural;
+         Projected_Bytes      : Interfaces.Unsigned_64;
+         Result               : out Outcome_Code);
 
       procedure Complete_Group
         (Tokens         : Token_Group;
@@ -3036,50 +3032,68 @@ package body Flyology.DB is
       entry Join;
       function Highest return Sequence_Number;
    private
-      Slots                     : Completion_Array;
-      Queue_Order               : Interfaces.Unsigned_64 := 0;
-      In_Use_Count              : Natural range 0 .. Maximum_Commit_Slots := 0;
-      Queued_Count              : Natural range 0 .. Maximum_Commit_Slots := 0;
-      In_Flight_Bytes           : Interfaces.Unsigned_64 := 0;
-      Current_Head              : Head_Snapshot;
-      Head_Generation           : Generation_Value;
-      Current_Manifest          : Manifests.Manifest;
-      Incarnation               : Engine_Incarnation := No_Incarnation;
-      Live_State_Bytes          : Interfaces.Unsigned_64 := 0;
-      Entries                   : State_Entry_Array (1 .. Entry_Capacity);
+      Slots                        : Completion_Array;
+      Queue_Order                  : Interfaces.Unsigned_64 := 0;
+      In_Use_Count                 : Natural range 0 .. Maximum_Commit_Slots := 0;
+      Queued_Count                 : Natural range 0 .. Maximum_Commit_Slots := 0;
+      In_Flight_Bytes              : Interfaces.Unsigned_64 := 0;
+      Current_Head                 : Head_Snapshot;
+      Head_Generation              : Generation_Value;
+      Current_Manifest             : Manifests.Manifest;
+      Incarnation                  : Engine_Incarnation := No_Incarnation;
+      Live_State_Bytes             : Interfaces.Unsigned_64 := 0;
+      Entries                      : State_Entry_Array (1 .. Entry_Capacity);
+      --  Private exact-key index over the dense live-entry array. Bucket and
+      --  chain storage derive from the authenticated live-entry capacity;
+      --  hashes only select candidates and exact bytes remain authoritative.
+      Entry_Buckets                : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
+      Entry_Links                  : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
       --  Preallocated projection scratch keeps potentially large allocation
       --  and Storage_Error outside protected operations.  Apply_Batch writes
       --  only this scratch until every final-state limit has passed.
-      Projected_Entries         : State_Entry_Array (1 .. Entry_Capacity);
-      Entry_Count               : Natural := 0;
-      Seen                      : Seen_Transaction_Array (1 .. Seen_Capacity) :=
+      Projected_Entries            : State_Entry_Array (1 .. Entry_Capacity);
+      Entry_Count                  : Natural := 0;
+      Prepared_Batch               : Boolean := False;
+      Prepared_Descriptor          : Runtime_Batch;
+      Prepared_Head                : Head_Snapshot;
+      Prepared_Generation          : Generation_Value;
+      Prepared_Incarnation         : Engine_Incarnation := No_Incarnation;
+      Prepared_Original_Count      : Natural := 0;
+      Prepared_Original_Bytes      : Interfaces.Unsigned_64 := 0;
+      Prepared_Seen_Count          : Natural := 0;
+      Prepared_History_Count       : Natural := 0;
+      Prepared_Entry_Count         : Natural := 0;
+      Prepared_State_Bytes         : Interfaces.Unsigned_64 := 0;
+      Seen                         : Seen_Transaction_Array (1 .. Seen_Capacity) :=
         [others => Zero_Transaction_ID];
-      Seen_Count                : Natural := 0;
-      Used_Batches              : Used_Batch_ID_Array (1 .. History_Capacity) := [others => Zero_Identifier];
-      History_Count             : Natural := 0;
+      Seen_Count                   : Natural := 0;
+      Used_Batches                 : Used_Batch_ID_Array (1 .. History_Capacity) :=
+        [others => Zero_Identifier];
+      History_Count                : Natural := 0;
       --  Retain exact decoded batch descriptors lazily with their already-owned
       --  immutable images. They are the post-checkpoint write authority used
       --  for snapshot conflict checks; no theoretical key table is allocated.
-      History_Batches           : Runtime_Batch_Array (1 .. History_Capacity) := [others => (others => <>)];
-      Reserved                  : Reserved_Identity_Array (1 .. Reserved_Capacity) :=
+      History_Batches              : Runtime_Batch_Array (1 .. History_Capacity) :=
+        [others => (others => <>)];
+      Reserved                     : Reserved_Identity_Array (1 .. Reserved_Capacity) :=
         [others => Zero_Identifier];
-      Reserved_Count            : Natural := 0;
+      Reserved_Count               : Natural := 0;
       --  Zero is the authenticated root/legacy replay boundary. A nonzero
       --  boundary comes only from the persisted checkpoint authority and makes
       --  older snapshots conservatively unverifiable.
-      Retained_History_Boundary : Sequence_Number := 0;
+      Retained_History_Boundary    : Sequence_Number := 0;
       --  Private exact-width experiment control. Zero retains the disabled
       --  compatibility state; no persisted or public default derives from it.
-      Configured_Cohort_Width   : Group_Count := 0;
-      Configured_Aggregate_Cohort : Boolean := False;
+      Configured_Cohort_Width      : Group_Count := 0;
+      Configured_Aggregate_Cohort  : Boolean := False;
       Next_Aggregate_Batch_Ordinal : Interfaces.Unsigned_64 := 0;
-      Aggregate_Profile_Required : Boolean := False;
-      Uncertain                 : Boolean := False;
-      Fenced                    : Boolean := False;
-      Closing                   : Boolean := False;
-      Stopped                   : Boolean := False;
-      Paused                    : Boolean := False;
-      Fail_Install              : Boolean := False;
+      Aggregate_Profile_Required   : Boolean := False;
+      Uncertain                    : Boolean := False;
+      Fenced                       : Boolean := False;
+      Closing                      : Boolean := False;
+      Stopped                      : Boolean := False;
+      Paused                       : Boolean := False;
+      Fail_Install                 : Boolean := False;
    end Coordinator;
 
    procedure Visit_Scan_Batch
@@ -3233,6 +3247,8 @@ package body Flyology.DB is
 
    protected body Coordinator is
 
+      procedure Clear_Prepared_Batch;
+
       procedure Initialize
         (Head             : Head_Snapshot;
          Generation       : Generation_Value;
@@ -3244,11 +3260,233 @@ package body Flyology.DB is
          Current_Head := Head;
          Head_Generation := Generation;
          Current_Manifest := Manifest;
-         Aggregate_Profile_Required :=
-           Commit_Profile = LSM_Runtime.Commit_Profiles.Aggregate_Coalescing;
+         Aggregate_Profile_Required := Commit_Profile = LSM_Runtime.Commit_Profiles.Aggregate_Coalescing;
          Retained_History_Boundary := History_Boundary;
          Incarnation := Stamp;
+         Entry_Buckets := [others => 0];
+         Entry_Links := [others => 0];
+         Clear_Prepared_Batch;
       end Initialize;
+
+      procedure Clear_Prepared_Batch is
+      begin
+         Prepared_Batch := False;
+         Prepared_Descriptor := (others => <>);
+         Prepared_Head := (others => <>);
+         Prepared_Generation := (others => <>);
+         Prepared_Incarnation := No_Incarnation;
+         Prepared_Original_Count := 0;
+         Prepared_Original_Bytes := 0;
+         Prepared_Seen_Count := 0;
+         Prepared_History_Count := 0;
+         Prepared_Entry_Count := 0;
+         Prepared_State_Bytes := 0;
+      end Clear_Prepared_Batch;
+
+      function Entry_Bucket (Hash : Interfaces.Unsigned_64) return Positive
+      is (Positive (Hash mod Interfaces.Unsigned_64 (Entry_Capacity) + 1));
+
+      function Indexed_Key_Matches
+        (Position : Positive; Image : not null Shared_Image_Access; Mutation : Runtime_Mutation)
+         return Boolean is
+      begin
+         if Position > Entry_Count
+           or else Entries (Position).Image = null
+           or else Entries (Position).Family /= Mutation.Family
+           or else Entries (Position).Key_Hash /= Mutation.Key_Hash
+           or else Entries (Position).Key_Length /= Mutation.Key_Length
+         then
+            return False;
+         end if;
+         if Mutation.Key_Length > 0 then
+            for Offset in Natural range 0 .. Mutation.Key_Length - 1 loop
+               if Image_Element (Entries (Position).Image, Entries (Position).Key_Offset + Offset + 1)
+                 /= Image_Element (Image, Mutation.Key_Offset + Offset + 1)
+               then
+                  return False;
+               end if;
+            end loop;
+         end if;
+         return True;
+      end Indexed_Key_Matches;
+
+      function Indexed_Key_Matches
+        (Position : Positive; Family : Column_Family_ID; Item_Key : Byte_Array) return Boolean is
+      begin
+         if Position > Entry_Count
+           or else Entries (Position).Image = null
+           or else Entries (Position).Family /= Family
+           or else Entries (Position).Key_Hash /= Runtime_Key_Hash (Item_Key)
+           or else Entries (Position).Key_Length /= Item_Key'Length
+         then
+            return False;
+         end if;
+         if Item_Key'Length > 0 then
+            for Offset in Natural range 0 .. Item_Key'Length - 1 loop
+               if Byte (Image_Element (Entries (Position).Image, Entries (Position).Key_Offset + Offset + 1))
+                 /= Item_Key (Item_Key'First + Offset)
+               then
+                  return False;
+               end if;
+            end loop;
+         end if;
+         return True;
+      end Indexed_Key_Matches;
+
+      procedure Find_Indexed_Entry
+        (Image    : not null Shared_Image_Access;
+         Mutation : Runtime_Mutation;
+         Position : out Natural;
+         Valid    : out Boolean)
+      is
+         Current : Natural := Entry_Buckets (Entry_Bucket (Mutation.Key_Hash));
+         Steps   : Natural := 0;
+      begin
+         Position := 0;
+         while Current > 0 loop
+            if Current > Entry_Count or else Steps = Entry_Count then
+               Valid := False;
+               return;
+            end if;
+            Steps := Steps + 1;
+            if Indexed_Key_Matches (Positive (Current), Image, Mutation) then
+               Position := Current;
+               Valid := True;
+               return;
+            end if;
+            Current := Entry_Links (Positive (Current));
+         end loop;
+         Valid := True;
+      end Find_Indexed_Entry;
+
+      procedure Find_Indexed_Entry
+        (Family : Column_Family_ID; Item_Key : Byte_Array; Position : out Natural; Valid : out Boolean)
+      is
+         Current : Natural := Entry_Buckets (Entry_Bucket (Runtime_Key_Hash (Item_Key)));
+         Steps   : Natural := 0;
+      begin
+         Position := 0;
+         while Current > 0 loop
+            if Current > Entry_Count or else Steps = Entry_Count then
+               Valid := False;
+               return;
+            end if;
+            Steps := Steps + 1;
+            if Indexed_Key_Matches (Positive (Current), Family, Item_Key) then
+               Position := Current;
+               Valid := True;
+               return;
+            end if;
+            Current := Entry_Links (Positive (Current));
+         end loop;
+         Valid := True;
+      end Find_Indexed_Entry;
+
+      procedure Insert_Indexed_Entry (Position : Positive; Valid : out Boolean) is
+         Bucket : Positive;
+      begin
+         if Position > Entry_Count or else Entries (Position).Image = null then
+            Valid := False;
+            return;
+         end if;
+         Bucket := Entry_Bucket (Entries (Position).Key_Hash);
+         Entry_Links (Position) := Entry_Buckets (Bucket);
+         Entry_Buckets (Bucket) := Position;
+         Valid := True;
+      end Insert_Indexed_Entry;
+
+      procedure Unlink_Indexed_Entry (Position : Positive; Valid : out Boolean) is
+         Bucket   : Positive;
+         Current  : Natural;
+         Previous : Natural := 0;
+         Steps    : Natural := 0;
+      begin
+         if Position > Entry_Count or else Entries (Position).Image = null then
+            Valid := False;
+            return;
+         end if;
+         Bucket := Entry_Bucket (Entries (Position).Key_Hash);
+         Current := Entry_Buckets (Bucket);
+         while Current > 0 loop
+            if Current > Entry_Count or else Steps = Entry_Count then
+               Valid := False;
+               return;
+            end if;
+            Steps := Steps + 1;
+            if Current = Position then
+               if Previous = 0 then
+                  Entry_Buckets (Bucket) := Entry_Links (Position);
+               else
+                  Entry_Links (Positive (Previous)) := Entry_Links (Position);
+               end if;
+               Entry_Links (Position) := 0;
+               Valid := True;
+               return;
+            end if;
+            Previous := Current;
+            Current := Entry_Links (Positive (Current));
+         end loop;
+         Valid := False;
+      end Unlink_Indexed_Entry;
+
+      procedure Remove_Indexed_Entry (Position : Positive; Valid : out Boolean) is
+         Last : constant Positive := Positive (Entry_Count);
+      begin
+         Unlink_Indexed_Entry (Position, Valid);
+         if not Valid then
+            return;
+         end if;
+         if Position /= Last then
+            Unlink_Indexed_Entry (Last, Valid);
+            if not Valid then
+               return;
+            end if;
+            Entries (Position) := Entries (Last);
+         end if;
+         Entries (Last) := (others => <>);
+         Entry_Links (Last) := 0;
+         Entry_Count := Entry_Count - 1;
+         if Position /= Last then
+            Insert_Indexed_Entry (Position, Valid);
+         end if;
+      end Remove_Indexed_Entry;
+
+      procedure Rebuild_Entry_Index (Result : out Outcome_Code) is
+         Existing : Natural;
+         Valid    : Boolean;
+      begin
+         Entry_Buckets := [others => 0];
+         Entry_Links := [others => 0];
+         for Position in Positive range 1 .. Entry_Count loop
+            if Entries (Position).Image = null then
+               Result := Corrupt;
+               return;
+            end if;
+            declare
+               Item : constant Runtime_Mutation :=
+                 (Family             => Entries (Position).Family,
+                  Operation          => Put_Mutation,
+                  Key_Hash           => Entries (Position).Key_Hash,
+                  Key_Offset         => Entries (Position).Key_Offset,
+                  Key_Length         => Entries (Position).Key_Length,
+                  Value_Offset       => 0,
+                  Value_Length       => 0,
+                  Matched_Live_Entry => False);
+            begin
+               Find_Indexed_Entry (Entries (Position).Image, Item, Existing, Valid);
+            end;
+            if not Valid or else Existing /= 0 then
+               Result := Corrupt;
+               return;
+            end if;
+            Insert_Indexed_Entry (Position, Valid);
+            if not Valid then
+               Result := Corrupt;
+               return;
+            end if;
+         end loop;
+         Result := Success;
+      end Rebuild_Entry_Index;
 
       function History_Key_Before_Bound
         (Batch      : Runtime_Batch;
@@ -3512,8 +3750,7 @@ package body Flyology.DB is
          end if;
          if Left.Key_Length > 0 then
             for Offset in Natural range 0 .. Left.Key_Length - 1 loop
-               if Mutation_Payload_Element (Left, Offset + 1)
-                 /= Mutation_Payload_Element (Right, Offset + 1)
+               if Mutation_Payload_Element (Left, Offset + 1) /= Mutation_Payload_Element (Right, Offset + 1)
                then
                   return False;
                end if;
@@ -3547,8 +3784,7 @@ package body Flyology.DB is
       begin
          if Common > 0 then
             for Offset in Natural range 0 .. Common - 1 loop
-               if Mutation_Payload_Element (Mutation, Offset + 1)
-                 < Flyology.Bytes.Element (Bound, Offset + 1)
+               if Mutation_Payload_Element (Mutation, Offset + 1) < Flyology.Bytes.Element (Bound, Offset + 1)
                then
                   return True;
                elsif Mutation_Payload_Element (Mutation, Offset + 1)
@@ -3674,13 +3910,14 @@ package body Flyology.DB is
       end Has_Transaction_Conflict;
 
       procedure Apply_Batch_Core
-        (Batch               : in out Runtime_Batch;
-         Identities_Reserved : Boolean;
-         Install             : Boolean;
-         Cohort_Projection   : Boolean;
-         Projected_Count     : out Natural;
-         Projected_Bytes     : out Interfaces.Unsigned_64;
-         Result              : out Outcome_Code)
+        (Batch                 : in out Runtime_Batch;
+         Identities_Reserved   : Boolean;
+         Install               : Boolean;
+         Cohort_Projection     : Boolean;
+         Prepare_Incrementally : Boolean;
+         Projected_Count       : out Natural;
+         Projected_Bytes       : out Interfaces.Unsigned_64;
+         Result                : out Outcome_Code)
       is
          --  Preserve the admitted immutable batch identity while Batch may be
          --  moved/released during installation; this is derived ownership state.
@@ -3819,6 +4056,9 @@ package body Flyology.DB is
       begin
          Projected_Count := 0;
          Projected_Bytes := 0;
+         if Prepare_Incrementally or else Install then
+            Clear_Prepared_Batch;
+         end if;
          if Batch.Image = null
            or else Batch.Transactions = null
            or else Batch.Mutations = null
@@ -4054,6 +4294,98 @@ package body Flyology.DB is
             Batch.Mutations (Mutation_Index).Matched_Live_Entry := False;
          end loop;
 
+         if Prepare_Incrementally then
+            Candidate_Count := Entry_Count;
+            Candidate_Bytes := Live_State_Bytes;
+            --  Remove every affected installed value before adding the final
+            --  values.  Capacity is a property of the final map, not of the
+            --  lookup order chosen for otherwise independent keys.
+            for Position in Positive range 1 .. Batch.Mutation_Total loop
+               declare
+                  Indexed       : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+                  Mutation      : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
+                  First_For_Key : constant Boolean :=
+                    Position = 1
+                    or else not Same_Runtime_Key
+                                  (Batch.Image,
+                                   Batch.Mutations (Batch.Lookup (Position - 1).Mutation_Index),
+                                   Batch.Image,
+                                   Mutation);
+                  Existing      : Natural := 0;
+                  Valid         : Boolean;
+                  Old_Amount    : Interfaces.Unsigned_64 := 0;
+               begin
+                  if First_For_Key then
+                     Find_Indexed_Entry (Batch.Image, Mutation, Existing, Valid);
+                     if not Valid then
+                        Result := Corrupt;
+                        return;
+                     end if;
+                     if Existing > 0 then
+                        Old_Amount :=
+                          Interfaces.Unsigned_64 (Entries (Existing).Key_Length)
+                          + Interfaces.Unsigned_64 (Entries (Existing).Value_Length);
+                        if Candidate_Bytes < Old_Amount or else Candidate_Count = 0 then
+                           Result := Corrupt;
+                           return;
+                        end if;
+                        Candidate_Bytes := Candidate_Bytes - Old_Amount;
+                        Candidate_Count := Candidate_Count - 1;
+                     end if;
+                  end if;
+               end;
+            end loop;
+            for Position in Positive range 1 .. Batch.Mutation_Total loop
+               declare
+                  Indexed       : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+                  Mutation      : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
+                  First_For_Key : constant Boolean :=
+                    Position = 1
+                    or else not Same_Runtime_Key
+                                  (Batch.Image,
+                                   Batch.Mutations (Batch.Lookup (Position - 1).Mutation_Index),
+                                   Batch.Image,
+                                   Mutation);
+                  New_Amount    : constant Interfaces.Unsigned_64 :=
+                    Interfaces.Unsigned_64 (Mutation.Key_Length)
+                    + Interfaces.Unsigned_64 (Mutation.Value_Length);
+               begin
+                  if First_For_Key and then Mutation.Operation = Put_Mutation then
+                     if Candidate_Count = Entry_Capacity
+                       or else Candidate_Bytes > Interfaces.Unsigned_64'Last - New_Amount
+                     then
+                        Result := Policy_Failure;
+                        return;
+                     end if;
+                     Candidate_Count := Candidate_Count + 1;
+                     Candidate_Bytes := Candidate_Bytes + New_Amount;
+                  end if;
+               end;
+            end loop;
+            if Interfaces.Unsigned_64 (Candidate_Count)
+              > Interfaces.Unsigned_64 (Current_Manifest.Limits.Maximum_Live_Entries)
+              or else Candidate_Bytes > Current_Manifest.Limits.Maximum_Live_State_Bytes
+            then
+               Result := Policy_Failure;
+               return;
+            end if;
+            Prepared_Descriptor := Batch;
+            Prepared_Head := Current_Head;
+            Prepared_Generation := Head_Generation;
+            Prepared_Incarnation := Incarnation;
+            Prepared_Original_Count := Entry_Count;
+            Prepared_Original_Bytes := Live_State_Bytes;
+            Prepared_Seen_Count := Seen_Count;
+            Prepared_History_Count := History_Count;
+            Prepared_Entry_Count := Candidate_Count;
+            Prepared_State_Bytes := Candidate_Bytes;
+            Prepared_Batch := True;
+            Projected_Count := Candidate_Count;
+            Projected_Bytes := Candidate_Bytes;
+            Result := Success;
+            return;
+         end if;
+
          for Existing in Positive range 1 .. Entry_Count loop
             declare
                Lookup_Position : Natural := 0;
@@ -4172,6 +4504,10 @@ package body Flyology.DB is
             Entries := Projected_Entries;
             Entry_Count := Candidate_Count;
             Live_State_Bytes := Candidate_Bytes;
+            Rebuild_Entry_Index (Result);
+            if Result /= Success then
+               return;
+            end if;
             if not Identities_Reserved and then Additional_Identities > Batch.Transaction_Total then
                Reserved_Count := Reserved_Count + 1;
                Reserved (Reserved_Count) := Batch_ID;
@@ -4204,7 +4540,8 @@ package body Flyology.DB is
          Ignored_Count : Natural;
          Ignored_Bytes : Interfaces.Unsigned_64;
       begin
-         Apply_Batch_Core (Batch, Identities_Reserved, Install, False, Ignored_Count, Ignored_Bytes, Result);
+         Apply_Batch_Core
+           (Batch, Identities_Reserved, Install, False, False, Ignored_Count, Ignored_Bytes, Result);
       end Apply_Batch;
 
       procedure Recover_Batch (Batch : in out Runtime_Batch; Result : out Outcome_Code) is
@@ -4310,6 +4647,7 @@ package body Flyology.DB is
             Valid := True;
          end Add_Put;
       begin
+         Clear_Prepared_Batch;
          Live_Count := 0;
          if Plan.Manifest = null
            or else Plan.Manifest.Replay_Boundary = 0
@@ -4527,6 +4865,10 @@ package body Flyology.DB is
          Entries := Projected_Entries;
          Entry_Count := Candidate_Count;
          Live_State_Bytes := Candidate_Bytes;
+         Rebuild_Entry_Index (Result);
+         if Result /= Success then
+            return;
+         end if;
          Reserved_Count := Plan.Manifest.Identity_Total;
          for Index in Positive range 1 .. Reserved_Count loop
             Reserved (Index) := To_Identifier (Plan.Manifest.Identities (Index));
@@ -4606,9 +4948,7 @@ package body Flyology.DB is
          elsif Uncertain then
             Result := Outcome_Unknown;
             return;
-         elsif Aggregate_Profile_Required
-           and then Configured_Cohort_Width = 0
-         then
+         elsif Aggregate_Profile_Required and then Configured_Cohort_Width = 0 then
             Result := Unsupported_Format;
             return;
          elsif Configured_Cohort_Width > 0 and then Deadline /= Ada.Real_Time.Time_Last then
@@ -5010,8 +5350,7 @@ package body Flyology.DB is
                exit when not Found;
                declare
                   Has_Conflict : Boolean :=
-                    Has_Transaction_Conflict
-                      (Slots (Selected).Work.Arena, Slots (Selected).Work.Snapshot_At);
+                    Has_Transaction_Conflict (Slots (Selected).Work.Arena, Slots (Selected).Work.Snapshot_At);
                begin
                   if not Has_Conflict then
                      for Position in Commit_Slot range 1 .. Selected_Count loop
@@ -5129,22 +5468,29 @@ package body Flyology.DB is
       end Prepublication_Check;
 
       procedure Validate_Batch (Batch : Runtime_Batch; Result : out Outcome_Code) is
-         Candidate : Runtime_Batch := Batch;
+         Candidate     : Runtime_Batch := Batch;
+         Ignored_Count : Natural;
+         Ignored_Bytes : Interfaces.Unsigned_64;
       begin
-         Apply_Batch (Candidate, True, False, Result);
+         Apply_Batch_Core (Candidate, True, False, False, True, Ignored_Count, Ignored_Bytes, Result);
       end Validate_Batch;
 
+      procedure Discard_Prepared_Batch is
+      begin
+         Clear_Prepared_Batch;
+      end Discard_Prepared_Batch;
+
       procedure Prepare_Independent_Cohort
-        (Projection : in out Runtime_Batch;
-         Batches    : in out Runtime_Batch_Array;
-         Count      : Group_Count;
-         Expected   : Head_Snapshot;
-         Published  : Head_Snapshot;
+        (Projection      : in out Runtime_Batch;
+         Batches         : in out Runtime_Batch_Array;
+         Count           : Group_Count;
+         Expected        : Head_Snapshot;
+         Published       : Head_Snapshot;
          Projected_Count : out Natural;
          Projected_Bytes : out Interfaces.Unsigned_64;
-         Result           : out Outcome_Code)
+         Result          : out Outcome_Code)
       is
-         Previous_Batch  : Identifier :=
+         Previous_Batch : Identifier :=
            (if Expected.Highest = 0 then Zero_Identifier else Expected.Latest_Batch);
 
          function Same_Value
@@ -5156,11 +5502,7 @@ package body Flyology.DB is
             return
               Left.Value_Length = Right.Value_Length
               and then Same_Image_Range
-                         (Left_Image,
-                          Left.Value_Offset,
-                          Right_Image,
-                          Right.Value_Offset,
-                          Left.Value_Length);
+                         (Left_Image, Left.Value_Offset, Right_Image, Right.Value_Offset, Left.Value_Length);
          end Same_Value;
 
          function Same_Mutation
@@ -5184,8 +5526,7 @@ package body Flyology.DB is
            (Item     : State_Entry;
             Image    : not null Shared_Image_Access;
             Mutation : Runtime_Mutation;
-            Sequence : Sequence_Number)
-            return Boolean is
+            Sequence : Sequence_Number) return Boolean is
          begin
             return
               Mutation.Operation = Put_Mutation
@@ -5297,7 +5638,7 @@ package body Flyology.DB is
             return;
          end if;
 
-         Apply_Batch_Core (Projection, True, False, True, Projected_Count, Projected_Bytes, Result);
+         Apply_Batch_Core (Projection, True, False, True, False, Projected_Count, Projected_Bytes, Result);
          if Result /= Success then
             return;
          end if;
@@ -5362,6 +5703,7 @@ package body Flyology.DB is
          Projected_Bytes      : Interfaces.Unsigned_64;
          Result               : out Outcome_Code) is
       begin
+         Clear_Prepared_Batch;
          if Count = 0
            or else Batches'First /= 1
            or else Batches'Last < Positive (Count)
@@ -5378,6 +5720,7 @@ package body Flyology.DB is
            or else Published.Transition_ID = Zero_Identifier
            or else Published.Transition_ID = Expected.Transition_ID
          then
+            Fenced := True;
             Result := Corrupt;
             return;
          end if;
@@ -5392,6 +5735,7 @@ package body Flyology.DB is
               or else Batches (Index).Publication_Transition_ID /= Published.Transition_ID
               or else Batches (Index).Publication_Transition_Number /= Published.Transition_Number
             then
+               Fenced := True;
                Result := Corrupt;
                return;
             end if;
@@ -5402,10 +5746,15 @@ package body Flyology.DB is
          end if;
 
          --  Everything above is validation/projection. The following bounded
-         --  block consists only of non-failing assignments and ownership moves.
+         --  installation fences any index-rebuild failure before ownership moves.
          Entries := Projected_Entries;
          Entry_Count := Projected_Count;
          Live_State_Bytes := Projected_Bytes;
+         Rebuild_Entry_Index (Result);
+         if Result /= Success then
+            Fenced := True;
+            return;
+         end if;
          for Index in Commit_Slot range 1 .. Count loop
             Seen_Count := Seen_Count + 1;
             Seen (Seen_Count) := Batches (Index).Transactions (1).Transaction_ID;
@@ -5417,6 +5766,10 @@ package body Flyology.DB is
          Current_Head := Published;
          Head_Generation := Published_Generation;
          Result := Success;
+      exception
+         when others =>
+            Fenced := True;
+            raise;
       end Install_Independent_Cohort;
 
       procedure Complete_Group
@@ -5517,17 +5870,177 @@ package body Flyology.DB is
         (Batch      : in out Runtime_Batch;
          Head       : Head_Snapshot;
          Generation : Generation_Value;
-         Result     : out Outcome_Code) is
+         Result     : out Outcome_Code)
+      is
+         function Same_Descriptor (Left, Right : Runtime_Batch) return Boolean is
+         begin
+            return
+              Left.Format_Version = Right.Format_Version
+              and then Left.Database_ID = Right.Database_ID
+              and then Left.Epoch = Right.Epoch
+              and then Left.Batch_ID = Right.Batch_ID
+              and then Left.Previous_Batch_ID = Right.Previous_Batch_ID
+              and then Left.Expected_Transition_ID = Right.Expected_Transition_ID
+              and then Left.Expected_Transition_Number = Right.Expected_Transition_Number
+              and then Left.Publication_Transition_ID = Right.Publication_Transition_ID
+              and then Left.Publication_Transition_Number = Right.Publication_Transition_Number
+              and then Left.First_Sequence = Right.First_Sequence
+              and then Left.Last_Sequence = Right.Last_Sequence
+              and then Left.Transaction_Total = Right.Transaction_Total
+              and then Left.Mutation_Total = Right.Mutation_Total
+              and then Left.Transactions = Right.Transactions
+              and then Left.Mutations = Right.Mutations
+              and then Left.Lookup = Right.Lookup
+              and then Left.Image = Right.Image;
+         end Same_Descriptor;
+
+         function First_For_Key (Position : Positive) return Boolean
+         is (Position = 1
+             or else not Same_Runtime_Key
+                           (Batch.Image,
+                            Batch.Mutations (Batch.Lookup (Position - 1).Mutation_Index),
+                            Batch.Image,
+                            Batch.Mutations (Batch.Lookup (Position).Mutation_Index)));
+
+         Existing : Natural;
+         Valid    : Boolean;
+
+         procedure Reject_Installation is
+         begin
+            Clear_Prepared_Batch;
+            Fenced := True;
+            Result := Corrupt;
+         end Reject_Installation;
       begin
+         if not Prepared_Batch
+           or else not Same_Descriptor (Prepared_Descriptor, Batch)
+           or else Prepared_Head /= Current_Head
+           or else Prepared_Generation /= Head_Generation
+           or else Prepared_Incarnation /= Incarnation
+           or else Prepared_Original_Count /= Entry_Count
+           or else Prepared_Original_Bytes /= Live_State_Bytes
+           or else Prepared_Seen_Count /= Seen_Count
+           or else Prepared_History_Count /= History_Count
+           or else Head.Database_ID /= Prepared_Head.Database_ID
+           or else Head.Version /= Prepared_Head.Version
+           or else Head.Epoch /= Prepared_Head.Epoch
+           or else Head.Highest /= Batch.Last_Sequence
+           or else Head.Latest_Batch /= Batch.Batch_ID
+           or else Head.Latest_Manifest /= Prepared_Head.Latest_Manifest
+           or else Head.Transition_ID /= Batch.Publication_Transition_ID
+           or else Head.Predecessor_Transition /= Prepared_Head.Transition_ID
+           or else Head.Transition_Number /= Batch.Publication_Transition_Number
+         then
+            Reject_Installation;
+            return;
+         end if;
          if Fail_Install then
             Fail_Install := False;
+            Clear_Prepared_Batch;
             raise Program_Error with "injected local installation failure";
          end if;
-         Apply_Batch (Batch, True, True, Result);
-         if Result = Success then
-            Current_Head := Head;
-            Head_Generation := Generation;
+
+         --  Delete first so exact final-state capacity, rather than a transient
+         --  operation order, controls whether same-batch replacements fit.
+         for Position in Positive range 1 .. Batch.Mutation_Total loop
+            declare
+               Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+               Mutation : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
+            begin
+               if First_For_Key (Position) and then Mutation.Operation = Delete_Mutation then
+                  Find_Indexed_Entry (Batch.Image, Mutation, Existing, Valid);
+                  if not Valid then
+                     Reject_Installation;
+                     return;
+                  elsif Existing > 0 then
+                     Remove_Indexed_Entry (Positive (Existing), Valid);
+                     if not Valid then
+                        Reject_Installation;
+                        return;
+                     end if;
+                  end if;
+               end if;
+            end;
+         end loop;
+
+         for Position in Positive range 1 .. Batch.Mutation_Total loop
+            declare
+               Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+               Mutation : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
+            begin
+               if First_For_Key (Position) and then Mutation.Operation = Put_Mutation then
+                  Find_Indexed_Entry (Batch.Image, Mutation, Existing, Valid);
+                  if not Valid then
+                     Reject_Installation;
+                     return;
+                  elsif Existing > 0 then
+                     Entries (Existing) :=
+                       (Family       => Mutation.Family,
+                        Image        => Batch.Image,
+                        Key_Hash     => Mutation.Key_Hash,
+                        Key_Offset   => Mutation.Key_Offset,
+                        Key_Length   => Mutation.Key_Length,
+                        Value_Offset => Mutation.Value_Offset,
+                        Value_Length => Mutation.Value_Length,
+                        Sequence     => Indexed.Sequence);
+                  end if;
+               end if;
+            end;
+         end loop;
+
+         for Position in Positive range 1 .. Batch.Mutation_Total loop
+            declare
+               Indexed  : Runtime_Mutation_Lookup_Entry renames Batch.Lookup (Position);
+               Mutation : Runtime_Mutation renames Batch.Mutations (Indexed.Mutation_Index);
+            begin
+               if First_For_Key (Position) and then Mutation.Operation = Put_Mutation then
+                  Find_Indexed_Entry (Batch.Image, Mutation, Existing, Valid);
+                  if not Valid or else (Existing = 0 and then Entry_Count = Entry_Capacity) then
+                     Reject_Installation;
+                     return;
+                  elsif Existing = 0 then
+                     Entry_Count := Entry_Count + 1;
+                     Entries (Entry_Count) :=
+                       (Family       => Mutation.Family,
+                        Image        => Batch.Image,
+                        Key_Hash     => Mutation.Key_Hash,
+                        Key_Offset   => Mutation.Key_Offset,
+                        Key_Length   => Mutation.Key_Length,
+                        Value_Offset => Mutation.Value_Offset,
+                        Value_Length => Mutation.Value_Length,
+                        Sequence     => Indexed.Sequence);
+                     Insert_Indexed_Entry (Positive (Entry_Count), Valid);
+                     if not Valid then
+                        Reject_Installation;
+                        return;
+                     end if;
+                  end if;
+               end if;
+            end;
+         end loop;
+
+         if Entry_Count /= Prepared_Entry_Count then
+            Reject_Installation;
+            return;
          end if;
+         Live_State_Bytes := Prepared_State_Bytes;
+         for Transaction_Index in Positive range 1 .. Batch.Transaction_Total loop
+            Seen_Count := Seen_Count + 1;
+            Seen (Seen_Count) := Batch.Transactions (Transaction_Index).Transaction_ID;
+         end loop;
+         History_Count := History_Count + 1;
+         Used_Batches (History_Count) := Batch.Batch_ID;
+         History_Batches (History_Count) := Batch;
+         Batch := (others => <>);
+         Current_Head := Head;
+         Head_Generation := Generation;
+         Clear_Prepared_Batch;
+         Result := Success;
+      exception
+         when others =>
+            Clear_Prepared_Batch;
+            Fenced := True;
+            raise;
       end Install_Published;
 
       procedure Snapshot
@@ -5840,31 +6353,19 @@ package body Flyology.DB is
          Sequence : out Sequence_Number;
          Result   : out Outcome_Code)
       is
-         Matches : Boolean;
+         Position : Natural;
+         Valid    : Boolean;
       begin
          Sequence := 0;
-         for Index in Positive range 1 .. Entry_Count loop
-            Matches :=
-              Entries (Index).Family = Family
-              and then Entries (Index).Image /= null
-              and then Entries (Index).Key_Length = Item_Key'Length;
-            if Matches then
-               for Offset in Natural range 0 .. Item_Key'Length - 1 loop
-                  if Byte (Image_Element (Entries (Index).Image, Entries (Index).Key_Offset + Offset + 1))
-                    /= Item_Key (Item_Key'First + Offset)
-                  then
-                     Matches := False;
-                     exit;
-                  end if;
-               end loop;
-               if Matches then
-                  Sequence := Entries (Index).Sequence;
-                  Result := Success;
-                  return;
-               end if;
-            end if;
-         end loop;
-         Result := Not_Found;
+         Find_Indexed_Entry (Family, Item_Key, Position, Valid);
+         if not Valid then
+            Result := Corrupt;
+         elsif Position = 0 then
+            Result := Not_Found;
+         else
+            Sequence := Entries (Position).Sequence;
+            Result := Success;
+         end if;
       end Lookup_Sequence;
 
       procedure Family_Snapshot_Requirements
@@ -8377,7 +8878,8 @@ package body Flyology.DB is
                                (Cursor
                                 + Mutation_Frame_Header_Length
                                 + Mutation_Payload_Length (Source)
-                                - 1)) := Source.Payload.all;
+                                - 1)) :=
+                       Source.Payload.all;
                   end if;
                   Target.Key_Hash := Runtime_Key_Hash (Batch.Image, Target.Key_Offset, Target.Key_Length);
                   Cursor := Cursor + Mutation_Frame_Header_Length + Source.Key_Length + Source.Value_Length;
@@ -9079,14 +9581,7 @@ package body Flyology.DB is
          Receipts (Index).Attempted_Head := Attempted_Head;
       end loop;
       State.Gate.Prepare_Independent_Cohort
-        (Validation_Batch,
-         Batches,
-         Count,
-         Head,
-         Attempted_Head,
-         Projected_Count,
-         Projected_Bytes,
-         Result);
+        (Validation_Batch, Batches, Count, Head, Attempted_Head, Projected_Count, Projected_Bytes, Result);
       if Result /= Success then
          Release_Work_Arenas;
          Release_Batches;
@@ -9244,6 +9739,12 @@ package body Flyology.DB is
             Release_Arena (Items (Index).Arena);
          end loop;
       end Release_Work_Arenas;
+
+      procedure Release_Batch is
+      begin
+         State.Gate.Discard_Prepared_Batch;
+         Release_Runtime_Batch (Batch);
+      end Release_Batch;
    begin
       Receipts := [others => <>];
       for Index in Commit_Slot range 1 .. Count loop
@@ -9296,7 +9797,7 @@ package body Flyology.DB is
       end loop;
       State.Gate.Validate_Batch (Batch, Result);
       if Result /= Success then
-         Release_Runtime_Batch (Batch);
+         Release_Batch;
          Finish_Work (State, Tokens, Receipts, Count, Result);
          return;
       end if;
@@ -9324,7 +9825,7 @@ package body Flyology.DB is
             if Read_Result = Object_Read and then Exact_Bytes (Batch.Image, Read_Data) then
                null;
             else
-               Release_Runtime_Batch (Batch);
+               Release_Batch;
                Finish_Work
                  (State,
                   Tokens,
@@ -9343,11 +9844,11 @@ package body Flyology.DB is
             --  A batch identity is one-shot at the public transaction boundary.
             --  Exact bytes can continue only inside the original unknown Put;
             --  a later admission must never replay the application operation.
-            Release_Runtime_Batch (Batch);
+            Release_Batch;
             Finish_Work (State, Tokens, Receipts, Count, Conflict, Mark_Fenced => True);
             return;
          else
-            Release_Runtime_Batch (Batch);
+            Release_Batch;
             Finish_Work
               (State,
                Tokens,
@@ -9379,7 +9880,7 @@ package body Flyology.DB is
          when Object_Published        =>
             Head_Confirmed := True;
             State.Gate.Install_Published (Batch, Attempted_Head, Published_Generation, Result);
-            Release_Runtime_Batch (Batch);
+            Release_Batch;
             State.Life.Set_Visible (Attempted_Head.Highest);
             if Result = Success then
                Finish_Work (State, Tokens, Receipts, Count, Success);
@@ -9390,7 +9891,7 @@ package body Flyology.DB is
             end if;
 
          when Put_Precondition_Failed =>
-            Release_Runtime_Batch (Batch);
+            Release_Batch;
             Finish_Work (State, Tokens, Receipts, Count, Stale_Writer, Mark_Fenced => True);
 
          when Put_Outcome_Unknown     =>
@@ -9401,26 +9902,26 @@ package body Flyology.DB is
                Receipts (Index).Image := Batch.Image;
             end loop;
             Batch.Image := null;
-            Release_Runtime_Batch (Batch);
+            Release_Batch;
             Finish_Work (State, Tokens, Receipts, Count, Outcome_Unknown, Mark_Uncertain => True);
 
          when Put_Cancelled           =>
-            Release_Runtime_Batch (Batch);
+            Release_Batch;
             Finish_Work (State, Tokens, Receipts, Count, Cancelled);
 
          when Put_Timed_Out           =>
-            Release_Runtime_Batch (Batch);
+            Release_Batch;
             Finish_Work (State, Tokens, Receipts, Count, Timed_Out);
 
          when Put_Definite_Failure    =>
-            Release_Runtime_Batch (Batch);
+            Release_Batch;
             Finish_Work (State, Tokens, Receipts, Count, Storage_Failure);
       end case;
    exception
       when others =>
          Release_Work_Arenas;
          Release_Image (Head_Owner);
-         Release_Runtime_Batch (Batch);
+         Release_Batch;
          if Head_Confirmed then
             State.Life.Set_Visible (Attempted_Head.Highest);
             Finish_Work (State, Tokens, Receipts, Count, Success, Mark_Fenced => True);
@@ -9536,8 +10037,8 @@ package body Flyology.DB is
       end if;
       for Index in Positive range 1 .. Count loop
          if (Checkpoint.Commit_Profile
-               in LSM_Runtime.Commit_Profiles.Standard_Publication
-                | LSM_Runtime.Commit_Profiles.Aggregate_Coalescing
+             in LSM_Runtime.Commit_Profiles.Standard_Publication
+              | LSM_Runtime.Commit_Profiles.Aggregate_Coalescing
              and then History (Index).Format_Version /= Batch_Format_Version_Code)
            or else (Checkpoint.Commit_Profile = LSM_Runtime.Commit_Profiles.Independent_Coalescing
                     and then History (Index).Format_Version /= Cohort_Batch_Format_Version_Code)
@@ -11354,8 +11855,8 @@ package body Flyology.DB is
          Fail_Recovery (State, Batch_Result);
          return;
       elsif (State.LSM_Authority.Commit_Profile
-               in LSM_Runtime.Commit_Profiles.Standard_Publication
-                | LSM_Runtime.Commit_Profiles.Aggregate_Coalescing
+             in LSM_Runtime.Commit_Profiles.Standard_Publication
+              | LSM_Runtime.Commit_Profiles.Aggregate_Coalescing
              and then State.History (State.Count).Format_Version /= Batch_Format_Version_Code)
         or else (State.LSM_Authority.Commit_Profile = LSM_Runtime.Commit_Profiles.Independent_Coalescing
                  and then State.History (State.Count).Format_Version /= Cohort_Batch_Format_Version_Code)
@@ -13217,8 +13718,7 @@ package body Flyology.DB is
          return False;
       end if;
       for Offset in Natural range 0 .. Item_Key'Length - 1 loop
-         if Byte (Mutation_Payload_Element (Mutation, Offset + 1)) /= Item_Key (Item_Key'First + Offset)
-         then
+         if Byte (Mutation_Payload_Element (Mutation, Offset + 1)) /= Item_Key (Item_Key'First + Offset) then
             return False;
          end if;
       end loop;
@@ -13745,8 +14245,7 @@ package body Flyology.DB is
       Allocation_Faults.Check (Transaction_Payload_Allocation);
       if New_Bytes > 0 then
          Candidate.Data :=
-           new Ada.Streams.Stream_Element_Array
-                 (1 .. Ada.Streams.Stream_Element_Offset (New_Bytes));
+           new Ada.Streams.Stream_Element_Array (1 .. Ada.Streams.Stream_Element_Offset (New_Bytes));
          if Item_Key'Length > 0 then
             for Offset in Natural range 0 .. Item_Key'Length - 1 loop
                Candidate.Data (Ada.Streams.Stream_Element_Offset (Offset + 1)) :=
@@ -13755,8 +14254,7 @@ package body Flyology.DB is
          end if;
          if Operation = Put_Mutation and then Data'Length > 0 then
             for Offset in Natural range 0 .. Data'Length - 1 loop
-               Candidate.Data
-                 (Ada.Streams.Stream_Element_Offset (Item_Key'Length + Offset + 1)) :=
+               Candidate.Data (Ada.Streams.Stream_Element_Offset (Item_Key'Length + Offset + 1)) :=
                  Ada.Streams.Stream_Element (Data (Data'First + Offset));
             end loop;
          end if;
@@ -14010,9 +14508,7 @@ package body Flyology.DB is
                return Byte (Image_Element (Source.Key_Image, Source.Key_Offset + Offset + 1));
             else
                return
-                 Byte
-                   (Mutation_Payload_Element
-                      (Txn.Owner.Arena.Mutations (Source.Arena_Index), Offset + 1));
+                 Byte (Mutation_Payload_Element (Txn.Owner.Arena.Mutations (Source.Arena_Index), Offset + 1));
             end if;
          end Key_Byte;
 
@@ -17806,15 +18302,15 @@ package body Flyology.DB is
       if Status /= Commit_Authorities.Decoded then
          Result := (if Status = Commit_Authorities.Unsupported_Version then Unsupported_Format else Corrupt);
          return;
-      elsif
-        (case Metadata.Format_Version is
-           when Commit_Authorities.Authority_Format_Version =>
-             Lease.State.LSM_Authority.Commit_Profile /= LSM_Runtime.Commit_Profiles.Standard_Publication,
-           when Commit_Authorities.Cohort_Authority_Format_Version =>
-             Lease.State.LSM_Authority.Commit_Profile /= LSM_Runtime.Commit_Profiles.Independent_Coalescing,
-           when Commit_Authorities.Aggregate_Authority_Format_Version =>
-             Lease.State.LSM_Authority.Commit_Profile /= LSM_Runtime.Commit_Profiles.Aggregate_Coalescing,
-           when others => True)
+      elsif (case Metadata.Format_Version is
+               when Commit_Authorities.Authority_Format_Version           =>
+                 Lease.State.LSM_Authority.Commit_Profile /= LSM_Runtime.Commit_Profiles.Standard_Publication,
+               when Commit_Authorities.Cohort_Authority_Format_Version    =>
+                 Lease.State.LSM_Authority.Commit_Profile
+                 /= LSM_Runtime.Commit_Profiles.Independent_Coalescing,
+               when Commit_Authorities.Aggregate_Authority_Format_Version =>
+                 Lease.State.LSM_Authority.Commit_Profile /= LSM_Runtime.Commit_Profiles.Aggregate_Coalescing,
+               when others                                                => True)
       then
          Result := Unsupported_Format;
          return;
@@ -17873,8 +18369,8 @@ package body Flyology.DB is
         or else Batch.Publication_Transition_Number
                 /= Interfaces.Unsigned_64 (Metadata.Attempted_Head.Transition_Number)
         or else (if Metadata.Format_Version
-                       in Commit_Authorities.Authority_Format_Version
-                        | Commit_Authorities.Aggregate_Authority_Format_Version
+                    in Commit_Authorities.Authority_Format_Version
+                     | Commit_Authorities.Aggregate_Authority_Format_Version
                  then
                    Batch.Format_Version /= Batch_Format_Version_Code
                    or else Batch.Previous_Batch_ID /= To_Identifier (Metadata.Expected_Head.Latest_Batch)
@@ -27837,8 +28333,7 @@ package body Flyology.DB is
    begin
       Acquire (Item, Lease, Result);
       if Result = Success then
-         if Lease.State.LSM_Authority.Commit_Profile /= LSM_Runtime.Commit_Profiles.Aggregate_Coalescing
-         then
+         if Lease.State.LSM_Authority.Commit_Profile /= LSM_Runtime.Commit_Profiles.Aggregate_Coalescing then
             Result := Unsupported_Format;
          else
             Lease.State.Gate.Configure_Aggregate_Cohort (Width, First_Batch_Ordinal, Result);
@@ -29823,8 +30318,7 @@ package body Flyology.DB is
                     (if Arena.Mutations (1).Operation = Put_Mutation then 1 else 0);
                   Arena.Mutations (1).Payload :=
                     new Ada.Streams.Stream_Element_Array
-                          (1 .. Ada.Streams.Stream_Element_Offset
-                                  (2 + Arena.Mutations (1).Value_Length));
+                          (1 .. Ada.Streams.Stream_Element_Offset (2 + Arena.Mutations (1).Value_Length));
                   Arena.Mutations (1).Payload (1) := Ada.Streams.Stream_Element (Transaction_Index);
                   Arena.Mutations (1).Payload (2) := Ada.Streams.Stream_Element (Case_Number);
                   if Arena.Mutations (1).Operation = Put_Mutation then
