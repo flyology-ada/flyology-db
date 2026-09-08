@@ -3419,6 +3419,218 @@ then
   exit 1
 fi
 
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 \
+  -metadir "$temporary_root/tlc-pipelined-adaptive-coalescing-states" \
+  -config PipelinedAdaptiveAggregateCommitCoalescing.cfg \
+  PipelinedAdaptiveAggregateCommitCoalescing \
+  >"$temporary_root/tlc-pipelined-adaptive-coalescing.log" 2>&1
+pipelined_adaptive_status=$?
+set -e
+if test "$pipelined_adaptive_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA pipelined adaptive coalescing TLC exited $pipelined_adaptive_status" >&2
+  cat "$temporary_root/tlc-pipelined-adaptive-coalescing.log" >&2
+  exit "$pipelined_adaptive_status"
+fi
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-pipelined-adaptive-coalescing.log"
+if grep -q '^Warning:' "$temporary_root/tlc-pipelined-adaptive-coalescing.log"
+then
+  printf '%s\n' 'Flyology.DB TLA pipelined adaptive coalescing TLC warned' >&2
+  cat "$temporary_root/tlc-pipelined-adaptive-coalescing.log" >&2
+  exit 1
+fi
+adaptive_extract_geometry \
+  "$temporary_root/tlc-pipelined-adaptive-coalescing.log" pipeline
+pipelined_adaptive_generated=$adaptive_generated
+pipelined_adaptive_distinct=$adaptive_distinct
+pipelined_adaptive_depth=$adaptive_depth
+pipelined_adaptive_action_report="$temporary_root/pipelined-adaptive-action-coverage.txt"
+adaptive_write_action_report \
+  "$temporary_root/tlc-pipelined-adaptive-coalescing.log" \
+  "$pipelined_adaptive_action_report" Freeze RequestCancellation StartBatch \
+  StoreBatch CompleteBatch JoinBatch IgnoreStaleCompletion ObserveBatch StartHead \
+  ApplyHead RivalHead CompleteHead JoinHead RetireSuccess AbandonSuffix BeginClose \
+  DrainAbandoned ObserveFrontResolution FinishFrontResolution ResolveDetachedMember \
+  ResolveRejected DetachUnknown CollectImage Close CrashAfterReturn Reopen
+if test "$pipelined_adaptive_generated" -ne 1742242 || \
+  test "$pipelined_adaptive_distinct" -ne 445238 || \
+  test "$pipelined_adaptive_depth" -ne 51
+then
+  printf '%s\n' \
+    'Flyology.DB TLA pipelined adaptive coalescing geometry changed' >&2
+  exit 1
+fi
+pipelined_adaptive_expected_action_report="$temporary_root/pipelined-adaptive-action-coverage.expected.txt"
+cat >"$pipelined_adaptive_expected_action_report" <<'EOF'
+    Freeze 98:596
+    RequestCancellation 0:113284
+    StartBatch 202:956
+    StoreBatch 526:3820
+    CompleteBatch 2382:15280
+    JoinBatch 2382:15280
+    IgnoreStaleCompletion 0:45060
+    ObserveBatch 220:1426
+    StartHead 170:724
+    ApplyHead 249:706
+    RivalHead 14307:57793
+    CompleteHead 3862:5790
+    JoinHead 3774:5790
+    RetireSuccess 2104:3248
+    AbandonSuffix 4292:41094
+    BeginClose 1952:71581
+    DrainAbandoned 6016:10224
+    ObserveFrontResolution 4236:7484
+    FinishFrontResolution 6354:14120
+    ResolveDetachedMember 16780:66028
+    ResolveRejected 5430:9920
+    DetachUnknown 2056:2616
+    CollectImage 298612:505914
+    Close 22669:132223
+    CrashAfterReturn 25819:394660
+    Reopen 20745:216624
+EOF
+if ! cmp "$pipelined_adaptive_expected_action_report" \
+    "$pipelined_adaptive_action_report"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA pipelined adaptive coalescing action coverage changed:' >&2
+  cat "$pipelined_adaptive_action_report" >&2
+  exit 1
+fi
+
+for probe in \
+  PipelinedAdaptiveAggregateCommitCoalescingHeadOrderProbe:OrderedHead \
+  PipelinedAdaptiveAggregateCommitCoalescingVisibilityProbe:NoPrematureSuccess \
+  PipelinedAdaptiveAggregateCommitCoalescingUnknownBarrierProbe:UnknownBarrier \
+  PipelinedAdaptiveAggregateCommitCoalescingReplayProbe:NoReplay \
+  PipelinedAdaptiveAggregateCommitCoalescingRebaseProbe:FrozenIdentity \
+  PipelinedAdaptiveAggregateCommitCoalescingOwnershipProbe:Ownership \
+  PipelinedAdaptiveAggregateCommitCoalescingStaleCompletionProbe:Ownership \
+  PipelinedAdaptiveAggregateCommitCoalescingValidationProbe:ValidationPrefix \
+  PipelinedAdaptiveAggregateCommitCoalescingResolutionTokenProbe:ResolutionBinding \
+  PipelinedAdaptiveAggregateCommitCoalescingResolutionOrderProbe:\
+NoPrematureResolutionSuccess \
+  PipelinedAdaptiveAggregateCommitCoalescingDetachedResolutionProbe:ResolutionInstalled \
+  PipelinedAdaptiveAggregateCommitCoalescingResolutionOwnershipProbe:ResolutionOwnership
+do
+  probe_module=${probe%%:*}
+  probe_invariant=${probe#*:}
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-$probe_module-states" \
+    -config "$probe_module.cfg" PipelinedAdaptiveAggregateCommitCoalescingProbes \
+    >"$temporary_root/tlc-$probe_module.log" 2>&1
+  probe_status=$?
+  set -e
+  if test "$probe_status" -ne 12
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA pipelined adaptive probe $probe_module exited $probe_status" >&2
+    cat "$temporary_root/tlc-$probe_module.log" >&2
+    if test "$probe_status" -eq 0
+    then
+      exit 1
+    fi
+    exit "$probe_status"
+  fi
+  grep -q "Invariant $probe_invariant is violated." \
+    "$temporary_root/tlc-$probe_module.log"
+  if grep -q '^Warning:' "$temporary_root/tlc-$probe_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA pipelined adaptive probe $probe_module warned" >&2
+    cat "$temporary_root/tlc-$probe_module.log" >&2
+    exit 1
+  fi
+done
+
+for witness in \
+  PipelinedAdaptiveAggregateCommitCoalescingOrderedSuccessWitness:OrderedSuccessPending \
+  PipelinedAdaptiveAggregateCommitCoalescingPredecessorFailureWitness:\
+PredecessorFailureOrphanPending \
+  PipelinedAdaptiveAggregateCommitCoalescingUnknownCloseRecoveryWitness:\
+UnknownCloseRecoveryPending \
+  PipelinedAdaptiveAggregateCommitCoalescingCancellationLocalFailureWitness:\
+CancellationLocalFailurePending \
+  PipelinedAdaptiveAggregateCommitCoalescingActiveUnknownResolutionWitness:\
+ActiveUnknownResolutionPending
+do
+  witness_module=${witness%%:*}
+  witness_invariant=${witness#*:}
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-$witness_module-states" \
+    -config "$witness_module.cfg" PipelinedAdaptiveAggregateCommitCoalescingWitnesses \
+    >"$temporary_root/tlc-$witness_module.log" 2>&1
+  witness_status=$?
+  set -e
+  if test "$witness_status" -ne 12
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA pipelined adaptive witness $witness_module exited $witness_status" >&2
+    cat "$temporary_root/tlc-$witness_module.log" >&2
+    if test "$witness_status" -eq 0
+    then
+      exit 1
+    fi
+    exit "$witness_status"
+  fi
+  grep -q "Invariant $witness_invariant is violated." \
+    "$temporary_root/tlc-$witness_module.log"
+  if grep -q '^Warning:' "$temporary_root/tlc-$witness_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA pipelined adaptive witness $witness_module warned" >&2
+    cat "$temporary_root/tlc-$witness_module.log" >&2
+    exit 1
+  fi
+done
+
+set +e
+"$tlapm" --cache-dir "$temporary_root/tlapm-pipelined-adaptive-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/PipelinedAdaptiveAggregateCommitCoalescingSafetyProof.tla" \
+  >"$temporary_root/tlaps-pipelined-adaptive.log" 2>&1
+pipelined_adaptive_tlaps_status=$?
+set -e
+if test "$pipelined_adaptive_tlaps_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA pipelined adaptive TLAPS exited $pipelined_adaptive_tlaps_status" >&2
+  cat "$temporary_root/tlaps-pipelined-adaptive.log" >&2
+  exit "$pipelined_adaptive_tlaps_status"
+fi
+if grep -q '^Warning:' "$temporary_root/tlaps-pipelined-adaptive.log"
+then
+  printf '%s\n' 'Flyology.DB TLA pipelined adaptive TLAPS warned' >&2
+  cat "$temporary_root/tlaps-pipelined-adaptive.log" >&2
+  exit 1
+fi
+pipelined_adaptive_tlaps_lines=$(grep -E \
+  '^(\[INFO\]: )?All [0-9][0-9]* obligations proved[.]$' \
+  "$temporary_root/tlaps-pipelined-adaptive.log" || :)
+if test -z "$pipelined_adaptive_tlaps_lines" || \
+  test "$(printf '%s\n' "$pipelined_adaptive_tlaps_lines" | wc -l | tr -d ' ')" -ne 1
+then
+  printf '%s\n' \
+    'Flyology.DB TLA pipelined adaptive TLAPS summary missing or ambiguous' >&2
+  cat "$temporary_root/tlaps-pipelined-adaptive.log" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$pipelined_adaptive_tlaps_lines" | \
+  grep -Eq '^(\[INFO\]: )?All 118 obligations proved[.]$'
+then
+  printf '%s\n' 'Flyology.DB TLA pipelined adaptive TLAPS total changed' >&2
+  cat "$temporary_root/tlaps-pipelined-adaptive.log" >&2
+  exit 1
+fi
+
 aggregate_identity_report="$temporary_root/aggregate-identity-coverage.txt"
 : >"$aggregate_identity_report"
 for identity_case in normal collision
@@ -3750,6 +3962,18 @@ printf '%s\n' \
   "  Adaptive coalescing TLAPS $adaptive_tlaps_obligations obligations proved" \
   "  Adaptive coalescing pre-admission/safety/progress/failure/recovery witnesses reached" \
   "  Negative adaptive visibility/replay/cancellation/split/alias/authority/identity probes detected"
+printf '%s\n' \
+  "  Pipelined adaptive coalescing TLC $pipelined_adaptive_generated generated," \
+  "        $pipelined_adaptive_distinct distinct, depth $pipelined_adaptive_depth"
+printf '%s\n' "  Pipelined adaptive coalescing action coverage"
+cat "$pipelined_adaptive_action_report"
+printf '%s\n' \
+  "  Pipelined adaptive coalescing TLAPS 118/118 obligations" \
+  "  Pipelined adaptive ordered/failure/unknown-close/cancellation/recovery witnesses reached" \
+  "  Positive pipeline TLC excludes authority export/import/drop lifecycle actions" \
+  "  Export/import recovery is witnessed; TLAPS abstracts lifecycle safety" \
+  "  Negative pipelined head-order/visibility/unknown/replay/rebase/ownership/"\
+"stale/validation/resolution-token/install/receipt-ownership probes detected"
 printf '%s\n' "  Aggregate encoded-identity reservation TLC"
 cat "$aggregate_identity_report"
 printf '%s\n' \
