@@ -142,6 +142,54 @@ package body Flyology_DB_Benchmark_Flyology is
            "FLYOLOGY_DB_BENCH_AGGREGATE_FIRST_BATCH_ORDINAL must be an unsigned integer";
    end Requested_Aggregate_First_Batch_Ordinal;
 
+   function Requested_Adaptive_Maximum_Members return Natural is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_MEMBERS");
+   begin
+      return (if Raw'Length = 0 then 0 else Natural'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with "FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_MEMBERS must be a natural number";
+   end Requested_Adaptive_Maximum_Members;
+
+   function Requested_Adaptive_Maximum_Encoded_Bytes return Interfaces.Unsigned_64 is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_ENCODED_BYTES");
+   begin
+      return (if Raw'Length = 0 then 0 else Interfaces.Unsigned_64'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with
+           "FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_ENCODED_BYTES must be an unsigned integer";
+   end Requested_Adaptive_Maximum_Encoded_Bytes;
+
+   function Requested_Adaptive_Maximum_Wait_Microseconds return Interfaces.Unsigned_64 is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_WAIT_US");
+   begin
+      return (if Raw'Length = 0 then 0 else Interfaces.Unsigned_64'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with
+           "FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_WAIT_US must be an unsigned integer";
+   end Requested_Adaptive_Maximum_Wait_Microseconds;
+
+   function Requested_Adaptive_Admission_Depth return Natural is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_ADAPTIVE_ADMISSION_DEPTH");
+   begin
+      return (if Raw'Length = 0 then 0 else Natural'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with "FLYOLOGY_DB_BENCH_ADAPTIVE_ADMISSION_DEPTH must be a natural number";
+   end Requested_Adaptive_Admission_Depth;
+
+   function Adaptive_Wait_Duration (Microseconds : Interfaces.Unsigned_64) return Duration is
+      Whole_Seconds : constant Interfaces.Unsigned_64 := Microseconds / 1_000_000;
+      Remainder     : constant Interfaces.Unsigned_64 := Microseconds mod 1_000_000;
+   begin
+      return Duration (Whole_Seconds) + Duration (Remainder) / 1_000_000.0;
+   exception
+      when Constraint_Error =>
+         raise Program_Error with "FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_WAIT_US exceeds Duration'Last";
+   end Adaptive_Wait_Duration;
+
    function Numbered_ID (Value : Interfaces.Unsigned_64) return DB.Identifier
    is
       Result    : DB.Identifier := [others => 0];
@@ -286,6 +334,7 @@ package body Flyology_DB_Benchmark_Flyology is
       Deadline       : Duration;
       Cohort_Width   : Natural;
       Aggregate_First_Ordinal : Interfaces.Unsigned_64;
+      Adaptive_Cohort : Boolean;
       Wave_Scheduling : Boolean)
    is
       type Operation_Access is access DB.Commit_Operation;
@@ -296,6 +345,7 @@ package body Flyology_DB_Benchmark_Flyology is
       type Positive_Array is array (Positive range <>) of Positive;
       type Sequence_Array is array (Positive range <>) of DB.Sequence_Number;
       type Transition_Array is array (Positive range <>) of Interfaces.Unsigned_64;
+      type Batch_ID_Array is array (Positive range <>) of DB.Identifier;
 
       Set            : aliased Operations.Completion_Set (Pipeline_Depth);
       Work           : Operation_Array (1 .. Pipeline_Depth) := [others => null];
@@ -303,6 +353,7 @@ package body Flyology_DB_Benchmark_Flyology is
       Index_For      : Positive_Array (Work'Range) := [others => First_Index];
       Sequences      : Sequence_Array (First_Index .. First_Index + Count - 1) := [others => 0];
       Transitions    : Transition_Array (Sequences'Range) := [others => 0];
+      Batch_IDs      : Batch_ID_Array (Sequences'Range) := [others => [others => 0]];
       Completed      : Operations.Completion_Batch (Set.Capacity);
       Submitted      : Natural := 0;
       Finished       : Natural := 0;
@@ -317,7 +368,7 @@ package body Flyology_DB_Benchmark_Flyology is
            DB.Transaction_Identifier
              (Numbered_ID (Interfaces.Unsigned_64 (1_000 + Index)));
          Expected_Batch_ID : constant DB.Identifier :=
-           (if Aggregate_First_Ordinal = 0
+           (if Adaptive_Cohort or else Aggregate_First_Ordinal = 0
             then DB.Identifier (Expected_ID)
             else Benchmark_Controls.Aggregate_Batch_ID
               (Aggregate_First_Ordinal
@@ -334,13 +385,15 @@ package body Flyology_DB_Benchmark_Flyology is
             "pipelined singleton receipt outcome mismatch");
          Require
            (DB.Receipt_Transaction_ID (Receipt) = Expected_ID
-              and then DB.Receipt_Batch_ID (Receipt) = Expected_Batch_ID,
+              and then
+                (Adaptive_Cohort or else DB.Receipt_Batch_ID (Receipt) = Expected_Batch_ID),
             "pipelined singleton receipt identity mismatch");
          Require
            (DB.Receipt_Sequence (Receipt) > 0,
             "pipelined singleton receipt sequence is absent");
          Sequences (Index) := DB.Receipt_Sequence (Receipt);
          Transitions (Index) := Benchmark_Controls.Attempted_Transition_Number (Receipt);
+         Batch_IDs (Index) := DB.Receipt_Batch_ID (Receipt);
       end Finish_Slot;
 
       procedure Drain_Ready is
@@ -410,7 +463,40 @@ package body Flyology_DB_Benchmark_Flyology is
                  or else Sequences (Index) = Sequences (Index - 1) + 1),
             "pipelined singleton receipt sequence mismatch");
       end loop;
-      if Cohort_Width > 0 then
+      if Adaptive_Cohort then
+         declare
+            First : Positive := Sequences'First;
+         begin
+            while First <= Sequences'Last loop
+               declare
+                  Last : Positive := First;
+               begin
+                  while Last < Sequences'Last
+                    and then Transitions (Last + 1) = Transitions (First)
+                  loop
+                     Last := Last + 1;
+                  end loop;
+                  Require
+                    (Last - First + 1 <= Cohort_Width
+                       and then Batch_IDs (First)
+                                  = Numbered_ID (Interfaces.Unsigned_64 (1_000 + First)),
+                     "adaptive cohort leader identity or member bound changed");
+                  for Index in First .. Last loop
+                     Require
+                       (Batch_IDs (Index) = Batch_IDs (First),
+                        "adaptive cohort receipts did not share one batch identity");
+                  end loop;
+                  if First > Sequences'First then
+                     Require
+                       (Transitions (First) = Transitions (First - 1) + 1,
+                        "adaptive cohort HEAD transition sequence changed");
+                  end if;
+                  exit when Last = Sequences'Last;
+                  First := Last + 1;
+               end;
+            end loop;
+         end;
+      elsif Cohort_Width > 0 then
          for First in Sequences'First .. Sequences'Last loop
             if (First - Sequences'First) mod Cohort_Width = 0 then
                for Offset in Natural range 0 .. Cohort_Width - 1 loop
@@ -694,7 +780,15 @@ package body Flyology_DB_Benchmark_Flyology is
       Aggregate_Cohort_Width   : constant Natural := Requested_Aggregate_Cohort_Width;
       Aggregate_First_Ordinal  : constant Interfaces.Unsigned_64 :=
         Requested_Aggregate_First_Batch_Ordinal;
-      Cohort_Width       : constant Natural := Independent_Cohort_Width + Aggregate_Cohort_Width;
+      Adaptive_Maximum_Members : constant Natural := Requested_Adaptive_Maximum_Members;
+      Adaptive_Maximum_Encoded_Bytes : constant Interfaces.Unsigned_64 :=
+        Requested_Adaptive_Maximum_Encoded_Bytes;
+      Adaptive_Maximum_Wait_Microseconds : constant Interfaces.Unsigned_64 :=
+        Requested_Adaptive_Maximum_Wait_Microseconds;
+      Adaptive_Admission_Depth : constant Natural := Requested_Adaptive_Admission_Depth;
+      Adaptive_Cohort    : constant Boolean := Adaptive_Maximum_Members > 0;
+      Cohort_Width       : constant Natural :=
+        Independent_Cohort_Width + Aggregate_Cohort_Width + Adaptive_Maximum_Members;
       Commit_Deadline    : constant Duration :=
         (if Cohort_Width > 0 then Duration'Last else Timeout);
       Total_Transactions : constant Positive := Warmup + Measured;
@@ -757,14 +851,28 @@ package body Flyology_DB_Benchmark_Flyology is
          Batch_After, Manifest_After, Head_After    : Natural;
          Transactions                               : Natural;
          Context                                    : String) is
+         Minimum_Publications : constant Natural :=
+           (if Adaptive_Cohort
+            then (Transactions + Adaptive_Maximum_Members - 1) / Adaptive_Maximum_Members
+            else Transactions / Cohort_Width);
       begin
-         Require
-           (Batch_After
-              = Batch_Before
-                + (if Aggregate_Cohort_Width > 0 then Transactions / Cohort_Width else Transactions)
-              and then Manifest_After = Manifest_Before
-              and then Head_After = Head_Before + Transactions / Cohort_Width,
-            Context & " cohort publication geometry changed");
+         if Adaptive_Cohort then
+            Require
+              (Batch_After >= Batch_Before + Minimum_Publications
+                 and then Batch_After <= Batch_Before + Transactions
+                 and then Manifest_After = Manifest_Before
+                 and then Head_After >= Head_Before
+                 and then Head_After - Head_Before = Batch_After - Batch_Before,
+               Context & " adaptive cohort publication geometry changed");
+         else
+            Require
+              (Batch_After
+                 = Batch_Before
+                   + (if Aggregate_Cohort_Width > 0 then Transactions / Cohort_Width else Transactions)
+                 and then Manifest_After = Manifest_Before
+                 and then Head_After = Head_Before + Transactions / Cohort_Width,
+               Context & " cohort publication geometry changed");
+         end if;
       end Require_Cohort_Geometry;
    begin
       Require
@@ -777,8 +885,11 @@ package body Flyology_DB_Benchmark_Flyology is
         (Pipeline_Depth <= Maximum_Pipeline_Depth,
          "benchmark pipeline depth exceeds the eight-slot fixture capacity");
       Require
-        (Independent_Cohort_Width = 0 or else Aggregate_Cohort_Width = 0,
-         "independent and aggregate cohort profiles are mutually exclusive");
+        ((if Independent_Cohort_Width > 0 then 1 else 0)
+           + (if Aggregate_Cohort_Width > 0 then 1 else 0)
+           + (if Adaptive_Cohort then 1 else 0)
+           <= 1,
+         "independent, exact aggregate, and adaptive cohort profiles are mutually exclusive");
       Require
         (Cohort_Width <= Maximum_Pipeline_Depth,
          "cohort width exceeds the eight-slot fixture capacity");
@@ -804,6 +915,20 @@ package body Flyology_DB_Benchmark_Flyology is
         ((Aggregate_Cohort_Width = 0 and then Aggregate_First_Ordinal = 0)
            or else (Aggregate_Cohort_Width > 0 and then Aggregate_First_Ordinal > 0),
          "aggregate identity range requires the aggregate profile");
+      Require
+        ((not Adaptive_Cohort
+            and then Adaptive_Maximum_Encoded_Bytes = 0
+            and then Adaptive_Maximum_Wait_Microseconds = 0
+            and then Adaptive_Admission_Depth = 0)
+           or else
+             (Adaptive_Cohort
+              and then not Explicit_Group
+              and then Adaptive_Maximum_Encoded_Bytes > 0
+              and then Adaptive_Maximum_Wait_Microseconds > 0
+              and then Adaptive_Admission_Depth >= Adaptive_Maximum_Members
+              and then Adaptive_Admission_Depth <= Maximum_Pipeline_Depth
+              and then Pipeline_Depth <= Adaptive_Admission_Depth),
+         "adaptive cohort scheduling requires a complete caller-selected profile");
       Require
         ((Explicit_Group
             and then Group_Size >= 2
@@ -860,6 +985,19 @@ package body Flyology_DB_Benchmark_Flyology is
             Timeout,
             Result);
          Expect (Result, "aggregate-coalescing profile setup failed");
+      elsif Adaptive_Cohort then
+         Benchmark_Controls.Enable_Adaptive_Aggregate_Coalescing
+           (Ignored_Item,
+            Storage,
+            DB.Database_Identifier (Numbered_ID (1)),
+            Numbered_ID (2),
+            Positive (Adaptive_Maximum_Members),
+            Adaptive_Maximum_Encoded_Bytes,
+            Adaptive_Wait_Duration (Adaptive_Maximum_Wait_Microseconds),
+            Positive (Adaptive_Admission_Depth),
+            Timeout,
+            Result);
+         Expect (Result, "adaptive aggregate-coalescing profile setup failed");
       end if;
       DB.Open_Column_Family (Ignored_Item, 1, Family, Result);
       Expect (Result, "family open failed");
@@ -905,6 +1043,7 @@ package body Flyology_DB_Benchmark_Flyology is
                Commit_Deadline,
                Cohort_Width,
                Aggregate_First_Ordinal,
+               Adaptive_Cohort,
                Wave_Scheduling);
          end if;
       end if;
@@ -957,6 +1096,7 @@ package body Flyology_DB_Benchmark_Flyology is
             Commit_Deadline,
             Cohort_Width,
             Aggregate_First_Ordinal,
+            Adaptive_Cohort,
             Wave_Scheduling);
       end if;
       Finished := Ada.Real_Time.Clock;

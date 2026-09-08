@@ -1,5 +1,3 @@
-with Ada.Real_Time;
-
 package body Flyology.DB.Testing is
 
    procedure Fail_Next_Allocation (Point : Allocation_Fault_Point) is
@@ -138,6 +136,23 @@ package body Flyology.DB.Testing is
       Set_Test_Aggregate_Cohort_Width (Item, Width, First_Batch_Ordinal, Result);
    end Configure_Aggregate_Cohort;
 
+   procedure Configure_Adaptive_Aggregate_Cohort
+     (Item                  : in out Database;
+      Maximum_Members       : Positive;
+      Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+      Maximum_Wait          : Ada.Real_Time.Time_Span;
+      Admission_Depth       : Positive;
+      Result                : out Outcome_Code) is
+   begin
+      Set_Test_Adaptive_Aggregate_Cohort
+        (Item,
+         Maximum_Members,
+         Maximum_Encoded_Bytes,
+         Maximum_Wait,
+         Admission_Depth,
+         Result);
+   end Configure_Adaptive_Aggregate_Cohort;
+
    procedure Abort_Independent_Cohort (Item : in out Database; Result : out Outcome_Code) is
    begin
       Abort_Test_Independent_Cohort (Item, Result);
@@ -147,6 +162,11 @@ package body Flyology.DB.Testing is
    begin
       Test_Queue_Depth (Item, Value, Result);
    end Queue_Depth;
+
+   function Adaptive_Cohort_Froze_On_Byte_Limit (Item : in out Database) return Boolean is
+   begin
+      return Test_Adaptive_Cohort_Froze_On_Byte_Limit (Item);
+   end Adaptive_Cohort_Froze_On_Byte_Limit;
 
    procedure Fail_Next_Install (Item : in out Database; Result : out Outcome_Code) is
    begin

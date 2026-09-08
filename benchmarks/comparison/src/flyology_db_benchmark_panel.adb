@@ -13,11 +13,13 @@ with Flyology_DB_Benchmark_SlateDB;
 with Flyology_DB_Benchmark_TidesDB;
 with GNAT.OS_Lib;
 with GNAT.SHA256;
+with Interfaces;
 
 procedure Flyology_DB_Benchmark_Panel is
    use type Flyology_Bench.Metric_Availability;
    use type Flyology_Bench.Iteration_Count;
    use type Ada.Streams.Stream_Element_Offset;
+   use type Interfaces.Unsigned_64;
 
    package Fixed renames Ada.Strings.Fixed;
    package OS renames GNAT.OS_Lib;
@@ -34,6 +36,8 @@ procedure Flyology_DB_Benchmark_Panel is
    Flyology_Cohort_Prefix : constant String := "flyology-db-files-independent-cohort-width";
    Flyology_Aggregate_Prefix : constant String :=
      "flyology-db-files-aggregate-cohort-width";
+   Flyology_Adaptive_Prefix : constant String :=
+     "flyology-db-files-adaptive-cohort-members";
    SlateDB_Depth_Prefix : constant String := "slatedb-1ms-depth";
    Waves_Suffix : constant String := "-waves";
 
@@ -83,6 +87,20 @@ procedure Flyology_DB_Benchmark_Panel is
          raise Program_Error with Context & " must be a canonical integer from 1 through 8";
    end Profile_Value;
 
+   function Profile_Unsigned_64 (Text : String; Context : String) return Interfaces.Unsigned_64 is
+      Value : constant Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Value (Text);
+   begin
+      if Value = 0
+        or else Text /= Fixed.Trim (Interfaces.Unsigned_64'Image (Value), Ada.Strings.Both)
+      then
+         raise Program_Error with Context & " must be a canonical positive integer";
+      end if;
+      return Value;
+   exception
+      when Constraint_Error =>
+         raise Program_Error with Context & " must be a canonical positive integer";
+   end Profile_Unsigned_64;
+
    procedure Configure_Flyology_Profile (Name : String; Wave_Scheduling : Boolean := False) is
    begin
       --  Every named panel profile defines the complete scheduling shape so
@@ -90,6 +108,10 @@ procedure Flyology_DB_Benchmark_Panel is
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH", "0");
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_AGGREGATE_COHORT_WIDTH", "0");
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_AGGREGATE_FIRST_BATCH_ORDINAL", "0");
+      Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_MEMBERS", "0");
+      Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_ENCODED_BYTES", "0");
+      Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_WAIT_US", "0");
+      Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_ADAPTIVE_ADMISSION_DEPTH", "0");
       Ada.Environment_Variables.Set
         ("FLYOLOGY_DB_BENCH_PIPELINE_SCHEDULE",
          (if Wave_Scheduling then "waves" else "rolling"));
@@ -145,6 +167,53 @@ procedure Flyology_DB_Benchmark_Panel is
               ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Width));
             Ada.Environment_Variables.Set
               ("FLYOLOGY_DB_BENCH_INDEPENDENT_COHORT_WIDTH", Image (Width));
+         end;
+      elsif Has_Profile_Prefix (Name, Flyology_Adaptive_Prefix) then
+         declare
+            Profile : constant String :=
+              Name (Name'First + Flyology_Adaptive_Prefix'Length .. Name'Last);
+            Bytes_Marker : constant Natural := Fixed.Index (Profile, "-bytes");
+            Wait_Marker : constant Natural := Fixed.Index (Profile, "-wait-us");
+            Depth_Marker : constant Natural := Fixed.Index (Profile, "-depth");
+         begin
+            if Bytes_Marker = 0
+              or else Bytes_Marker = Profile'First
+              or else Wait_Marker <= Bytes_Marker + 6
+              or else Depth_Marker <= Wait_Marker + 8
+              or else Depth_Marker + 6 > Profile'Last
+            then
+               raise Program_Error with "invalid Flyology adaptive-cohort benchmark profile " & Name;
+            end if;
+            declare
+               Members_Text : constant String := Profile (Profile'First .. Bytes_Marker - 1);
+               Bytes_Text : constant String := Profile (Bytes_Marker + 6 .. Wait_Marker - 1);
+               Wait_Text : constant String := Profile (Wait_Marker + 8 .. Depth_Marker - 1);
+               Depth_Text : constant String := Profile (Depth_Marker + 6 .. Profile'Last);
+               Members : constant Positive := Profile_Value (Members_Text, "Flyology adaptive members");
+               Bytes : constant Interfaces.Unsigned_64 :=
+                 Profile_Unsigned_64 (Bytes_Text, "Flyology adaptive byte target");
+               Wait_Microseconds : constant Interfaces.Unsigned_64 :=
+                 Profile_Unsigned_64 (Wait_Text, "Flyology adaptive wait");
+               Depth : constant Positive := Profile_Value (Depth_Text, "Flyology adaptive depth");
+            begin
+               if Depth < Members then
+                  raise Program_Error with
+                    "Flyology adaptive depth must be at least its maximum member count";
+               end if;
+               Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_EXPLICIT_GROUP", "0");
+               Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_GROUP_SIZE", "1");
+               Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_PIPELINE_DEPTH", Image (Depth));
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_MEMBERS", Image (Members));
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_ENCODED_BYTES",
+                  Fixed.Trim (Interfaces.Unsigned_64'Image (Bytes), Ada.Strings.Both));
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_WAIT_US",
+                  Fixed.Trim (Interfaces.Unsigned_64'Image (Wait_Microseconds), Ada.Strings.Both));
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_ADAPTIVE_ADMISSION_DEPTH", Image (Depth));
+            end;
          end;
       else
          declare
@@ -263,6 +332,7 @@ procedure Flyology_DB_Benchmark_Panel is
         and then not
           (Has_Profile_Prefix (Profile, Flyology_Singleton_Prefix)
            or else Has_Profile_Prefix (Profile, Flyology_Aggregate_Prefix)
+           or else Has_Profile_Prefix (Profile, Flyology_Adaptive_Prefix)
            or else Has_Profile_Prefix (Profile, SlateDB_Depth_Prefix))
       then
          raise Program_Error with "wave scheduling is not supported by benchmark participant " & Name;
@@ -272,6 +342,7 @@ procedure Flyology_DB_Benchmark_Panel is
         or else Has_Profile_Prefix (Profile, Flyology_Group_Prefix)
         or else Has_Profile_Prefix (Profile, Flyology_Cohort_Prefix)
         or else Has_Profile_Prefix (Profile, Flyology_Aggregate_Prefix)
+        or else Has_Profile_Prefix (Profile, Flyology_Adaptive_Prefix)
       then
          Configure_Flyology_Profile (Profile, Wave_Scheduling);
          Flyology_DB_Benchmark_Flyology.Run_Local

@@ -2975,6 +2975,450 @@ then
   exit 1
 fi
 
+adaptive_extract_geometry() {
+  adaptive_geometry_log=$1
+  adaptive_geometry_label=$2
+  adaptive_state_lines=$(grep -E \
+    '^[1-9][0-9]* states generated, [1-9][0-9]* distinct states found, 0 states left on queue[.]$' \
+    "$adaptive_geometry_log" || :)
+  adaptive_depth_lines=$(grep -E \
+    '^The depth of the complete state graph search is [1-9][0-9]*[.]$' \
+    "$adaptive_geometry_log" || :)
+  if test -z "$adaptive_state_lines" || \
+    test "$(printf '%s\n' "$adaptive_state_lines" | wc -l | tr -d ' ')" -ne 1 || \
+    test -z "$adaptive_depth_lines" || \
+    test "$(printf '%s\n' "$adaptive_depth_lines" | wc -l | tr -d ' ')" -ne 1
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA adaptive coalescing $adaptive_geometry_label geometry missing or ambiguous" \
+      >&2
+    grep -E 'states generated|depth of the complete state graph' \
+      "$adaptive_geometry_log" >&2 || :
+    exit 1
+  fi
+  adaptive_generated=$(printf '%s\n' "$adaptive_state_lines" | awk '{print $1}')
+  adaptive_distinct=$(printf '%s\n' "$adaptive_state_lines" | awk '{print $4}')
+  adaptive_depth=$(printf '%s\n' "$adaptive_depth_lines" | \
+    sed 's/^The depth of the complete state graph search is \([1-9][0-9]*\)[.]$/\1/')
+}
+
+adaptive_write_action_report() {
+  adaptive_action_log=$1
+  adaptive_action_report=$2
+  shift 2
+  adaptive_final_coverage="$adaptive_action_report.final"
+  if ! awk '
+    /^Model checking completed\. No error has been found\.$/ {
+      completed++
+      next
+    }
+    /^The coverage statistics at / {
+      if (completed == 0) {
+        next
+      }
+      if (completed != 1 || capture || reports != 0) {
+        invalid = 1
+        next
+      }
+      block = ""
+      capture = 1
+      reports++
+    }
+    capture {
+      block = block $0 ORS
+    }
+    capture && /^End of statistics/ {
+      final = block
+      capture = 0
+    }
+    END {
+      if (invalid || completed != 1 || reports != 1 || capture || final == "") {
+        exit 1
+      }
+      printf "%s", final
+    }
+  ' "$adaptive_action_log" >"$adaptive_final_coverage"
+  then
+    printf '%s\n' \
+      'Flyology.DB TLA adaptive coalescing final coverage report missing or incomplete' >&2
+    exit 1
+  fi
+  : >"$adaptive_action_report"
+  for adaptive_action
+  do
+    adaptive_action_lines=$(grep -E "^<$adaptive_action " \
+      "$adaptive_final_coverage" || :)
+    if test -z "$adaptive_action_lines"
+    then
+      printf '%s\n' \
+        "Flyology.DB TLA adaptive coalescing action $adaptive_action failed: missing" >&2
+      exit 1
+    fi
+    adaptive_action_unique_lines=$(printf '%s\n' "$adaptive_action_lines" | \
+      LC_ALL=C sort -u)
+    if test "$(printf '%s\n' "$adaptive_action_unique_lines" | wc -l | tr -d ' ')" -ne 1
+    then
+      printf '%s\n' \
+        "Flyology.DB TLA adaptive coalescing action $adaptive_action failed: conflicting coverage" \
+        >&2
+      printf '%s\n' "$adaptive_action_lines" >&2
+      exit 1
+    fi
+    if ! printf '%s\n' "$adaptive_action_unique_lines" | \
+      grep -Eq "^<$adaptive_action .*: [0-9][0-9]*(:[0-9]+)?$"
+    then
+      printf '%s\n' \
+        "Flyology.DB TLA adaptive coalescing action $adaptive_action failed: malformed" >&2
+      printf '%s\n' "$adaptive_action_lines" >&2
+      exit 1
+    fi
+    adaptive_action_counts=${adaptive_action_unique_lines##*: }
+    case "$adaptive_action_counts" in
+      *:*)
+        adaptive_action_invocations=${adaptive_action_counts##*:}
+        ;;
+      *)
+        adaptive_action_invocations=$adaptive_action_counts
+        ;;
+    esac
+    case "$adaptive_action_invocations" in
+      ''|*[!0-9]*|0*)
+        printf '%s\n' \
+          "Flyology.DB TLA adaptive coalescing action $adaptive_action failed: no invocations" >&2
+        exit 1
+        ;;
+    esac
+    printf '    %s %s\n' "$adaptive_action" "$adaptive_action_counts" \
+      >>"$adaptive_action_report"
+  done
+}
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-adaptive-coalescing-core-states" \
+  -config AdaptiveAggregateCommitCoalescing.cfg AdaptiveAggregateCommitCoalescing \
+  >"$temporary_root/tlc-adaptive-coalescing-core.log" 2>&1
+adaptive_core_status=$?
+set -e
+if test "$adaptive_core_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA adaptive coalescing core TLC exited $adaptive_core_status" >&2
+  cat "$temporary_root/tlc-adaptive-coalescing-core.log" >&2
+  exit "$adaptive_core_status"
+fi
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-adaptive-coalescing-core.log"
+if grep -q '^Warning:' "$temporary_root/tlc-adaptive-coalescing-core.log"
+then
+  printf '%s\n' 'Flyology.DB TLA adaptive coalescing core TLC warned' >&2
+  cat "$temporary_root/tlc-adaptive-coalescing-core.log" >&2
+  exit 1
+fi
+adaptive_extract_geometry "$temporary_root/tlc-adaptive-coalescing-core.log" core
+adaptive_core_generated=$adaptive_generated
+adaptive_core_distinct=$adaptive_distinct
+adaptive_core_depth=$adaptive_depth
+adaptive_core_action_report="$temporary_root/adaptive-core-action-coverage.txt"
+adaptive_write_action_report \
+  "$temporary_root/tlc-adaptive-coalescing-core.log" "$adaptive_core_action_report" \
+  Admit CancelBeforeAdmission RequestCancellation ReachDeadline ExpireQueued Tick \
+  RejectQueuedConflict BeginClose FreezeCohort PublishAggregate ConfirmAggregate \
+  ObserveBatchFailure BeginHeadAttempt RivalHead HeadAccepted ClassifyHeadUnknown \
+  HeadPreconditionRejected ObserveSuccess ObserveLocalInstallFailure ResolveMember \
+  ResolveRejected RetainUnknown ExportAuthority ImportAuthority \
+  RejectMalformedAuthority Crash ReopenFromHead CloseWithUnknown Close
+if test "$adaptive_core_generated" -ne 18644105 || \
+  test "$adaptive_core_distinct" -ne 4090177 || \
+  test "$adaptive_core_depth" -ne 37
+then
+  printf '%s\n' \
+    'Flyology.DB TLA adaptive coalescing core geometry changed' >&2
+  exit 1
+fi
+adaptive_core_expected_action_report="$temporary_root/adaptive-core-action-coverage.expected.txt"
+cat >"$adaptive_core_expected_action_report" <<'EOF'
+    Admit 1745:1114449
+    CancelBeforeAdmission 0:3179682
+    RequestCancellation 1757:727920
+    ReachDeadline 3514:727920
+    ExpireQueued 4984:37704
+    Tick 13792:50272
+    RejectQueuedConflict 10208:75408
+    BeginClose 508339:1379051
+    FreezeCohort 32608:57176
+    PublishAggregate 132736:178816
+    ConfirmAggregate 0:89408
+    ObserveBatchFailure 30272:44704
+    BeginHeadAttempt 33184:77120
+    RivalHead 50240:131968
+    HeadAccepted 33184:44704
+    ClassifyHeadUnknown 91488:121824
+    HeadPreconditionRejected 22304:32416
+    ObserveSuccess 30368:44704
+    ObserveLocalInstallFailure 29600:44704
+    ResolveMember 267312:816352
+    ResolveRejected 330048:601568
+    RetainUnknown 0:339104
+    ExportAuthority 120480:532320
+    ImportAuthority 628880:2070016
+    RejectMalformedAuthority 322448:3250176
+    Crash 304002:475732
+    ReopenFromHead 472338:918347
+    CloseWithUnknown 97104:183600
+    Close 517241:1296939
+EOF
+if ! cmp "$adaptive_core_expected_action_report" "$adaptive_core_action_report"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA adaptive coalescing core action coverage changed:' >&2
+  cat "$adaptive_core_action_report" >&2
+  exit 1
+fi
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -metadir "$temporary_root/tlc-adaptive-coalescing-scheduler-states" \
+  -config AdaptiveAggregateCommitCoalescingScheduler.cfg \
+  AdaptiveAggregateCommitCoalescing \
+  >"$temporary_root/tlc-adaptive-coalescing-scheduler.log" 2>&1
+adaptive_scheduler_status=$?
+set -e
+if test "$adaptive_scheduler_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA adaptive coalescing scheduler TLC exited $adaptive_scheduler_status" >&2
+  cat "$temporary_root/tlc-adaptive-coalescing-scheduler.log" >&2
+  exit "$adaptive_scheduler_status"
+fi
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-adaptive-coalescing-scheduler.log"
+if grep -q '^Warning:' "$temporary_root/tlc-adaptive-coalescing-scheduler.log"
+then
+  printf '%s\n' 'Flyology.DB TLA adaptive coalescing scheduler TLC warned' >&2
+  cat "$temporary_root/tlc-adaptive-coalescing-scheduler.log" >&2
+  exit 1
+fi
+adaptive_extract_geometry "$temporary_root/tlc-adaptive-coalescing-scheduler.log" scheduler
+adaptive_scheduler_generated=$adaptive_generated
+adaptive_scheduler_distinct=$adaptive_distinct
+adaptive_scheduler_depth=$adaptive_depth
+if test "$adaptive_scheduler_generated" -ne 10444240 || \
+  test "$adaptive_scheduler_distinct" -ne 2478645 || \
+  test "$adaptive_scheduler_depth" -ne 33
+then
+  printf '%s\n' \
+    'Flyology.DB TLA adaptive coalescing scheduler geometry changed' >&2
+  exit 1
+fi
+
+set +e
+"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+  -workers 1 -coverage 1 -metadir "$temporary_root/tlc-adaptive-coalescing-progress-states" \
+  -config AdaptiveAggregateCommitCoalescingProgress.cfg \
+  AdaptiveAggregateCommitCoalescingProgress \
+  >"$temporary_root/tlc-adaptive-coalescing-progress.log" 2>&1
+adaptive_progress_status=$?
+set -e
+if test "$adaptive_progress_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA adaptive coalescing progress TLC exited $adaptive_progress_status" >&2
+  cat "$temporary_root/tlc-adaptive-coalescing-progress.log" >&2
+  exit "$adaptive_progress_status"
+fi
+grep -q 'Model checking completed. No error has been found.' \
+  "$temporary_root/tlc-adaptive-coalescing-progress.log"
+if grep -q '^Warning:' "$temporary_root/tlc-adaptive-coalescing-progress.log"
+then
+  printf '%s\n' 'Flyology.DB TLA adaptive coalescing progress TLC warned' >&2
+  cat "$temporary_root/tlc-adaptive-coalescing-progress.log" >&2
+  exit 1
+fi
+adaptive_extract_geometry "$temporary_root/tlc-adaptive-coalescing-progress.log" progress
+adaptive_progress_generated=$adaptive_generated
+adaptive_progress_distinct=$adaptive_distinct
+adaptive_progress_depth=$adaptive_depth
+adaptive_progress_action_report="$temporary_root/adaptive-progress-action-coverage.txt"
+adaptive_write_action_report \
+  "$temporary_root/tlc-adaptive-coalescing-progress.log" \
+  "$adaptive_progress_action_report" Admit RequestCancellation Tick FreezeCohort \
+  PublishAggregate BeginHeadAttempt HeadAccepted ObserveSuccess
+if test "$adaptive_progress_generated" -ne 96058 || \
+  test "$adaptive_progress_distinct" -ne 23983 || \
+  test "$adaptive_progress_depth" -ne 28
+then
+  printf '%s\n' \
+    'Flyology.DB TLA adaptive coalescing progress geometry changed' >&2
+  exit 1
+fi
+adaptive_progress_expected_action_report="$temporary_root/adaptive-progress-action-coverage.expected.txt"
+cat >"$adaptive_progress_expected_action_report" <<'EOF'
+    Admit 1443:2613
+    RequestCancellation 8001:57807
+    Tick 4596:16962
+    FreezeCohort 1278:6111
+    PublishAggregate 2166:4323
+    BeginHeadAttempt 2166:5211
+    HeadAccepted 2166:5211
+    ObserveSuccess 2166:5211
+EOF
+if ! cmp "$adaptive_progress_expected_action_report" \
+    "$adaptive_progress_action_report"
+then
+  printf '%s\n' \
+    'Flyology.DB TLA adaptive coalescing progress action coverage changed:' >&2
+  cat "$adaptive_progress_action_report" >&2
+  exit 1
+fi
+
+for probe in \
+  AdaptiveAggregateCommitCoalescingVisibilityProbe:WholeCohortVisibility \
+  AdaptiveAggregateCommitCoalescingReplayProbe:PublicationGeometry \
+  AdaptiveAggregateCommitCoalescingCancellationProbe:CancellationAndDeadlineCut \
+  AdaptiveAggregateCommitCoalescingSplitOutcomeProbe:NoSplitAfterHeadAttempt \
+  AdaptiveAggregateCommitCoalescingAliasProbe:LeaderAliasIsExact \
+  AdaptiveAggregateCommitCoalescingAuthorityProbe:AuthorityIsComplete \
+  AdaptiveAggregateCommitCoalescingUnknownAuthorityProbe:AuthorityIsComplete \
+  AdaptiveAggregateCommitCoalescingCancelledIdentityProbe:PreAdmissionCancellationKeepsIdentity \
+  AdaptiveAggregateCommitCoalescingSequenceProbe:LeaderAliasIsExact \
+  AdaptiveAggregateCommitCoalescingDeadlineProbe:CancellationAndDeadlineCut
+do
+  probe_module=${probe%%:*}
+  probe_invariant=${probe#*:}
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE -metadir "$temporary_root/tlc-$probe_module-states" \
+    -config "$probe_module.cfg" AdaptiveAggregateCommitCoalescingProbes \
+    >"$temporary_root/tlc-$probe_module.log" 2>&1
+  probe_status=$?
+  set -e
+  if test "$probe_status" -ne 12
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA adaptive coalescing probe $probe_module exited $probe_status" >&2
+    cat "$temporary_root/tlc-$probe_module.log" >&2
+    if test "$probe_status" -eq 0
+    then
+      exit 1
+    fi
+    exit "$probe_status"
+  fi
+  grep -q "Invariant $probe_invariant is violated." \
+    "$temporary_root/tlc-$probe_module.log"
+  if grep -q '^Warning:' "$temporary_root/tlc-$probe_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA adaptive coalescing probe $probe_module warned" >&2
+    cat "$temporary_root/tlc-$probe_module.log" >&2
+    exit 1
+  fi
+done
+
+for witness in \
+  AdaptiveAggregateCommitCoalescingTailWitness:TailSuccessPending \
+  AdaptiveAggregateCommitCoalescingByteWitness:ByteBoundFreezePending \
+  AdaptiveAggregateCommitCoalescingExactByteWitness:ExactByteTargetPending \
+  AdaptiveAggregateCommitCoalescingOversizedWitness:OversizedSingletonPending \
+  AdaptiveAggregateCommitCoalescingExpiryWitness:QueuedExpiryPending \
+  AdaptiveAggregateCommitCoalescingCancellationWitness:CancellationResolutionPending \
+  AdaptiveAggregateCommitCoalescingRejectionWitness:PreconditionRejectionPending \
+  AdaptiveAggregateCommitCoalescingRejectedResolutionWitness:RejectedMemberResolutionPending \
+  AdaptiveAggregateCommitCoalescingAuthorityWitness:AuthorityRecoveryPending \
+  AdaptiveAggregateCommitCoalescingPreAdmissionWitness:PreAdmissionCancellationPending \
+  AdaptiveAggregateCommitCoalescingCrashBeforeHeadWitness:CrashBeforeHeadEntryRecoveryPending \
+  AdaptiveAggregateCommitCoalescingCrashAfterHeadWitness:CrashAfterHeadEntryRecoveryPending \
+  AdaptiveAggregateCommitCoalescingLocalFailureWitness:LocalInstallFailurePending \
+  AdaptiveAggregateCommitCoalescingUnknownCloseWitness:UnknownCloseRecoveryPending \
+  AdaptiveAggregateCommitCoalescingReopenAdmissionWitness:ReopenAdmissionPending
+do
+  witness_module=${witness%%:*}
+  witness_invariant=${witness#*:}
+  witness_source=AdaptiveAggregateCommitCoalescingWitnesses
+  case "$witness_module" in
+    AdaptiveAggregateCommitCoalescingAuthorityWitness | \
+      AdaptiveAggregateCommitCoalescingCrashBeforeHeadWitness | \
+      AdaptiveAggregateCommitCoalescingCrashAfterHeadWitness)
+      witness_source=AdaptiveAggregateCommitCoalescingRecoveryWitnesses
+      ;;
+  esac
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE -metadir "$temporary_root/tlc-$witness_module-states" \
+    -config "$witness_module.cfg" "$witness_source" \
+    >"$temporary_root/tlc-$witness_module.log" 2>&1
+  witness_status=$?
+  set -e
+  if test "$witness_status" -ne 12
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA adaptive coalescing witness $witness_module exited $witness_status" >&2
+    cat "$temporary_root/tlc-$witness_module.log" >&2
+    if test "$witness_status" -eq 0
+    then
+      exit 1
+    fi
+    exit "$witness_status"
+  fi
+  grep -q "Invariant $witness_invariant is violated." \
+    "$temporary_root/tlc-$witness_module.log"
+  if grep -q '^Warning:' "$temporary_root/tlc-$witness_module.log"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA adaptive coalescing witness $witness_module warned" >&2
+    cat "$temporary_root/tlc-$witness_module.log" >&2
+    exit 1
+  fi
+done
+
+set +e
+"$tlapm" --cache-dir "$temporary_root/tlapm-adaptive-coalescing-cache" \
+  --cleanfp --nofp --strict --method smt \
+  "$model_root/AdaptiveAggregateCommitCoalescingSafetyProof.tla" \
+  >"$temporary_root/tlaps-adaptive-coalescing.log" 2>&1
+adaptive_tlaps_status=$?
+set -e
+if test "$adaptive_tlaps_status" -ne 0
+then
+  printf '%s\n' \
+    "Flyology.DB TLA adaptive coalescing TLAPS exited $adaptive_tlaps_status" >&2
+  cat "$temporary_root/tlaps-adaptive-coalescing.log" >&2
+  exit "$adaptive_tlaps_status"
+fi
+if grep -q '^Warning:' "$temporary_root/tlaps-adaptive-coalescing.log"
+then
+  printf '%s\n' 'Flyology.DB TLA adaptive coalescing TLAPS warned' >&2
+  cat "$temporary_root/tlaps-adaptive-coalescing.log" >&2
+  exit 1
+fi
+adaptive_tlaps_lines=$(grep -E \
+  '^(\[INFO\]: )?All [1-9][0-9]* obligations proved[.]$' \
+  "$temporary_root/tlaps-adaptive-coalescing.log" || :)
+if test -z "$adaptive_tlaps_lines" || \
+  test "$(printf '%s\n' "$adaptive_tlaps_lines" | wc -l | tr -d ' ')" -ne 1
+then
+  printf '%s\n' \
+    'Flyology.DB TLA adaptive coalescing TLAPS summary missing or ambiguous' >&2
+  cat "$temporary_root/tlaps-adaptive-coalescing.log" >&2
+  exit 1
+fi
+adaptive_tlaps_obligations=$(printf '%s\n' "$adaptive_tlaps_lines" | \
+  sed -E 's/^(\[INFO\]: )?All ([1-9][0-9]*) obligations proved[.]$/\2/')
+case "$adaptive_tlaps_obligations" in
+  ''|0|*[!0-9]*)
+    printf '%s\n' \
+      'Flyology.DB TLA adaptive coalescing TLAPS total is not positive numeric' >&2
+    exit 1
+    ;;
+esac
+if test "$adaptive_tlaps_obligations" -ne 56
+then
+  printf '%s\n' \
+    'Flyology.DB TLA adaptive coalescing obligation total changed:' >&2
+  cat "$temporary_root/tlaps-adaptive-coalescing.log" >&2
+  exit 1
+fi
+
 aggregate_identity_report="$temporary_root/aggregate-identity-coverage.txt"
 : >"$aggregate_identity_report"
 for identity_case in normal collision
@@ -3278,7 +3722,8 @@ printf '%s\n' \
 printf '%s\n' \
   "  Independent coalescing failure/deadline/authority/empty-recovery/fence witnesses reached"
 printf '%s\n' \
-  "  Negative independent-coalescing visibility/replay/fence/authority/recovery/deadline/failure probes detected"
+  "  Negative independent-coalescing visibility/replay/fence/authority/"\
+"recovery/deadline/failure probes detected"
 printf '%s\n' \
   "  Aggregate coalescing TLC $aggregate_coalescing_generated generated," \
   "        $aggregate_coalescing_states distinct, depth $aggregate_coalescing_depth"
@@ -3290,6 +3735,21 @@ printf '%s\n' \
   "  Aggregate coalescing authority/cancellation/orphan/absent-identity witnesses reached"
 printf '%s\n' \
   "  Negative aggregate visibility/replay/authority/cancellation/identity/orphan probes detected"
+printf '%s\n' \
+  "  Adaptive coalescing core TLC $adaptive_core_generated generated," \
+  "        $adaptive_core_distinct distinct, depth $adaptive_core_depth" \
+  "  Adaptive coalescing scheduler TLC $adaptive_scheduler_generated generated," \
+  "        $adaptive_scheduler_distinct distinct, depth $adaptive_scheduler_depth" \
+  "  Adaptive coalescing progress TLC $adaptive_progress_generated generated," \
+  "        $adaptive_progress_distinct distinct, depth $adaptive_progress_depth"
+printf '%s\n' "  Adaptive coalescing core action coverage"
+cat "$adaptive_core_action_report"
+printf '%s\n' "  Adaptive coalescing progress action coverage"
+cat "$adaptive_progress_action_report"
+printf '%s\n' \
+  "  Adaptive coalescing TLAPS $adaptive_tlaps_obligations obligations proved" \
+  "  Adaptive coalescing pre-admission/safety/progress/failure/recovery witnesses reached" \
+  "  Negative adaptive visibility/replay/cancellation/split/alias/authority/identity probes detected"
 printf '%s\n' "  Aggregate encoded-identity reservation TLC"
 cat "$aggregate_identity_report"
 printf '%s\n' \

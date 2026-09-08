@@ -29,7 +29,8 @@ is
       Checkpoint     : Identity_Array;
       Batch_IDs      : Identity_Array;
       Member_IDs     : Identity_Array;
-      Member_Batches : Batch_Index_Array) return Boolean
+      Member_Batches : Batch_Index_Array;
+      Allow_Aggregate_Leader_Alias : Boolean) return Boolean
    is
       --  Exactness distinguishes one from every malformed alternative;
       --  saturation at two avoids arithmetic overflow on corrupt input.
@@ -57,7 +58,7 @@ is
       for Batch_Index in Batch_IDs'Range loop
          declare
             Member_Total : Natural := 0;
-            Sole_Member  : Identity := Zero;
+            First_Member : Identity := Zero;
          begin
             if Batch_IDs (Batch_Index) = Zero or else not Contains (Reserved, Batch_IDs (Batch_Index)) then
                return False;
@@ -71,20 +72,25 @@ is
                   elsif Member_Total = Natural'Last then
                      return False;
                   end if;
+                  if Member_Total = 0 then
+                     First_Member := Member_IDs (Member_Index);
+                  end if;
                   Member_Total := Member_Total + 1;
-                  Sole_Member := Member_IDs (Member_Index);
                end if;
             end loop;
             if Member_Total = 0 then
                return False;
             elsif Member_Total = 1 then
-               if Batch_IDs (Batch_Index) /= Sole_Member then
+               if Batch_IDs (Batch_Index) /= First_Member then
                   return False;
                end if;
             else
                for Member_Index in Member_IDs'Range loop
                   if Member_Batches (Member_Index) = Natural (Batch_Index)
                     and then Member_IDs (Member_Index) = Batch_IDs (Batch_Index)
+                    and then
+                      (not Allow_Aggregate_Leader_Alias
+                       or else Member_IDs (Member_Index) /= First_Member)
                   then
                      return False;
                   end if;
@@ -111,20 +117,29 @@ is
             for Batch_Index in Batch_IDs'Range loop
                declare
                   Member_Total : Natural := 0;
-                  Sole_Member  : Identity := Zero;
+                  First_Member : Identity := Zero;
                begin
                   for Member_Index in Member_IDs'Range loop
                      if Member_Batches (Member_Index) = Natural (Batch_Index) then
                         if Member_Total < Natural'Last then
                            Member_Total := Member_Total + 1;
                         end if;
-                        Sole_Member := Member_IDs (Member_Index);
+                        if First_Member = Zero then
+                           First_Member := Member_IDs (Member_Index);
+                        end if;
                      end if;
                   end loop;
-                  if Member_Total = 1 and then Batch_IDs (Batch_Index) = Sole_Member then
-                     if Batch_IDs (Batch_Index) = Item then
-                        Occurrences := Recorded (Occurrences);
-                     end if;
+                  if Batch_IDs (Batch_Index) = First_Member
+                    and then
+                      (Member_Total = 1 or else Allow_Aggregate_Leader_Alias)
+                  then
+                     for Member_Index in Member_IDs'Range loop
+                        if Member_Batches (Member_Index) = Natural (Batch_Index)
+                          and then Member_IDs (Member_Index) = Item
+                        then
+                           Occurrences := Recorded (Occurrences);
+                        end if;
+                     end loop;
                   else
                      if Batch_IDs (Batch_Index) = Item then
                         Occurrences := Recorded (Occurrences);

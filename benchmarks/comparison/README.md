@@ -82,14 +82,21 @@ controlled successful-path durability experiments:
   awaits every returned durable handle; and
 - `flyology-db-files-explicit-groupG-depthN` admits up to `N` caller-requested
   `Commit_Group` operations of `G` transactions and validates every member
-  transaction ID, shared batch ID, and sequence.
+  transaction ID, shared batch ID, and sequence; and
+- `flyology-db-files-adaptive-cohort-membersM-bytesB-wait-usW-depthN`
+  admits ordinary singleton commits through an `N`-slot completion set, then
+  freezes the oldest compatible prefix at `M` members, `B` encoded bytes, or
+  `W` microseconds and validates each member receipt against its shared batch
+  and HEAD transition.
 
-`N` and `G` are canonical decimal integers bounded by the existing eight-slot
-benchmark fixture; explicit groups require `G >= 2` and `G * N <= 8`. The
-participant name records the exact geometry in JSON and NDJSON evidence. These
-are benchmark profile choices, not database defaults: the useful balance
-between publication amortization and in-flight overlap can vary by hardware,
-provider latency, key/value geometry, and transaction shape.
+`N`, `G`, and `M` are canonical decimal integers bounded by the existing
+eight-slot benchmark fixture; explicit groups require `G >= 2` and
+`G * N <= 8`, while adaptive profiles require `N >= M`. `B` and `W` are
+canonical positive decimal integers. The participant name records the exact
+geometry in JSON and NDJSON evidence. These are benchmark profile choices, not
+database defaults: the useful balance between publication amortization,
+maximum wait, and in-flight overlap can vary by hardware, provider latency,
+key/value geometry, and transaction shape.
 
 The unsuffixed Flyology participant refills after each completion, while the
 SlateDB participant submits and drains fixed waves. Append `-waves` to both

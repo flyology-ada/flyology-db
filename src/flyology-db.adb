@@ -44,6 +44,7 @@ package body Flyology.DB is
    package UStrings renames Ada.Strings.Unbounded;
 
    use type Ada.Real_Time.Time;
+   use type Ada.Real_Time.Time_Span;
    use type Ada.Exceptions.Exception_Id;
    use type Ada.Streams.Stream_Element_Offset;
    use type Ada.Streams.Stream_Element;
@@ -2107,6 +2108,7 @@ package body Flyology.DB is
       Arena          : Transaction_Arena_Access := null;
       Payload_Length : Interfaces.Unsigned_64 := 0;
       Deadline       : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      Schedule_By    : Ada.Real_Time.Time := Ada.Real_Time.Time_Last;
       Batch_ID       : Identifier := Zero_Identifier;
       Group_ID       : Interfaces.Unsigned_64 := 0;
       Group_Member   : Commit_Slot := Commit_Slot'First;
@@ -2163,6 +2165,30 @@ package body Flyology.DB is
       Lookup                        : Runtime_Mutation_Lookup_Array_Access := null;
       Image                         : Shared_Image_Access := null;
    end record;
+
+   function Valid_Batch_Identity
+     (Batch                        : Runtime_Batch;
+      Allow_Aggregate_Leader_Alias : Boolean) return Boolean
+   is
+   begin
+      if Batch.Transactions = null
+        or else Batch.Transaction_Total = 0
+        or else Batch.Transactions'First /= 1
+        or else Batch.Transaction_Total > Batch.Transactions'Length
+      then
+         return False;
+      end if;
+      for Index in Positive range 1 .. Batch.Transaction_Total loop
+         if Identifier (Batch.Transactions (Index).Transaction_ID) = Batch.Batch_ID
+           and then
+             (Index /= 1
+              or else (Batch.Transaction_Total > 1 and then not Allow_Aggregate_Leader_Alias))
+         then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end Valid_Batch_Identity;
    type Runtime_Batch_Array is array (Positive range <>) of Runtime_Batch;
    subtype History_Slot is Positive range 1 .. Maximum_History_Batches;
    type Batch_History is array (Positive range <>) of Runtime_Batch;
@@ -2864,13 +2890,17 @@ package body Flyology.DB is
          Count             : out Group_Count;
          Result            : out Outcome_Code);
 
-      entry Take_Group
-        (Items      : out Work_Group;
+      procedure Select_Group
+        (Now         : Ada.Real_Time.Time;
+         Items       : out Work_Group;
          Tokens     : out Token_Group;
          Count      : out Group_Count;
          Head       : out Head_Snapshot;
          Generation : out Generation_Value;
+         Next_Wake   : out Ada.Real_Time.Time;
          Stop       : out Boolean);
+
+      entry Await_Work_Change;
 
       procedure Prepublication_Check (Items : Work_Group; Count : Group_Count; Result : out Outcome_Code);
 
@@ -3014,9 +3044,16 @@ package body Flyology.DB is
       procedure Configure_Independent_Cohort (Width : Positive; Result : out Outcome_Code);
       procedure Configure_Aggregate_Cohort
         (Width : Positive; First_Batch_Ordinal : Interfaces.Unsigned_64; Result : out Outcome_Code);
+      procedure Configure_Adaptive_Aggregate_Cohort
+        (Maximum_Members       : Positive;
+         Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+         Maximum_Wait          : Ada.Real_Time.Time_Span;
+         Admission_Depth       : Positive;
+         Result                : out Outcome_Code);
       procedure Abort_Independent_Cohort (Result : out Outcome_Code);
       function Independent_Cohort_Width return Group_Count;
       function Queue_Depth return Natural;
+      function Adaptive_Cohort_Froze_On_Byte_Limit return Boolean;
       procedure Fail_Next_Install;
       procedure Request_Close;
       procedure Mark_Stopped;
@@ -3086,8 +3123,14 @@ package body Flyology.DB is
       --  compatibility state; no persisted or public default derives from it.
       Configured_Cohort_Width      : Group_Count := 0;
       Configured_Aggregate_Cohort  : Boolean := False;
+      Configured_Adaptive_Cohort   : Boolean := False;
+      Configured_Cohort_Byte_Limit : Interfaces.Unsigned_64 := 0;
+      Configured_Cohort_Wait       : Ada.Real_Time.Time_Span := Ada.Real_Time.Time_Span_Zero;
+      Configured_Admission_Depth   : Group_Count := Maximum_Commit_Slots;
+      Last_Adaptive_Byte_Freeze    : Boolean := False;
       Next_Aggregate_Batch_Ordinal : Interfaces.Unsigned_64 := 0;
       Aggregate_Profile_Required   : Boolean := False;
+      Work_Changed                 : Boolean := False;
       Uncertain                    : Boolean := False;
       Fenced                       : Boolean := False;
       Closing                      : Boolean := False;
@@ -4086,8 +4129,12 @@ package body Flyology.DB is
             Result := Policy_Failure;
             return;
          elsif not Cohort_Projection
-           and then (Batch.Transaction_Total /= 1
-                     or else Identifier (Batch.Transactions (1).Transaction_ID) /= Batch_ID)
+           and then not Valid_Batch_Identity (Batch, Aggregate_Profile_Required)
+         then
+            Result := Corrupt;
+            return;
+         elsif not Cohort_Projection
+           and then Identifier (Batch.Transactions (1).Transaction_ID) /= Batch_ID
          then
             Additional_Identities := Additional_Identities + 1;
          end if;
@@ -4173,13 +4220,6 @@ package body Flyology.DB is
                   return;
                end if;
                Batch_Payload := Batch_Payload + Transaction_Payload;
-               if not Cohort_Projection
-                 and then Batch.Transaction_Total > 1
-                 and then Identifier (Transaction.Transaction_ID) = Batch_ID
-               then
-                  Result := Corrupt;
-                  return;
-               end if;
                for Existing in Positive range 1 .. Seen_Count loop
                   if Seen (Existing) = Transaction.Transaction_ID then
                      Result := Corrupt;
@@ -4930,7 +4970,8 @@ package body Flyology.DB is
          Slot              : out Slot_Token;
          Result            : out Outcome_Code)
       is
-         Selected           : Commit_Slot := Commit_Slot'First;
+         Selected            : Commit_Slot := Commit_Slot'First;
+         Scheduling_Deadline : Ada.Real_Time.Time := Ada.Real_Time.Time_Last;
          --  Singleton commits deliberately reuse the caller transaction ID as
          --  immutable batch identity; this enforces one nonreuse namespace.
          Candidate_Batch_ID : constant Identifier := Identifier (Txn.Transaction_ID);
@@ -4970,6 +5011,8 @@ package body Flyology.DB is
             Result := Capacity_Exceeded;
             return;
          elsif In_Use_Count = Maximum_Commit_Slots
+           or else (Configured_Adaptive_Cohort
+                    and then In_Use_Count >= Natural (Configured_Admission_Depth))
            or else Payload_Bytes (Txn) > Current_Manifest.Limits.Maximum_Batch_Payload_Bytes
            or else In_Flight_Bytes > Current_Manifest.Limits.Maximum_Batch_Payload_Bytes - Payload_Bytes (Txn)
            or else History_Count = History_Capacity
@@ -5018,6 +5061,15 @@ package body Flyology.DB is
             Result := Capacity_Exceeded;
             return;
          end if;
+         if Configured_Adaptive_Cohort then
+            begin
+               Scheduling_Deadline := Ada.Real_Time.Clock + Configured_Cohort_Wait;
+            exception
+            when Constraint_Error =>
+                  Result := Capacity_Exceeded;
+                  return;
+            end;
+         end if;
          Reserved_Count := Reserved_Count + 1;
          Reserved (Reserved_Count) := Candidate_Batch_ID;
          Queue_Order := Queue_Order + 1;
@@ -5029,6 +5081,7 @@ package body Flyology.DB is
          Slots (Selected).Work.Arena := Txn.Owner.Arena;
          Txn.Owner.Arena := null;
          Slots (Selected).Work.Deadline := Deadline;
+         Slots (Selected).Work.Schedule_By := Scheduling_Deadline;
          Slots (Selected).Work.Batch_ID := Candidate_Batch_ID;
          Slots (Selected).Work.Group_ID := Queue_Order;
          Slots (Selected).Work.Group_Member := Commit_Slot'First;
@@ -5041,6 +5094,7 @@ package body Flyology.DB is
          In_Use_Count := In_Use_Count + 1;
          Queued_Count := Queued_Count + 1;
          In_Flight_Bytes := In_Flight_Bytes + Payload_Bytes (Slots (Selected).Work);
+         Work_Changed := True;
          Slot := (Index => Selected, Generation => Slots (Selected).Generation);
          Result := Success;
       end Admit;
@@ -5072,6 +5126,9 @@ package body Flyology.DB is
             return;
          elsif Uncertain then
             Result := Outcome_Unknown;
+            return;
+         elsif Configured_Adaptive_Cohort then
+            Result := Unsupported_Format;
             return;
          elsif Transactions'Length < 2 then
             Result := Invalid_State;
@@ -5257,32 +5314,58 @@ package body Flyology.DB is
          In_Use_Count := In_Use_Count + Count;
          Queued_Count := Queued_Count + Count;
          In_Flight_Bytes := In_Flight_Bytes + Total_Bytes;
+         Work_Changed := True;
          Result := Success;
       end Admit_Group;
 
-      entry Take_Group
-        (Items      : out Work_Group;
+      procedure Select_Group
+        (Now         : Ada.Real_Time.Time;
+         Items       : out Work_Group;
          Tokens     : out Token_Group;
          Count      : out Group_Count;
          Head       : out Head_Snapshot;
          Generation : out Generation_Value;
+         Next_Wake   : out Ada.Real_Time.Time;
          Stop       : out Boolean)
-        when Closing
-        or else Fenced
-        or else (Queued_Count > 0
-                 and then not Uncertain
-                 and then not Paused
-                 and then (Configured_Cohort_Width = 0
-                           or else Queued_Count >= Natural (Configured_Cohort_Width)))
       is
-         Selected       : Commit_Slot;
-         Selected_Order : Interfaces.Unsigned_64;
-         Selected_Group : Interfaces.Unsigned_64 := 0;
-         Selected_Slots : Token_Group := [others => <>];
-         Selected_Count : Group_Count := 0;
-         Found          : Boolean;
-         Aggregate_ID   : Identifier := Zero_Identifier;
-         Identity_Clash : Boolean := False;
+         Selected           : Commit_Slot;
+         Selected_Order     : Interfaces.Unsigned_64;
+         Selected_Group     : Interfaces.Unsigned_64 := 0;
+         Selected_Slots     : Token_Group := [others => <>];
+         Selected_Count     : Group_Count := 0;
+         Selected_Mutations : Interfaces.Unsigned_64 := 0;
+         Selected_Payload   : Interfaces.Unsigned_64 := 0;
+         Selected_Wire      : Interfaces.Unsigned_64 :=
+           Interfaces.Unsigned_64 (Batch_Header_Length + Batch_Trailer_Length);
+         Found              : Boolean;
+         Aggregate_ID       : Identifier := Zero_Identifier;
+         Identity_Clash     : Boolean := False;
+         Selection_Boundary : Boolean := False;
+         Byte_Boundary      : Boolean := False;
+         Wait_Boundary      : Boolean := False;
+
+         function Wire_Contribution
+           (Item : Work_Item; Value : out Interfaces.Unsigned_64) return Boolean
+         is
+            Mutation_Bytes : Interfaces.Unsigned_64;
+         begin
+            Mutation_Bytes :=
+              Interfaces.Unsigned_64 (Mutation_Count (Item))
+              * Interfaces.Unsigned_64 (Mutation_Frame_Header_Length);
+            if Mutation_Bytes
+              > Interfaces.Unsigned_64'Last - Interfaces.Unsigned_64 (Transaction_Frame_Header_Length)
+            then
+               Value := 0;
+               return False;
+            end if;
+            Value := Mutation_Bytes + Interfaces.Unsigned_64 (Transaction_Frame_Header_Length);
+            if Payload_Bytes (Item) > Interfaces.Unsigned_64'Last - Value then
+               Value := 0;
+               return False;
+            end if;
+            Value := Value + Payload_Bytes (Item);
+            return True;
+         end Wire_Contribution;
 
          function Already_Selected (Index : Commit_Slot) return Boolean is
          begin
@@ -5334,13 +5417,35 @@ package body Flyology.DB is
          Count := 0;
          Head := Current_Head;
          Generation := Head_Generation;
-         if Closing or else Fenced then
+         Next_Wake := Ada.Real_Time.Time_Last;
+         Work_Changed := False;
+         if Fenced then
+            for Index in Commit_Slot loop
+               if Slots (Index).State = Queued then
+                  Complete_Queued (Index, Stale_Writer);
+               end if;
+            end loop;
+            Stop := True;
+            return;
+         elsif Closing and then Configured_Adaptive_Cohort and then Uncertain then
+            for Index in Commit_Slot loop
+               if Slots (Index).State = Queued then
+                  Complete_Queued (Index, Storage_Failure);
+               end if;
+            end loop;
+            Stop := True;
+            return;
+         elsif Closing and then not Configured_Adaptive_Cohort then
             Stop := True;
             return;
          end if;
          Stop := False;
+         if Uncertain or else (Paused and then not Closing) then
+            return;
+         end if;
          Find_Oldest_Queued;
          if not Found then
+            Stop := Closing;
             return;
          end if;
 
@@ -5364,50 +5469,128 @@ package body Flyology.DB is
                   end if;
                   if Has_Conflict then
                      Complete_Queued (Selected, Conflict);
-                  else
+                  elsif not Configured_Adaptive_Cohort then
                      Selected_Count := Selected_Count + 1;
                      Selected_Slots (Selected_Count) :=
                        (Index => Selected, Generation => Slots (Selected).Generation);
+                  else
+                     declare
+                        Contribution       : Interfaces.Unsigned_64;
+                        Candidate_Mutations : constant Interfaces.Unsigned_64 :=
+                          Interfaces.Unsigned_64 (Mutation_Count (Slots (Selected).Work));
+                        Candidate_Payload   : constant Interfaces.Unsigned_64 :=
+                          Payload_Bytes (Slots (Selected).Work);
+                        Fits_Wire           : constant Boolean :=
+                          Wire_Contribution (Slots (Selected).Work, Contribution);
+                        Fits_Hard_Limits    : constant Boolean :=
+                          Fits_Wire
+                          and then Candidate_Mutations
+                                     <= Interfaces.Unsigned_64
+                                          (Current_Manifest.Limits.Maximum_Mutations_Per_Batch)
+                          and then Candidate_Payload
+                                     <= Current_Manifest.Limits.Maximum_Batch_Payload_Bytes
+                          and then Selected_Mutations
+                                     <= Interfaces.Unsigned_64
+                                          (Current_Manifest.Limits.Maximum_Mutations_Per_Batch)
+                                          - Candidate_Mutations
+                          and then Selected_Payload
+                                     <= Current_Manifest.Limits.Maximum_Batch_Payload_Bytes
+                                          - Candidate_Payload
+                          and then Contribution
+                                     <= Interfaces.Unsigned_64
+                                          (Maximum_Runtime_Batch_Length (Current_Manifest.Limits))
+                          and then Selected_Wire
+                                     <= Interfaces.Unsigned_64
+                                          (Maximum_Runtime_Batch_Length (Current_Manifest.Limits))
+                                          - Contribution;
+                        Fits_Target         : constant Boolean :=
+                          Contribution <= Configured_Cohort_Byte_Limit
+                          and then Selected_Wire
+                                     <= Configured_Cohort_Byte_Limit - Contribution;
+                     begin
+                        if Selected_Count > 0
+                          and then (not Fits_Hard_Limits or else not Fits_Target)
+                        then
+                           Selection_Boundary := True;
+                           Byte_Boundary := not Fits_Target;
+                           exit;
+                        elsif not Fits_Hard_Limits then
+                           Complete_Queued (Selected, Capacity_Exceeded);
+                        else
+                           Selected_Count := Selected_Count + 1;
+                           Selected_Slots (Selected_Count) :=
+                             (Index => Selected, Generation => Slots (Selected).Generation);
+                           Selected_Mutations := Selected_Mutations + Candidate_Mutations;
+                           Selected_Payload := Selected_Payload + Candidate_Payload;
+                           Selected_Wire := Selected_Wire + Contribution;
+                           if Selected_Wire >= Configured_Cohort_Byte_Limit then
+                              Selection_Boundary := True;
+                              Byte_Boundary := True;
+                           end if;
+                           Wait_Boundary :=
+                             Wait_Boundary or else Slots (Selected).Work.Schedule_By <= Now;
+                        end if;
+                     end;
                   end if;
                end;
-               exit when Selected_Count = Configured_Cohort_Width;
+               exit when Selection_Boundary or else Selected_Count = Configured_Cohort_Width;
             end loop;
-            if Selected_Count < Configured_Cohort_Width then
+            if Selected_Count = 0 then
+               Stop := Closing and then Queued_Count = 0;
+               return;
+            elsif Configured_Adaptive_Cohort
+              and then not Selection_Boundary
+              and then not Wait_Boundary
+              and then Selected_Count < Configured_Cohort_Width
+              and then not Closing
+            then
+               Next_Wake := Slots (Selected_Slots (1).Index).Work.Schedule_By;
+               return;
+            elsif not Configured_Adaptive_Cohort and then Selected_Count < Configured_Cohort_Width then
                return;
             end if;
             if Configured_Aggregate_Cohort then
-               if Reserved_Count = Reserved_Capacity
-                 or else Next_Aggregate_Batch_Ordinal = 0
-                 or else Next_Aggregate_Batch_Ordinal = Interfaces.Unsigned_64'Last
-               then
+               if Configured_Adaptive_Cohort then
+                  Aggregate_ID := Identifier (Slots (Selected_Slots (1).Index).Work.Transaction_ID);
                   for Position in Commit_Slot range 1 .. Selected_Count loop
-                     Complete_Queued (Selected_Slots (Position).Index, Capacity_Exceeded);
+                     Slots (Selected_Slots (Position).Index).Work.Batch_ID := Aggregate_ID;
                   end loop;
-                  return;
-               end if;
-               Aggregate_ID := Structural_ID (16#C5#, Next_Aggregate_Batch_Ordinal);
-               for Existing in Positive range 1 .. Reserved_Count loop
-                  if Reserved (Existing) = Aggregate_ID then
-                     Identity_Clash := True;
-                     exit;
+               else
+                  if Reserved_Count = Reserved_Capacity
+                    or else Next_Aggregate_Batch_Ordinal = 0
+                    or else Next_Aggregate_Batch_Ordinal = Interfaces.Unsigned_64'Last
+                  then
+                     for Position in Commit_Slot range 1 .. Selected_Count loop
+                        Complete_Queued (Selected_Slots (Position).Index, Capacity_Exceeded);
+                     end loop;
+                     return;
                   end if;
-               end loop;
-               if Identity_Clash then
-                  Fenced := True;
-                  for Index in Commit_Slot loop
-                     if Slots (Index).State = Queued then
-                        Complete_Queued (Index, Stale_Writer);
+                  Aggregate_ID := Structural_ID (16#C5#, Next_Aggregate_Batch_Ordinal);
+                  for Existing in Positive range 1 .. Reserved_Count loop
+                     if Reserved (Existing) = Aggregate_ID then
+                        Identity_Clash := True;
+                        exit;
                      end if;
                   end loop;
-                  return;
+                  if Identity_Clash then
+                     Fenced := True;
+                     for Index in Commit_Slot loop
+                        if Slots (Index).State = Queued then
+                           Complete_Queued (Index, Stale_Writer);
+                        end if;
+                     end loop;
+                     Stop := True;
+                     return;
+                  end if;
+                  Reserved_Count := Reserved_Count + 1;
+                  Reserved (Reserved_Count) := Aggregate_ID;
+                  Next_Aggregate_Batch_Ordinal := Next_Aggregate_Batch_Ordinal + 1;
+                  for Position in Commit_Slot range 1 .. Selected_Count loop
+                     Slots (Selected_Slots (Position).Index).Work.Batch_ID := Aggregate_ID;
+                  end loop;
                end if;
-               Reserved_Count := Reserved_Count + 1;
-               Reserved (Reserved_Count) := Aggregate_ID;
-               Next_Aggregate_Batch_Ordinal := Next_Aggregate_Batch_Ordinal + 1;
-               for Position in Commit_Slot range 1 .. Selected_Count loop
-                  Slots (Selected_Slots (Position).Index).Work.Batch_ID := Aggregate_ID;
-               end loop;
             end if;
+            Last_Adaptive_Byte_Freeze := Configured_Adaptive_Cohort and then Byte_Boundary;
             for Position in Commit_Slot range 1 .. Selected_Count loop
                Take_Selected (Selected_Slots (Position).Index);
             end loop;
@@ -5430,7 +5613,12 @@ package body Flyology.DB is
             exit when not Found;
             Take_Selected (Selected);
          end loop;
-      end Take_Group;
+      end Select_Group;
+
+      entry Await_Work_Change when Work_Changed is
+      begin
+         Work_Changed := False;
+      end Await_Work_Change;
 
       procedure Prepublication_Check (Items : Work_Group; Count : Group_Count; Result : out Outcome_Code) is
          Required_Batches : constant Natural :=
@@ -5797,9 +5985,11 @@ package body Flyology.DB is
          end loop;
          if Mark_Uncertain and then Count > 0 then
             Uncertain := True;
+            Work_Changed := True;
          end if;
          if Mark_Fenced then
             Fenced := True;
+            Work_Changed := True;
             for Index in Commit_Slot loop
                if Slots (Index).State = Queued then
                   Slots (Index).Receipt.Current_Outcome := Stale_Writer;
@@ -6649,7 +6839,8 @@ package body Flyology.DB is
                   Checkpoint     => Checkpoint_IDs,
                   Batch_IDs      => Batch_IDs,
                   Member_IDs     => Member_IDs (1 .. Member_Total),
-                  Member_Batches => Member_Batches (1 .. Member_Total))
+                  Member_Batches => Member_Batches (1 .. Member_Total),
+                  Allow_Aggregate_Leader_Alias => Aggregate_Profile_Required)
             then Success
             else Corrupt);
       end Validate_Checkpoint_Identity_Partition;
@@ -6741,6 +6932,7 @@ package body Flyology.DB is
       begin
          Fenced := True;
          Uncertain := False;
+         Work_Changed := True;
          for Index in Commit_Slot loop
             if Slots (Index).State = Queued then
                Slots (Index).Receipt.Current_Outcome := Stale_Writer;
@@ -6753,6 +6945,7 @@ package body Flyology.DB is
 
       procedure Drain_Queued_For_Resolution is
       begin
+         Work_Changed := True;
          for Index in Commit_Slot loop
             if Slots (Index).State = Queued then
                Slots (Index).Receipt.Current_Outcome := Storage_Failure;
@@ -6766,6 +6959,7 @@ package body Flyology.DB is
       procedure Set_Paused (Value : Boolean) is
       begin
          Paused := Value;
+         Work_Changed := True;
       end Set_Paused;
 
       procedure Configure_Independent_Cohort (Width : Positive; Result : out Outcome_Code) is
@@ -6781,7 +6975,13 @@ package body Flyology.DB is
          else
             Configured_Cohort_Width := Group_Count (Width);
             Configured_Aggregate_Cohort := False;
+            Configured_Adaptive_Cohort := False;
+            Configured_Cohort_Byte_Limit := 0;
+            Configured_Cohort_Wait := Ada.Real_Time.Time_Span_Zero;
+            Configured_Admission_Depth := Maximum_Commit_Slots;
+            Last_Adaptive_Byte_Freeze := False;
             Next_Aggregate_Batch_Ordinal := 0;
+            Work_Changed := True;
             Result := Success;
          end if;
       end Configure_Independent_Cohort;
@@ -6802,10 +7002,50 @@ package body Flyology.DB is
          else
             Configured_Cohort_Width := Group_Count (Width);
             Configured_Aggregate_Cohort := True;
+            Configured_Adaptive_Cohort := False;
+            Configured_Cohort_Byte_Limit := 0;
+            Configured_Cohort_Wait := Ada.Real_Time.Time_Span_Zero;
+            Configured_Admission_Depth := Maximum_Commit_Slots;
+            Last_Adaptive_Byte_Freeze := False;
             Next_Aggregate_Batch_Ordinal := First_Batch_Ordinal;
+            Work_Changed := True;
             Result := Success;
          end if;
       end Configure_Aggregate_Cohort;
+
+      procedure Configure_Adaptive_Aggregate_Cohort
+        (Maximum_Members       : Positive;
+         Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+         Maximum_Wait          : Ada.Real_Time.Time_Span;
+         Admission_Depth       : Positive;
+         Result                : out Outcome_Code) is
+      begin
+         if In_Use_Count /= 0 or else Queued_Count /= 0 or else Uncertain or else Fenced then
+            Result := Invalid_State;
+         elsif Maximum_Encoded_Bytes = 0 or else Maximum_Wait <= Ada.Real_Time.Time_Span_Zero then
+            Result := Invalid_State;
+         elsif Maximum_Members > Admission_Depth
+           or else Admission_Depth > Maximum_Commit_Slots
+           or else Maximum_Members > Seen_Capacity
+           or else Interfaces.Unsigned_32 (Maximum_Members)
+                   > Current_Manifest.Limits.Maximum_Transactions_Per_Batch
+           or else Maximum_Encoded_Bytes
+                   > Interfaces.Unsigned_64 (Maximum_Runtime_Batch_Length (Current_Manifest.Limits))
+         then
+            Result := Capacity_Exceeded;
+         else
+            Configured_Cohort_Width := Group_Count (Maximum_Members);
+            Configured_Aggregate_Cohort := True;
+            Configured_Adaptive_Cohort := True;
+            Configured_Cohort_Byte_Limit := Maximum_Encoded_Bytes;
+            Configured_Cohort_Wait := Maximum_Wait;
+            Configured_Admission_Depth := Group_Count (Admission_Depth);
+            Last_Adaptive_Byte_Freeze := False;
+            Next_Aggregate_Batch_Ordinal := 0;
+            Work_Changed := True;
+            Result := Success;
+         end if;
+      end Configure_Adaptive_Aggregate_Cohort;
 
       procedure Abort_Independent_Cohort (Result : out Outcome_Code) is
       begin
@@ -6821,6 +7061,7 @@ package body Flyology.DB is
                Queued_Count := Queued_Count - 1;
             end if;
          end loop;
+         Work_Changed := True;
          Result := Success;
       end Abort_Independent_Cohort;
 
@@ -6830,6 +7071,9 @@ package body Flyology.DB is
       function Queue_Depth return Natural
       is (Queued_Count);
 
+      function Adaptive_Cohort_Froze_On_Byte_Limit return Boolean
+      is (Last_Adaptive_Byte_Freeze);
+
       procedure Fail_Next_Install is
       begin
          Fail_Install := True;
@@ -6838,14 +7082,17 @@ package body Flyology.DB is
       procedure Request_Close is
       begin
          Closing := True;
-         for Index in Commit_Slot loop
-            if Slots (Index).State = Queued then
-               Slots (Index).Receipt.Current_Outcome := Storage_Failure;
-               Slots (Index).Result := Storage_Failure;
-               Slots (Index).State := Completed;
-               Queued_Count := Queued_Count - 1;
-            end if;
-         end loop;
+         Work_Changed := True;
+         if not Configured_Adaptive_Cohort then
+            for Index in Commit_Slot loop
+               if Slots (Index).State = Queued then
+                  Slots (Index).Receipt.Current_Outcome := Storage_Failure;
+                  Slots (Index).Result := Storage_Failure;
+                  Slots (Index).State := Completed;
+                  Queued_Count := Queued_Count - 1;
+               end if;
+            end loop;
+         end if;
       end Request_Close;
 
       procedure Mark_Stopped is
@@ -6861,6 +7108,7 @@ package body Flyology.DB is
             end if;
          end loop;
          Stopped := True;
+         Work_Changed := True;
       end Mark_Stopped;
 
       function History_Length return Natural is
@@ -9936,14 +10184,24 @@ package body Flyology.DB is
       Count      : Group_Count;
       Head       : Head_Snapshot;
       Generation : Generation_Value;
+      Next_Wake  : Ada.Real_Time.Time;
       Stop       : Boolean;
    begin
       loop
-         State.Gate.Take_Group (Items, Tokens, Count, Head, Generation, Stop);
+         State.Gate.Select_Group
+           (Ada.Real_Time.Clock, Items, Tokens, Count, Head, Generation, Next_Wake, Stop);
          exit when Stop;
          Signal_Ready_Completions (State);
          if Count > 0 then
             Process_Group (State, Items, Tokens, Count, Head, Generation);
+         elsif Next_Wake = Ada.Real_Time.Time_Last then
+            State.Gate.Await_Work_Change;
+         else
+            select
+               State.Gate.Await_Work_Change;
+            or
+               delay until Next_Wake;
+            end select;
          end if;
       end loop;
       Mark_Engine_Stopped (State);
@@ -18350,6 +18608,14 @@ package body Flyology.DB is
       end;
       if Result /= Success then
          Release_Runtime_Batch (Batch);
+         return;
+      elsif not Valid_Batch_Identity
+          (Batch,
+           Lease.State.LSM_Authority.Commit_Profile
+             = LSM_Runtime.Commit_Profiles.Aggregate_Coalescing)
+      then
+         Release_Runtime_Batch (Batch);
+         Result := Corrupt;
          return;
       end if;
 
@@ -28341,6 +28607,31 @@ package body Flyology.DB is
       end if;
    end Set_Test_Aggregate_Cohort_Width;
 
+   procedure Set_Test_Adaptive_Aggregate_Cohort
+     (Item                  : in out Database;
+      Maximum_Members       : Positive;
+      Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+      Maximum_Wait          : Ada.Real_Time.Time_Span;
+      Admission_Depth       : Positive;
+      Result                : out Outcome_Code)
+   is
+      Lease : Lifecycle_Lease;
+   begin
+      Acquire (Item, Lease, Result);
+      if Result = Success then
+         if Lease.State.LSM_Authority.Commit_Profile /= LSM_Runtime.Commit_Profiles.Aggregate_Coalescing then
+            Result := Unsupported_Format;
+         else
+            Lease.State.Gate.Configure_Adaptive_Aggregate_Cohort
+              (Maximum_Members,
+               Maximum_Encoded_Bytes,
+               Maximum_Wait,
+               Admission_Depth,
+               Result);
+         end if;
+      end if;
+   end Set_Test_Adaptive_Aggregate_Cohort;
+
    procedure Abort_Test_Independent_Cohort (Item : in out Database; Result : out Outcome_Code) is
       Lease : Lifecycle_Lease;
    begin
@@ -28360,6 +28651,14 @@ package body Flyology.DB is
          Value := Lease.State.Gate.Queue_Depth;
       end if;
    end Test_Queue_Depth;
+
+   function Test_Adaptive_Cohort_Froze_On_Byte_Limit (Item : in out Database) return Boolean is
+      Lease  : Lifecycle_Lease;
+      Result : Outcome_Code;
+   begin
+      Acquire (Item, Lease, Result);
+      return Result = Success and then Lease.State.Gate.Adaptive_Cohort_Froze_On_Byte_Limit;
+   end Test_Adaptive_Cohort_Froze_On_Byte_Limit;
 
    procedure Fail_Next_Test_Install (Item : in out Database; Result : out Outcome_Code) is
       Lease : Lifecycle_Lease;

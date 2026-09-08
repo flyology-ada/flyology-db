@@ -176,10 +176,16 @@ package body Flyology.DB.Engine_Tests is
          Batch_Value      : Partition_Identity_Array;
          Member_Value     : Partition_Identity_Array;
          Mapping_Value    : Partition_Batch_Index_Array;
+         Allow_Leader_Alias : Boolean;
          Context          : String) is
       begin
          if Identity_Partitions.Valid_Partition
-              (Reserved_Value, Checkpoint_Value, Batch_Value, Member_Value, Mapping_Value)
+              (Reserved_Value,
+               Checkpoint_Value,
+               Batch_Value,
+               Member_Value,
+               Mapping_Value,
+               Allow_Leader_Alias)
            /= Expected
          then
             raise Program_Error with Context;
@@ -187,13 +193,17 @@ package body Flyology.DB.Engine_Tests is
       end Expect_Partition;
    begin
       Expect_Partition
-        (True, Reserved, Checkpoint, Batches, Members, Mapping, "valid identity partition was rejected");
+        (True, Reserved, Checkpoint, Batches, Members, Mapping, False,
+         "valid identity partition was rejected");
       Expect_Partition
-        (False, Reserved, [1, 1], Batches, Members, Mapping, "duplicate checkpoint identity was accepted");
+        (False, Reserved, [1, 1], Batches, Members, Mapping, False,
+         "duplicate checkpoint identity was accepted");
       Expect_Partition
-        (False, Reserved, [1], Batches, Members, Mapping, "missing checkpoint identity was accepted");
+        (False, Reserved, [1], Batches, Members, Mapping, False,
+         "missing checkpoint identity was accepted");
       Expect_Partition
-        (False, Reserved, Checkpoint, Batches, [5, 5, 6], Mapping, "malformed singleton alias was accepted");
+        (False, Reserved, Checkpoint, Batches, [5, 5, 6], Mapping, False,
+         "malformed singleton alias was accepted");
       Expect_Partition
         (False,
          Reserved,
@@ -201,7 +211,26 @@ package body Flyology.DB.Engine_Tests is
          [3, 5],
          [3, 5, 6],
          Mapping,
+         False,
          "group batch/member identity collision was accepted");
+      Expect_Partition
+        (True,
+         [1, 2, 3, 5, 6],
+         Checkpoint,
+         [3, 5],
+         [3, 5, 6],
+         Mapping,
+         True,
+         "authenticated aggregate leader alias was rejected");
+      Expect_Partition
+        (False,
+         [1, 2, 3, 5, 6],
+         Checkpoint,
+         [3, 6],
+         [3, 5, 6],
+         Mapping,
+         True,
+         "nonleader aggregate alias was accepted");
       Expect_Partition
         (False,
          [1, 2, 3, 4, 5],
@@ -209,6 +238,7 @@ package body Flyology.DB.Engine_Tests is
          Batches,
          Members,
          Mapping,
+         False,
          "suffix identity outside the reserved ledger was accepted");
       Expect_Partition
         (False,
@@ -217,6 +247,7 @@ package body Flyology.DB.Engine_Tests is
          Batches,
          Members,
          Mapping,
+         False,
          "duplicate reserved identity was accepted");
       Expect_Partition
         (False,
@@ -225,6 +256,7 @@ package body Flyology.DB.Engine_Tests is
          Batches,
          Members,
          Mapping,
+         False,
          "zero reserved identity was accepted");
       Expect_Partition
         (False,
@@ -233,6 +265,7 @@ package body Flyology.DB.Engine_Tests is
          Batches,
          Members,
          [1, 2, 3],
+         False,
          "member mapped outside the batch summary was accepted");
    end Test_Identity_Partition_Policy;
 
@@ -7000,6 +7033,731 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, "aggregate orphan final close failed");
       end;
 
+      --  Adaptive aggregate cohorts retain ordinary transaction identities
+      --  while publishing the oldest compatible prefix under a caller-owned
+      --  member, byte, wait, and admission bound.
+      declare
+         Context                                    : aliased Storage_Context;
+         Item                                       : aliased Database;
+         Family                                     : Column_Family;
+         Appended_Family                            : Column_Family;
+         Reader                                     : Transaction;
+         Data                                       : Value;
+         Create_Info                                : Create_Receipt;
+         Flush_Info                                 : Flush_Receipt;
+         Append_Info                                : Column_Family_Receipt;
+         Batch_Before, Manifest_Before, Head_Before : Natural;
+         Batch_After, Manifest_After, Head_After    : Natural;
+         subtype Authority_Buffer is Byte_Array (1 .. 4_096);
+         Authorities : array (Positive range 1 .. 2) of Authority_Buffer := [others => [others => 0]];
+         Lengths     : array (Positive range 1 .. 2) of Natural := [others => 0];
+         Checkpoint_Runs : constant Checkpoint_Run_Identity_Array :=
+           [Configure_Checkpoint_Run (1, Numbered_ID (65_030))];
+         Adaptive_Limits : constant Database_Limits :=
+           (Default_Limits
+            with delta Maximum_Column_Families => 2, Maximum_Total_L0_Runs => 2);
+         --  Sixteen entries at the exact maximum key/value extent retain all
+         --  successful pre-checkpoint cohort fixtures without changing a
+         --  production limit or the later two-run checkpoint bound.
+         Initial_Families : constant Column_Family_Configuration_Array :=
+           [Configure_Column_Family (1, [16#61#], 64, 256, 5_120, 16, 1)];
+         Appended_Configuration : constant Column_Family_Configuration :=
+           Configure_Test_Family (2, [16#62#], 8, 8);
+      begin
+         Bind_Context (Context, Backend, "adaptive-aggregate-cohort");
+         Create
+           (Item,
+            Context'Access,
+            DB_ID (231),
+            Manifest_ID_For (ID (232)),
+            ID (232),
+            Adaptive_Limits,
+            Initial_Families,
+            Test_Operation_Timeout,
+            Receipt => Create_Info,
+            Result  => Result);
+         Expect (Result, Success, "adaptive cohort root create failed");
+         Close (Item, Result);
+         Expect (Result, Success, "adaptive cohort root close failed");
+         Testing.Rewrite_Manifest_Profile
+           (Context, Manifest_ID_For (ID (232)), DB_ID (231), Result, Aggregate_Profile => True);
+         Expect (Result, Success, "adaptive cohort profile rewrite failed");
+         Open (Item, Context'Access, DB_ID (231), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "adaptive cohort root reopen failed");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "adaptive cohort family open failed");
+         Testing.Configure_Adaptive_Aggregate_Cohort
+           (Item,
+            Maximum_Members       => 4,
+            Maximum_Encoded_Bytes => 4_096,
+            Maximum_Wait          => Ada.Real_Time.To_Time_Span (0.01),
+            Admission_Depth       => 4,
+            Result                => Result);
+         Expect (Result, Success, "adaptive cohort configuration failed");
+
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         declare
+            Group    : Transaction_Array (1 .. 2);
+            Receipts : Commit_Receipt_Array (Group'Range);
+         begin
+            for Index in Group'Range loop
+               Begin_Transaction (Item, Numbered_TX_ID (65_010 + Index), Group (Index), Result);
+               Expect (Result, Success, "adaptive explicit-group member begin failed");
+               Put
+                 (Item,
+                  Group (Index),
+                  Family,
+                  To_Key ([Byte (10 + Index)]),
+                  To_Value ([Byte (10 + Index)]),
+                  Result);
+               Expect (Result, Success, "adaptive explicit-group member mutation failed");
+            end loop;
+            Commit_Group
+              (Item,
+               Numbered_ID (65_020),
+               Group,
+               Test_Operation_Timeout,
+               Receipts => Receipts,
+               Result   => Result);
+            Expect (Result, Unsupported_Format, "adaptive profile admitted an explicit group");
+            for Txn of Group loop
+               Rollback (Txn, Result);
+               Expect (Result, Success, "adaptive explicit-group rejection consumed a member");
+            end loop;
+         end;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "adaptive explicit-group rejection reached publication";
+         end if;
+
+         declare
+            Txn     : Transaction;
+            Receipt : Commit_Receipt;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (65_000), Txn, Result);
+            Expect (Result, Success, "adaptive finite-deadline transaction begin failed");
+            Put (Item, Txn, Family, To_Key ([0]), To_Value ([0]), Result);
+            Expect (Result, Success, "adaptive finite-deadline mutation failed");
+            Commit
+              (Item,
+               Txn,
+               Test_Operation_Timeout,
+               Receipt => Receipt,
+               Result  => Result);
+            Expect (Result, Unsupported_Format, "adaptive cohort admitted a finite commit deadline");
+            Rollback (Txn, Result);
+            Expect (Result, Success, "adaptive finite-deadline rejection consumed its transaction");
+         end;
+
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         declare
+            Set     : aliased Flyology.Operations.Completion_Set (1);
+            Work    : Commit_Operation (Set'Access, Item'Access, null);
+            Txn     : Transaction;
+            Receipt : Commit_Receipt;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (65_001), Txn, Result);
+            Expect (Result, Success, "adaptive wait-tail transaction begin failed");
+            Put (Item, Txn, Family, To_Key ([1]), To_Value ([1]), Result);
+            Expect (Result, Success, "adaptive wait-tail mutation failed");
+            Commit (Txn, Duration'Last, Work);
+            Flyology.Operations.Wait_All (Set);
+            Finish (Work, Receipt, Result);
+            Flyology.Operations.Release (Work);
+            Expect (Result, Success, "adaptive wait-tail singleton did not publish");
+            if Receipt_Transaction_ID (Receipt) /= Numbered_TX_ID (65_001)
+              or else Receipt_Batch_ID (Receipt) /= Numbered_ID (65_001)
+            then
+               raise Program_Error with "adaptive wait-tail leader alias changed";
+            end if;
+         end;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 1
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 1
+         then
+            raise Program_Error with "adaptive wait-tail publication geometry changed";
+         end if;
+
+         --  Exact byte equality freezes a compatible cohort without waiting
+         --  for its otherwise distant scheduler boundary.
+         Testing.Configure_Adaptive_Aggregate_Cohort
+           (Item,
+            Maximum_Members       => 4,
+            Maximum_Encoded_Bytes => 256,
+            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
+            Admission_Depth       => 4,
+            Result                => Result);
+         Expect (Result, Success, "adaptive exact-byte equality configuration failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         declare
+            Set                : aliased Flyology.Operations.Completion_Set (2);
+            First              : Commit_Operation (Set'Access, Item'Access, null);
+            Second             : Commit_Operation (Set'Access, Item'Access, null);
+            First_Txn          : Transaction;
+            Second_Txn         : Transaction;
+            Receipt            : Commit_Receipt;
+            Coordinator_Paused : Boolean := False;
+         begin
+            Testing.Pause_Coordinator (Item, Result);
+            Expect (Result, Success, "adaptive exact-byte equality pause failed");
+            Coordinator_Paused := True;
+            Begin_Transaction (Item, Numbered_TX_ID (65_108), First_Txn, Result);
+            Put (Item, First_Txn, Family, To_Key ([12]), To_Value ([12]), Result);
+            Commit (First_Txn, Duration'Last, First);
+            Begin_Transaction (Item, Numbered_TX_ID (65_109), Second_Txn, Result);
+            Put (Item, Second_Txn, Family, To_Key ([13]), To_Value ([13]), Result);
+            Commit (Second_Txn, Duration'Last, Second);
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "adaptive exact-byte equality resume failed");
+            Coordinator_Paused := False;
+            Flyology.Operations.Wait_All (Set);
+            if not Testing.Adaptive_Cohort_Froze_On_Byte_Limit (Item) then
+               raise Program_Error with "adaptive exact-byte equality did not freeze on its byte limit";
+            end if;
+            Finish (First, Receipt, Result);
+            Flyology.Operations.Release (First);
+            Expect (Result, Success, "adaptive exact-byte equality first member failed");
+            if Receipt_Batch_ID (Receipt) /= Numbered_ID (65_108) then
+               raise Program_Error with "adaptive exact-byte equality leader changed";
+            end if;
+            Finish (Second, Receipt, Result);
+            Flyology.Operations.Release (Second);
+            Expect (Result, Success, "adaptive exact-byte equality second member failed");
+            if Receipt_Batch_ID (Receipt) /= Numbered_ID (65_108) then
+               raise Program_Error with "adaptive exact-byte equality split its cohort";
+            end if;
+         exception
+            when others =>
+               if Coordinator_Paused then
+                  Testing.Resume_Coordinator (Item, Result);
+               end if;
+               Testing.Abort_Independent_Cohort (Item, Result);
+               if Flyology.Operations.Is_Active (First)
+                 or else Flyology.Operations.Is_Active (Second)
+               then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               if Flyology.Operations.Is_Terminal (First) then
+                  Finish (First, Receipt, Result);
+                  Flyology.Operations.Release (First);
+               end if;
+               if Flyology.Operations.Is_Terminal (Second) then
+                  Finish (Second, Receipt, Result);
+                  Flyology.Operations.Release (Second);
+               end if;
+               raise;
+         end;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 1
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 1
+         then
+            raise Program_Error with "adaptive exact-byte equality publication geometry changed";
+         end if;
+
+         --  An expired oldest member still selects the maximal compatible
+         --  prefix. A third member crosses the exact byte boundary and
+         --  publishes separately.
+         Testing.Configure_Adaptive_Aggregate_Cohort
+           (Item,
+            Maximum_Members       => 4,
+            Maximum_Encoded_Bytes => 256,
+            Maximum_Wait          => Ada.Real_Time.To_Time_Span (0.01),
+            Admission_Depth       => 4,
+            Result                => Result);
+         Expect (Result, Success, "adaptive exact-byte configuration failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         declare
+            Set                : aliased Flyology.Operations.Completion_Set (3);
+            Work               : array (Positive range 1 .. 3) of
+              Commit_Operation (Set'Access, Item'Access, null);
+            Receipts           : array (Positive range 1 .. 3) of Commit_Receipt;
+            Results            : array (Positive range 1 .. 3) of Outcome_Code;
+            Depth              : Natural := 0;
+            Coordinator_Paused : Boolean := False;
+         begin
+            Testing.Pause_Coordinator (Item, Result);
+            Expect (Result, Success, "adaptive exact-byte coordinator pause failed");
+            Coordinator_Paused := True;
+            for Index in Work'Range loop
+               declare
+                  Txn : Transaction;
+               begin
+                  Begin_Transaction (Item, Numbered_TX_ID (65_100 + Index), Txn, Result);
+                  Expect (Result, Success, "adaptive exact-byte member begin failed");
+                  Put
+                    (Item,
+                     Txn,
+                     Family,
+                     To_Key ([Byte (4 + Index)]),
+                     To_Value ([Byte (4 + Index)]),
+                     Result);
+                  Expect (Result, Success, "adaptive exact-byte mutation failed");
+                  Commit (Txn, Duration'Last, Work (Index));
+               end;
+            end loop;
+            for Attempt in 1 .. 2_000 loop
+               Testing.Queue_Depth (Item, Depth, Result);
+               Expect (Result, Success, "adaptive exact-byte queue query failed");
+               exit when Depth = Work'Length;
+               delay 0.001;
+            end loop;
+            if Depth /= Work'Length then
+               raise Program_Error with "adaptive exact-byte queue did not fill";
+            end if;
+            delay 0.02;
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "adaptive exact-byte coordinator resume failed");
+            Coordinator_Paused := False;
+            Flyology.Operations.Wait_All (Set);
+            for Index in Work'Range loop
+               Finish (Work (Index), Receipts (Index), Results (Index));
+               Flyology.Operations.Release (Work (Index));
+               Expect (Results (Index), Success, "adaptive exact-byte member failed");
+            end loop;
+            if Receipt_Batch_ID (Receipts (1)) /= Numbered_ID (65_101)
+              or else Receipt_Batch_ID (Receipts (2)) /= Receipt_Batch_ID (Receipts (1))
+              or else Receipt_Batch_ID (Receipts (3)) /= Numbered_ID (65_103)
+            then
+               raise Program_Error with "adaptive exact-byte split changed cohort identity";
+            end if;
+         exception
+            when others =>
+               if Coordinator_Paused then
+                  Testing.Resume_Coordinator (Item, Result);
+               end if;
+               Testing.Abort_Independent_Cohort (Item, Result);
+               if (for some Index in Work'Range => Flyology.Operations.Is_Active (Work (Index))) then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               for Index in Work'Range loop
+                  if Flyology.Operations.Is_Terminal (Work (Index)) then
+                     Finish (Work (Index), Receipts (Index), Results (Index));
+                     Flyology.Operations.Release (Work (Index));
+                  end if;
+               end loop;
+               raise;
+         end;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 2
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 2
+         then
+            raise Program_Error with "adaptive exact-byte split publication geometry changed";
+         end if;
+
+         --  The byte target is a coalescing preference, not an individual
+         --  transaction limit: a hard-valid oversized oldest item publishes
+         --  alone instead of becoming permanently unselectable.
+         Testing.Configure_Adaptive_Aggregate_Cohort
+           (Item,
+            Maximum_Members       => 4,
+            Maximum_Encoded_Bytes => 200,
+            Maximum_Wait          => Ada.Real_Time.To_Time_Span (0.01),
+            Admission_Depth       => 4,
+            Result                => Result);
+         Expect (Result, Success, "adaptive oversized-singleton configuration failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         declare
+            Set     : aliased Flyology.Operations.Completion_Set (1);
+            Work    : Commit_Operation (Set'Access, Item'Access, null);
+            Txn     : Transaction;
+            Receipt : Commit_Receipt;
+         begin
+            Begin_Transaction (Item, Numbered_TX_ID (65_104), Txn, Result);
+            Expect (Result, Success, "adaptive oversized-singleton begin failed");
+            Put (Item, Txn, Family, To_Key ([8]), To_Value ([8]), Result);
+            Expect (Result, Success, "adaptive oversized-singleton mutation failed");
+            Commit (Txn, Duration'Last, Work);
+            Flyology.Operations.Wait_All (Set);
+            Finish (Work, Receipt, Result);
+            Flyology.Operations.Release (Work);
+            Expect (Result, Success, "adaptive oversized-singleton did not publish");
+            if Receipt_Batch_ID (Receipt) /= Numbered_ID (65_104) then
+               raise Program_Error with "adaptive oversized-singleton identity changed";
+            end if;
+         end;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 1
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 1
+         then
+            raise Program_Error with "adaptive oversized-singleton publication geometry changed";
+         end if;
+
+         --  Admission depth counts owned but uncollected work. A rejected
+         --  third operation leaves its transaction caller-owned, while Close
+         --  forces the conclusive queued pair to a final durable cohort.
+         Testing.Configure_Adaptive_Aggregate_Cohort
+           (Item,
+            Maximum_Members       => 2,
+            Maximum_Encoded_Bytes => 4_096,
+            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
+            Admission_Depth       => 2,
+            Result                => Result);
+         Expect (Result, Success, "adaptive admission-depth configuration failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         declare
+            Set                : aliased Flyology.Operations.Completion_Set (3);
+            First              : Commit_Operation (Set'Access, Item'Access, null);
+            Second             : Commit_Operation (Set'Access, Item'Access, null);
+            Rejected           : Commit_Operation (Set'Access, Item'Access, null);
+            First_Txn          : Transaction;
+            Second_Txn         : Transaction;
+            Rejected_Txn       : Transaction;
+            Receipt            : Commit_Receipt;
+            First_Result       : Outcome_Code;
+            Second_Result      : Outcome_Code;
+            Close_Result       : Outcome_Code;
+            Coordinator_Paused : Boolean := False;
+         begin
+            Testing.Pause_Coordinator (Item, Result);
+            Expect (Result, Success, "adaptive admission-depth coordinator pause failed");
+            Coordinator_Paused := True;
+            Begin_Transaction (Item, Numbered_TX_ID (65_105), First_Txn, Result);
+            Put (Item, First_Txn, Family, To_Key ([9]), To_Value ([9]), Result);
+            Commit (First_Txn, Duration'Last, First);
+            Begin_Transaction (Item, Numbered_TX_ID (65_106), Second_Txn, Result);
+            Put (Item, Second_Txn, Family, To_Key ([10]), To_Value ([10]), Result);
+            Commit (Second_Txn, Duration'Last, Second);
+            Begin_Transaction (Item, Numbered_TX_ID (65_107), Rejected_Txn, Result);
+            Put (Item, Rejected_Txn, Family, To_Key ([11]), To_Value ([11]), Result);
+            Commit (Rejected_Txn, Duration'Last, Rejected);
+            for Attempt in 1 .. 2_000 loop
+               exit when Flyology.Operations.Is_Terminal (Rejected);
+               delay 0.001;
+            end loop;
+            if not Flyology.Operations.Is_Terminal (Rejected) then
+               raise Program_Error with "adaptive admission-depth rejection did not complete";
+            end if;
+            Finish (Rejected, Receipt, Result);
+            Flyology.Operations.Release (Rejected);
+            Expect (Result, Capacity_Exceeded, "adaptive admission depth admitted a third operation");
+            Rollback (Rejected_Txn, Result);
+            Expect (Result, Success, "adaptive admission-depth rejection consumed its transaction");
+            Coordinator_Paused := False;
+            declare
+               Join_Attempted : Boolean := False;
+
+               task Closer is
+                  entry Finish (Close_Result : out Outcome_Code);
+               end Closer;
+
+               task body Closer is
+                  Local_Result : Outcome_Code;
+               begin
+                  Close (Item, Local_Result);
+                  accept Finish (Close_Result : out Outcome_Code) do
+                     Close_Result := Local_Result;
+                  end Finish;
+               end Closer;
+            begin
+               Flyology.Operations.Wait_All (Set);
+               Join_Attempted := True;
+               Closer.Finish (Close_Result);
+               Finish (First, Receipt, First_Result);
+               Flyology.Operations.Release (First);
+               Finish (Second, Receipt, Second_Result);
+               Flyology.Operations.Release (Second);
+            exception
+               when others =>
+                  if Flyology.Operations.Is_Active (First)
+                    or else Flyology.Operations.Is_Active (Second)
+                  then
+                     Flyology.Operations.Wait_All (Set);
+                  end if;
+                  if not Join_Attempted then
+                     Join_Attempted := True;
+                     Closer.Finish (Result);
+                  end if;
+                  if Flyology.Operations.Is_Terminal (First) then
+                     Finish (First, Receipt, Result);
+                     Flyology.Operations.Release (First);
+                  end if;
+                  if Flyology.Operations.Is_Terminal (Second) then
+                     Finish (Second, Receipt, Result);
+                     Flyology.Operations.Release (Second);
+                  end if;
+                  raise;
+            end;
+            Expect (First_Result, Success, "adaptive close-tail first member failed");
+            Expect (Second_Result, Success, "adaptive close-tail second member failed");
+            Expect (Close_Result, Success, "adaptive conclusive close did not drain its tail");
+         exception
+            when others =>
+               if Coordinator_Paused then
+                  Testing.Resume_Coordinator (Item, Result);
+               end if;
+               Testing.Abort_Independent_Cohort (Item, Result);
+               if Flyology.Operations.Is_Active (First)
+                 or else Flyology.Operations.Is_Active (Second)
+                 or else Flyology.Operations.Is_Active (Rejected)
+               then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               if Flyology.Operations.Is_Terminal (First) then
+                  Finish (First, Receipt, Result);
+                  Flyology.Operations.Release (First);
+               end if;
+               if Flyology.Operations.Is_Terminal (Second) then
+                  Finish (Second, Receipt, Result);
+                  Flyology.Operations.Release (Second);
+               end if;
+               if Flyology.Operations.Is_Terminal (Rejected) then
+                  Finish (Rejected, Receipt, Result);
+                  Flyology.Operations.Release (Rejected);
+               end if;
+               raise;
+         end;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 1
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 1
+         then
+            raise Program_Error with "adaptive conclusive close publication geometry changed";
+         end if;
+         Open (Item, Context'Access, DB_ID (231), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "adaptive close-tail root did not reopen");
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "adaptive close-tail family did not reopen");
+         Flush
+           (Item,
+            Checkpoint_Runs,
+            Manifest_ID_For (Numbered_ID (65_031)),
+            Numbered_ID (65_032),
+            Test_Operation_Timeout,
+            Receipt => Flush_Info,
+            Result  => Result);
+         Expect (Result, Success, "adaptive checkpoint preparation failed");
+
+         Testing.Configure_Adaptive_Aggregate_Cohort
+           (Item,
+            Maximum_Members       => 2,
+            Maximum_Encoded_Bytes => 4_096,
+            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
+            Admission_Depth       => 4,
+            Result                => Result);
+         Expect (Result, Success, "adaptive two-member configuration failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+         declare
+            Set            : aliased Flyology.Operations.Completion_Set (3);
+            First          : Commit_Operation (Set'Access, Item'Access, null);
+            Second         : Commit_Operation (Set'Access, Item'Access, null);
+            Tail           : Commit_Operation (Set'Access, Item'Access, null);
+            First_Txn      : Transaction;
+            Second_Txn     : Transaction;
+            Tail_Txn       : Transaction;
+            Tail_Receipt   : Commit_Receipt;
+            Tail_Result    : Outcome_Code;
+            Receipts       : array (Positive range 1 .. 2) of Commit_Receipt;
+            Results        : array (Positive range 1 .. 2) of Outcome_Code;
+            Both_Terminal  : Boolean := False;
+            Close_Result   : Outcome_Code;
+            Coordinator_Paused : Boolean := False;
+         begin
+            Testing.Pause_Coordinator (Item, Result);
+            Expect (Result, Success, "adaptive recovery coordinator pause failed");
+            Coordinator_Paused := True;
+            Begin_Transaction (Item, Numbered_TX_ID (65_002), First_Txn, Result);
+            Expect (Result, Success, "adaptive first member begin failed");
+            Put (Item, First_Txn, Family, To_Key ([2]), To_Value ([2]), Result);
+            Expect (Result, Success, "adaptive first member mutation failed");
+            Begin_Transaction (Item, Numbered_TX_ID (65_003), Second_Txn, Result);
+            Expect (Result, Success, "adaptive second member begin failed");
+            Put (Item, Second_Txn, Family, To_Key ([3]), To_Value ([3]), Result);
+            Expect (Result, Success, "adaptive second member mutation failed");
+            Begin_Transaction (Item, Numbered_TX_ID (65_004), Tail_Txn, Result);
+            Expect (Result, Success, "adaptive close-tail member begin failed");
+            Put (Item, Tail_Txn, Family, To_Key ([4]), To_Value ([4]), Result);
+            Expect (Result, Success, "adaptive close-tail mutation failed");
+            Commit (First_Txn, Duration'Last, First);
+            Commit (Second_Txn, Duration'Last, Second);
+            Commit (Tail_Txn, Duration'Last, Tail);
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "adaptive recovery coordinator resume failed");
+            Coordinator_Paused := False;
+            loop
+               declare
+                  Completed : Flyology.Operations.Completion_Batch (Set.Capacity);
+               begin
+                  Flyology.Operations.Wait_Some (Set, Completed);
+                  if Completed.Count = 0 then
+                     raise Program_Error with "adaptive unknown cohort produced no completion";
+                  end if;
+               end;
+               Both_Terminal :=
+                 Flyology.Operations.Is_Terminal (First)
+                 and then Flyology.Operations.Is_Terminal (Second);
+               exit when Both_Terminal;
+            end loop;
+            if Flyology.Operations.Is_Terminal (Tail) then
+               raise Program_Error with "adaptive unknown cohort did not retain its queued tail";
+            end if;
+            Finish (First, Receipts (1), Results (1));
+            Flyology.Operations.Release (First);
+            Finish (Second, Receipts (2), Results (2));
+            Flyology.Operations.Release (Second);
+            for Index in Results'Range loop
+               Expect (Results (Index), Outcome_Unknown, "adaptive member did not retain uncertainty");
+            end loop;
+            if Receipt_Transaction_ID (Receipts (1)) /= Numbered_TX_ID (65_002)
+              or else Receipt_Transaction_ID (Receipts (2)) /= Numbered_TX_ID (65_003)
+              or else Receipt_Sequence (Receipts (1)) + 1 /= Receipt_Sequence (Receipts (2))
+              or else Receipt_Batch_ID (Receipts (1)) /= Numbered_ID (65_002)
+              or else Receipt_Batch_ID (Receipts (2)) /= Numbered_ID (65_002)
+            then
+               raise Program_Error with "adaptive member receipt identity changed";
+            end if;
+            for Index in Receipts'Range loop
+               Lengths (Index) := Commit_Resolution_Authority_Length (Receipts (Index));
+               if Lengths (Index) = 0 or else Lengths (Index) > Authorities (Index)'Length then
+                  raise Program_Error with "adaptive member authority length changed";
+               end if;
+               Export_Commit_Resolution_Authority
+                 (Receipts (Index), Authorities (Index), Lengths (Index), Result);
+               Expect (Result, Success, "adaptive member authority export failed");
+            end loop;
+            declare
+               Join_Attempted : Boolean := False;
+
+               task Closer is
+                  entry Finish (Close_Result : out Outcome_Code);
+               end Closer;
+
+               task body Closer is
+                  Local_Result : Outcome_Code;
+               begin
+                  Close (Item, Local_Result);
+                  accept Finish (Close_Result : out Outcome_Code) do
+                     Close_Result := Local_Result;
+                  end Finish;
+               end Closer;
+            begin
+               Flyology.Operations.Wait_All (Set);
+               Join_Attempted := True;
+               Closer.Finish (Close_Result);
+               Finish (Tail, Tail_Receipt, Tail_Result);
+               Flyology.Operations.Release (Tail);
+            exception
+               when others =>
+                  if Flyology.Operations.Is_Active (First)
+                    or else Flyology.Operations.Is_Active (Second)
+                    or else Flyology.Operations.Is_Active (Tail)
+                  then
+                     Flyology.Operations.Wait_All (Set);
+                  end if;
+                  if not Join_Attempted then
+                     Join_Attempted := True;
+                     Closer.Finish (Result);
+                  end if;
+                  if Flyology.Operations.Is_Terminal (First) then
+                     Finish (First, Receipts (1), Results (1));
+                     Flyology.Operations.Release (First);
+                  end if;
+                  if Flyology.Operations.Is_Terminal (Second) then
+                     Finish (Second, Receipts (2), Results (2));
+                     Flyology.Operations.Release (Second);
+                  end if;
+                  if Flyology.Operations.Is_Terminal (Tail) then
+                     Finish (Tail, Tail_Receipt, Tail_Result);
+                     Flyology.Operations.Release (Tail);
+                  end if;
+                  raise;
+            end;
+            Expect (Tail_Result, Storage_Failure, "adaptive close did not drain the unfrozen tail");
+            if Receipt_Transaction_ID (Tail_Receipt) /= Numbered_TX_ID (65_004)
+              or else Receipt_Batch_ID (Tail_Receipt) /= Numbered_ID (65_004)
+            then
+               raise Program_Error with "adaptive close-tail receipt identity changed";
+            end if;
+            Expect (Close_Result, Success, "adaptive unknown cohort close did not join");
+         exception
+            when others =>
+               if Coordinator_Paused then
+                  Testing.Resume_Coordinator (Item, Result);
+               end if;
+               Testing.Abort_Independent_Cohort (Item, Result);
+               if Flyology.Operations.Is_Active (First)
+                 or else Flyology.Operations.Is_Active (Second)
+                 or else Flyology.Operations.Is_Active (Tail)
+               then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               if Flyology.Operations.Is_Terminal (First) then
+                  Finish (First, Receipts (1), Results (1));
+                  Flyology.Operations.Release (First);
+               end if;
+               if Flyology.Operations.Is_Terminal (Second) then
+                  Finish (Second, Receipts (2), Results (2));
+                  Flyology.Operations.Release (Second);
+               end if;
+               if Flyology.Operations.Is_Terminal (Tail) then
+                  Finish (Tail, Tail_Receipt, Tail_Result);
+                  Flyology.Operations.Release (Tail);
+               end if;
+               raise;
+         end;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 1
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 1
+         then
+            raise Program_Error with "adaptive cohort publication geometry changed";
+         end if;
+         Open (Item, Context'Access, DB_ID (231), Test_Operation_Timeout, Result => Result);
+         Expect (Result, Success, "adaptive leader-alias recovery failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         for Index in Authorities'Range loop
+            declare
+               Receipt : Commit_Receipt;
+            begin
+               Import_Commit_Resolution_Authority
+                 (Item, Authorities (Index) (1 .. Lengths (Index)), Receipt, Result);
+               Expect (Result, Success, "adaptive member authority import failed");
+               Resolve (Item, Receipt, Test_Operation_Timeout, Result => Result);
+               Expect (Result, Success, "adaptive member authority resolution failed");
+            end;
+         end loop;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before
+         then
+            raise Program_Error with "adaptive authority import or resolution replayed publication";
+         end if;
+         Open_Column_Family (Item, 1, Family, Result);
+         Expect (Result, Success, "adaptive recovered family open failed");
+         Add_Column_Family
+           (Item,
+            Appended_Configuration,
+            Manifest_ID_For (Numbered_ID (65_040)),
+            Numbered_ID (65_041),
+            Test_Operation_Timeout,
+            Receipt => Append_Info,
+            Result  => Result);
+         Expect (Result, Success, "adaptive leader-alias suffix blocked family append");
+         Open_Column_Family (Item, 2, Appended_Family, Result);
+         Expect (Result, Success, "adaptive appended family did not open");
+         Begin_Transaction (Item, Numbered_TX_ID (65_005), Reader, Result);
+         Expect (Result, Success, "adaptive recovery reader begin failed");
+         for Key_Byte in Byte range 1 .. 3 loop
+            Get (Item, Reader, Family, To_Key ([Key_Byte]), Data, Result);
+            Expect (Result, Success, "adaptive recovery lost a member");
+            if Data /= To_Value ([Key_Byte]) then
+               raise Program_Error with "adaptive recovery changed a member value";
+            end if;
+         end loop;
+         Rollback (Reader, Result);
+         Expect (Result, Success, "adaptive recovery reader rollback failed");
+         Close (Item, Result);
+         Expect (Result, Success, "adaptive recovered root close failed");
+      end;
+
       declare
          Context                                    : aliased Storage_Context;
          Item                                       : Database;
@@ -12349,10 +13107,11 @@ package body Flyology.DB.Engine_Tests is
          --  corpus, ten durable-authority fixture keys, seven cohort-authority
          --  keys, 46 coalescing-profile keys, six aggregate cancellation/orphan
          --  keys, 69 v2 recovery objects, one reverse-order live-capacity
-         --  batch, and six collision-index fixture objects.
+         --  batch, six collision-index fixture objects, and 12 adaptive-cohort
+         --  fixture objects.
          --  Eight million bytes cover the complete deterministic engine corpus
          --  while retaining explicit backend backpressure.
-         Store : aliased Memory.Store (4, 657, 8_000_000);
+         Store : aliased Memory.Store (4, 669, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then

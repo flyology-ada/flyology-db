@@ -11,13 +11,16 @@ package Flyology.DB.Identity_Partition_Policy with SPARK_Mode => On is
    --  its retained-checkpoint portion. Batch_IDs and Member_IDs describe the
    --  post-checkpoint suffix; Member_Batches maps every member to one batch.
    --  A singleton aliases its batch and member identity and therefore counts
-   --  once. A multi-member group requires a distinct batch identity.
+   --  once. When explicitly allowed by the authenticated database profile, a
+   --  multi-member batch may likewise alias its first member; otherwise its
+   --  batch identity is distinct from every member identity.
    function Valid_Partition
      (Reserved       : Identity_Array;
       Checkpoint     : Identity_Array;
       Batch_IDs      : Identity_Array;
       Member_IDs     : Identity_Array;
-      Member_Batches : Batch_Index_Array) return Boolean
+      Member_Batches : Batch_Index_Array;
+      Allow_Aggregate_Leader_Alias : Boolean) return Boolean
    with Pre => Member_IDs'First = Member_Batches'First and then Member_IDs'Last = Member_Batches'Last;
 
 end Flyology.DB.Identity_Partition_Policy;

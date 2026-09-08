@@ -1,3 +1,5 @@
+with Ada.Real_Time;
+
 package body Flyology.DB.Benchmark_Controls is
 
    procedure Enable_Independent_Coalescing
@@ -49,6 +51,40 @@ package body Flyology.DB.Benchmark_Controls is
       end if;
       Set_Test_Aggregate_Cohort_Width (Item, Width, First_Batch_Ordinal, Result);
    end Enable_Aggregate_Coalescing;
+
+   procedure Enable_Adaptive_Aggregate_Coalescing
+     (Item                  : in out Database;
+      Storage               : not null access Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Maximum_Members       : Positive;
+      Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+      Maximum_Wait          : Duration;
+      Admission_Depth       : Positive;
+      Timeout               : Duration;
+      Result                : out Outcome_Code) is
+   begin
+      Close (Item, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Rewrite_Test_Manifest_Profile
+        (Storage.all, Manifest_ID, Database_ID, Result, Aggregate_Profile => True);
+      if Result /= Success then
+         return;
+      end if;
+      Open (Item, Storage, Database_ID, Timeout, Result => Result);
+      if Result /= Success then
+         return;
+      end if;
+      Set_Test_Adaptive_Aggregate_Cohort
+        (Item,
+         Maximum_Members,
+         Maximum_Encoded_Bytes,
+         Ada.Real_Time.To_Time_Span (Maximum_Wait),
+         Admission_Depth,
+         Result);
+   end Enable_Adaptive_Aggregate_Coalescing;
 
    procedure Abort_Independent_Coalescing
      (Item : in out Database; Result : out Outcome_Code) is

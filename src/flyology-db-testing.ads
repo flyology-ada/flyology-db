@@ -1,3 +1,4 @@
+with Ada.Real_Time;
 with Interfaces;
 
 private package Flyology.DB.Testing is
@@ -83,8 +84,16 @@ private package Flyology.DB.Testing is
       Width               : Positive;
       First_Batch_Ordinal : Interfaces.Unsigned_64;
       Result              : out Outcome_Code);
+   procedure Configure_Adaptive_Aggregate_Cohort
+     (Item                  : in out Database;
+      Maximum_Members       : Positive;
+      Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+      Maximum_Wait          : Ada.Real_Time.Time_Span;
+      Admission_Depth       : Positive;
+      Result                : out Outcome_Code);
    procedure Abort_Independent_Cohort (Item : in out Database; Result : out Outcome_Code);
    procedure Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
+   function Adaptive_Cohort_Froze_On_Byte_Limit (Item : in out Database) return Boolean;
    procedure Fail_Next_Install (Item : in out Database; Result : out Outcome_Code);
    procedure Pause_Gets (Item : in out Storage_Context);
    procedure Resume_Gets (Item : in out Storage_Context);

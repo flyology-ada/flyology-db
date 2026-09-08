@@ -26,6 +26,21 @@ package Flyology.DB.Benchmark_Controls is
       Timeout             : Duration;
       Result              : out Outcome_Code);
 
+   --  Rewrite a fresh benchmark root to the private aggregate profile and
+   --  select caller-owned adaptive scheduling bounds. These values are
+   --  workload inputs, not persisted or public defaults.
+   procedure Enable_Adaptive_Aggregate_Coalescing
+     (Item                  : in out Database;
+      Storage               : not null access Storage_Context;
+      Database_ID           : Database_Identifier;
+      Manifest_ID           : Identifier;
+      Maximum_Members       : Positive;
+      Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+      Maximum_Wait          : Duration;
+      Admission_Depth       : Positive;
+      Timeout               : Duration;
+      Result                : out Outcome_Code);
+
    --  Terminalize only queued members after a benchmark-harness failure so
    --  exact-width tail waiting cannot trap exception cleanup.
    procedure Abort_Independent_Coalescing

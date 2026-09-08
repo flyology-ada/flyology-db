@@ -3231,8 +3231,16 @@ private
       Width               : Positive;
       First_Batch_Ordinal : Interfaces.Unsigned_64;
       Result              : out Outcome_Code);
+   procedure Set_Test_Adaptive_Aggregate_Cohort
+     (Item                  : in out Database;
+      Maximum_Members       : Positive;
+      Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+      Maximum_Wait          : Ada.Real_Time.Time_Span;
+      Admission_Depth       : Positive;
+      Result                : out Outcome_Code);
    procedure Abort_Test_Independent_Cohort (Item : in out Database; Result : out Outcome_Code);
    procedure Test_Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
+   function Test_Adaptive_Cohort_Froze_On_Byte_Limit (Item : in out Database) return Boolean;
    procedure Fail_Next_Test_Install (Item : in out Database; Result : out Outcome_Code);
    procedure Set_Test_Get_Paused (Item : in out Storage_Context; Value : Boolean);
    procedure Wait_For_Test_Get (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean);
