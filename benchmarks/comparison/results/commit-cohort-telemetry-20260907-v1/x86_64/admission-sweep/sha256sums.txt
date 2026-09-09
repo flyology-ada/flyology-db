@@ -1,0 +1,10 @@
+46fbffe4fdfa8249b54720930cf94b728e680b596a186b0622f39ffec4c2e054  ./power-after.env
+46fbffe4fdfa8249b54720930cf94b728e680b596a186b0622f39ffec4c2e054  ./power-before.env
+965958b8f1253204bb46f1d63c2c1bd9ebcfaefa7f2dc4103e5a6de99eded46a  ./rolling-1ms-vs-4ms.json
+0c4ada33716b7a6f77cf523e11dfb8630b7030603ede357e03f775c9734af61e  ./rolling-1ms-vs-4ms.ndjson
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./rolling-1ms-vs-4ms.stderr
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./rolling-1ms-vs-4ms.stdout
+7ec19da48a819523302b102812936c63a77b0e3fbaea26bcc3ab8bfd3e8ed71f  ./waves-vs-rolling-1ms.json
+accc2009b500d96a2589be3f6a607c34a27ec0d4f1c0546abff4d25b2bef8646  ./waves-vs-rolling-1ms.ndjson
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./waves-vs-rolling-1ms.stderr
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./waves-vs-rolling-1ms.stdout

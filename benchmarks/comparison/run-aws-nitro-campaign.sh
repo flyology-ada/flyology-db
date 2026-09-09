@@ -38,6 +38,8 @@ Rerun:
   --output PATH     New local evidence directory
   --include-untracked PATH
                     Admit one intentional Git-relative untracked source path
+  --retain-workdir  Preserve the authenticated remote worktree after success
+                    for follow-up profiling on the retained instance
 EOF
 }
 
@@ -352,6 +354,7 @@ rerun_kept_host()
   shift 2
   rerun_region=us-west-2
   rerun_output=
+  rerun_retain_workdir=false
   rerun_untracked_paths=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -369,6 +372,10 @@ rerun_kept_host()
         [ "$#" -ge 2 ] || fail '--include-untracked requires a value'
         rerun_untracked_paths+=("$2")
         shift 2
+        ;;
+      --retain-workdir)
+        rerun_retain_workdir=true
+        shift
         ;;
       -h | --help)
         usage
@@ -732,15 +739,25 @@ extract-artifacts.py
     "$rerun_output/remote/evidence/benchmark-sentinel.txt" >/dev/null ||
     fail 'remote benchmark sentinel is missing'
 
-  printf -v rerun_remove_command 'sudo -n rm -rf -- %q %q' \
-    "$rerun_remote_input" "$rerun_remote_work"
-  ssh "${rerun_ssh_options[@]}" "ubuntu@$rerun_public_ip" "$rerun_remove_command"
+  if [ "$rerun_retain_workdir" = true ]; then
+    printf -v rerun_remove_command 'sudo -n rm -rf -- %q' "$rerun_remote_input"
+    ssh "${rerun_ssh_options[@]}" "ubuntu@$rerun_public_ip" "$rerun_remove_command"
+    rerun_remote_input=
+    {
+      printf 'state=retained_after_success\n'
+      printf 'work=%s\n' "$rerun_remote_work"
+    } > "$rerun_output/remote-roots.txt"
+  else
+    printf -v rerun_remove_command 'sudo -n rm -rf -- %q %q' \
+      "$rerun_remote_input" "$rerun_remote_work"
+    ssh "${rerun_ssh_options[@]}" "ubuntu@$rerun_public_ip" "$rerun_remove_command"
+    {
+      printf 'state=removed_after_success\n'
+      printf 'input=%s\n' "$rerun_remote_input"
+      printf 'work=%s\n' "$rerun_remote_work"
+    } > "$rerun_output/remote-roots.txt"
+  fi
   rerun_remote_cleaned=true
-  {
-    printf 'state=removed_after_success\n'
-    printf 'input=%s\n' "$rerun_remote_input"
-    printf 'work=%s\n' "$rerun_remote_work"
-  } > "$rerun_output/remote-roots.txt"
 
   printf '%s\n' "AWS Nitro retained-host rerun passed; evidence: $rerun_output"
 }

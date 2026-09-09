@@ -1,0 +1,9 @@
+70d614d40734349fa0c08b9daee0581e41c3f4fe03152c60b92dfea7dfa8ccfb  ./comparison.json
+c28e025890ce992d5316aa21cdef01d6967d1565df0dd36f8458a2cf6fda06fc  ./comparison.ndjson
+667d257fbe1af3df66f2ae31535b6f5619f0e3ea7e23428e9346a91e8d4902f2  ./comparison.stderr
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./comparison.stdout
+844f9904ddf5ae9cd738a1842a1a66c39b7a3a1e049dd10e729b87b56cb17af0  ./conflicts-with-earlier-annotate.txt
+c618b6e99b80b3c1769c244d81d22d9ecef6a14ca8921339d104895ab31ea042  ./perf-report.txt
+fafdcc1f52222caab45a86bd71b93f3fce2853302327383e3aae7f4a4e376336  ./perf.data
+46fbffe4fdfa8249b54720930cf94b728e680b596a186b0622f39ffec4c2e054  ./power-after.env
+46fbffe4fdfa8249b54720930cf94b728e680b596a186b0622f39ffec4c2e054  ./power-before.env

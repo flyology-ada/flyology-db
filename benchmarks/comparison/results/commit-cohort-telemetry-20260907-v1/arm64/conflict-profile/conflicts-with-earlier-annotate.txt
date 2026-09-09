@@ -1,0 +1,266 @@
+ Percent |	Source code & Disassembly of flyology_db_benchmark_panel for armv8_pmuv3_0/cycles/P (122 samples, percent: local period)
+----------------------------------------------------------------------------------------------------------------------------------------
+         : 0      0x18db20 <flyology__db__coordinator__conflicts_with_earlierN>:
+    0.00 :   18db20:        ldr     x3, [x1, #0x18]
+    0.00 :   18db24:        cbz     x3, 0x18dd8c <flyology__db__coordinator__conflicts_with_earlierN+0x26c>
+    0.00 :   18db28:        ldr     x4, [x2, #0x18]
+    0.00 :   18db2c:        cbz     x4, 0x18dd8c <flyology__db__coordinator__conflicts_with_earlierN+0x26c>
+    0.00 :   18db30:        stp     x29, x30, [sp, #-0x90]!
+    0.00 :   18db34:        mov     x29, sp
+    0.00 :   18db38:        stp     x19, x20, [sp, #0x10]
+    0.00 :   18db3c:        mov     x20, x2
+    0.00 :   18db40:        stp     x21, x22, [sp, #0x20]
+    0.00 :   18db44:        stp     x23, x24, [sp, #0x30]
+    0.00 :   18db48:        stp     x25, x26, [sp, #0x40]
+    0.00 :   18db4c:        stp     x27, x28, [sp, #0x50]
+    0.00 :   18db50:        str     x0, [sp, #0x70]
+    0.00 :   18db54:        ldr     w0, [x4, #0x4]
+    0.00 :   18db58:        str     x1, [sp, #0x80]
+    0.00 :   18db5c:        tbnz    w0, #0x1f, 0x18df28 <flyology__db__coordinator__conflicts_with_earlierN+0x408>
+    0.00 :   18db60:        cbz     w0, 0x18dc3c <flyology__db__coordinator__conflicts_with_earlierN+0x11c>
+    0.00 :   18db64:        ldr     w1, [x4]
+    0.00 :   18db68:        sxtw    x2, w0
+    0.00 :   18db6c:        mov     x21, #0x1
+    0.00 :   18db70:        str     x2, [sp, #0x88]
+    0.00 :   18db74:        cmp     w0, w1
+    0.00 :   18db78:        mov     x2, #0x38
+    0.00 :   18db7c:        cset    w22, gt
+    0.00 :   18db80:        str     x2, [sp, #0x78]
+    0.00 :   18db84:        ldr     w24, [x3, #0x4]
+    0.00 :   18db88:        tbnz    w24, #0x1f, 0x18df14 <flyology__db__coordinator__conflicts_with_earlierN+0x3f4>
+    0.00 :   18db8c:        cbnz    w24, 0x18dd98 <flyology__db__coordinator__conflicts_with_earlierN+0x278>
+    0.00 :   18db90:        ldr     x27, [x3, #0x10]
+    0.80 :   18db94:        cbz     x27, 0x18dc74 <flyology__db__coordinator__conflicts_with_earlierN+0x154>
+    0.00 :   18db98:        add     x25, x21, x21, lsl #1
+    0.00 :   18db9c:        nop
+    0.00 :   18dba0:        ldr     x28, [x20, #0x18]
+    0.00 :   18dba4:        cbz     x28, 0x18de7c <flyology__db__coordinator__conflicts_with_earlierN+0x35c>
+    0.00 :   18dba8:        ldr     w0, [x28]
+    0.00 :   18dbac:        cmp     w22, #0x0
+    0.00 :   18dbb0:        ccmp    w0, w21, #0x0, ne
+    0.00 :   18dbb4:        b.lt    0x18ded8 <flyology__db__coordinator__conflicts_with_earlierN+0x3b8>
+    0.00 :   18dbb8:        add     x28, x28, x25, lsl #4
+    0.00 :   18dbbc:        ldr     w0, [x28, #0x8]
+    0.00 :   18dbc0:        cbz     w0, 0x18de2c <flyology__db__coordinator__conflicts_with_earlierN+0x30c>
+    0.00 :   18dbc4:        ldr     w1, [x27]
+    0.00 :   18dbc8:        cbz     w1, 0x18de2c <flyology__db__coordinator__conflicts_with_earlierN+0x30c>
+    0.00 :   18dbcc:        cmp     w0, w1
+    0.00 :   18dbd0:        b.ne    0x18dc60 <flyology__db__coordinator__conflicts_with_earlierN+0x140>
+    0.00 :   18dbd4:        ldr     w19, [x28, #0x1c]
+    0.00 :   18dbd8:        tbnz    w19, #0x1f, 0x18de2c <flyology__db__coordinator__conflicts_with_earlierN+0x30c>
+    0.00 :   18dbdc:        ldr     w0, [x27, #0x4]
+    0.00 :   18dbe0:        tbnz    w0, #0x1f, 0x18de2c <flyology__db__coordinator__conflicts_with_earlierN+0x30c>
+    0.00 :   18dbe4:        cmp     w19, w0
+    0.00 :   18dbe8:        b.ne    0x18dc60 <flyology__db__coordinator__conflicts_with_earlierN+0x140>
+    0.00 :   18dbec:        cbz     w19, 0x18dd68 <flyology__db__coordinator__conflicts_with_earlierN+0x248>
+    0.00 :   18dbf0:        sub     w19, w19, #0x1
+    0.00 :   18dbf4:        add     x0, x27, #0x8
+    0.00 :   18dbf8:        mov     w24, #0x1
+    0.00 :   18dbfc:        mov     w23, #-0x1
+    0.00 :   18dc00:        str     x0, [sp, #0x68]
+    0.00 :   18dc04:        ldr     x6, [x28, #0x28]
+    0.00 :   18dc08:        cbz     x6, 0x18dc1c <flyology__db__coordinator__conflicts_with_earlierN+0xfc>
+    0.00 :   18dc0c:        ldr     x0, [x28, #0x30]
+    0.00 :   18dc10:        ldp     x2, x3, [x0]
+    0.00 :   18dc14:        cmp     x3, x2
+    0.00 :   18dc18:        b.ge    0x18dcf8 <flyology__db__coordinator__conflicts_with_earlierN+0x1d8>
+    0.00 :   18dc1c:        adrp    x0, 3489 // 0xf2e000
+    0.00 :   18dc20:        ldr     x0, [x0, #0xe38]
+    0.00 :   18dc24:        adrp    x2, 2731 // 0xc38000
+    0.00 :   18dc28:        add     x2, x2, #0x410
+    0.00 :   18dc2c:        adrp    x1, 2566 // 0xb93000
+    0.00 :   18dc30:        add     x2, x2, #0x340
+    0.00 :   18dc34:        add     x1, x1, #0xdf8
+    0.00 :   18dc38:        bl      0xb34dd0 <__gnat_raise_exception>
+    0.00 :   18dc3c:        mov     w1, #0x0
+    0.00 :   18dc40:        mov     w0, w1
+    0.00 :   18dc44:        ldp     x19, x20, [sp, #0x10]
+    0.00 :   18dc48:        ldp     x21, x22, [sp, #0x20]
+    0.00 :   18dc4c:        ldp     x23, x24, [sp, #0x30]
+    0.00 :   18dc50:        ldp     x25, x26, [sp, #0x40]
+    0.00 :   18dc54:        ldp     x27, x28, [sp, #0x50]
+    0.00 :   18dc58:        ldp     x29, x30, [sp], #0x90
+    0.00 :   18dc5c:        ret
+    0.00 :   18dc60:        ldr     x27, [x27, #0x28]
+    0.00 :   18dc64:        cbnz    x27, 0x18dba0 <flyology__db__coordinator__conflicts_with_earlierN+0x80>
+    0.00 :   18dc68:        ldr     x0, [sp, #0x80]
+    0.00 :   18dc6c:        ldr     x3, [x0, #0x18]
+    0.00 :   18dc70:        cbz     x3, 0x18df00 <flyology__db__coordinator__conflicts_with_earlierN+0x3e0>
+    0.00 :   18dc74:        ldr     x19, [x3, #0x20]
+    0.00 :   18dc78:        cbz     x19, 0x18dcbc <flyology__db__coordinator__conflicts_with_earlierN+0x19c>
+    0.00 :   18dc7c:        nop
+    0.00 :   18dc80:        ldr     x1, [x20, #0x18]
+    0.00 :   18dc84:        cbz     x1, 0x18dec4 <flyology__db__coordinator__conflicts_with_earlierN+0x3a4>
+    0.00 :   18dc88:        ldr     w0, [x1]
+    0.00 :   18dc8c:        cmp     w22, #0x0
+    0.00 :   18dc90:        ccmp    w0, w21, #0x0, ne
+    0.00 :   18dc94:        b.lt    0x18deec <flyology__db__coordinator__conflicts_with_earlierN+0x3cc>
+    0.00 :   18dc98:        ldr     x0, [sp, #0x78]
+    0.00 :   18dc9c:        mov     x2, x19
+    0.00 :   18dca0:        add     x1, x1, x0
+    0.00 :   18dca4:        ldr     x0, [sp, #0x70]
+    0.00 :   18dca8:        bl      0x18da00 <flyology__db__coordinator__admitted_key_in_rangeN>
+    0.00 :   18dcac:        and     w1, w0, #0xff
+    0.00 :   18dcb0:        tbnz    w0, #0x0, 0x18dc40 <flyology__db__coordinator__conflicts_with_earlierN+0x120>
+    0.00 :   18dcb4:        ldr     x19, [x19, #0x58]
+    0.00 :   18dcb8:        cbnz    x19, 0x18dc80 <flyology__db__coordinator__conflicts_with_earlierN+0x160>
+    0.00 :   18dcbc:        ldr     x0, [sp, #0x88]
+    0.00 :   18dcc0:        cmp     x0, x21
+    0.00 :   18dcc4:        b.eq    0x18dc3c <flyology__db__coordinator__conflicts_with_earlierN+0x11c>
+    0.00 :   18dcc8:        ldr     x0, [sp, #0x80]
+    0.00 :   18dccc:        add     x21, x21, #0x1
+    0.00 :   18dcd0:        ldr     x3, [x0, #0x18]
+    0.00 :   18dcd4:        ldr     x0, [sp, #0x78]
+    0.00 :   18dcd8:        add     x0, x0, #0x30
+    0.00 :   18dcdc:        str     x0, [sp, #0x78]
+    0.00 :   18dce0:        cbnz    x3, 0x18db84 <flyology__db__coordinator__conflicts_with_earlierN+0x64>
+    0.00 :   18dce4:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18dce8:        add     x0, x0, #0x410
+    0.00 :   18dcec:        add     x0, x0, #0x58
+    0.00 :   18dcf0:        mov     w1, #0xf2a
+    0.00 :   18dcf4:        bl      0xb35238 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   18dcf8:        subs    x7, x3, x2
+    0.00 :   18dcfc:        asr     x0, x3, #63
+    0.00 :   18dd00:        asr     x8, x2, #63
+    0.00 :   18dd04:        sbc     x0, x0, x8
+    0.00 :   18dd08:        adds    x7, x7, #0x1
+    0.00 :   18dd0c:        cinc    x0, x0, hs
+    0.00 :   18dd10:        cmp     x0, #0x0
+    0.00 :   18dd14:        b.gt    0x18de9c <flyology__db__coordinator__conflicts_with_earlierN+0x37c>
+    0.00 :   18dd18:        b.eq    0x18de90 <flyology__db__coordinator__conflicts_with_earlierN+0x370>
+    0.00 :   18dd1c:        cmp     w24, w7
+    0.00 :   18dd20:        b.gt    0x18dc1c <flyology__db__coordinator__conflicts_with_earlierN+0xfc>
+    0.00 :   18dd24:        add     w23, w23, #0x1
+    0.00 :   18dd28:        sxtw    x0, w23
+    0.00 :   18dd2c:        adds    x0, x0, x2
+    0.00 :   18dd30:        b.vs    0x18de40 <flyology__db__coordinator__conflicts_with_earlierN+0x320>
+    0.00 :   18dd34:        cmp     x2, x0
+    0.00 :   18dd38:        ccmp    x3, x0, #0x1, le
+    0.00 :   18dd3c:        b.lt    0x18de54 <flyology__db__coordinator__conflicts_with_earlierN+0x334>
+    0.00 :   18dd40:        sub     x2, x0, x2
+    0.00 :   18dd44:        mov     w1, w24
+    0.00 :   18dd48:        ldr     x0, [sp, #0x68]
+    0.00 :   18dd4c:        ldrb    w26, [x6, x2]
+    0.00 :   18dd50:        bl      0xaa1160 <flyology__bytes__element>
+    0.00 :   18dd54:        cmp     w26, w0, uxtb
+    0.00 :   18dd58:        b.ne    0x18dc60 <flyology__db__coordinator__conflicts_with_earlierN+0x140>
+    0.00 :   18dd5c:        add     w24, w24, #0x1
+    0.00 :   18dd60:        cmp     w19, w23
+    0.00 :   18dd64:        b.ne    0x18dc04 <flyology__db__coordinator__conflicts_with_earlierN+0xe4>
+    0.00 :   18dd68:        mov     w1, #0x1
+    0.00 :   18dd6c:        mov     w0, w1
+    0.00 :   18dd70:        ldp     x19, x20, [sp, #0x10]
+    0.00 :   18dd74:        ldp     x21, x22, [sp, #0x20]
+    0.00 :   18dd78:        ldp     x23, x24, [sp, #0x30]
+    0.00 :   18dd7c:        ldp     x25, x26, [sp, #0x40]
+    0.00 :   18dd80:        ldp     x27, x28, [sp, #0x50]
+    0.00 :   18dd84:        ldp     x29, x30, [sp], #0x90
+    0.00 :   18dd88:        ret
+    0.00 :   18dd8c:        mov     w1, #0x1
+    0.00 :   18dd90:        mov     w0, w1
+    0.00 :   18dd94:        ret
+    0.89 :   18dd98:        ldr     w0, [x3]
+    0.00 :   18dd9c:        mov     w19, #0x0
+    0.00 :   18dda0:        mov     x28, #0x38
+    0.00 :   18dda4:        cmp     w24, w0
+    0.00 :   18dda8:        cset    w25, gt
+   10.03 :   18ddac:        ldr     x1, [x20, #0x18]
+    0.00 :   18ddb0:        cbz     x1, 0x18de68 <flyology__db__coordinator__conflicts_with_earlierN+0x348>
+   11.95 :   18ddb4:        ldr     x0, [sp, #0x80]
+    0.00 :   18ddb8:        ldr     x2, [x0, #0x18]
+    0.00 :   18ddbc:        cbz     x2, 0x18de68 <flyology__db__coordinator__conflicts_with_earlierN+0x348>
+   15.74 :   18ddc0:        ldr     w0, [x1]
+    0.00 :   18ddc4:        cmp     w22, #0x0
+    0.00 :   18ddc8:        ccmp    w0, w21, #0x0, ne
+    0.00 :   18ddcc:        b.lt    0x18deb0 <flyology__db__coordinator__conflicts_with_earlierN+0x390>
+   12.07 :   18ddd0:        ldr     w0, [x2]
+    0.83 :   18ddd4:        add     w19, w19, #0x1
+    0.00 :   18ddd8:        cmp     w25, #0x0
+    0.00 :   18dddc:        ccmp    w19, w0, #0x4, ne
+    0.00 :   18dde0:        b.gt    0x18deb0 <flyology__db__coordinator__conflicts_with_earlierN+0x390>
+   19.75 :   18dde4:        ldr     x0, [sp, #0x78]
+    0.00 :   18dde8:        add     x2, x2, x28
+    0.00 :   18ddec:        add     x1, x1, x0
+    0.00 :   18ddf0:        ldr     x0, [sp, #0x70]
+    0.00 :   18ddf4:        bl      0x18d400 <flyology__db__coordinator__same_admitted_keyN>
+   13.22 :   18ddf8:        and     w1, w0, #0xff
+    0.00 :   18ddfc:        tbnz    w0, #0x0, 0x18dc40 <flyology__db__coordinator__conflicts_with_earlierN+0x120>
+   14.73 :   18de00:        add     x28, x28, #0x30
+    0.00 :   18de04:        cmp     w24, w19
+    0.00 :   18de08:        b.ne    0x18ddac <flyology__db__coordinator__conflicts_with_earlierN+0x28c>
+    0.00 :   18de0c:        ldr     x0, [sp, #0x80]
+    0.00 :   18de10:        ldr     x3, [x0, #0x18]
+    0.00 :   18de14:        cbnz    x3, 0x18db90 <flyology__db__coordinator__conflicts_with_earlierN+0x70>
+    0.00 :   18de18:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18de1c:        add     x0, x0, #0x410
+    0.00 :   18de20:        add     x0, x0, #0x58
+    0.00 :   18de24:        mov     w1, #0xf31
+    0.00 :   18de28:        bl      0xb35238 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   18de2c:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18de30:        add     x0, x0, #0x410
+    0.00 :   18de34:        add     x0, x0, #0x58
+    0.00 :   18de38:        mov     w1, #0xef4
+    0.00 :   18de3c:        bl      0xb352c8 <__gnat_rcheck_CE_Invalid_Data>
+    0.00 :   18de40:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18de44:        add     x0, x0, #0x410
+    0.00 :   18de48:        add     x0, x0, #0x58
+    0.00 :   18de4c:        mov     w1, #0x1b4
+    0.00 :   18de50:        bl      0xb35328 <__gnat_rcheck_CE_Overflow_Check>
+    0.00 :   18de54:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18de58:        add     x0, x0, #0x410
+    0.00 :   18de5c:        add     x0, x0, #0x58
+    0.00 :   18de60:        mov     w1, #0x1b4
+    0.00 :   18de64:        bl      0xb352b0 <__gnat_rcheck_CE_Index_Check>
+    0.00 :   18de68:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18de6c:        add     x0, x0, #0x410
+    0.00 :   18de70:        add     x0, x0, #0x58
+    0.00 :   18de74:        mov     w1, #0xf2c
+    0.00 :   18de78:        bl      0xb35238 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   18de7c:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18de80:        add     x0, x0, #0x410
+    0.00 :   18de84:        add     x0, x0, #0x58
+    0.00 :   18de88:        mov     w1, #0xf33
+    0.00 :   18de8c:        bl      0xb35238 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   18de90:        mov     x0, #0x7fffffff
+    0.00 :   18de94:        cmp     x7, x0
+    0.00 :   18de98:        b.ls    0x18dd1c <flyology__db__coordinator__conflicts_with_earlierN+0x1fc>
+    0.00 :   18de9c:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18dea0:        add     x0, x0, #0x410
+    0.00 :   18dea4:        add     x0, x0, #0x58
+    0.00 :   18dea8:        mov     w1, #0x1b1
+    0.00 :   18deac:        bl      0xb35358 <__gnat_rcheck_CE_Range_Check>
+    0.00 :   18deb0:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18deb4:        add     x0, x0, #0x410
+    0.00 :   18deb8:        add     x0, x0, #0x58
+    0.00 :   18debc:        mov     w1, #0xf2c
+    0.00 :   18dec0:        bl      0xb352b0 <__gnat_rcheck_CE_Index_Check>
+    0.00 :   18dec4:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18dec8:        add     x0, x0, #0x410
+    0.00 :   18decc:        add     x0, x0, #0x58
+    0.00 :   18ded0:        mov     w1, #0xf3a
+    0.00 :   18ded4:        bl      0xb35238 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   18ded8:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18dedc:        add     x0, x0, #0x410
+    0.00 :   18dee0:        add     x0, x0, #0x58
+    0.00 :   18dee4:        mov     w1, #0xf33
+    0.00 :   18dee8:        bl      0xb352b0 <__gnat_rcheck_CE_Index_Check>
+    0.00 :   18deec:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18def0:        add     x0, x0, #0x410
+    0.00 :   18def4:        add     x0, x0, #0x58
+    0.00 :   18def8:        mov     w1, #0xf3a
+    0.00 :   18defc:        bl      0xb352b0 <__gnat_rcheck_CE_Index_Check>
+    0.00 :   18df00:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18df04:        add     x0, x0, #0x410
+    0.00 :   18df08:        add     x0, x0, #0x58
+    0.00 :   18df0c:        mov     w1, #0xf38
+    0.00 :   18df10:        bl      0xb35238 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   18df14:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18df18:        add     x0, x0, #0x410
+    0.00 :   18df1c:        add     x0, x0, #0x58
+    0.00 :   18df20:        mov     w1, #0xf2a
+    0.00 :   18df24:        bl      0xb352c8 <__gnat_rcheck_CE_Invalid_Data>
+    0.00 :   18df28:        adrp    x0, 2731 // 0xc38000
+    0.00 :   18df2c:        add     x0, x0, #0x410
+    0.00 :   18df30:        add     x0, x0, #0x58
+    0.00 :   18df34:        mov     w1, #0xf29
+    0.00 :   18df38:        bl      0xb352c8 <__gnat_rcheck_CE_Invalid_Data>

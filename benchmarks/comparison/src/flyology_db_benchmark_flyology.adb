@@ -1,5 +1,8 @@
 with Ada.Environment_Variables;
 with Ada.Real_Time;
+with Ada.Strings;
+with Ada.Strings.Fixed;
+with Ada.Strings.Unbounded;
 with Ada.Unchecked_Deallocation;
 with Flyology.Bytes;
 with Flyology.DB;
@@ -23,6 +26,7 @@ package body Flyology_DB_Benchmark_Flyology is
    package Low_Level renames Flyology.Object_Storage.Client.Low_Level;
    package Operations renames Flyology.Operations;
    package OS renames Flyology.Object_Storage;
+   package UStrings renames Ada.Strings.Unbounded;
 
    use type Ada.Real_Time.Time;
    use type DB.Byte;
@@ -42,6 +46,23 @@ package body Flyology_DB_Benchmark_Flyology is
    Timeout                     : constant Duration := 30.0;
    Local_Bucket                : constant String := "flyology-db-benchmark";
    Local_Prefix                : constant String := "database";
+
+   type Caller_Diagnostics is record
+      Cohort_Total             : Interfaces.Unsigned_64 := 0;
+      Member_Total             : Interfaces.Unsigned_64 := 0;
+      Width_Counts             : Benchmark_Controls.Diagnostic_Cohort_Width_Counts := [others => 0];
+      Preparation_Nanoseconds  : Interfaces.Unsigned_64 := 0;
+      Admission_Nanoseconds    : Interfaces.Unsigned_64 := 0;
+      Completion_Drive_Nanoseconds : Interfaces.Unsigned_64 := 0;
+   end record;
+
+   Latest_Diagnostics_Available : Boolean := False;
+   Latest_Configuration_Available : Boolean := False;
+   Latest_Runtime_Diagnostics   : Benchmark_Controls.Adaptive_Cohort_Diagnostics;
+   Latest_Caller_Diagnostics    : Caller_Diagnostics;
+   Latest_Batch_Publications    : Natural := 0;
+   Latest_Manifest_Publications : Natural := 0;
+   Latest_Head_Publications     : Natural := 0;
 
    procedure Require (Condition : Boolean; Message : String) is
    begin
@@ -73,6 +94,129 @@ package body Flyology_DB_Benchmark_Flyology is
      (if Ada.Environment_Variables.Exists (Name)
       then Ada.Environment_Variables.Value (Name)
       else "");
+
+   function Effective_Commit_Diagnostics return Boolean is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_COMMIT_DIAGNOSTICS");
+   begin
+      if Raw'Length = 0 or else Raw = "0" then
+         return False;
+      elsif Raw = "1" then
+         return True;
+      end if;
+      raise Program_Error with "FLYOLOGY_DB_BENCH_COMMIT_DIAGNOSTICS must be 0 or 1";
+   end Effective_Commit_Diagnostics;
+
+   function Image (Value : Interfaces.Unsigned_64) return String is
+     (Ada.Strings.Fixed.Trim (Interfaces.Unsigned_64'Image (Value), Ada.Strings.Both));
+
+   function Image (Value : Natural) return String is
+     (Ada.Strings.Fixed.Trim (Natural'Image (Value), Ada.Strings.Both));
+
+   function Nanoseconds_Between
+     (Started, Finished : Ada.Real_Time.Time) return Interfaces.Unsigned_64
+   is
+   begin
+      if Finished <= Started then
+         return 0;
+      end if;
+      return
+        Interfaces.Unsigned_64
+          (Long_Long_Integer
+             (Ada.Real_Time.To_Duration (Finished - Started) * 1_000_000_000.0));
+   exception
+      when Constraint_Error =>
+         return Interfaces.Unsigned_64'Last;
+   end Nanoseconds_Between;
+
+   procedure Add_Elapsed
+     (Target : in out Interfaces.Unsigned_64; Started, Finished : Ada.Real_Time.Time)
+   is
+      Value : constant Interfaces.Unsigned_64 := Nanoseconds_Between (Started, Finished);
+   begin
+      if Value > Interfaces.Unsigned_64'Last - Target then
+         Target := Interfaces.Unsigned_64'Last;
+      else
+         Target := Target + Value;
+      end if;
+   end Add_Elapsed;
+
+   function Last_Run_Configuration_NDJSON
+     (Participant : String; Execution_Ordinal : Natural; Transactions : Positive) return String is
+   begin
+      if not Latest_Configuration_Available then
+         return "";
+      end if;
+      return
+        "{""schema"":""flyology.db.benchmark.execution_configuration.v1"""
+        & ",""kind"":""flyology_db_execution_configuration"""
+        & ",""participant"":""" & Participant & """"
+        & ",""execution_ordinal"":" & Image (Execution_Ordinal)
+        & ",""transactions"":" & Image (Transactions)
+        & ",""batch_publications"":" & Image (Latest_Batch_Publications)
+        & ",""manifest_publications"":" & Image (Latest_Manifest_Publications)
+        & ",""head_publications"":" & Image (Latest_Head_Publications)
+        & "}";
+   end Last_Run_Configuration_NDJSON;
+
+   function Last_Run_Diagnostics_NDJSON
+     (Execution_Ordinal : Natural; Transactions : Positive) return String
+   is
+      Result : UStrings.Unbounded_String;
+   begin
+      if not Latest_Diagnostics_Available then
+         return "";
+      end if;
+      Result :=
+        UStrings.To_Unbounded_String
+          ("{""schema"":""flyology.db.benchmark.commit_diagnostics.v1"""
+         & ",""kind"":""flyology_db_commit_diagnostics"""
+           & ",""attribution"":""elapsed_upper_bounds_nonadditive"""
+           & ",""worker_span_semantics"":""provider_inclusive_sequential"""
+           & ",""caller_span_semantics"":""overlaps_worker_completion_includes_driver"""
+           & ",""boundary_semantics"":""nonexclusive_predicates"""
+           & ",""precompletion_semantics"":""inclusive_worker_total"""
+           & ",""execution_ordinal"":" & Image (Execution_Ordinal)
+           & ",""transactions"":" & Image (Transactions)
+           & ",""cohort_total"":" & Image (Latest_Runtime_Diagnostics.Cohort_Total)
+           & ",""member_total"":" & Image (Latest_Runtime_Diagnostics.Member_Total)
+           & ",""encoded_bytes"":" & Image (Latest_Runtime_Diagnostics.Encoded_Bytes)
+           & ",""width_counts"":{");
+      for Width in Benchmark_Controls.Diagnostic_Cohort_Width loop
+         UStrings.Append
+           (Result,
+            (if Width = Benchmark_Controls.Diagnostic_Cohort_Width'First then "" else ",")
+            & """" & Image (Width) & """:"
+            & Image (Latest_Runtime_Diagnostics.Width_Counts (Width)));
+      end loop;
+      UStrings.Append
+        (Result,
+         "},""member_boundary_total"":"
+         & Image (Latest_Runtime_Diagnostics.Member_Boundary_Total)
+         & ",""byte_boundary_total"":" & Image (Latest_Runtime_Diagnostics.Byte_Boundary_Total)
+         & ",""hard_boundary_total"":" & Image (Latest_Runtime_Diagnostics.Hard_Boundary_Total)
+         & ",""wait_boundary_total"":" & Image (Latest_Runtime_Diagnostics.Wait_Boundary_Total)
+         & ",""close_boundary_total"":" & Image (Latest_Runtime_Diagnostics.Close_Boundary_Total)
+         & ",""phase_cohort_total"":" & Image (Latest_Runtime_Diagnostics.Phase_Cohort_Total)
+         & ",""batch_publications"":" & Image (Latest_Batch_Publications)
+         & ",""manifest_publications"":" & Image (Latest_Manifest_Publications)
+         & ",""head_publications"":" & Image (Latest_Head_Publications)
+         & ",""prepublication_ns"":"
+         & Image (Latest_Runtime_Diagnostics.Phases.Prepublication_Nanoseconds)
+         & ",""build_ns"":" & Image (Latest_Runtime_Diagnostics.Phases.Build_Nanoseconds)
+         & ",""validation_ns"":" & Image (Latest_Runtime_Diagnostics.Phases.Validation_Nanoseconds)
+         & ",""batch_put_ns"":" & Image (Latest_Runtime_Diagnostics.Phases.Batch_Put_Nanoseconds)
+         & ",""head_encode_ns"":" & Image (Latest_Runtime_Diagnostics.Phases.Head_Encode_Nanoseconds)
+         & ",""head_put_ns"":" & Image (Latest_Runtime_Diagnostics.Phases.Head_Put_Nanoseconds)
+         & ",""installation_ns"":" & Image (Latest_Runtime_Diagnostics.Phases.Installation_Nanoseconds)
+         & ",""precompletion_ns"":"
+         & Image (Latest_Runtime_Diagnostics.Phases.Precompletion_Nanoseconds)
+         & ",""caller_preparation_ns"":" & Image (Latest_Caller_Diagnostics.Preparation_Nanoseconds)
+         & ",""caller_admission_ns"":" & Image (Latest_Caller_Diagnostics.Admission_Nanoseconds)
+         & ",""caller_completion_drive_ns"":"
+         & Image (Latest_Caller_Diagnostics.Completion_Drive_Nanoseconds)
+         & "}");
+      return UStrings.To_String (Result);
+   end Last_Run_Diagnostics_NDJSON;
 
    function Requested_Group_Size return Positive is
       Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_GROUP_SIZE");
@@ -335,7 +479,9 @@ package body Flyology_DB_Benchmark_Flyology is
       Cohort_Width   : Natural;
       Aggregate_First_Ordinal : Interfaces.Unsigned_64;
       Adaptive_Cohort : Boolean;
-      Wave_Scheduling : Boolean)
+      Wave_Scheduling : Boolean;
+      Collect_Diagnostics : Boolean;
+      Diagnostics         : in out Caller_Diagnostics)
    is
       type Operation_Access is access DB.Commit_Operation;
       procedure Free is new Ada.Unchecked_Deallocation
@@ -398,8 +544,16 @@ package body Flyology_DB_Benchmark_Flyology is
 
       procedure Drain_Ready is
          Finished_Here : Natural := 0;
+         Started       : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
       begin
+         if Collect_Diagnostics then
+            Started := Ada.Real_Time.Clock;
+         end if;
          Operations.Wait_Some (Set, Completed);
+         if Collect_Diagnostics then
+            Add_Elapsed
+              (Diagnostics.Completion_Drive_Nanoseconds, Started, Ada.Real_Time.Clock);
+         end if;
          Require (Completed.Count > 0, "singleton pipeline returned no completion");
          for Slot in Work'Range loop
             if Active (Slot) and then Operations.Is_Terminal (Work (Slot).all) then
@@ -431,13 +585,26 @@ package body Flyology_DB_Benchmark_Flyology is
                Index       : constant Positive := First_Index + Submitted;
                Transaction : DB.Transaction;
                Result      : DB.Outcome_Code;
+               Started     : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
             begin
                while Active (Slot) loop
                   Slot := Slot + 1;
                end loop;
+               if Collect_Diagnostics then
+                  Started := Ada.Real_Time.Clock;
+               end if;
                Prepare_Transaction
                  (Item, Family, Index, Mutations, Key_Length, Value_Length, Transaction);
+               if Collect_Diagnostics then
+                  Add_Elapsed
+                    (Diagnostics.Preparation_Nanoseconds, Started, Ada.Real_Time.Clock);
+                  Started := Ada.Real_Time.Clock;
+               end if;
                DB.Commit (Transaction, Deadline, Work (Slot).all);
+               if Collect_Diagnostics then
+                  Add_Elapsed
+                    (Diagnostics.Admission_Nanoseconds, Started, Ada.Real_Time.Clock);
+               end if;
                Index_For (Slot) := Index;
                Active (Slot) := True;
                Active_Count := Active_Count + 1;
@@ -469,15 +636,17 @@ package body Flyology_DB_Benchmark_Flyology is
          begin
             while First <= Sequences'Last loop
                declare
-                  Last : Positive := First;
+                  Last  : Positive := First;
+                  Width : Positive;
                begin
                   while Last < Sequences'Last
                     and then Transitions (Last + 1) = Transitions (First)
                   loop
                      Last := Last + 1;
                   end loop;
+                  Width := Last - First + 1;
                   Require
-                    (Last - First + 1 <= Cohort_Width
+                    (Width <= Cohort_Width
                        and then Batch_IDs (First)
                                   = Numbered_ID (Interfaces.Unsigned_64 (1_000 + First)),
                      "adaptive cohort leader identity or member bound changed");
@@ -486,6 +655,12 @@ package body Flyology_DB_Benchmark_Flyology is
                        (Batch_IDs (Index) = Batch_IDs (First),
                         "adaptive cohort receipts did not share one batch identity");
                   end loop;
+                  if Collect_Diagnostics then
+                     Diagnostics.Cohort_Total := Diagnostics.Cohort_Total + 1;
+                     Diagnostics.Member_Total :=
+                       Diagnostics.Member_Total + Interfaces.Unsigned_64 (Width);
+                     Diagnostics.Width_Counts (Width) := Diagnostics.Width_Counts (Width) + 1;
+                  end if;
                   if First > Sequences'First then
                      Require
                        (Transitions (First) = Transitions (First - 1) + 1,
@@ -787,6 +962,7 @@ package body Flyology_DB_Benchmark_Flyology is
         Requested_Adaptive_Maximum_Wait_Microseconds;
       Adaptive_Admission_Depth : constant Natural := Requested_Adaptive_Admission_Depth;
       Adaptive_Cohort    : constant Boolean := Adaptive_Maximum_Members > 0;
+      Collect_Diagnostics : constant Boolean := Effective_Commit_Diagnostics;
       Cohort_Width       : constant Natural :=
         Independent_Cohort_Width + Aggregate_Cohort_Width + Adaptive_Maximum_Members;
       Commit_Deadline    : constant Duration :=
@@ -845,6 +1021,8 @@ package body Flyology_DB_Benchmark_Flyology is
       Warmup_Batch_Before, Warmup_Manifest_Before, Warmup_Head_Before : Natural := 0;
       Warmup_Batch_After, Warmup_Manifest_After, Warmup_Head_After    : Natural := 0;
       Measured_Batch_After, Measured_Manifest_After, Measured_Head_After : Natural := 0;
+      Runtime_Diagnostics : Benchmark_Controls.Adaptive_Cohort_Diagnostics;
+      Caller_Snapshot     : Caller_Diagnostics;
 
       procedure Require_Cohort_Geometry
         (Batch_Before, Manifest_Before, Head_Before : Natural;
@@ -875,6 +1053,13 @@ package body Flyology_DB_Benchmark_Flyology is
          end if;
       end Require_Cohort_Geometry;
    begin
+      Latest_Diagnostics_Available := False;
+      Latest_Configuration_Available := False;
+      Latest_Runtime_Diagnostics := (others => <>);
+      Latest_Caller_Diagnostics := (others => <>);
+      Latest_Batch_Publications := 0;
+      Latest_Manifest_Publications := 0;
+      Latest_Head_Publications := 0;
       Require
         (Total_Transactions <= Maximum_Operations,
          "operation count exceeds benchmark fixture limit");
@@ -890,6 +1075,9 @@ package body Flyology_DB_Benchmark_Flyology is
            + (if Adaptive_Cohort then 1 else 0)
            <= 1,
          "independent, exact aggregate, and adaptive cohort profiles are mutually exclusive");
+      Require
+        (not Collect_Diagnostics or else Adaptive_Cohort,
+         "commit diagnostics require the adaptive cohort profile");
       Require
         (Cohort_Width <= Maximum_Pipeline_Depth,
          "cohort width exceeds the eight-slot fixture capacity");
@@ -999,13 +1187,12 @@ package body Flyology_DB_Benchmark_Flyology is
             Result);
          Expect (Result, "adaptive aggregate-coalescing profile setup failed");
       end if;
+      Latest_Configuration_Available := True;
       DB.Open_Column_Family (Ignored_Item, 1, Family, Result);
       Expect (Result, "family open failed");
 
-      if Cohort_Width > 0 then
-         Benchmark_Controls.Publication_Counts
-           (Storage.all, Warmup_Batch_Before, Warmup_Manifest_Before, Warmup_Head_Before);
-      end if;
+      Benchmark_Controls.Publication_Counts
+        (Storage.all, Warmup_Batch_Before, Warmup_Manifest_Before, Warmup_Head_Before);
 
       if Warmup > 0 then
          if Explicit_Group then
@@ -1044,12 +1231,14 @@ package body Flyology_DB_Benchmark_Flyology is
                Cohort_Width,
                Aggregate_First_Ordinal,
                Adaptive_Cohort,
-               Wave_Scheduling);
+               Wave_Scheduling,
+               False,
+               Caller_Snapshot);
          end if;
       end if;
+      Benchmark_Controls.Publication_Counts
+        (Storage.all, Warmup_Batch_After, Warmup_Manifest_After, Warmup_Head_After);
       if Cohort_Width > 0 then
-         Benchmark_Controls.Publication_Counts
-           (Storage.all, Warmup_Batch_After, Warmup_Manifest_After, Warmup_Head_After);
          Require_Cohort_Geometry
            (Warmup_Batch_Before,
             Warmup_Manifest_Before,
@@ -1059,6 +1248,10 @@ package body Flyology_DB_Benchmark_Flyology is
             Warmup_Head_After,
             Warmup,
             "warmup");
+      end if;
+      if Collect_Diagnostics then
+         Benchmark_Controls.Begin_Adaptive_Cohort_Diagnostics (Ignored_Item, Result);
+         Expect (Result, "adaptive cohort diagnostics begin failed");
       end if;
       Started := Ada.Real_Time.Clock;
       if Explicit_Group then
@@ -1097,12 +1290,22 @@ package body Flyology_DB_Benchmark_Flyology is
             Cohort_Width,
             Aggregate_First_Ordinal,
             Adaptive_Cohort,
-            Wave_Scheduling);
+            Wave_Scheduling,
+            Collect_Diagnostics,
+            Caller_Snapshot);
       end if;
       Finished := Ada.Real_Time.Clock;
+      if Collect_Diagnostics then
+         Benchmark_Controls.Finish_Adaptive_Cohort_Diagnostics
+           (Ignored_Item, Runtime_Diagnostics, Result);
+         Expect (Result, "adaptive cohort diagnostics finish failed");
+      end if;
+      Benchmark_Controls.Publication_Counts
+        (Storage.all, Measured_Batch_After, Measured_Manifest_After, Measured_Head_After);
+      Latest_Batch_Publications := Measured_Batch_After - Warmup_Batch_After;
+      Latest_Manifest_Publications := Measured_Manifest_After - Warmup_Manifest_After;
+      Latest_Head_Publications := Measured_Head_After - Warmup_Head_After;
       if Cohort_Width > 0 then
-         Benchmark_Controls.Publication_Counts
-           (Storage.all, Measured_Batch_After, Measured_Manifest_After, Measured_Head_After);
          Require_Cohort_Geometry
            (Warmup_Batch_After,
             Warmup_Manifest_After,
@@ -1112,6 +1315,102 @@ package body Flyology_DB_Benchmark_Flyology is
             Measured_Head_After,
             Measured,
             "measured");
+      end if;
+      if Collect_Diagnostics then
+         declare
+            Batch_Publications : constant Natural := Measured_Batch_After - Warmup_Batch_After;
+            Manifest_Publications : constant Natural :=
+              Measured_Manifest_After - Warmup_Manifest_After;
+            Head_Publications : constant Natural := Measured_Head_After - Warmup_Head_After;
+            Primary_Nanoseconds : constant Interfaces.Unsigned_64 :=
+              Nanoseconds_Between (Started, Finished);
+            Worker_Component_Total : Interfaces.Unsigned_64 := 0;
+            Caller_Component_Total : Interfaces.Unsigned_64 := 0;
+            Worker_Difference      : Interfaces.Unsigned_64;
+            Worker_Rounding_Tolerance : constant Interfaces.Unsigned_64 :=
+              16 * Runtime_Diagnostics.Cohort_Total;
+            Caller_Rounding_Tolerance : constant Interfaces.Unsigned_64 :=
+              2 * Interfaces.Unsigned_64 (3 * Measured + 1);
+
+            procedure Add_Component
+              (Target : in out Interfaces.Unsigned_64; Value : Interfaces.Unsigned_64) is
+            begin
+               if Value > Interfaces.Unsigned_64'Last - Target then
+                  Target := Interfaces.Unsigned_64'Last;
+               else
+                  Target := Target + Value;
+               end if;
+            end Add_Component;
+
+            function Within_Rounding
+              (Value, Bound, Tolerance : Interfaces.Unsigned_64) return Boolean is
+              (Value <= Bound or else Value - Bound <= Tolerance);
+         begin
+            Add_Component
+              (Worker_Component_Total, Runtime_Diagnostics.Phases.Prepublication_Nanoseconds);
+            Add_Component (Worker_Component_Total, Runtime_Diagnostics.Phases.Build_Nanoseconds);
+            Add_Component (Worker_Component_Total, Runtime_Diagnostics.Phases.Validation_Nanoseconds);
+            Add_Component (Worker_Component_Total, Runtime_Diagnostics.Phases.Batch_Put_Nanoseconds);
+            Add_Component (Worker_Component_Total, Runtime_Diagnostics.Phases.Head_Encode_Nanoseconds);
+            Add_Component (Worker_Component_Total, Runtime_Diagnostics.Phases.Head_Put_Nanoseconds);
+            Add_Component (Worker_Component_Total, Runtime_Diagnostics.Phases.Installation_Nanoseconds);
+            Add_Component (Caller_Component_Total, Caller_Snapshot.Preparation_Nanoseconds);
+            Add_Component (Caller_Component_Total, Caller_Snapshot.Admission_Nanoseconds);
+            Add_Component (Caller_Component_Total, Caller_Snapshot.Completion_Drive_Nanoseconds);
+            Worker_Difference :=
+              (if Worker_Component_Total >= Runtime_Diagnostics.Phases.Precompletion_Nanoseconds
+               then Worker_Component_Total - Runtime_Diagnostics.Phases.Precompletion_Nanoseconds
+               else Runtime_Diagnostics.Phases.Precompletion_Nanoseconds - Worker_Component_Total);
+            --  Each cohort converts seven adjacent phases and one inclusive
+            --  span independently. Caller conversion count is bounded by two
+            --  spans per transaction, one Wait_Some per transaction, and the
+            --  primary window. The derived allowances conservatively absorb
+            --  fixed-point rounding without masking a missing phase.
+            Require
+              (Runtime_Diagnostics.Cohort_Total = Interfaces.Unsigned_64 (Batch_Publications)
+                 and then Runtime_Diagnostics.Member_Total = Interfaces.Unsigned_64 (Measured)
+                 and then Runtime_Diagnostics.Phase_Cohort_Total = Runtime_Diagnostics.Cohort_Total
+                 and then Runtime_Diagnostics.Encoded_Bytes > 0
+                 and then Caller_Snapshot.Cohort_Total = Runtime_Diagnostics.Cohort_Total
+                 and then Caller_Snapshot.Member_Total = Runtime_Diagnostics.Member_Total
+                 and then Manifest_Publications = 0
+                 and then Head_Publications = Batch_Publications,
+               "adaptive cohort diagnostic geometry disagrees with publication evidence");
+            Require
+              (Primary_Nanoseconds /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Cohort_Total /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Member_Total /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Encoded_Bytes /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Member_Boundary_Total /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Byte_Boundary_Total /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Hard_Boundary_Total /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Wait_Boundary_Total /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Close_Boundary_Total /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Phase_Cohort_Total /= Interfaces.Unsigned_64'Last
+                 and then Runtime_Diagnostics.Phases.Precompletion_Nanoseconds
+                            /= Interfaces.Unsigned_64'Last
+                 and then Worker_Component_Total /= Interfaces.Unsigned_64'Last
+                 and then Caller_Component_Total /= Interfaces.Unsigned_64'Last
+                 and then Worker_Difference <= Worker_Rounding_Tolerance
+                 and then
+                   Within_Rounding
+                     (Runtime_Diagnostics.Phases.Precompletion_Nanoseconds,
+                      Primary_Nanoseconds,
+                      Worker_Rounding_Tolerance)
+                 and then
+                   Within_Rounding
+                     (Caller_Component_Total, Primary_Nanoseconds, Caller_Rounding_Tolerance),
+               "adaptive cohort diagnostic timing is saturated or internally inconsistent");
+            for Width in Benchmark_Controls.Diagnostic_Cohort_Width loop
+               Require
+                 (Caller_Snapshot.Width_Counts (Width) = Runtime_Diagnostics.Width_Counts (Width)
+                    and then Caller_Snapshot.Width_Counts (Width) /= Interfaces.Unsigned_64'Last,
+                  "adaptive cohort receipt width disagrees with coordinator selection");
+            end loop;
+            Latest_Runtime_Diagnostics := Runtime_Diagnostics;
+            Latest_Caller_Diagnostics := Caller_Snapshot;
+            Latest_Diagnostics_Available := True;
+         end;
       end if;
 
       DB.Close (Ignored_Item, Result);

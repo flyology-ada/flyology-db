@@ -1,0 +1,6 @@
+aca2cbbb8a17e930fad82ed0a8785ef8f11c8cec9b7275357d8c779f72ab874e  ./comparison.json
+57dfcea40a150b92075c2c5c28f4c6d13430c11a29deebb4df98a1961fee1fce  ./comparison.ndjson
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./comparison.stderr
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./comparison.stdout
+46fbffe4fdfa8249b54720930cf94b728e680b596a186b0622f39ffec4c2e054  ./power-after.env
+46fbffe4fdfa8249b54720930cf94b728e680b596a186b0622f39ffec4c2e054  ./power-before.env

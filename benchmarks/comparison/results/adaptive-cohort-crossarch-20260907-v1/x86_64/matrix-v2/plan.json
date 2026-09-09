@@ -1,0 +1,46 @@
+{
+  "architecture": "x86_64",
+  "comparisons": {
+    "P": [
+      "flyology-db-files",
+      "flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves"
+    ],
+    "Q": [
+      "flyology-db-files-singleton-depth8-waves",
+      "flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves"
+    ],
+    "R": [
+      "slatedb-1ms-depth8-waves",
+      "flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves"
+    ]
+  },
+  "driver_sha256": "f41d86f5f5b58f2d181cb3ecc7eecfe378bc041f445ce17c74bbdab9e4c9b310",
+  "host_lock_path": "/run/lock/flyology-bench-host-cpu.lock",
+  "maintained_campaign_sha256": "d268985f787fd6846d6e8e5ca918310683d39f2bbf44f12c3a8c411e83c6fb94",
+  "orders": [
+    [
+      "P",
+      "Q",
+      "R"
+    ],
+    [
+      "Q",
+      "R",
+      "P"
+    ],
+    [
+      "R",
+      "P",
+      "Q"
+    ]
+  ],
+  "schema": "flyology.db.benchmark.adaptive-crossarch-plan.v1",
+  "warmup_transactions": 8,
+  "workload": {
+    "id": "sustained-8960",
+    "key_bytes": 16,
+    "mutations": 256,
+    "transactions": 35,
+    "value_bytes": 1024
+  }
+}

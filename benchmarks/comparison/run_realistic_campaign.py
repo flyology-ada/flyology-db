@@ -55,6 +55,7 @@ REMOTE_PAIRS = (
     ("flyology-db-rustfs", "slatedb-rustfs-1ms"),
 )
 REMOTE_WORKLOADS = frozenset(("baseline", "value-16384", "batch-16", "sustained-8960"))
+INDEPENDENT_COHORT_PREFIX = "flyology-db-files-independent-cohort-width"
 
 
 def run(command: list[str], *, environment: dict[str, str] | None = None) -> str:
@@ -157,9 +158,11 @@ def host(power: dict[str, str | None]) -> dict[str, Any]:
         memory_bytes = int(run(["sysctl", "-n", "hw.memsize"]).strip())
     elif platform.system() == "Linux":
         cpu_rows = {
-            line.split(":", 1)[1].strip()
-            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines()
-            if line.startswith("model name") and ":" in line
+            row["data"].strip()
+            for row in json.loads(run(["lscpu", "--json"]))["lscpu"]
+            if row.get("field", "").rstrip(":") == "Model name"
+            and isinstance(row.get("data"), str)
+            and row["data"].strip()
         }
         if len(cpu_rows) != 1:
             raise RuntimeError("Linux CPU model is missing or ambiguous")
@@ -335,6 +338,124 @@ def load_pair(
         or primary[0]["contender_median"] <= 0
     ):
         raise RuntimeError(f"retained primary metric is incomplete: {metrics_path}")
+    flyology_participants = {
+        participant
+        for participant in (reference, contender)
+        if participant.startswith("flyology-db-")
+    }
+    configurations = [
+        metric
+        for metric in metrics
+        if metric.get("kind") == "flyology_db_execution_configuration"
+    ]
+    if not configurations or {
+        configuration.get("participant") for configuration in configurations
+    } != flyology_participants:
+        raise RuntimeError(f"retained Flyology configuration is incomplete: {metrics_path}")
+    configuration_by_execution: dict[tuple[str, int], dict[str, Any]] = {}
+    configuration_ordinals: set[int] = set()
+    for configuration in configurations:
+        participant = configuration["participant"]
+        execution_profile = participant.removesuffix("-waves").removesuffix("-diagnostics")
+        independent_cohort_width = 0
+        if execution_profile.startswith(INDEPENDENT_COHORT_PREFIX):
+            width_text = execution_profile.removeprefix(INDEPENDENT_COHORT_PREFIX)
+            if not width_text.isascii() or not width_text.isdigit():
+                raise RuntimeError(
+                    f"retained independent cohort width is malformed: {metrics_path}"
+                )
+            independent_cohort_width = int(width_text)
+            #  The maintained panel profile parser admits canonical widths 1 through 8.
+            if (
+                independent_cohort_width <= 0
+                or independent_cohort_width > 8
+                or str(independent_cohort_width) != width_text
+            ):
+                raise RuntimeError(
+                    f"retained independent cohort width is not canonical: {metrics_path}"
+                )
+        counts_are_valid = (
+            type(configuration.get("transactions")) is int
+            and configuration["transactions"] > 0
+            and type(configuration.get("batch_publications")) is int
+            and configuration["batch_publications"] > 0
+            and type(configuration.get("manifest_publications")) is int
+            and configuration["manifest_publications"] == 0
+            and type(configuration.get("head_publications")) is int
+        )
+        publication_geometry_is_valid = False
+        if counts_are_valid:
+            if independent_cohort_width > 0:
+                publication_geometry_is_valid = (
+                    configuration["batch_publications"] == configuration["transactions"]
+                    and configuration["transactions"] % independent_cohort_width == 0
+                    and configuration["head_publications"]
+                    == configuration["transactions"] // independent_cohort_width
+                )
+            else:
+                publication_geometry_is_valid = (
+                    configuration["head_publications"]
+                    == configuration["batch_publications"]
+                )
+        if (
+            configuration.get("schema")
+            != "flyology.db.benchmark.execution_configuration.v1"
+            or type(configuration.get("execution_ordinal")) is not int
+            or configuration["execution_ordinal"] <= 0
+            or not publication_geometry_is_valid
+        ):
+            raise RuntimeError(
+                f"retained Flyology configuration disagrees with its participant: {metrics_path}"
+            )
+        key = (participant, configuration["execution_ordinal"])
+        if key in configuration_by_execution or configuration["execution_ordinal"] in configuration_ordinals:
+            raise RuntimeError(f"retained Flyology configuration is duplicated: {metrics_path}")
+        configuration_by_execution[key] = configuration
+        configuration_ordinals.add(configuration["execution_ordinal"])
+    paired = [
+        metric
+        for metric in metrics
+        if metric.get("schema") == "flyology.db.benchmark.paired_primary_sample.v1"
+    ]
+    if len(paired) != comparison["samples"]:
+        raise RuntimeError(f"retained paired samples are incomplete: {metrics_path}")
+    measured_configurations: set[tuple[str, int]] = set()
+    for sample in paired:
+        if (
+            sample.get("reference") != reference
+            or sample.get("contender") != contender
+            or type(sample.get("transactions_per_operation")) is not int
+            or sample["transactions_per_operation"] <= 0
+        ):
+            raise RuntimeError(f"retained paired sample identity is invalid: {metrics_path}")
+        sample_configurations: dict[str, dict[str, Any]] = {}
+        for side, participant in (("reference", reference), ("contender", contender)):
+            if participant not in flyology_participants:
+                continue
+            ordinal_value = sample.get(f"{side}_execution_ordinal")
+            iterations = sample.get(f"{side}_iterations")
+            if (
+                isinstance(ordinal_value, bool)
+                or not isinstance(ordinal_value, (int, float))
+                or ordinal_value <= 0
+                or int(ordinal_value) != ordinal_value
+                or type(iterations) is not int
+                or iterations <= 0
+            ):
+                raise RuntimeError(f"retained paired sample geometry is invalid: {metrics_path}")
+            key = (participant, int(ordinal_value))
+            if key in measured_configurations or key not in configuration_by_execution:
+                raise RuntimeError(
+                    f"retained paired sample has missing or reused Flyology configuration: {metrics_path}"
+                )
+            if configuration_by_execution[key]["transactions"] != (
+                iterations * sample["transactions_per_operation"]
+            ):
+                raise RuntimeError(
+                    f"retained Flyology configuration has the wrong transaction count: {metrics_path}"
+                )
+            measured_configurations.add(key)
+            sample_configurations[side] = configuration_by_execution[key]
     return comparison, metrics
 
 

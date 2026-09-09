@@ -1,0 +1,19 @@
+diff --git a/benchmarks/comparison/run_realistic_campaign.py b/benchmarks/comparison/run_realistic_campaign.py
+index cbcf117..4568aa6 100644
+--- a/benchmarks/comparison/run_realistic_campaign.py
++++ b/benchmarks/comparison/run_realistic_campaign.py
+@@ -157,9 +157,11 @@ def host(power: dict[str, str | None]) -> dict[str, Any]:
+         memory_bytes = int(run(["sysctl", "-n", "hw.memsize"]).strip())
+     elif platform.system() == "Linux":
+         cpu_rows = {
+-            line.split(":", 1)[1].strip()
+-            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines()
+-            if line.startswith("model name") and ":" in line
++            row["data"].strip()
++            for row in json.loads(run(["lscpu", "--json"]))["lscpu"]
++            if row.get("field", "").rstrip(":") == "Model name"
++            and isinstance(row.get("data"), str)
++            and row["data"].strip()
+         }
+         if len(cpu_rows) != 1:
+             raise RuntimeError("Linux CPU model is missing or ambiguous")

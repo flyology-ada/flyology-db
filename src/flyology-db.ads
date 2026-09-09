@@ -3035,20 +3035,13 @@ private
       Before_Immutable_Reconciliation,
       Before_Local_Activation);
    type Storage_Fault_Mode is
-     (No_Fault,
-      Definite_Failure,
-      Precondition_Failure,
-      Unknown_After_Entry,
-      Conflicting_Immutable_Read);
+     (No_Fault, Definite_Failure, Precondition_Failure, Unknown_After_Entry, Conflicting_Immutable_Read);
    type Storage_Fault_Count is array (Storage_Fault_Point) of Natural;
    type Storage_Fault_Modes is array (Storage_Fault_Point) of Storage_Fault_Mode;
 
    protected type Storage_Test_Control is
       procedure Arm
-        (Point : Storage_Fault_Point;
-         Mode  : Storage_Fault_Mode;
-         Count : Positive;
-         Skip  : Natural := 0);
+        (Point : Storage_Fault_Point; Mode : Storage_Fault_Mode; Count : Positive; Skip : Natural := 0);
       procedure Clear;
       procedure Consume (Point : Storage_Fault_Point; Mode : out Storage_Fault_Mode);
       procedure Record_Put (Is_Head, Is_Manifest, Is_Run : Boolean);
@@ -3238,6 +3231,34 @@ private
       Maximum_Wait          : Ada.Real_Time.Time_Span;
       Admission_Depth       : Positive;
       Result                : out Outcome_Code);
+   type Test_Adaptive_Cohort_Width_Counts is
+     array (Positive range 1 .. Maximum_Commit_Slots) of Interfaces.Unsigned_64;
+   type Test_Adaptive_Cohort_Phase_Durations is record
+      Prepublication_Nanoseconds : Interfaces.Unsigned_64 := 0;
+      Build_Nanoseconds          : Interfaces.Unsigned_64 := 0;
+      Validation_Nanoseconds     : Interfaces.Unsigned_64 := 0;
+      Batch_Put_Nanoseconds      : Interfaces.Unsigned_64 := 0;
+      Head_Encode_Nanoseconds    : Interfaces.Unsigned_64 := 0;
+      Head_Put_Nanoseconds       : Interfaces.Unsigned_64 := 0;
+      Installation_Nanoseconds   : Interfaces.Unsigned_64 := 0;
+      Precompletion_Nanoseconds  : Interfaces.Unsigned_64 := 0;
+   end record;
+   type Test_Adaptive_Cohort_Diagnostics is record
+      Cohort_Total          : Interfaces.Unsigned_64 := 0;
+      Member_Total          : Interfaces.Unsigned_64 := 0;
+      Encoded_Bytes         : Interfaces.Unsigned_64 := 0;
+      Width_Counts          : Test_Adaptive_Cohort_Width_Counts := [others => 0];
+      Member_Boundary_Total : Interfaces.Unsigned_64 := 0;
+      Byte_Boundary_Total   : Interfaces.Unsigned_64 := 0;
+      Hard_Boundary_Total   : Interfaces.Unsigned_64 := 0;
+      Wait_Boundary_Total   : Interfaces.Unsigned_64 := 0;
+      Close_Boundary_Total  : Interfaces.Unsigned_64 := 0;
+      Phase_Cohort_Total    : Interfaces.Unsigned_64 := 0;
+      Phases                : Test_Adaptive_Cohort_Phase_Durations;
+   end record;
+   procedure Begin_Test_Adaptive_Cohort_Diagnostics (Item : in out Database; Result : out Outcome_Code);
+   procedure Finish_Test_Adaptive_Cohort_Diagnostics
+     (Item : in out Database; Diagnostics : out Test_Adaptive_Cohort_Diagnostics; Result : out Outcome_Code);
    procedure Abort_Test_Independent_Cohort (Item : in out Database; Result : out Outcome_Code);
    procedure Test_Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
    function Test_Adaptive_Cohort_Froze_On_Byte_Limit (Item : in out Database) return Boolean;

@@ -1,0 +1,279 @@
+ Percent |	Source code & Disassembly of flyology_db_benchmark_panel for task-clock:ppp (81 samples, percent: local period)
+-------------------------------------------------------------------------------------------------------------------------------
+         : 0      0x332b80 <flyology__db__coordinator__conflicts_with_earlierN>:
+    0.00 :   332b80:        movq    0x18(%rsi), %rax
+    0.00 :   332b84:        testq   %rax, %rax
+    0.00 :   332b87:        je      0x332e70 <flyology__db__coordinator__conflicts_with_earlierN+0x2f0>
+    0.00 :   332b8d:        movq    0x18(%rdx), %rcx
+    0.00 :   332b91:        testq   %rcx, %rcx
+    0.00 :   332b94:        je      0x332e70 <flyology__db__coordinator__conflicts_with_earlierN+0x2f0>
+    0.00 :   332b9a:        pushq   %r15
+    0.00 :   332b9c:        pushq   %r14
+    0.00 :   332b9e:        movq    %rdi, %r14
+    0.00 :   332ba1:        pushq   %r13
+    0.00 :   332ba3:        pushq   %r12
+    0.00 :   332ba5:        movq    %rsi, %r12
+    0.00 :   332ba8:        pushq   %rbp
+    0.00 :   332ba9:        pushq   %rbx
+    0.00 :   332baa:        subq    $0x48, %rsp
+    0.00 :   332bae:        movl    0x4(%rcx), %edi
+    0.00 :   332bb1:        testl   %edi, %edi
+    0.00 :   332bb3:        js      0x332fea <flyology__db__coordinator__conflicts_with_earlierN+0x46a>
+    0.00 :   332bb9:        je      0x332cf0 <flyology__db__coordinator__conflicts_with_earlierN+0x170>
+    0.00 :   332bbf:        movq    %rdi, 0x38(%rsp)
+    0.00 :   332bc4:        cmpl    (%rcx), %edi
+    0.00 :   332bc6:        movq    %r14, %rbx
+    0.00 :   332bc9:        movl    $0x1, %r15d
+    0.00 :   332bcf:        movq    %r12, 0x28(%rsp)
+    0.00 :   332bd4:        setg    %sil
+    0.00 :   332bd8:        movl    $0x38, %r13d
+    0.00 :   332bde:        movq    %rdx, %r14
+    0.00 :   332be1:        movl    0x4(%rax), %edi
+    2.47 :   332be4:        testl   %edi, %edi
+    0.00 :   332be6:        js      0x33300c <flyology__db__coordinator__conflicts_with_earlierN+0x48c>
+    0.00 :   332bec:        jne     0x332e80 <flyology__db__coordinator__conflicts_with_earlierN+0x300>
+    0.00 :   332bf2:        movq    0x10(%rax), %rbp
+    0.00 :   332bf6:        testq   %rbp, %rbp
+    0.00 :   332bf9:        je      0x332d49 <flyology__db__coordinator__conflicts_with_earlierN+0x1c9>
+    0.00 :   332bff:        leaq    (%r15,%r15,2), %rax
+    0.00 :   332c03:        movq    %rbx, 0x30(%rsp)
+    0.00 :   332c08:        shlq    $0x4, %rax
+    0.00 :   332c0c:        movq    %r13, 0x20(%rsp)
+    0.00 :   332c11:        movq    %rax, %r13
+    0.00 :   332c14:        nop
+    0.00 :   332c15:        nopw    %cs:(%rax,%rax)
+    0.00 :   332c20:        movq    0x18(%r14), %rbx
+    0.00 :   332c24:        testq   %rbx, %rbx
+    0.00 :   332c27:        je      0x332f84 <flyology__db__coordinator__conflicts_with_earlierN+0x404>
+    0.00 :   332c2d:        cmpl    %r15d, (%rbx)
+    0.00 :   332c30:        setl    %al
+    0.00 :   332c33:        testb   %sil, %al
+    0.00 :   332c36:        jne     0x332fa6 <flyology__db__coordinator__conflicts_with_earlierN+0x426>
+    0.00 :   332c3c:        addq    %r13, %rbx
+    0.00 :   332c3f:        movl    0x8(%rbx), %eax
+    0.00 :   332c42:        testl   %eax, %eax
+    0.00 :   332c44:        je      0x332f40 <flyology__db__coordinator__conflicts_with_earlierN+0x3c0>
+    0.00 :   332c4a:        movl    (%rbp), %edx
+    0.00 :   332c4d:        testl   %edx, %edx
+    0.00 :   332c4f:        je      0x332f40 <flyology__db__coordinator__conflicts_with_earlierN+0x3c0>
+    0.00 :   332c55:        cmpl    %edx, %eax
+    0.00 :   332c57:        jne     0x332d20 <flyology__db__coordinator__conflicts_with_earlierN+0x1a0>
+    0.00 :   332c5d:        movl    0x1c(%rbx), %eax
+    0.00 :   332c60:        testl   %eax, %eax
+    0.00 :   332c62:        js      0x332f40 <flyology__db__coordinator__conflicts_with_earlierN+0x3c0>
+    0.00 :   332c68:        movl    0x4(%rbp), %edx
+    0.00 :   332c6b:        testl   %edx, %edx
+    0.00 :   332c6d:        js      0x332f40 <flyology__db__coordinator__conflicts_with_earlierN+0x3c0>
+    0.00 :   332c73:        cmpl    %edx, %eax
+    0.00 :   332c75:        jne     0x332d20 <flyology__db__coordinator__conflicts_with_earlierN+0x1a0>
+    0.00 :   332c7b:        testl   %eax, %eax
+    0.00 :   332c7d:        je      0x332e5c <flyology__db__coordinator__conflicts_with_earlierN+0x2dc>
+    0.00 :   332c83:        movb    %sil, 0x10(%rsp)
+    0.00 :   332c88:        movl    $0xffffffff, %r12d
+    0.00 :   332c8e:        movq    %r15, 0x8(%rsp)
+    0.00 :   332c93:        movq    %r14, %r15
+    0.00 :   332c96:        movq    %rbx, %r14
+    0.00 :   332c99:        movq    %r13, 0x18(%rsp)
+    0.00 :   332c9e:        leal    -0x1(%rax), %r13d
+    0.00 :   332ca2:        nopl    (%rax)
+    0.00 :   332ca5:        nopw    %cs:(%rax,%rax)
+    0.00 :   332cb0:        movq    0x28(%r14), %r8
+    0.00 :   332cb4:        testq   %r8, %r8
+    0.00 :   332cb7:        je      0x332ccd <flyology__db__coordinator__conflicts_with_earlierN+0x14d>
+    0.00 :   332cb9:        movq    0x30(%r14), %rax
+    0.00 :   332cbd:        movq    0x8(%rax), %rdx
+    0.00 :   332cc1:        movq    (%rax), %rax
+    0.00 :   332cc4:        cmpq    %rax, %rdx
+    0.00 :   332cc7:        jge     0x332dd8 <flyology__db__coordinator__conflicts_with_earlierN+0x258>
+    0.00 :   332ccd:        leaq    0x863694(%rip), %rsi  # 0xb96368
+    0.00 :   332cd4:        leaq    0x908405(%rip), %rdx  # 0xc3b0e0
+    0.00 :   332cdb:        leaq    0xc9b4be(%rip), %rdi  # 0xfce1a0 <constraint_error>
+    0.00 :   332ce2:        callq   0xb33c88 <__gnat_raise_exception>
+    0.00 :   332ce7:        nopw    (%rax,%rax)
+    0.00 :   332cf0:        xorl    %eax, %eax
+    0.00 :   332cf2:        addq    $0x48, %rsp
+    0.00 :   332cf6:        popq    %rbx
+    0.00 :   332cf7:        popq    %rbp
+    0.00 :   332cf8:        popq    %r12
+    0.00 :   332cfa:        popq    %r13
+    0.00 :   332cfc:        popq    %r14
+    0.00 :   332cfe:        popq    %r15
+    0.00 :   332d00:        retq
+    0.00 :   332d01:        nopl    (%rax)
+    0.00 :   332d08:        movq    %r15, %r14
+    0.00 :   332d0b:        movzbl  0x10(%rsp), %esi
+    0.00 :   332d10:        movq    0x18(%rsp), %r13
+    0.00 :   332d15:        movq    0x8(%rsp), %r15
+    0.00 :   332d1a:        nopw    (%rax,%rax)
+    0.00 :   332d20:        movq    0x28(%rbp), %rbp
+    0.00 :   332d24:        testq   %rbp, %rbp
+    0.00 :   332d27:        jne     0x332c20 <flyology__db__coordinator__conflicts_with_earlierN+0xa0>
+    0.00 :   332d2d:        movq    0x28(%rsp), %rax
+    0.00 :   332d32:        movq    0x20(%rsp), %r13
+    0.00 :   332d37:        movq    0x30(%rsp), %rbx
+    0.00 :   332d3c:        movq    0x18(%rax), %rax
+    0.00 :   332d40:        testq   %rax, %rax
+    0.00 :   332d43:        je      0x332ffb <flyology__db__coordinator__conflicts_with_earlierN+0x47b>
+    0.00 :   332d49:        movq    0x20(%rax), %rbp
+    0.00 :   332d4d:        testq   %rbp, %rbp
+    0.00 :   332d50:        je      0x332d9e <flyology__db__coordinator__conflicts_with_earlierN+0x21e>
+    0.00 :   332d52:        movl    %esi, %r12d
+    0.00 :   332d55:        nopw    %cs:(%rax,%rax)
+    0.00 :   332d60:        movq    0x18(%r14), %rsi
+    0.00 :   332d64:        testq   %rsi, %rsi
+    0.00 :   332d67:        je      0x332f95 <flyology__db__coordinator__conflicts_with_earlierN+0x415>
+    0.00 :   332d6d:        cmpl    %r15d, (%rsi)
+    0.00 :   332d70:        setl    %al
+    0.00 :   332d73:        testb   %r12b, %al
+    0.00 :   332d76:        jne     0x332fd9 <flyology__db__coordinator__conflicts_with_earlierN+0x459>
+    0.00 :   332d7c:        addq    %r13, %rsi
+    0.00 :   332d7f:        movq    %rbp, %rdx
+    0.00 :   332d82:        movq    %rbx, %rdi
+    0.00 :   332d85:        callq   0x332a80 <flyology__db__coordinator__admitted_key_in_rangeN>
+    0.00 :   332d8a:        testb   %al, %al
+    0.00 :   332d8c:        jne     0x332cf2 <flyology__db__coordinator__conflicts_with_earlierN+0x172>
+    0.00 :   332d92:        movq    0x58(%rbp), %rbp
+    0.00 :   332d96:        testq   %rbp, %rbp
+    0.00 :   332d99:        jne     0x332d60 <flyology__db__coordinator__conflicts_with_earlierN+0x1e0>
+    0.00 :   332d9b:        movl    %r12d, %esi
+    0.00 :   332d9e:        cmpq    %r15, 0x38(%rsp)
+    0.00 :   332da3:        je      0x332cf0 <flyology__db__coordinator__conflicts_with_earlierN+0x170>
+    0.00 :   332da9:        movq    0x28(%rsp), %rax
+    0.00 :   332dae:        addq    $0x1, %r15
+    0.00 :   332db2:        addq    $0x30, %r13
+    0.00 :   332db6:        movq    0x18(%rax), %rax
+    0.00 :   332dba:        testq   %rax, %rax
+    0.00 :   332dbd:        jne     0x332be1 <flyology__db__coordinator__conflicts_with_earlierN+0x61>
+    0.00 :   332dc3:        movl    $0xf2a, %esi
+    0.00 :   332dc8:        leaq    0x9080c9(%rip), %rdi  # 0xc3ae98
+    0.00 :   332dcf:        callq   0xb34088 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   332dd4:        nopl    (%rax)
+    0.00 :   332dd8:        movq    %rdx, %rcx
+    0.00 :   332ddb:        movq    %rdx, %rbx
+    0.00 :   332dde:        movq    %rax, %rdi
+    0.00 :   332de1:        sarq    $0x3f, %rdi
+    0.00 :   332de5:        sarq    $0x3f, %rbx
+    0.00 :   332de9:        subq    %rax, %rcx
+    0.00 :   332dec:        sbbq    %rdi, %rbx
+    0.00 :   332def:        addq    $0x1, %rcx
+    0.00 :   332df3:        movl    $0x7fffffff, %edi
+    0.00 :   332df8:        adcq    $0x0, %rbx
+    0.00 :   332dfc:        xorl    %esi, %esi
+    0.00 :   332dfe:        cmpq    %rcx, %rdi
+    0.00 :   332e01:        sbbq    %rbx, %rsi
+    0.00 :   332e04:        jl      0x332fc8 <flyology__db__coordinator__conflicts_with_earlierN+0x448>
+    0.00 :   332e0a:        leal    0x2(%r12), %esi
+    0.00 :   332e0f:        cmpl    %ecx, %esi
+    0.00 :   332e11:        jg      0x332ccd <flyology__db__coordinator__conflicts_with_earlierN+0x14d>
+    0.00 :   332e17:        leal    0x1(%r12), %ecx
+    0.00 :   332e1c:        movq    %rcx, %r12
+    0.00 :   332e1f:        addq    %rax, %rcx
+    0.00 :   332e22:        jo      0x332f51 <flyology__db__coordinator__conflicts_with_earlierN+0x3d1>
+    0.00 :   332e28:        cmpq    %rcx, %rax
+    0.00 :   332e2b:        jg      0x332f62 <flyology__db__coordinator__conflicts_with_earlierN+0x3e2>
+    0.00 :   332e31:        cmpq    %rcx, %rdx
+    0.00 :   332e34:        jl      0x332f62 <flyology__db__coordinator__conflicts_with_earlierN+0x3e2>
+    0.00 :   332e3a:        subq    %rax, %rcx
+    0.00 :   332e3d:        leaq    0x8(%rbp), %rdi
+    0.00 :   332e41:        movzbl  (%r8,%rcx), %ebx
+    0.00 :   332e46:        callq   0xaad3c0 <flyology__bytes__element>
+    0.00 :   332e4b:        cmpb    %bl, %al
+    0.00 :   332e4d:        jne     0x332d08 <flyology__db__coordinator__conflicts_with_earlierN+0x188>
+    0.00 :   332e53:        cmpl    %r12d, %r13d
+    0.00 :   332e56:        jne     0x332cb0 <flyology__db__coordinator__conflicts_with_earlierN+0x130>
+    0.00 :   332e5c:        movl    $0x1, %eax
+    0.00 :   332e61:        addq    $0x48, %rsp
+    0.00 :   332e65:        popq    %rbx
+    0.00 :   332e66:        popq    %rbp
+    0.00 :   332e67:        popq    %r12
+    0.00 :   332e69:        popq    %r13
+    0.00 :   332e6b:        popq    %r14
+    0.00 :   332e6d:        popq    %r15
+    0.00 :   332e6f:        retq
+    0.00 :   332e70:        movl    $0x1, %eax
+    0.00 :   332e75:        retq
+    0.00 :   332e76:        nopw    %cs:(%rax,%rax)
+    1.23 :   332e80:        cmpl    (%rax), %edi
+    0.00 :   332e82:        movl    %edi, 0x20(%rsp)
+    0.00 :   332e86:        setg    0x18(%rsp)
+    0.00 :   332e8b:        xorl    %ebp, %ebp
+    0.00 :   332e8d:        movb    %sil, 0x8(%rsp)
+    0.00 :   332e92:        movl    %ebp, %r12d
+    0.00 :   332e95:        movq    0x28(%rsp), %rbp
+    0.00 :   332e9a:        movq    %rbx, 0x10(%rsp)
+    0.00 :   332e9f:        movl    $0x38, %ebx
+    0.00 :   332ea4:        nop
+    0.00 :   332ea5:        nopw    %cs:(%rax,%rax)
+    1.23 :   332eb0:        movq    0x18(%r14), %rsi
+   12.35 :   332eb4:        testq   %rsi, %rsi
+    0.00 :   332eb7:        je      0x332f73 <flyology__db__coordinator__conflicts_with_earlierN+0x3f3>
+    1.23 :   332ebd:        movq    0x18(%rbp), %rdx
+    0.00 :   332ec1:        testq   %rdx, %rdx
+    0.00 :   332ec4:        je      0x332f73 <flyology__db__coordinator__conflicts_with_earlierN+0x3f3>
+    0.00 :   332eca:        cmpl    %r15d, (%rsi)
+   17.28 :   332ecd:        setl    %al
+    8.64 :   332ed0:        testb   %al, 0x8(%rsp)
+    0.00 :   332ed4:        jne     0x332fb7 <flyology__db__coordinator__conflicts_with_earlierN+0x437>
+    8.64 :   332eda:        addl    $0x1, %r12d
+    0.00 :   332ede:        cmpl    (%rdx), %r12d
+    8.64 :   332ee1:        setg    %al
+   14.81 :   332ee4:        testb   %al, 0x18(%rsp)
+    0.00 :   332ee8:        jne     0x332fb7 <flyology__db__coordinator__conflicts_with_earlierN+0x437>
+   17.28 :   332eee:        movq    0x10(%rsp), %rdi
+    0.00 :   332ef3:        addq    %rbx, %rdx
+    1.23 :   332ef6:        addq    %r13, %rsi
+    0.00 :   332ef9:        callq   0x332490 <flyology__db__coordinator__same_admitted_keyN>
+    1.23 :   332efe:        testb   %al, %al
+    0.00 :   332f00:        jne     0x332cf2 <flyology__db__coordinator__conflicts_with_earlierN+0x172>
+    0.00 :   332f06:        addq    $0x30, %rbx
+    0.00 :   332f0a:        cmpl    %r12d, 0x20(%rsp)
+    0.00 :   332f0f:        jne     0x332eb0 <flyology__db__coordinator__conflicts_with_earlierN+0x330>
+    1.23 :   332f11:        movq    0x28(%rsp), %rax
+    2.47 :   332f16:        movzbl  0x8(%rsp), %esi
+    0.00 :   332f1b:        movq    0x10(%rsp), %rbx
+    0.00 :   332f20:        movq    0x18(%rax), %rax
+    0.00 :   332f24:        testq   %rax, %rax
+    0.00 :   332f27:        jne     0x332bf2 <flyology__db__coordinator__conflicts_with_earlierN+0x72>
+    0.00 :   332f2d:        movl    $0xf31, %esi
+    0.00 :   332f32:        leaq    0x907f5f(%rip), %rdi  # 0xc3ae98
+    0.00 :   332f39:        callq   0xb34088 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   332f3e:        nop
+    0.00 :   332f40:        movl    $0xef4, %esi
+    0.00 :   332f45:        leaq    0x907f4c(%rip), %rdi  # 0xc3ae98
+    0.00 :   332f4c:        callq   0xb3410c <__gnat_rcheck_CE_Invalid_Data>
+    0.00 :   332f51:        movl    $0x1b4, %esi
+    0.00 :   332f56:        leaq    0x907f3b(%rip), %rdi  # 0xc3ae98
+    0.00 :   332f5d:        callq   0xb34164 <__gnat_rcheck_CE_Overflow_Check>
+    0.00 :   332f62:        movl    $0x1b4, %esi
+    0.00 :   332f67:        leaq    0x907f2a(%rip), %rdi  # 0xc3ae98
+    0.00 :   332f6e:        callq   0xb340f6 <__gnat_rcheck_CE_Index_Check>
+    0.00 :   332f73:        movl    $0xf2c, %esi
+    0.00 :   332f78:        leaq    0x907f19(%rip), %rdi  # 0xc3ae98
+    0.00 :   332f7f:        callq   0xb34088 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   332f84:        movl    $0xf33, %esi
+    0.00 :   332f89:        leaq    0x907f08(%rip), %rdi  # 0xc3ae98
+    0.00 :   332f90:        callq   0xb34088 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   332f95:        movl    $0xf3a, %esi
+    0.00 :   332f9a:        leaq    0x907ef7(%rip), %rdi  # 0xc3ae98
+    0.00 :   332fa1:        callq   0xb34088 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   332fa6:        movl    $0xf33, %esi
+    0.00 :   332fab:        leaq    0x907ee6(%rip), %rdi  # 0xc3ae98
+    0.00 :   332fb2:        callq   0xb340f6 <__gnat_rcheck_CE_Index_Check>
+    0.00 :   332fb7:        movl    $0xf2c, %esi
+    0.00 :   332fbc:        leaq    0x907ed5(%rip), %rdi  # 0xc3ae98
+    0.00 :   332fc3:        callq   0xb340f6 <__gnat_rcheck_CE_Index_Check>
+    0.00 :   332fc8:        movl    $0x1b1, %esi
+    0.00 :   332fcd:        leaq    0x907ec4(%rip), %rdi  # 0xc3ae98
+    0.00 :   332fd4:        callq   0xb34190 <__gnat_rcheck_CE_Range_Check>
+    0.00 :   332fd9:        movl    $0xf3a, %esi
+    0.00 :   332fde:        leaq    0x907eb3(%rip), %rdi  # 0xc3ae98
+    0.00 :   332fe5:        callq   0xb340f6 <__gnat_rcheck_CE_Index_Check>
+    0.00 :   332fea:        movl    $0xf29, %esi
+    0.00 :   332fef:        leaq    0x907ea2(%rip), %rdi  # 0xc3ae98
+    0.00 :   332ff6:        callq   0xb3410c <__gnat_rcheck_CE_Invalid_Data>
+    0.00 :   332ffb:        movl    $0xf38, %esi
+    0.00 :   333000:        leaq    0x907e91(%rip), %rdi  # 0xc3ae98
+    0.00 :   333007:        callq   0xb34088 <__gnat_rcheck_CE_Access_Check>
+    0.00 :   33300c:        movl    $0xf2a, %esi
+    0.00 :   333011:        leaq    0x907e80(%rip), %rdi  # 0xc3ae98
+    0.00 :   333018:        callq   0xb3410c <__gnat_rcheck_CE_Invalid_Data>

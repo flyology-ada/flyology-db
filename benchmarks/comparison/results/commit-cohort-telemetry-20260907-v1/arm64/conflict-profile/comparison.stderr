@@ -1,0 +1,2 @@
+[ perf record: Woken up 645 times to write data ]
+[ perf record: Captured and wrote 161.292 MB /mnt/flyology-bench/experiments/commit-cohort-telemetry-20260907-v1-arm64-v4/evidence/conflict-profile/perf.data (19806 samples) ]

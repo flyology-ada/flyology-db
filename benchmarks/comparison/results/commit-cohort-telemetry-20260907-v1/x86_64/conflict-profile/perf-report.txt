@@ -1,0 +1,105 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 9K of event 'task-clock:ppp'
+# Event count (approx.): 9547547538
+#
+# Overhead  Command          Shared Object                Symbol                                                                                                                    
+# ........  ...............  ...........................  ..........................................................................................................................
+#
+    21.31%  flyology_db_ben  flyology_db_benchmark_panel  [.] gnat__secure_hashes__sha2_32__transform
+     8.47%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__bytes__element
+     6.77%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology_db_benchmark_flyology__value_for
+     6.53%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__store_mutation
+     4.92%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__crc_32c
+     4.81%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__bytes__append
+     4.53%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__image_element
+     4.19%  commit_worker_a  flyology_db_benchmark_panel  [.] gnat__secure_hashes__md5__transform
+     3.37%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__bytes__append__2
+     2.99%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology_db_benchmark_panel__run_participant.192
+     2.61%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__bytes__length
+     2.56%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__coordinator__lookup_atN__compare_key.242
+     2.04%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__bytes__to_array
+     1.98%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology_db_benchmark_flyology__run.constprop.0
+     1.54%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__get
+     1.27%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__coordinator__apply_batch_coreN
+     1.05%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__coordinator__lookup_atN
+     0.88%  flyology_db_ben  flyology_db_benchmark_panel  [.] gnat__byte_swapping__swap4
+     0.85%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__coordinator__conflicts_with_earlierN
+     0.77%  flyology_db_ben  libc.so.6                    [.] 0x0000000000198e09
+     0.73%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__coordinator__same_admitted_keyN
+     0.61%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__same_runtime_key__2
+     0.51%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__decode_runtime_batch
+     0.40%  flyology_db_ben  [kernel.kallsyms]            [k] do_user_addr_fault
+     0.37%  commit_worker_a  [kernel.kallsyms]            [k] kernel_init_pages
+     0.34%  flyology_db_ben  flyology_db_benchmark_panel  [.] gnat__secure_hashes__fill_buffer_copy
+     0.29%  flyology_db_ben  libc.so.6                    [.] pthread_mutex_lock
+     0.28%  flyology_db_ben  libc.so.6                    [.] 0x0000000000198dad
+     0.27%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology_crc__crc32c_x86_avx512_vpclmul_v3x2__update
+     0.27%  flyology_db_ben  [kernel.kallsyms]            [k] _raw_spin_unlock_irqrestore
+     0.26%  flyology_db_ben  [kernel.kallsyms]            [k] rep_movs_alternative
+     0.26%  flyology_db_ben  libc.so.6                    [.] pthread_mutex_unlock
+     0.25%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__build_runtime_mutation_lookup__precedes.180.isra.0
+     0.24%  commit_worker_a  [kernel.kallsyms]            [k] _raw_spin_unlock_irqrestore
+     0.23%  commit_worker_a  [kernel.kallsyms]            [k] finish_task_switch.isra.0
+     0.21%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__runtime_key_hash
+     0.19%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__coordinator__batch_has_post_snapshot_keyN
+     0.19%  flyology_db_ben  flyology_db_benchmark_panel  [.] system__flyology__scheduler__current_task
+     0.18%  flyology_db_ben  flyology_db_benchmark_panel  [.] gnat__sha256__update__3.constprop.0
+     0.17%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__coordinator__find_indexed_entryN
+     0.14%  commit_worker_a  [kernel.kallsyms]            [k] hash_name
+     0.14%  commit_worker_a  flyology_db_benchmark_panel  [.] ada__directories__validity__is_valid_path_name
+     0.14%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__build_runtime_mutation_lookup__precedes.180.isra.0
+     0.14%  flyology_db_ben  flyology_db_benchmark_panel  [.] system__task_primitives__operations__self
+     0.13%  commit_worker_a  [kernel.kallsyms]            [k] do_user_addr_fault
+     0.13%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__build_runtime_batch_image__store_array.379
+     0.13%  commit_worker_a  flyology_db_benchmark_panel  [.] gnat__secure_hashes__fill_buffer_copy
+     0.12%  commit_worker_a  [kernel.kallsyms]            [k] rep_movs_alternative
+     0.12%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__coordinator__find_indexed_entryN
+     0.12%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__runtime_key_hash
+     0.12%  flyology_db_ben  flyology_db_benchmark_panel  [.] system__tasking__queuing__select_protected_entry_call
+     0.10%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__build_runtime_batch_image
+     0.10%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__build_runtime_mutation_lookup__sift_down.179
+     0.10%  commit_worker_a  flyology_db_benchmark_panel  [.] gnat__md5__update__3.constprop.0
+     0.10%  flyology_db_ben  [kernel.kallsyms]            [k] get_mem_cgroup_from_mm
+     0.10%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__build_runtime_mutation_lookup__sift_down.179
+     0.09%  commit_worker_a  [kernel.kallsyms]            [k] __d_lookup_rcu
+     0.09%  commit_worker_a  [kernel.kallsyms]            [k] get_mem_cgroup_from_mm
+     0.09%  commit_worker_a  [kernel.kallsyms]            [k] memset_orig
+     0.09%  commit_worker_a  libc.so.6                    [.] 0x0000000000198e09
+     0.09%  flyology_db_ben  [kernel.kallsyms]            [k] try_charge_memcg
+     0.09%  flyology_db_ben  flyology_db_benchmark_panel  [.] system__tasking__protected_objects__entries__lock_entries_with_status
+     0.08%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__coordinator__apply_batch_coreN
+     0.08%  flyology_db_ben  [kernel.kallsyms]            [k] __rmqueue_pcplist
+     0.08%  flyology_db_ben  [kernel.kallsyms]            [k] handle_softirqs
+     0.08%  flyology_db_ben  flyology_db_benchmark_panel  [.] system__tasking__initialization__abort_undefer
+     0.08%  flyology_db_ben  libc.so.6                    [.] 0x0000000000198ad3
+     0.08%  flyology_db_ben  libc.so.6                    [.] 0x0000000000198ae5
+     0.07%  commit_worker_a  [kernel.kallsyms]            [k] do_syscall_64
+     0.07%  flyology_db_ben  [kernel.kallsyms]            [k] __mem_cgroup_charge
+     0.07%  flyology_db_ben  [kernel.kallsyms]            [k] zap_present_ptes.constprop.0
+     0.07%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__coordinatorVIP
+     0.07%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__coordinator__lookup_atP
+     0.07%  flyology_db_ben  flyology_db_benchmark_panel  [.] system__secondary_stack__ss_mark
+     0.07%  flyology_db_ben  flyology_db_benchmark_panel  [.] system__tasking__protected_objects__operations__po_service_entries
+     0.06%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__coordinator__compare_history_keyN
+     0.06%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__coordinator__install_publishedN
+     0.06%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__coordinator__find_familyN
+     0.06%  flyology_db_ben  flyology_db_benchmark_panel  [.] memmove@plt
+     0.06%  flyology_db_ben  libc.so.6                    [.] malloc
+     0.05%  commit_worker_a  [kernel.kallsyms]            [k] kmem_cache_alloc_noprof
+     0.05%  commit_worker_a  [kernel.kallsyms]            [k] link_path_walk
+     0.05%  commit_worker_a  flyology_db_benchmark_panel  [.] flyology__db__same_runtime_key
+     0.05%  commit_worker_a  libc.so.6                    [.] 0x0000000000198c8d
+     0.05%  flyology_db_ben  [kernel.kallsyms]            [k] __d_lookup_rcu
+     0.05%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__coordinator__apply_batch_coreN__valid_slice.188
+     0.05%  flyology_db_ben  flyology_db_benchmark_panel  [.] flyology__db__coordinator__validate_familyP
+     0.05%  flyology_db_ben  flyology_db_benchmark_panel  [.] system__secondary_stack__allocate_dynamic
+     0.05%  flyology_db_ben  flyology_db_benchmark_panel  [.] system__tasking__initialization__abort_defer
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

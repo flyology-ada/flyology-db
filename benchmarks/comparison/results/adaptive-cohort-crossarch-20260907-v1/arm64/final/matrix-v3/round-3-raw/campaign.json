@@ -1,0 +1,105 @@
+{
+  "schema_version": "flyology.db.benchmark.campaign.v1",
+  "created_at_utc": "2026-09-08T02:10:59.075679+00:00",
+  "identity_sha256": "9fdd4e5ad8045b2a9bd52a4b08e60f696bf94a3bdd3797a998d23f208ae2e052",
+  "identity": {
+    "lane": "local",
+    "host": {
+      "os": "Linux-7.0.0-1012-aws-aarch64-with-glibc2.39",
+      "architecture": "aarch64",
+      "cpu": "Neoverse-N1",
+      "memory_bytes": 33212641280,
+      "power": {
+        "detector": "unavailable",
+        "os": "linux",
+        "power_source": null,
+        "profile": null,
+        "detector_exit_status": "2"
+      }
+    },
+    "power": {
+      "detector": "unavailable",
+      "os": "linux",
+      "power_source": null,
+      "profile": null,
+      "detector_exit_status": "2"
+    },
+    "method": {
+      "framework": "flyology_bench 0.1.1-dev",
+      "samples": 10,
+      "bootstrap_resamples": 2000,
+      "confidence_percent": 95,
+      "cpu_quiescence": {
+        "maximum_average_percent": 25,
+        "maximum_core_percent": 60,
+        "stable_seconds": 2,
+        "timeout_seconds": 300
+      },
+      "timed_region": "begin, all puts, durable commit outcome",
+      "verification": "close, reopen, byte-compare every key, participant SHA-256, harness SHA-256",
+      "comparison_batching": "shared logical iteration count with balanced pair order",
+      "resumption": "Each pair is sealed immediately with its request, collection-time identity, and raw hashes. A resumed campaign accepts only byte-identical sealed pairs under the same campaign identity.",
+      "in_process_adapter_note": "Each batch uses an in-process engine adapter and a fresh database. Setup, close, reopen, and verification are visible as harness wall time but excluded from primary_time."
+    },
+    "provenance": {
+      "repository_commit": "13282ad692b813a814594147a43f79a2282d7e27",
+      "repository_diff_sha256": "a33a8d08c891f34fbd9768fa3fb99a707f21ab63da59c43b7c9db1830a49e496",
+      "flyology_bench_version": "0.1.1-dev",
+      "flyology_bench_commit": "bd95746d5c9c31f5b41b611db9ba82a016ceaaa4",
+      "flyology_bench_lock_sha256": "d7b7a12db435e5d2e441ef5e9fa80332a85ef502e819d712072c402aeb3c797d",
+      "flyology_db_adapter_spec_sha256": "e95e96f1d0c905ba996d3c70caa17dc5fb4aff56fa90f5cfedf64d49b918df98",
+      "flyology_db_adapter_body_sha256": "fe32038e729bd2d2696417ebb8eea9202f235145e7b803fcb30c00088287c70a",
+      "panel_adapter_sha256": "14d610de772ffa1af1e86f1ccfd4298964dd3a31430393603d3e09b22c2dbf45",
+      "panel_executable_sha256": "17954b40c6d50cea088a9721965c4ff8715bfcbe4deca6d5b96dff39e2423266",
+      "campaign_driver_sha256": "147c0165422c2076cd886c4670f0366c2881669149d396024a55214f08b0c980",
+      "slatedb_adapter_sha256": "501d5014421d0ea4d3be43d9f7628c6b096e7a3ac39963d4ee0b0a08f368e7a3",
+      "slatedb_lock_sha256": "f1389cd99cc640eecee9f2419ba79a0288fa145bc1c30f182dbbe6b0d7b809ec",
+      "tidesdb_adapter_spec_sha256": "795574bdd4cc5dee51d4e8422554559c2ad4e5a17d870515a1acf11645a86b3c",
+      "tidesdb_adapter_body_sha256": "cfa9bca9de1f82004ffdae713346d867fd14c7ce8a92005ad3b739126dd36f27",
+      "slatedb_commit": "e0161973d8d7ffdede7c44725729838811674e99",
+      "tidesdb_commit": "23a67a6531bc6c0b537d3696758c7879586dcfce",
+      "flyology_alire_index_commit": "0c53e305221cf86109acce92a1865421eef6204b",
+      "object_storage_index_entry_sha256": "47852589648da33c24273b191abfdb67609d541f5fc829286724635e190e6059",
+      "object_storage_commit": "5eaf79cf12358c1402b5b7d7ed0a6ec74df6a628",
+      "object_storage_origin": "git+https://github.com/flyology-ada/flyology-object-storage.git",
+      "object_storage_manifest_sha256": "c4f8e27e76bf4a2f584df7844cfbdcf6d6010586c91e25d7c49c0ebda3a5abd4",
+      "object_storage_source_sha256": "97e048bb7fa42eee3aeca832548859c8b39e64a1a8c7a2326c435398a866a172"
+    },
+    "remote_server": {
+      "implementation": null,
+      "revision": null,
+      "transport": null
+    },
+    "plan": {
+      "pairs": [
+        [
+          "flyology-db-files",
+          "flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves"
+        ],
+        [
+          "slatedb-1ms-depth8-waves",
+          "flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves"
+        ],
+        [
+          "flyology-db-files-singleton-depth8-waves",
+          "flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves"
+        ]
+      ],
+      "workloads": [
+        {
+          "id": "sustained-8960",
+          "key_bytes": 16,
+          "value_bytes": 1024,
+          "mutations": 256,
+          "transactions": 35
+        }
+      ]
+    },
+    "adaptive_matrix": {
+      "architecture": "arm64",
+      "warmup_transactions": 8,
+      "driver_sha256": "f41d86f5f5b58f2d181cb3ecc7eecfe378bc041f445ce17c74bbdab9e4c9b310",
+      "plan_sha256": "097798990ab2d847ad468aa6926f18418729d7ef6d8ddc1e472fd8cd21a058cb"
+    }
+  }
+}

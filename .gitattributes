@@ -1,0 +1,4 @@
+# Retained raw tool output is immutable evidence; do not normalize generator spacing.
+benchmarks/comparison/results/adaptive-cohort-crossarch-20260907-v1/input/source.patch -whitespace
+benchmarks/comparison/results/commit-cohort-telemetry-20260907-v1/arm64/conflict-profile/perf-report.txt -whitespace
+benchmarks/comparison/results/commit-cohort-telemetry-20260907-v1/x86_64/conflict-profile/perf-report.txt -whitespace

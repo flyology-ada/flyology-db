@@ -1,9 +1,11 @@
 with Ada.Command_Line;
+with Ada.Characters.Latin_1;
 with Ada.Directories;
 with Ada.Environment_Variables;
 with Ada.Streams;
 with Ada.Strings;
 with Ada.Strings.Fixed;
+with Ada.Strings.Unbounded;
 with Ada.Text_IO;
 with Flyology_Bench;
 with Flyology_Bench.Manual_Timing_Comparison;
@@ -24,6 +26,7 @@ procedure Flyology_DB_Benchmark_Panel is
    package Fixed renames Ada.Strings.Fixed;
    package OS renames GNAT.OS_Lib;
    package Reporters renames Flyology_Bench.Reporters;
+   package Unbounded renames Ada.Strings.Unbounded;
 
    Minimum_Arguments : constant := 8;
    Maximum_Transactions : constant := 63;
@@ -40,6 +43,7 @@ procedure Flyology_DB_Benchmark_Panel is
      "flyology-db-files-adaptive-cohort-members";
    SlateDB_Depth_Prefix : constant String := "slatedb-1ms-depth";
    Waves_Suffix : constant String := "-waves";
+   Diagnostics_Suffix : constant String := "-diagnostics";
 
    Reference_Name : constant String := Ada.Command_Line.Argument (1);
    Contender_Name : constant String := Ada.Command_Line.Argument (2);
@@ -58,6 +62,7 @@ procedure Flyology_DB_Benchmark_Panel is
    Sequence : Natural := 0;
    Execution_Ordinal : Natural := 0;
    Execution_Axis : Flyology_Bench.Custom_Metric_Index := Flyology_Bench.Custom_Metric_Index'First;
+   Commit_Diagnostics : Unbounded.Unbounded_String;
 
    function Image (Value : Integer) return String is
      (Fixed.Trim (Integer'Image (Value), Ada.Strings.Both));
@@ -67,13 +72,39 @@ procedure Flyology_DB_Benchmark_Panel is
       and then Name (Name'First .. Name'First + Prefix'Length - 1) = Prefix);
 
    function Uses_Wave_Scheduling (Name : String) return Boolean is
-     (Name'Length > Waves_Suffix'Length
-      and then Name (Name'Last - Waves_Suffix'Length + 1 .. Name'Last) = Waves_Suffix);
+      Profile : constant String := Name;
+   begin
+      return
+        Profile'Length > Waves_Suffix'Length
+        and then Profile (Profile'Last - Waves_Suffix'Length + 1 .. Profile'Last) = Waves_Suffix;
+   end Uses_Wave_Scheduling;
 
    function Scheduling_Profile (Name : String) return String is
-     (if Uses_Wave_Scheduling (Name)
-      then Name (Name'First .. Name'Last - Waves_Suffix'Length)
-      else Name);
+      Profile : constant String := Name;
+   begin
+      return
+        (if Uses_Wave_Scheduling (Name)
+         then Profile (Profile'First .. Profile'Last - Waves_Suffix'Length)
+         else Profile);
+   end Scheduling_Profile;
+
+   function Uses_Commit_Diagnostics (Name : String) return Boolean is
+      Profile : constant String := Scheduling_Profile (Name);
+   begin
+      return
+        Profile'Length > Diagnostics_Suffix'Length
+        and then Profile (Profile'Last - Diagnostics_Suffix'Length + 1 .. Profile'Last)
+          = Diagnostics_Suffix;
+   end Uses_Commit_Diagnostics;
+
+   function Execution_Profile (Name : String) return String is
+      Profile : constant String := Scheduling_Profile (Name);
+   begin
+      if Uses_Commit_Diagnostics (Name) then
+         return Profile (Profile'First .. Profile'Last - Diagnostics_Suffix'Length);
+      end if;
+      return Profile;
+   end Execution_Profile;
 
    function Profile_Value (Text : String; Context : String) return Positive is
       Value : constant Positive := Positive'Value (Text);
@@ -317,14 +348,16 @@ procedure Flyology_DB_Benchmark_Panel is
       Status : out Flyology_Bench.Metric_Availability)
    is
       Scratch : constant String := Scratch_Path;
-      Profile : constant String := Scheduling_Profile (Name);
+      Profile : constant String := Execution_Profile (Name);
       Wave_Scheduling : constant Boolean := Uses_Wave_Scheduling (Name);
+      Collect_Diagnostics : constant Boolean := Uses_Commit_Diagnostics (Name);
       Root : constant String := Scratch & "/database";
       Transactions : constant Positive :=
         Positive (Iterations) * Transactions_Per_Operation;
       Verified_Keys : Positive;
       State_SHA256 : GNAT.SHA256.Message_Digest;
       Flush : Flyology_DB_Benchmark_SlateDB.Flush_Profile;
+      Flyology_Participant : Boolean := False;
    begin
       Execution_Ordinal := Sequence;
       Ada.Directories.Create_Directory (Scratch);
@@ -337,6 +370,9 @@ procedure Flyology_DB_Benchmark_Panel is
       then
          raise Program_Error with "wave scheduling is not supported by benchmark participant " & Name;
       end if;
+      if Collect_Diagnostics and then not Has_Profile_Prefix (Profile, Flyology_Adaptive_Prefix) then
+         raise Program_Error with "commit diagnostics require an adaptive Flyology participant";
+      end if;
       if Profile = "flyology-db-files"
         or else Has_Profile_Prefix (Profile, Flyology_Singleton_Prefix)
         or else Has_Profile_Prefix (Profile, Flyology_Group_Prefix)
@@ -345,6 +381,10 @@ procedure Flyology_DB_Benchmark_Panel is
         or else Has_Profile_Prefix (Profile, Flyology_Adaptive_Prefix)
       then
          Configure_Flyology_Profile (Profile, Wave_Scheduling);
+         Ada.Environment_Variables.Set
+           ("FLYOLOGY_DB_BENCH_COMMIT_DIAGNOSTICS",
+            (if Collect_Diagnostics then "1" else "0"));
+         Flyology_Participant := True;
          Flyology_DB_Benchmark_Flyology.Run_Local
            (Root,
             Warmup_Transactions,
@@ -396,6 +436,8 @@ procedure Flyology_DB_Benchmark_Panel is
             State_SHA256);
       elsif Profile = "flyology-db-rustfs" then
          Configure_Flyology_Profile ("flyology-db-files");
+         Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_COMMIT_DIAGNOSTICS", "0");
+         Flyology_Participant := True;
          Flyology_DB_Benchmark_Flyology.Run_S3
            (Ada.Environment_Variables.Value ("FLYOLOGY_DB_BENCH_ENDPOINT"),
             Ada.Environment_Variables.Value ("FLYOLOGY_DB_BENCH_BUCKET"),
@@ -439,6 +481,24 @@ procedure Flyology_DB_Benchmark_Panel is
       then
          raise Program_Error
            with "benchmark participant returned invalid evidence: " & Name;
+      end if;
+      if Flyology_Participant then
+         declare
+            Configuration : constant String :=
+              Flyology_DB_Benchmark_Flyology.Last_Run_Configuration_NDJSON
+                (Name, Execution_Ordinal, Transactions);
+            Line : constant String :=
+              Flyology_DB_Benchmark_Flyology.Last_Run_Diagnostics_NDJSON
+                (Execution_Ordinal, Transactions);
+         begin
+            if Configuration'Length = 0 then
+               raise Program_Error with "Flyology participant returned no effective configuration";
+            end if;
+            Unbounded.Append (Commit_Diagnostics, Configuration & Ada.Characters.Latin_1.LF);
+            if Line'Length > 0 then
+               Unbounded.Append (Commit_Diagnostics, Line & Ada.Characters.Latin_1.LF);
+            end if;
+         end;
       end if;
       Ada.Directories.Delete_Tree (Scratch);
       Status := Flyology_Bench.Metric_Collected;
@@ -667,5 +727,6 @@ begin
    Reporters.Put_Comparison_Metrics_NDJSON
      (Reference_Name, Contender_Name, Result, Ignored_Metrics_File);
    Put_Paired_Primary_Samples (Result, Ignored_Metrics_File);
+   Ada.Text_IO.Put (Ignored_Metrics_File, Unbounded.To_String (Commit_Diagnostics));
    Ada.Text_IO.Close (Ignored_Metrics_File);
 end Flyology_DB_Benchmark_Panel;

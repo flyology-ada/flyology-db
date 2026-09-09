@@ -1,0 +1,37 @@
+{
+  "schema_version": "flyology.db.benchmark.pair-request.v1",
+  "campaign_identity_sha256": "a590d1551636a6b009c97aaa73d4ee86677ca23d9078d231e57f9d9302b792fe",
+  "identity": "local--sustained-8960--flyology-db-files--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves",
+  "workload": {
+    "id": "sustained-8960",
+    "key_bytes": 16,
+    "value_bytes": 1024,
+    "mutations": 256,
+    "transactions": 35
+  },
+  "reference": "flyology-db-files",
+  "contender": "flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves",
+  "power": {
+    "detector": "unavailable",
+    "os": "linux",
+    "power_source": null,
+    "profile": null,
+    "detector_exit_status": "2"
+  },
+  "environment": {
+    "FLYOLOGY_DB_BENCH_NAMESPACE": "local--sustained-8960--flyology-db-files--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves",
+    "FLYOLOGY_DB_BENCH_WARMUP": "8",
+    "FLYOLOGY_BENCH_LOCK_PATH": "/run/lock/flyology-bench-host-cpu.lock"
+  },
+  "command_argv": [
+    "/mnt/flyology-bench/experiments/adaptive-cohort-crossarch-20260907-v1-arm64-v2/source/benchmarks/comparison/bin/flyology_db_benchmark_panel",
+    "flyology-db-files",
+    "flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves",
+    "16",
+    "1024",
+    "256",
+    "35",
+    "/mnt/flyology-bench/experiments/adaptive-cohort-crossarch-20260907-v1-arm64-v2/evidence/matrix-v3/round-1-raw/local--sustained-8960--flyology-db-files--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves.json",
+    "/mnt/flyology-bench/experiments/adaptive-cohort-crossarch-20260907-v1-arm64-v2/evidence/matrix-v3/round-1-raw/local--sustained-8960--flyology-db-files--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves.metrics.ndjson"
+  ]
+}

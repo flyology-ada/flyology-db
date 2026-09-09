@@ -2,6 +2,12 @@ with GNAT.SHA256;
 
 package Flyology_DB_Benchmark_Flyology is
 
+   function Last_Run_Configuration_NDJSON
+     (Participant : String; Execution_Ordinal : Natural; Transactions : Positive) return String;
+
+   function Last_Run_Diagnostics_NDJSON
+     (Execution_Ordinal : Natural; Transactions : Positive) return String;
+
    procedure Run_Local
      (Root                : String;
       Warmup              : Natural;

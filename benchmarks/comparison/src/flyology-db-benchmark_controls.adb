@@ -92,6 +92,51 @@ package body Flyology.DB.Benchmark_Controls is
       Abort_Test_Independent_Cohort (Item, Result);
    end Abort_Independent_Coalescing;
 
+   procedure Begin_Adaptive_Cohort_Diagnostics
+     (Item : in out Database; Result : out Outcome_Code) is
+   begin
+      Begin_Test_Adaptive_Cohort_Diagnostics (Item, Result);
+   end Begin_Adaptive_Cohort_Diagnostics;
+
+   procedure Finish_Adaptive_Cohort_Diagnostics
+     (Item        : in out Database;
+      Diagnostics : out Adaptive_Cohort_Diagnostics;
+      Result      : out Outcome_Code)
+   is
+      Runtime_Diagnostics : Test_Adaptive_Cohort_Diagnostics;
+   begin
+      Diagnostics := (others => <>);
+      Finish_Test_Adaptive_Cohort_Diagnostics (Item, Runtime_Diagnostics, Result);
+      if Result /= Success then
+         return;
+      elsif Runtime_Diagnostics.Width_Counts'First /= Diagnostic_Cohort_Width_Counts'First
+        or else Runtime_Diagnostics.Width_Counts'Last /= Diagnostic_Cohort_Width_Counts'Last
+      then
+         Result := Invalid_State;
+         return;
+      end if;
+      Diagnostics :=
+        (Cohort_Total          => Runtime_Diagnostics.Cohort_Total,
+         Member_Total          => Runtime_Diagnostics.Member_Total,
+         Encoded_Bytes         => Runtime_Diagnostics.Encoded_Bytes,
+         Width_Counts          => Diagnostic_Cohort_Width_Counts (Runtime_Diagnostics.Width_Counts),
+         Member_Boundary_Total => Runtime_Diagnostics.Member_Boundary_Total,
+         Byte_Boundary_Total   => Runtime_Diagnostics.Byte_Boundary_Total,
+         Hard_Boundary_Total   => Runtime_Diagnostics.Hard_Boundary_Total,
+         Wait_Boundary_Total   => Runtime_Diagnostics.Wait_Boundary_Total,
+         Close_Boundary_Total  => Runtime_Diagnostics.Close_Boundary_Total,
+         Phase_Cohort_Total    => Runtime_Diagnostics.Phase_Cohort_Total,
+         Phases                =>
+           (Prepublication_Nanoseconds => Runtime_Diagnostics.Phases.Prepublication_Nanoseconds,
+            Build_Nanoseconds          => Runtime_Diagnostics.Phases.Build_Nanoseconds,
+            Validation_Nanoseconds     => Runtime_Diagnostics.Phases.Validation_Nanoseconds,
+            Batch_Put_Nanoseconds      => Runtime_Diagnostics.Phases.Batch_Put_Nanoseconds,
+            Head_Encode_Nanoseconds    => Runtime_Diagnostics.Phases.Head_Encode_Nanoseconds,
+            Head_Put_Nanoseconds       => Runtime_Diagnostics.Phases.Head_Put_Nanoseconds,
+            Installation_Nanoseconds   => Runtime_Diagnostics.Phases.Installation_Nanoseconds,
+            Precompletion_Nanoseconds  => Runtime_Diagnostics.Phases.Precompletion_Nanoseconds));
+   end Finish_Adaptive_Cohort_Diagnostics;
+
    procedure Publication_Counts
      (Item          : in out Storage_Context;
       Batch_Puts    : out Natural;

@@ -1,0 +1,10 @@
+collecting local--sustained-8960--slatedb-1ms-depth8-waves--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves
+collecting local--sustained-8960--flyology-db-files-singleton-depth8-waves--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves
+collecting local--sustained-8960--flyology-db-files--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves
+wrote /mnt/flyology-bench/experiments/adaptive-cohort-crossarch-20260907-v1-arm64-v2/evidence/matrix-v3/round-1.json sha256=79a28083a8f1b4aa6417c875b4a1def6d0b1f06cf1dfc071f60621e5efbf52d7
+collecting local--sustained-8960--flyology-db-files-singleton-depth8-waves--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves
+collecting local--sustained-8960--flyology-db-files--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves
+collecting local--sustained-8960--slatedb-1ms-depth8-waves--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves
+wrote /mnt/flyology-bench/experiments/adaptive-cohort-crossarch-20260907-v1-arm64-v2/evidence/matrix-v3/round-2.json sha256=02c254f62f5964612dd471d9ca808194f5ca1edbe0aac6b6d20d02108cb7e540
+collecting local--sustained-8960--flyology-db-files--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves
+collecting local--sustained-8960--slatedb-1ms-depth8-waves--flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-waves
