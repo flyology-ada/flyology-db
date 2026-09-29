@@ -412,6 +412,43 @@ def load_pair(
             raise RuntimeError(f"retained Flyology configuration is duplicated: {metrics_path}")
         configuration_by_execution[key] = configuration
         configuration_ordinals.add(configuration["execution_ordinal"])
+    verifications = [
+        metric
+        for metric in metrics
+        if metric.get("schema") == "flyology.db.benchmark.state_verification.v1"
+    ]
+    verification_by_execution: dict[tuple[str, int], dict[str, Any]] = {}
+    verification_ordinals: set[int] = set()
+    for verification in verifications:
+        participant = verification.get("participant")
+        ordinal = verification.get("execution_ordinal")
+        warmup = verification.get("warmup_transactions")
+        transactions = verification.get("transactions")
+        mutations = verification.get("mutations_per_transaction")
+        verified_keys = verification.get("verified_keys")
+        state_sha256 = verification.get("state_sha256")
+        if (
+            participant not in (reference, contender)
+            or type(ordinal) is not int
+            or ordinal <= 0
+            or type(warmup) is not int
+            or warmup < 0
+            or type(transactions) is not int
+            or transactions <= 0
+            or type(mutations) is not int
+            or mutations <= 0
+            or type(verified_keys) is not int
+            or verified_keys != (warmup + transactions) * mutations
+            or not isinstance(state_sha256, str)
+            or len(state_sha256) != 64
+            or state_sha256 != verification.get("expected_state_sha256")
+        ):
+            raise RuntimeError(f"retained state verification is invalid: {metrics_path}")
+        key = (participant, ordinal)
+        if key in verification_by_execution or ordinal in verification_ordinals:
+            raise RuntimeError(f"retained state verification is duplicated: {metrics_path}")
+        verification_by_execution[key] = verification
+        verification_ordinals.add(ordinal)
     paired = [
         metric
         for metric in metrics
@@ -420,6 +457,7 @@ def load_pair(
     if len(paired) != comparison["samples"]:
         raise RuntimeError(f"retained paired samples are incomplete: {metrics_path}")
     measured_configurations: set[tuple[str, int]] = set()
+    measured_verifications: set[tuple[str, int]] = set()
     for sample in paired:
         if (
             sample.get("reference") != reference
@@ -430,8 +468,6 @@ def load_pair(
             raise RuntimeError(f"retained paired sample identity is invalid: {metrics_path}")
         sample_configurations: dict[str, dict[str, Any]] = {}
         for side, participant in (("reference", reference), ("contender", contender)):
-            if participant not in flyology_participants:
-                continue
             ordinal_value = sample.get(f"{side}_execution_ordinal")
             iterations = sample.get(f"{side}_iterations")
             if (
@@ -444,6 +480,19 @@ def load_pair(
             ):
                 raise RuntimeError(f"retained paired sample geometry is invalid: {metrics_path}")
             key = (participant, int(ordinal_value))
+            if key in measured_verifications or key not in verification_by_execution:
+                raise RuntimeError(
+                    f"retained paired sample has missing or reused state verification: {metrics_path}"
+                )
+            if verification_by_execution[key]["transactions"] != (
+                iterations * sample["transactions_per_operation"]
+            ):
+                raise RuntimeError(
+                    f"retained state verification has the wrong transaction count: {metrics_path}"
+                )
+            measured_verifications.add(key)
+            if participant not in flyology_participants:
+                continue
             if key in measured_configurations or key not in configuration_by_execution:
                 raise RuntimeError(
                     f"retained paired sample has missing or reused Flyology configuration: {metrics_path}"

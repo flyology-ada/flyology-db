@@ -142,6 +142,9 @@ package body Flyology.DB.Testing is
       Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
       Maximum_Wait          : Ada.Real_Time.Time_Span;
       Admission_Depth       : Positive;
+      Preparation_Concurrency : Positive;
+      Pipeline_Depth          : Positive;
+      Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
       Result                : out Outcome_Code) is
    begin
       Set_Test_Adaptive_Aggregate_Cohort
@@ -150,6 +153,9 @@ package body Flyology.DB.Testing is
          Maximum_Encoded_Bytes,
          Maximum_Wait,
          Admission_Depth,
+         Preparation_Concurrency,
+         Pipeline_Depth,
+         Maximum_In_Flight_Payload_Bytes,
          Result);
    end Configure_Adaptive_Aggregate_Cohort;
 
@@ -190,6 +196,24 @@ package body Flyology.DB.Testing is
 
    function Get_Waiting (Item : Storage_Context) return Boolean
    is (Test_Get_Waiting (Item));
+
+   procedure Pause_Head_Puts (Item : in out Storage_Context) is
+   begin
+      Set_Test_Head_Put_Paused (Item, True);
+   end Pause_Head_Puts;
+
+   procedure Resume_Head_Puts (Item : in out Storage_Context) is
+   begin
+      Set_Test_Head_Put_Paused (Item, False);
+   end Resume_Head_Puts;
+
+   procedure Wait_For_Head_Put (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean) is
+   begin
+      Wait_For_Test_Head_Put (Item, Timeout, Arrived);
+   end Wait_For_Head_Put;
+
+   function Head_Put_Waiting (Item : Storage_Context) return Boolean
+   is (Test_Head_Put_Waiting (Item));
 
    procedure Image_Statistics
      (Allocated, Released, Arenas_Allocated, Arenas_Released, Transaction_Bytes, Source_Bytes, Sink_Bytes :

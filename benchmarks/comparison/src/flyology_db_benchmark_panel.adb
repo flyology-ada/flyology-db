@@ -41,8 +41,12 @@ procedure Flyology_DB_Benchmark_Panel is
      "flyology-db-files-aggregate-cohort-width";
    Flyology_Adaptive_Prefix : constant String :=
      "flyology-db-files-adaptive-cohort-members";
+   Runtime_Workers_Marker : constant String := "-workers";
+   Runtime_Cohorts_Marker   : constant String := "-cohorts";
    SlateDB_Depth_Prefix : constant String := "slatedb-1ms-depth";
    Waves_Suffix : constant String := "-waves";
+   Preparation_Marker : constant String := "-prepare";
+   Packed_Suffix : constant String := "-packed";
    Diagnostics_Suffix : constant String := "-diagnostics";
 
    Reference_Name : constant String := Ada.Command_Line.Argument (1);
@@ -88,24 +92,6 @@ procedure Flyology_DB_Benchmark_Panel is
          else Profile);
    end Scheduling_Profile;
 
-   function Uses_Commit_Diagnostics (Name : String) return Boolean is
-      Profile : constant String := Scheduling_Profile (Name);
-   begin
-      return
-        Profile'Length > Diagnostics_Suffix'Length
-        and then Profile (Profile'Last - Diagnostics_Suffix'Length + 1 .. Profile'Last)
-          = Diagnostics_Suffix;
-   end Uses_Commit_Diagnostics;
-
-   function Execution_Profile (Name : String) return String is
-      Profile : constant String := Scheduling_Profile (Name);
-   begin
-      if Uses_Commit_Diagnostics (Name) then
-         return Profile (Profile'First .. Profile'Last - Diagnostics_Suffix'Length);
-      end if;
-      return Profile;
-   end Execution_Profile;
-
    function Profile_Value (Text : String; Context : String) return Positive is
       Value : constant Positive := Positive'Value (Text);
    begin
@@ -117,6 +103,88 @@ procedure Flyology_DB_Benchmark_Panel is
       when Constraint_Error =>
          raise Program_Error with Context & " must be a canonical integer from 1 through 8";
    end Profile_Value;
+
+   function Outstanding_Profile_Value (Text : String; Context : String) return Positive is
+      Value : constant Positive := Positive'Value (Text);
+   begin
+      if Text /= Image (Value) or else Value > Maximum_Transactions then
+         raise Program_Error
+           with Context & " must be a canonical integer from 1 through "
+           & Image (Maximum_Transactions);
+      end if;
+      return Value;
+   exception
+      when Constraint_Error =>
+         raise Program_Error
+           with Context & " must be a canonical integer from 1 through "
+           & Image (Maximum_Transactions);
+   end Outstanding_Profile_Value;
+
+   function Preparation_Width (Name : String) return Positive is
+      Profile : constant String := Scheduling_Profile (Name);
+      Marker  : constant Natural :=
+        Fixed.Index (Profile, Preparation_Marker, Going => Ada.Strings.Backward);
+   begin
+      if Marker = 0 then
+         return 1;
+      elsif Marker = Profile'First
+        or else Marker + Preparation_Marker'Length > Profile'Last
+      then
+         raise Program_Error with "invalid preparation-width benchmark profile " & Name;
+      end if;
+      return
+        Profile_Value
+          (Profile (Marker + Preparation_Marker'Length .. Profile'Last),
+           "benchmark preparation width");
+   end Preparation_Width;
+
+   function Preparation_Profile (Name : String) return String is
+      Profile : constant String := Scheduling_Profile (Name);
+      Marker  : constant Natural :=
+        Fixed.Index (Profile, Preparation_Marker, Going => Ada.Strings.Backward);
+      Width   : constant Positive := Preparation_Width (Name);
+      pragma Unreferenced (Width);
+   begin
+      return
+        (if Marker = 0
+         then Profile
+         else Profile (Profile'First .. Marker - 1));
+   end Preparation_Profile;
+
+   function Uses_Packed_Admission (Name : String) return Boolean is
+      Profile : constant String := Preparation_Profile (Name);
+   begin
+      return
+        Profile'Length > Packed_Suffix'Length
+        and then Profile (Profile'Last - Packed_Suffix'Length + 1 .. Profile'Last) = Packed_Suffix;
+   end Uses_Packed_Admission;
+
+   function Admission_Profile (Name : String) return String is
+      Profile : constant String := Preparation_Profile (Name);
+   begin
+      return
+        (if Uses_Packed_Admission (Name)
+         then Profile (Profile'First .. Profile'Last - Packed_Suffix'Length)
+         else Profile);
+   end Admission_Profile;
+
+   function Uses_Commit_Diagnostics (Name : String) return Boolean is
+      Profile : constant String := Admission_Profile (Name);
+   begin
+      return
+        Profile'Length > Diagnostics_Suffix'Length
+        and then Profile (Profile'Last - Diagnostics_Suffix'Length + 1 .. Profile'Last)
+          = Diagnostics_Suffix;
+   end Uses_Commit_Diagnostics;
+
+   function Execution_Profile (Name : String) return String is
+      Profile : constant String := Admission_Profile (Name);
+   begin
+      if Uses_Commit_Diagnostics (Name) then
+         return Profile (Profile'First .. Profile'Last - Diagnostics_Suffix'Length);
+      end if;
+      return Profile;
+   end Execution_Profile;
 
    function Profile_Unsigned_64 (Text : String; Context : String) return Interfaces.Unsigned_64 is
       Value : constant Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Value (Text);
@@ -143,6 +211,9 @@ procedure Flyology_DB_Benchmark_Panel is
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_ENCODED_BYTES", "0");
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_ADAPTIVE_MAXIMUM_WAIT_US", "0");
       Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_ADAPTIVE_ADMISSION_DEPTH", "0");
+      Ada.Environment_Variables.Set
+        ("FLYOLOGY_DB_BENCH_ADAPTIVE_PREPARATION_CONCURRENCY", "1");
+      Ada.Environment_Variables.Set ("FLYOLOGY_DB_BENCH_ADAPTIVE_PIPELINE_COHORTS", "1");
       Ada.Environment_Variables.Set
         ("FLYOLOGY_DB_BENCH_PIPELINE_SCHEDULE",
          (if Wave_Scheduling then "waves" else "rolling"));
@@ -206,12 +277,21 @@ procedure Flyology_DB_Benchmark_Panel is
             Bytes_Marker : constant Natural := Fixed.Index (Profile, "-bytes");
             Wait_Marker : constant Natural := Fixed.Index (Profile, "-wait-us");
             Depth_Marker : constant Natural := Fixed.Index (Profile, "-depth");
+            Workers_Marker : constant Natural := Fixed.Index (Profile, Runtime_Workers_Marker);
+            Cohorts_Marker : constant Natural := Fixed.Index (Profile, Runtime_Cohorts_Marker);
          begin
             if Bytes_Marker = 0
               or else Bytes_Marker = Profile'First
               or else Wait_Marker <= Bytes_Marker + 6
               or else Depth_Marker <= Wait_Marker + 8
-              or else Depth_Marker + 6 > Profile'Last
+              or else (Workers_Marker = 0) /= (Cohorts_Marker = 0)
+              or else
+                (Workers_Marker > 0
+                 and then
+                   (Workers_Marker <= Depth_Marker + 6
+                    or else Cohorts_Marker <= Workers_Marker + Runtime_Workers_Marker'Length
+                    or else Cohorts_Marker + Runtime_Cohorts_Marker'Length > Profile'Last))
+              or else (Workers_Marker = 0 and then Depth_Marker + 6 > Profile'Last)
             then
                raise Program_Error with "invalid Flyology adaptive-cohort benchmark profile " & Name;
             end if;
@@ -219,13 +299,32 @@ procedure Flyology_DB_Benchmark_Panel is
                Members_Text : constant String := Profile (Profile'First .. Bytes_Marker - 1);
                Bytes_Text : constant String := Profile (Bytes_Marker + 6 .. Wait_Marker - 1);
                Wait_Text : constant String := Profile (Wait_Marker + 8 .. Depth_Marker - 1);
-               Depth_Text : constant String := Profile (Depth_Marker + 6 .. Profile'Last);
+               Depth_Text : constant String :=
+                 Profile
+                   (Depth_Marker + 6
+                    .. (if Workers_Marker = 0 then Profile'Last else Workers_Marker - 1));
+               Workers_Text : constant String :=
+                 (if Workers_Marker = 0
+                  then "1"
+                  else
+                    Profile
+                      (Workers_Marker + Runtime_Workers_Marker'Length
+                       .. Cohorts_Marker - 1));
+               Cohorts_Text : constant String :=
+                 (if Cohorts_Marker = 0
+                  then "1"
+                  else Profile (Cohorts_Marker + Runtime_Cohorts_Marker'Length .. Profile'Last));
                Members : constant Positive := Profile_Value (Members_Text, "Flyology adaptive members");
                Bytes : constant Interfaces.Unsigned_64 :=
                  Profile_Unsigned_64 (Bytes_Text, "Flyology adaptive byte target");
                Wait_Microseconds : constant Interfaces.Unsigned_64 :=
                  Profile_Unsigned_64 (Wait_Text, "Flyology adaptive wait");
-               Depth : constant Positive := Profile_Value (Depth_Text, "Flyology adaptive depth");
+               Depth : constant Positive :=
+                 Outstanding_Profile_Value (Depth_Text, "Flyology adaptive caller depth");
+               Runtime_Preparers : constant Positive :=
+                 Profile_Value (Workers_Text, "Flyology adaptive runtime workers");
+               Runtime_Cohorts : constant Positive :=
+                 Profile_Value (Cohorts_Text, "Flyology adaptive runtime cohorts");
             begin
                if Depth < Members then
                   raise Program_Error with
@@ -244,6 +343,11 @@ procedure Flyology_DB_Benchmark_Panel is
                   Fixed.Trim (Interfaces.Unsigned_64'Image (Wait_Microseconds), Ada.Strings.Both));
                Ada.Environment_Variables.Set
                  ("FLYOLOGY_DB_BENCH_ADAPTIVE_ADMISSION_DEPTH", Image (Depth));
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_ADAPTIVE_PREPARATION_CONCURRENCY",
+                  Image (Runtime_Preparers));
+               Ada.Environment_Variables.Set
+                 ("FLYOLOGY_DB_BENCH_ADAPTIVE_PIPELINE_COHORTS", Image (Runtime_Cohorts));
             end;
          end;
       else
@@ -350,6 +454,8 @@ procedure Flyology_DB_Benchmark_Panel is
       Scratch : constant String := Scratch_Path;
       Profile : constant String := Execution_Profile (Name);
       Wave_Scheduling : constant Boolean := Uses_Wave_Scheduling (Name);
+      Parallel_Preparation : constant Positive := Preparation_Width (Name);
+      Packed_Admission : constant Boolean := Uses_Packed_Admission (Name);
       Collect_Diagnostics : constant Boolean := Uses_Commit_Diagnostics (Name);
       Root : constant String := Scratch & "/database";
       Transactions : constant Positive :=
@@ -358,9 +464,27 @@ procedure Flyology_DB_Benchmark_Panel is
       State_SHA256 : GNAT.SHA256.Message_Digest;
       Flush : Flyology_DB_Benchmark_SlateDB.Flush_Profile;
       Flyology_Participant : Boolean := False;
+      Slate_Participant : Boolean := False;
    begin
       Execution_Ordinal := Sequence;
       Ada.Directories.Create_Directory (Scratch);
+      Ada.Environment_Variables.Set
+        ("FLYOLOGY_DB_BENCH_PREPARATION_WIDTH", Image (Parallel_Preparation));
+      Ada.Environment_Variables.Set
+        ("FLYOLOGY_DB_SLATE_PREPARATION_WIDTH", Image (Parallel_Preparation));
+      Ada.Environment_Variables.Set
+        ("FLYOLOGY_DB_BENCH_PACKED_ADMISSION", (if Packed_Admission then "1" else "0"));
+      Ada.Environment_Variables.Set ("FLYOLOGY_DB_SLATE_PREPARATION_DIAGNOSTICS", "0");
+      if Parallel_Preparation > 1 and then not Wave_Scheduling then
+         raise Program_Error with "parallel preparation requires an explicit wave profile";
+      end if;
+      if Packed_Admission
+        and then
+          (not Wave_Scheduling
+           or else not Has_Profile_Prefix (Profile, Flyology_Adaptive_Prefix))
+      then
+         raise Program_Error with "packed admission requires an adaptive wave profile";
+      end if;
       if Wave_Scheduling
         and then not
           (Has_Profile_Prefix (Profile, Flyology_Singleton_Prefix)
@@ -370,8 +494,17 @@ procedure Flyology_DB_Benchmark_Panel is
       then
          raise Program_Error with "wave scheduling is not supported by benchmark participant " & Name;
       end if;
-      if Collect_Diagnostics and then not Has_Profile_Prefix (Profile, Flyology_Adaptive_Prefix) then
-         raise Program_Error with "commit diagnostics require an adaptive Flyology participant";
+      if Collect_Diagnostics
+        and then not
+          (Has_Profile_Prefix (Profile, Flyology_Adaptive_Prefix)
+           or else
+             (Parallel_Preparation = 1
+              and then
+                (Profile = "slatedb-default"
+                 or else Profile = "slatedb-1ms"
+                 or else Has_Profile_Prefix (Profile, SlateDB_Depth_Prefix))))
+      then
+         raise Program_Error with "diagnostics require adaptive Flyology or serial SlateDB";
       end if;
       if Profile = "flyology-db-files"
         or else Has_Profile_Prefix (Profile, Flyology_Singleton_Prefix)
@@ -400,10 +533,14 @@ procedure Flyology_DB_Benchmark_Panel is
         or else Has_Profile_Prefix (Profile, SlateDB_Depth_Prefix)
       then
          Ada.Environment_Variables.Set
+           ("FLYOLOGY_DB_SLATE_PREPARATION_DIAGNOSTICS",
+            (if Collect_Diagnostics then "1" else "0"));
+         Slate_Participant := True;
+         Ada.Environment_Variables.Set
            ("FLYOLOGY_DB_SLATE_PIPELINE_DEPTH",
             (if Has_Profile_Prefix (Profile, SlateDB_Depth_Prefix)
              then Image
-               (Profile_Value
+               (Outstanding_Profile_Value
                   (Profile
                      (Profile'First + SlateDB_Depth_Prefix'Length .. Profile'Last),
                    "SlateDB pipeline depth"))
@@ -482,6 +619,26 @@ procedure Flyology_DB_Benchmark_Panel is
          raise Program_Error
            with "benchmark participant returned invalid evidence: " & Name;
       end if;
+      Unbounded.Append
+        (Commit_Diagnostics,
+         "{""schema"":""flyology.db.benchmark.state_verification.v1"",""participant"":"""
+         & Name
+         & """,""execution_ordinal"":"
+         & Image (Execution_Ordinal)
+         & ",""warmup_transactions"":"
+         & Image (Warmup_Transactions)
+         & ",""transactions"":"
+         & Image (Transactions)
+         & ",""mutations_per_transaction"":"
+         & Image (Mutations)
+         & ",""verified_keys"":"
+         & Image (Verified_Keys)
+         & ",""state_sha256"":"""
+         & State_SHA256
+         & """,""expected_state_sha256"":"""
+         & Expected_SHA (Transactions + Warmup_Transactions)
+         & """}"
+         & Ada.Characters.Latin_1.LF);
       if Flyology_Participant then
          declare
             Configuration : constant String :=
@@ -498,6 +655,17 @@ procedure Flyology_DB_Benchmark_Panel is
             if Line'Length > 0 then
                Unbounded.Append (Commit_Diagnostics, Line & Ada.Characters.Latin_1.LF);
             end if;
+         end;
+      elsif Slate_Participant and then Collect_Diagnostics then
+         declare
+            Line : constant String :=
+              Flyology_DB_Benchmark_SlateDB.Last_Run_Preparation_Diagnostics_NDJSON
+                (Execution_Ordinal, Transactions);
+         begin
+            if Line'Length = 0 then
+               raise Program_Error with "SlateDB returned no preparation diagnostics";
+            end if;
+            Unbounded.Append (Commit_Diagnostics, Line & Ada.Characters.Latin_1.LF);
          end;
       end if;
       Ada.Directories.Delete_Tree (Scratch);

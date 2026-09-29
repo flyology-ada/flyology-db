@@ -1,0 +1,515 @@
+--- a/src/flyology-db.adb
++++ b/src/flyology-db.adb
+@@ -3009,8 +3009,7 @@
+          Generation : out Generation_Value;
+          Result     : out Outcome_Code);
+ 
+-      procedure Retire_Pipeline_Front
+-        (Token : Pipeline_Token; Halt : Boolean; Terminal_Halt : Boolean);
++      procedure Retire_Pipeline_Front (Token : Pipeline_Token; Halt : Boolean; Terminal_Halt : Boolean);
+ 
+       procedure Mark_Pipeline_Preparation_Stopped;
+       procedure Abort_Pipeline;
+@@ -3162,14 +3161,14 @@
+       procedure Configure_Aggregate_Cohort
+         (Width : Positive; First_Batch_Ordinal : Interfaces.Unsigned_64; Result : out Outcome_Code);
+       procedure Configure_Adaptive_Aggregate_Cohort
+-        (Maximum_Members       : Positive;
+-         Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+-         Maximum_Wait          : Ada.Real_Time.Time_Span;
+-         Admission_Depth       : Positive;
+-         Preparation_Concurrency : Positive;
+-         Pipeline_Depth          : Positive;
++        (Maximum_Members                 : Positive;
++         Maximum_Encoded_Bytes           : Interfaces.Unsigned_64;
++         Maximum_Wait                    : Ada.Real_Time.Time_Span;
++         Admission_Depth                 : Positive;
++         Preparation_Concurrency         : Positive;
++         Pipeline_Depth                  : Positive;
+          Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
+-         Result                : out Outcome_Code);
++         Result                          : out Outcome_Code);
+       procedure Begin_Adaptive_Cohort_Diagnostics (Result : out Outcome_Code);
+       procedure Finish_Adaptive_Cohort_Diagnostics
+         (Diagnostics : out Test_Adaptive_Cohort_Diagnostics; Result : out Outcome_Code);
+@@ -3202,85 +3201,85 @@
+       entry Join;
+       function Highest return Sequence_Number;
+    private
+-      Slots                        : Completion_Array;
+-      Queue_Order                  : Interfaces.Unsigned_64 := 0;
+-      In_Use_Count                 : Natural range 0 .. Maximum_Commit_Slots := 0;
+-      Queued_Count                 : Natural range 0 .. Maximum_Commit_Slots := 0;
+-      In_Flight_Bytes              : Interfaces.Unsigned_64 := 0;
+-      Current_Head                 : Head_Snapshot;
+-      Head_Generation              : Generation_Value;
+-      Current_Manifest             : Manifests.Manifest;
+-      Incarnation                  : Engine_Incarnation := No_Incarnation;
+-      Live_State_Bytes             : Interfaces.Unsigned_64 := 0;
+-      Entries                      : State_Entry_Array (1 .. Entry_Capacity);
++      Slots                              : Completion_Array;
++      Queue_Order                        : Interfaces.Unsigned_64 := 0;
++      In_Use_Count                       : Natural range 0 .. Maximum_Commit_Slots := 0;
++      Queued_Count                       : Natural range 0 .. Maximum_Commit_Slots := 0;
++      In_Flight_Bytes                    : Interfaces.Unsigned_64 := 0;
++      Current_Head                       : Head_Snapshot;
++      Head_Generation                    : Generation_Value;
++      Current_Manifest                   : Manifests.Manifest;
++      Incarnation                        : Engine_Incarnation := No_Incarnation;
++      Live_State_Bytes                   : Interfaces.Unsigned_64 := 0;
++      Entries                            : State_Entry_Array (1 .. Entry_Capacity);
+       --  Private exact-key index over the dense live-entry array. Bucket and
+       --  chain storage derive from the authenticated live-entry capacity;
+       --  hashes only select candidates and exact bytes remain authoritative.
+-      Entry_Buckets                : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
+-      Entry_Links                  : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
++      Entry_Buckets                      : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
++      Entry_Links                        : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
+       --  Preallocated projection scratch keeps potentially large allocation
+       --  and Storage_Error outside protected operations.  Apply_Batch writes
+       --  only this scratch until every final-state limit has passed.
+-      Projected_Entries            : State_Entry_Array (1 .. Entry_Capacity);
+-      Entry_Count                  : Natural := 0;
+-      Prepared_Batch               : Boolean := False;
+-      Prepared_Descriptor          : Runtime_Batch;
+-      Prepared_Head                : Head_Snapshot;
+-      Prepared_Generation          : Generation_Value;
+-      Prepared_Incarnation         : Engine_Incarnation := No_Incarnation;
+-      Prepared_Original_Count      : Natural := 0;
+-      Prepared_Original_Bytes      : Interfaces.Unsigned_64 := 0;
+-      Prepared_Seen_Count          : Natural := 0;
+-      Prepared_History_Count       : Natural := 0;
+-      Prepared_Entry_Count         : Natural := 0;
+-      Prepared_State_Bytes         : Interfaces.Unsigned_64 := 0;
+-      Seen                         : Seen_Transaction_Array (1 .. Seen_Capacity) :=
++      Projected_Entries                  : State_Entry_Array (1 .. Entry_Capacity);
++      Entry_Count                        : Natural := 0;
++      Prepared_Batch                     : Boolean := False;
++      Prepared_Descriptor                : Runtime_Batch;
++      Prepared_Head                      : Head_Snapshot;
++      Prepared_Generation                : Generation_Value;
++      Prepared_Incarnation               : Engine_Incarnation := No_Incarnation;
++      Prepared_Original_Count            : Natural := 0;
++      Prepared_Original_Bytes            : Interfaces.Unsigned_64 := 0;
++      Prepared_Seen_Count                : Natural := 0;
++      Prepared_History_Count             : Natural := 0;
++      Prepared_Entry_Count               : Natural := 0;
++      Prepared_State_Bytes               : Interfaces.Unsigned_64 := 0;
++      Seen                               : Seen_Transaction_Array (1 .. Seen_Capacity) :=
+         [others => Zero_Transaction_ID];
+-      Seen_Count                   : Natural := 0;
+-      Used_Batches                 : Used_Batch_ID_Array (1 .. History_Capacity) :=
++      Seen_Count                         : Natural := 0;
++      Used_Batches                       : Used_Batch_ID_Array (1 .. History_Capacity) :=
+         [others => Zero_Identifier];
+-      History_Count                : Natural := 0;
++      History_Count                      : Natural := 0;
+       --  Retain exact decoded batch descriptors lazily with their already-owned
+       --  immutable images. They are the post-checkpoint write authority used
+       --  for snapshot conflict checks; no theoretical key table is allocated.
+-      History_Batches              : Runtime_Batch_Array (1 .. History_Capacity) :=
++      History_Batches                    : Runtime_Batch_Array (1 .. History_Capacity) :=
+         [others => (others => <>)];
+-      Reserved                     : Reserved_Identity_Array (1 .. Reserved_Capacity) :=
++      Reserved                           : Reserved_Identity_Array (1 .. Reserved_Capacity) :=
+         [others => Zero_Identifier];
+-      Reserved_Count               : Natural := 0;
++      Reserved_Count                     : Natural := 0;
+       --  Zero is the authenticated root/legacy replay boundary. A nonzero
+       --  boundary comes only from the persisted checkpoint authority and makes
+       --  older snapshots conservatively unverifiable.
+-      Retained_History_Boundary    : Sequence_Number := 0;
++      Retained_History_Boundary          : Sequence_Number := 0;
+       --  Private exact-width experiment control. Zero retains the disabled
+       --  compatibility state; no persisted or public default derives from it.
+-      Configured_Cohort_Width      : Group_Count := 0;
+-      Configured_Aggregate_Cohort  : Boolean := False;
+-      Configured_Adaptive_Cohort   : Boolean := False;
+-      Configured_Cohort_Byte_Limit : Interfaces.Unsigned_64 := 0;
+-      Configured_Cohort_Wait       : Ada.Real_Time.Time_Span := Ada.Real_Time.Time_Span_Zero;
+-      Configured_Admission_Depth   : Positive := Maximum_Group_Transactions;
+-      Configured_In_Flight_Payload : Interfaces.Unsigned_64 := 0;
++      Configured_Cohort_Width            : Group_Count := 0;
++      Configured_Aggregate_Cohort        : Boolean := False;
++      Configured_Adaptive_Cohort         : Boolean := False;
++      Configured_Cohort_Byte_Limit       : Interfaces.Unsigned_64 := 0;
++      Configured_Cohort_Wait             : Ada.Real_Time.Time_Span := Ada.Real_Time.Time_Span_Zero;
++      Configured_Admission_Depth         : Positive := Maximum_Group_Transactions;
++      Configured_In_Flight_Payload       : Interfaces.Unsigned_64 := 0;
+       Configured_Preparation_Concurrency : Pipeline_Position := Pipeline_Position'First;
+-      Configured_Pipeline_Depth    : Pipeline_Position := Pipeline_Position'First;
+-      Pipeline                     : Pipeline_Array;
+-      Pipeline_First               : Pipeline_Position := Pipeline_Position'First;
+-      Pipeline_Count               : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
+-      Pipeline_Halted              : Boolean := False;
+-      Pipeline_Terminal_Halt       : Boolean := False;
+-      Pipeline_Preparation_Stopped : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
+-      Last_Adaptive_Byte_Freeze    : Boolean := False;
+-      Adaptive_Diagnostics_Enabled : Boolean := False;
+-      Adaptive_Diagnostics         : Test_Adaptive_Cohort_Diagnostics;
+-      Next_Aggregate_Batch_Ordinal : Interfaces.Unsigned_64 := 0;
+-      Aggregate_Profile_Required   : Boolean := False;
+-      Work_Changed                 : Boolean := False;
+-      Uncertain                    : Boolean := False;
+-      Fenced                       : Boolean := False;
+-      Closing                      : Boolean := False;
+-      Stopped                      : Boolean := False;
+-      Paused                       : Boolean := False;
+-      Fail_Install                 : Boolean := False;
++      Configured_Pipeline_Depth          : Pipeline_Position := Pipeline_Position'First;
++      Pipeline                           : Pipeline_Array;
++      Pipeline_First                     : Pipeline_Position := Pipeline_Position'First;
++      Pipeline_Count                     : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
++      Pipeline_Halted                    : Boolean := False;
++      Pipeline_Terminal_Halt             : Boolean := False;
++      Pipeline_Preparation_Stopped       : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
++      Last_Adaptive_Byte_Freeze          : Boolean := False;
++      Adaptive_Diagnostics_Enabled       : Boolean := False;
++      Adaptive_Diagnostics               : Test_Adaptive_Cohort_Diagnostics;
++      Next_Aggregate_Batch_Ordinal       : Interfaces.Unsigned_64 := 0;
++      Aggregate_Profile_Required         : Boolean := False;
++      Work_Changed                       : Boolean := False;
++      Uncertain                          : Boolean := False;
++      Fenced                             : Boolean := False;
++      Closing                            : Boolean := False;
++      Stopped                            : Boolean := False;
++      Paused                             : Boolean := False;
++      Fail_Install                       : Boolean := False;
+    end Coordinator;
+ 
+    procedure Visit_Scan_Batch
+@@ -5531,9 +5530,8 @@
+          Wait_Boundary      : Boolean := False;
+          Pipeline_Boundary  : Boolean := False;
+ 
+-         function Position_At (Offset : Natural) return Pipeline_Position is
+-           (Pipeline_Position
+-              (((Natural (Pipeline_First) - 1 + Offset) mod Maximum_Pipeline_Cohorts) + 1));
++         function Position_At (Offset : Natural) return Pipeline_Position
++         is (Pipeline_Position (((Natural (Pipeline_First) - 1 + Offset) mod Maximum_Pipeline_Cohorts) + 1));
+ 
+          function Conflicts_With_Pipeline (Item : Work_Item) return Boolean is
+          begin
+@@ -5743,7 +5741,8 @@
+                      end;
+                   end if;
+                end;
+-               exit when Pipeline_Boundary
++               exit when
++                 Pipeline_Boundary
+                  or else Selection_Boundary
+                  or else Selected_Count = Configured_Cohort_Width;
+             end loop;
+@@ -5859,8 +5858,7 @@
+             Next_Wake := Ada.Real_Time.Time_Last;
+             Stop := False;
+          else
+-            Select_Group_Core
+-              (Now, False, Items, Tokens, Count, Head, Generation, Next_Wake, Stop);
++            Select_Group_Core (Now, False, Items, Tokens, Count, Head, Generation, Next_Wake, Stop);
+          end if;
+       end Select_Group;
+ 
+@@ -5927,16 +5925,7 @@
+          then
+             return;
+          end if;
+-         Select_Group_Core
+-           (Now,
+-            True,
+-            Items,
+-            Tokens,
+-            Count,
+-            Expected,
+-            Ignored_Generation,
+-            Next_Wake,
+-            Stop);
++         Select_Group_Core (Now, True, Items, Tokens, Count, Expected, Ignored_Generation, Next_Wake, Stop);
+          if Count = 0 then
+             return;
+          end if;
+@@ -6023,9 +6012,8 @@
+          Started          : out Ada.Real_Time.Time;
+          Phases           : out Test_Adaptive_Cohort_Phase_Durations;
+          Stop             : out Boolean)
+-        when (Pipeline_Count > 0 and then Pipeline (Pipeline_First).Phase = Ready)
+-          or else
+-            (Pipeline_Preparation_Stopped = Maximum_Pipeline_Cohorts and then Pipeline_Count = 0)
++        when(Pipeline_Count > 0 and then Pipeline (Pipeline_First).Phase = Ready)
++        or else (Pipeline_Preparation_Stopped = Maximum_Pipeline_Cohorts and then Pipeline_Count = 0)
+       is
+          Descriptor : Pipeline_Descriptor renames Pipeline (Pipeline_First);
+       begin
+@@ -6088,8 +6076,7 @@
+          end if;
+       end Validate_Pipeline_Front;
+ 
+-      procedure Retire_Pipeline_Front
+-        (Token : Pipeline_Token; Halt : Boolean; Terminal_Halt : Boolean) is
++      procedure Retire_Pipeline_Front (Token : Pipeline_Token; Halt : Boolean; Terminal_Halt : Boolean) is
+          Saved_Generation : Interfaces.Unsigned_64;
+       begin
+          if Pipeline_Count = 0
+@@ -6105,8 +6092,7 @@
+          Saved_Generation := Pipeline (Pipeline_First).Generation;
+          Pipeline (Pipeline_First) := (others => <>);
+          Pipeline (Pipeline_First).Generation := Saved_Generation;
+-         Pipeline_First :=
+-           Pipeline_Position ((Natural (Pipeline_First) mod Maximum_Pipeline_Cohorts) + 1);
++         Pipeline_First := Pipeline_Position ((Natural (Pipeline_First) mod Maximum_Pipeline_Cohorts) + 1);
+          Pipeline_Count := Pipeline_Count - 1;
+          Pipeline_Halted := Pipeline_Halted or Halt;
+          Pipeline_Terminal_Halt := Pipeline_Terminal_Halt or Terminal_Halt;
+@@ -6146,10 +6132,7 @@
+       end Abort_Pipeline;
+ 
+       entry Await_Pipeline_Enabled (Stop : out Boolean)
+-        when Configured_Adaptive_Cohort
+-          or else Closing
+-          or else Fenced
+-          or else Pipeline_Terminal_Halt
++        when Configured_Adaptive_Cohort or else Closing or else Fenced or else Pipeline_Terminal_Halt
+       is
+       begin
+          Stop := not Configured_Adaptive_Cohort or else Fenced or else Pipeline_Terminal_Halt;
+@@ -7575,14 +7558,14 @@
+       end Configure_Aggregate_Cohort;
+ 
+       procedure Configure_Adaptive_Aggregate_Cohort
+-        (Maximum_Members       : Positive;
+-         Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+-         Maximum_Wait          : Ada.Real_Time.Time_Span;
+-         Admission_Depth       : Positive;
+-         Preparation_Concurrency : Positive;
+-         Pipeline_Depth          : Positive;
++        (Maximum_Members                 : Positive;
++         Maximum_Encoded_Bytes           : Interfaces.Unsigned_64;
++         Maximum_Wait                    : Ada.Real_Time.Time_Span;
++         Admission_Depth                 : Positive;
++         Preparation_Concurrency         : Positive;
++         Pipeline_Depth                  : Positive;
+          Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
+-         Result                : out Outcome_Code) is
++         Result                          : out Outcome_Code) is
+       begin
+          if In_Use_Count /= 0
+            or else Queued_Count /= 0
+@@ -9546,8 +9529,7 @@
+       Prepared       : out Prepared_Work_Group_View;
+       Mutation_Total : out Natural;
+       Wire_Length    : out Interfaces.Unsigned_64;
+-      Result         : out Outcome_Code)
+-   is
++      Result         : out Outcome_Code) is
+    begin
+       Prepared := [others => <>];
+       Mutation_Total := 0;
+@@ -11119,8 +11101,7 @@
+       begin
+          State.Gate.Retire_Pipeline_Front (Pipeline_Item, Halt, Terminal_Halt);
+          Retired := True;
+-         Finish_Work
+-           (State, Tokens, Receipts, Count, Outcome, Mark_Uncertain, Mark_Fenced);
++         Finish_Work (State, Tokens, Receipts, Count, Outcome, Mark_Uncertain, Mark_Fenced);
+       end Retire;
+ 
+       procedure Record_Diagnostics is
+@@ -11148,31 +11129,18 @@
+       end loop;
+       if Abandoned then
+          Release_Batch;
+-         Retire
+-           (False,
+-            Fence_On_Failure,
+-            Storage_Failure,
+-            Mark_Fenced => Fence_On_Failure);
++         Retire (False, Fence_On_Failure, Storage_Failure, Mark_Fenced => Fence_On_Failure);
+          return;
+       elsif Preparation /= Success then
+          Release_Batch;
+-         Retire
+-           (True,
+-            Fence_On_Failure,
+-            Preparation,
+-            Mark_Fenced => Fence_On_Failure);
++         Retire (True, Fence_On_Failure, Preparation, Mark_Fenced => Fence_On_Failure);
+          return;
+       end if;
+-      State.Gate.Validate_Pipeline_Front
+-        (Pipeline_Item, Items, Count, Batch, Head_Generation, Result);
++      State.Gate.Validate_Pipeline_Front (Pipeline_Item, Items, Count, Batch, Head_Generation, Result);
+       Finish_Phase (Phases.Validation_Nanoseconds);
+       if Result /= Success then
+          Release_Batch;
+-         Retire
+-           (True,
+-            Result = Stale_Writer,
+-            Result,
+-            Mark_Fenced => Result = Stale_Writer);
++         Retire (True, Result = Stale_Writer, Result, Mark_Fenced => Result = Stale_Writer);
+          return;
+       end if;
+       Head_Image := Formats.Encode_Head (To_Head (Attempted));
+@@ -11197,11 +11165,7 @@
+             State.Life.Set_Visible (Attempted.Highest);
+             Finish_Phase (Phases.Installation_Nanoseconds);
+             Record_Diagnostics;
+-            Retire
+-              (Result /= Success,
+-               Result /= Success,
+-               Success,
+-               Mark_Fenced => Result /= Success);
++            Retire (Result /= Success, Result /= Success, Success, Mark_Fenced => Result /= Success);
+ 
+          when Put_Precondition_Failed =>
+             Release_Batch;
+@@ -11302,13 +11266,7 @@
+                      Fence_On_Failure,
+                      Phases);
+                   State.Gate.Return_Pipeline_Preparation
+-                    (Pipeline_Item,
+-                     Attempted,
+-                     Batch,
+-                     Result,
+-                     Fence_On_Failure,
+-                     Phases,
+-                     Taken);
++                    (Pipeline_Item, Attempted, Batch, Result, Fence_On_Failure, Phases, Taken);
+                   if not Taken then
+                      Release_Runtime_Batch (Batch);
+                      State.Gate.Abort_Pipeline;
+@@ -11332,13 +11290,7 @@
+                   Result := Storage_Failure;
+                   Fence_On_Failure := True;
+                   State.Gate.Return_Pipeline_Preparation
+-                    (Pipeline_Item,
+-                     Attempted,
+-                     Batch,
+-                     Result,
+-                     Fence_On_Failure,
+-                     Phases,
+-                     Taken);
++                    (Pipeline_Item, Attempted, Batch, Result, Fence_On_Failure, Phases, Taken);
+                   if not Taken then
+                      Release_Runtime_Batch (Batch);
+                   end if;
+@@ -11366,15 +11318,7 @@
+       begin
+          loop
+             State.Gate.Select_Group
+-              (Ada.Real_Time.Clock,
+-               Items,
+-               Tokens,
+-               Count,
+-               Head,
+-               Generation,
+-               Next_Wake,
+-               Pipeline,
+-               Stop);
++              (Ada.Real_Time.Clock, Items, Tokens, Count, Head, Generation, Next_Wake, Pipeline, Stop);
+             exit when Stop;
+             Signal_Ready_Completions (State);
+             if Pipeline then
+@@ -15647,6 +15591,48 @@
+       Candidate     : Owned_Bytes_Guard;
+       Prior_Payload : Owned_Byte_Array_Access := null;
+       Configuration : Column_Family_Configuration;
++
++      function Copy_Octets
++        (Destination : System.Address; Source : System.Address; Count : Interfaces.C.size_t)
++         return System.Address
++      with Import, Convention => C, External_Name => "memcpy";
++
++      --  These are representation facts, not a workload policy: opaque keys
++      --  and values are octets. Use the C byte-copy ABI only when its byte and
++      --  both Ada component representations are exactly eight bits and every
++      --  accepted Natural length fits size_t. Otherwise keep numeric copying.
++      Native_Copy_Compatible : constant Boolean :=
++        System.Storage_Unit = 8
++        and Byte'Size = 8
++        and Ada.Streams.Stream_Element'Size = 8
++        and Interfaces.C.char'Size = 8
++        and Byte_Array'Component_Size = 8
++        and Ada.Streams.Stream_Element_Array'Component_Size = 8
++        and Interfaces.C.size_t'Size >= Natural'Size;
++
++      procedure Copy_Into_Candidate
++        (Destination_First : Ada.Streams.Stream_Element_Offset; Source : Byte_Array)
++      is
++         Ignored_Destination : System.Address;
++      begin
++         if Source'Length = 0 then
++            return;
++         elsif Native_Copy_Compatible then
++            --  The caller has allocated the complete independent candidate
++            --  and established this exact slice. No source aliases it and
++            --  memcpy neither retains storage nor changes its ownership.
++            Ignored_Destination :=
++              Copy_Octets
++                (Candidate.Data (Destination_First)'Address,
++                 Source (Source'First)'Address,
++                 Interfaces.C.size_t (Source'Length));
++         else
++            for Offset in Natural range 0 .. Source'Length - 1 loop
++               Candidate.Data (Destination_First + Ada.Streams.Stream_Element_Offset (Offset)) :=
++                 Ada.Streams.Stream_Element (Source (Source'First + Offset));
++            end loop;
++         end if;
++      end Copy_Into_Candidate;
+    begin
+       if not Txn.Active or else Txn.Owner.Arena = null then
+          Result := Invalid_State;
+@@ -15727,16 +15713,10 @@
+          Candidate.Data :=
+            new Ada.Streams.Stream_Element_Array (1 .. Ada.Streams.Stream_Element_Offset (New_Bytes));
+          if Item_Key'Length > 0 then
+-            for Offset in Natural range 0 .. Item_Key'Length - 1 loop
+-               Candidate.Data (Ada.Streams.Stream_Element_Offset (Offset + 1)) :=
+-                 Ada.Streams.Stream_Element (Item_Key (Item_Key'First + Offset));
+-            end loop;
++            Copy_Into_Candidate (1, Item_Key);
+          end if;
+          if Operation = Put_Mutation and then Data'Length > 0 then
+-            for Offset in Natural range 0 .. Data'Length - 1 loop
+-               Candidate.Data (Ada.Streams.Stream_Element_Offset (Item_Key'Length + Offset + 1)) :=
+-                 Ada.Streams.Stream_Element (Data (Data'First + Offset));
+-            end loop;
++            Copy_Into_Candidate (Ada.Streams.Stream_Element_Offset (Item_Key'Length + 1), Data);
+          end if;
+       end if;
+ 
+@@ -29830,15 +29810,15 @@
+    end Set_Test_Aggregate_Cohort_Width;
+ 
+    procedure Set_Test_Adaptive_Aggregate_Cohort
+-     (Item                  : in out Database;
+-      Maximum_Members       : Positive;
+-      Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
+-      Maximum_Wait          : Ada.Real_Time.Time_Span;
+-      Admission_Depth       : Positive;
+-      Preparation_Concurrency : Positive;
+-      Pipeline_Depth          : Positive;
++     (Item                            : in out Database;
++      Maximum_Members                 : Positive;
++      Maximum_Encoded_Bytes           : Interfaces.Unsigned_64;
++      Maximum_Wait                    : Ada.Real_Time.Time_Span;
++      Admission_Depth                 : Positive;
++      Preparation_Concurrency         : Positive;
++      Pipeline_Depth                  : Positive;
+       Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
+-      Result                : out Outcome_Code)
++      Result                          : out Outcome_Code)
+    is
+       Lease : Lifecycle_Lease;
+    begin
+@@ -29942,8 +29922,8 @@
+       Item.Test_Control.Set_Head_Put_Paused (Value);
+    end Set_Test_Head_Put_Paused;
+ 
+-   procedure Wait_For_Test_Head_Put
+-     (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean) is
++   procedure Wait_For_Test_Head_Put (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean)
++   is
+    begin
+       Arrived := False;
+       select

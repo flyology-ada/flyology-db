@@ -90,6 +90,9 @@ private package Flyology.DB.Testing is
       Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
       Maximum_Wait          : Ada.Real_Time.Time_Span;
       Admission_Depth       : Positive;
+      Preparation_Concurrency : Positive;
+      Pipeline_Depth          : Positive;
+      Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
       Result                : out Outcome_Code);
    procedure Abort_Independent_Cohort (Item : in out Database; Result : out Outcome_Code);
    procedure Queue_Depth (Item : in out Database; Value : out Natural; Result : out Outcome_Code);
@@ -99,6 +102,10 @@ private package Flyology.DB.Testing is
    procedure Resume_Gets (Item : in out Storage_Context);
    procedure Wait_For_Get (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean);
    function Get_Waiting (Item : Storage_Context) return Boolean;
+   procedure Pause_Head_Puts (Item : in out Storage_Context);
+   procedure Resume_Head_Puts (Item : in out Storage_Context);
+   procedure Wait_For_Head_Put (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean);
+   function Head_Put_Waiting (Item : Storage_Context) return Boolean;
    procedure Image_Statistics
      (Allocated, Released, Arenas_Allocated, Arenas_Released, Transaction_Bytes, Source_Bytes, Sink_Bytes :
         out Interfaces.Unsigned_64);

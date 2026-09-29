@@ -1,0 +1,10 @@
+diff --git a/src/flyology-db.adb b/src/flyology-db.adb
+--- a/src/flyology-db.adb
++++ b/src/flyology-db.adb
+@@ -14,6 +14,5 @@ with Flyology_CRC.Width_32;
+ with GNAT.SHA256;
+ with Interfaces.C;
+-with System;
+ pragma
+   Warnings
+     (Off,

@@ -134,6 +134,13 @@ package body Flyology.DB is
    begin
       Free_Owned_Bytes (Item.Data);
    end Finalize;
+
+   procedure Move_Guarded_Bytes (Source : in out Owned_Bytes_Guard; Target : out Owned_Byte_Array_Access) is
+   begin
+      Target := Source.Data;
+      Source.Data := null;
+   end Move_Guarded_Bytes;
+
    procedure Free_Owned_Point_Read is new
      Ada.Unchecked_Deallocation (Owned_Point_Read, Owned_Point_Read_Access);
    procedure Free_Owned_Scan_Range is new
@@ -425,16 +432,56 @@ package body Flyology.DB is
    end Copy_Growable_Range;
 
    function Mutation_Payload_Length (Mutation : Owned_Mutation) return Natural
-   is (if Mutation.Payload = null then 0 else Mutation.Payload.all'Length);
+   is (if Mutation.Prepared_Body /= null
+       then Mutation.Key_Length + Mutation.Value_Length
+       elsif Mutation.Payload = null
+       then 0
+       else Mutation.Payload.all'Length);
 
    function Mutation_Payload_Element
      (Mutation : Owned_Mutation; Index : Positive) return Ada.Streams.Stream_Element is
    begin
-      if Mutation.Payload = null or else Index > Mutation.Payload.all'Length then
+      if Mutation.Prepared_Body /= null then
+         if Mutation.Prepared_Offset > Mutation.Prepared_Body'Length
+           or else Index > Mutation_Payload_Length (Mutation)
+           or else Index > Mutation.Prepared_Body'Length - Mutation.Prepared_Offset
+         then
+            raise Constraint_Error with "prepared mutation index exceeds source length";
+         end if;
+         return
+           Mutation.Prepared_Body
+             (Mutation.Prepared_Body'First
+              + Ada.Streams.Stream_Element_Offset (Mutation.Prepared_Offset + Index - 1));
+      elsif Mutation.Payload = null or else Index > Mutation.Payload.all'Length then
          raise Constraint_Error with "mutation payload index exceeds source length";
       end if;
       return Mutation.Payload (Mutation.Payload.all'First + Ada.Streams.Stream_Element_Offset (Index - 1));
    end Mutation_Payload_Element;
+
+   procedure Copy_Mutation_Payload (Mutation : Owned_Mutation; Target : out Ada.Streams.Stream_Element_Array)
+   is
+      Length : constant Natural := Mutation_Payload_Length (Mutation);
+   begin
+      if Target'Length /= Length then
+         raise Constraint_Error with "mutation copy extent differs from payload";
+      elsif Length = 0 then
+         return;
+      elsif Mutation.Prepared_Body /= null then
+         if Mutation.Prepared_Offset > Mutation.Prepared_Body'Length
+           or else Length > Mutation.Prepared_Body'Length - Mutation.Prepared_Offset
+         then
+            raise Constraint_Error with "prepared mutation copy exceeds source";
+         end if;
+         Target :=
+           Mutation.Prepared_Body
+             (Mutation.Prepared_Body'First
+              + Ada.Streams.Stream_Element_Offset (Mutation.Prepared_Offset)
+              .. Mutation.Prepared_Body'First
+                 + Ada.Streams.Stream_Element_Offset (Mutation.Prepared_Offset + Length - 1));
+      else
+         Target := Mutation.Payload.all;
+      end if;
+   end Copy_Mutation_Payload;
 
    procedure Copy_Image_Range
      (Image         : not null Shared_Image_Access;
@@ -479,7 +526,9 @@ package body Flyology.DB is
       if Arena /= null then
          for Mutation of Arena.Mutations loop
             Free_Owned_Bytes (Mutation.Payload);
+            Mutation.Prepared_Body := null;
          end loop;
+         Free_Owned_Bytes (Arena.Prepared_Body);
          while Arena.Point_Reads /= null loop
             Point := Arena.Point_Reads;
             Arena.Point_Reads := Point.Next;
@@ -1045,6 +1094,33 @@ package body Flyology.DB is
 
       function Get_Waiting return Boolean
       is (Waiting_Gets > 0);
+
+      procedure Set_Head_Put_Paused (Value : Boolean) is
+      begin
+         Head_Put_Paused := Value;
+      end Set_Head_Put_Paused;
+
+      procedure Arrive_Head_Put is
+      begin
+         if Head_Put_Paused and then Waiting_Head_Puts < Natural'Last then
+            Waiting_Head_Puts := Waiting_Head_Puts + 1;
+         end if;
+      end Arrive_Head_Put;
+
+      entry Await_Head_Put when Waiting_Head_Puts > 0 is
+      begin
+         null;
+      end Await_Head_Put;
+
+      entry Continue_Head_Put when not Head_Put_Paused is
+      begin
+         if Waiting_Head_Puts > 0 then
+            Waiting_Head_Puts := Waiting_Head_Puts - 1;
+         end if;
+      end Continue_Head_Put;
+
+      function Head_Put_Waiting return Boolean
+      is (Waiting_Head_Puts > 0);
 
    end Storage_Test_Control;
 
@@ -1792,6 +1868,10 @@ package body Flyology.DB is
                  (Is_Head     => Before_Point = Before_Head_Put,
                   Is_Manifest => Before_Point = Before_Manifest_Put,
                   Is_Run      => Before_Point = Before_Run_Put);
+               if Before_Point = Before_Head_Put then
+                  Storage.Test_Control.Arrive_Head_Put;
+                  Storage.Test_Control.Continue_Head_Put;
+               end if;
                Entered := True;
                if UStrings.To_String (Conditions.If_None_Match) = "*" then
                   Outcome :=
@@ -1938,6 +2018,10 @@ package body Flyology.DB is
            (Is_Head     => Before_Point = Before_Head_Put,
             Is_Manifest => Before_Point = Before_Manifest_Put,
             Is_Run      => Before_Point = Before_Run_Put);
+         if Before_Point = Before_Head_Put then
+            Storage.Test_Control.Arrive_Head_Put;
+            Storage.Test_Control.Continue_Head_Put;
+         end if;
          Entered := True;
          Storage.Backend.Put_Object
            (Bucket     => UStrings.To_String (Storage.Bucket),
@@ -2097,7 +2181,8 @@ package body Flyology.DB is
    end Storage_Port;
 
    subtype Commit_Slot is Positive range 1 .. Maximum_Commit_Slots;
-   subtype Group_Count is Natural range 0 .. Maximum_Commit_Slots;
+   subtype Cohort_Member is Positive range 1 .. Maximum_Group_Transactions;
+   subtype Group_Count is Natural range 0 .. Maximum_Group_Transactions;
 
    type Work_Item is record
       Transaction_ID : Transaction_Identifier := Zero_Transaction_ID;
@@ -2111,9 +2196,26 @@ package body Flyology.DB is
       Schedule_By    : Ada.Real_Time.Time := Ada.Real_Time.Time_Last;
       Batch_ID       : Identifier := Zero_Identifier;
       Group_ID       : Interfaces.Unsigned_64 := 0;
-      Group_Member   : Commit_Slot := Commit_Slot'First;
+      Group_Member   : Cohort_Member := Cohort_Member'First;
    end record;
-   type Work_Group is array (Commit_Slot) of Work_Item;
+   type Work_Group is array (Cohort_Member) of Work_Item;
+
+   --  One pointer per admitted mutation, derived from the arena's actual
+   --  count. A preparation worker owns these detached allocations through
+   --  raw retirement; descriptor views never own the shared canonical body.
+   type Raw_Payload_Array is array (Positive range <>) of Owned_Byte_Array_Access;
+
+   type Raw_Payload_Guard (Count : Natural) is new Ada.Finalization.Limited_Controlled with record
+      Data : Raw_Payload_Array (1 .. Count) := [others => null];
+   end record;
+
+   overriding
+   procedure Finalize (Item : in out Raw_Payload_Guard) is
+   begin
+      for Payload of Item.Data loop
+         Free_Owned_Bytes (Payload);
+      end loop;
+   end Finalize;
 
    type Runtime_Transaction is record
       Transaction_ID : Transaction_Identifier := Zero_Transaction_ID;
@@ -2244,7 +2346,7 @@ package body Flyology.DB is
       Index      : Commit_Slot := Commit_Slot'First;
       Generation : Interfaces.Unsigned_64 := 0;
    end record;
-   type Token_Group is array (Commit_Slot) of Slot_Token;
+   type Token_Group is array (Cohort_Member) of Slot_Token;
    type Internal_Receipt is record
       Current_Outcome     : Outcome_Code := Invalid_State;
       Phase               : Receipt_Phase := No_Publication;
@@ -2256,7 +2358,30 @@ package body Flyology.DB is
       Expected_Head       : Head_Snapshot;
       Attempted_Head      : Head_Snapshot;
    end record;
-   type Receipt_Group is array (Commit_Slot) of Internal_Receipt;
+   type Receipt_Group is array (Cohort_Member) of Internal_Receipt;
+
+   subtype Pipeline_Position is Positive range 1 .. Maximum_Pipeline_Cohorts;
+   type Pipeline_Phase is (Vacant, Preparing, Awaiting_Put, Putting, Ready, Publishing);
+   type CPU_Worker_Changed_Array is array (Pipeline_Position) of Boolean;
+   type Pipeline_Token is record
+      Position   : Pipeline_Position := Pipeline_Position'First;
+      Generation : Interfaces.Unsigned_64 := 0;
+   end record;
+   type Pipeline_Descriptor is record
+      Phase            : Pipeline_Phase := Vacant;
+      Generation       : Interfaces.Unsigned_64 := 0;
+      Items            : Work_Group;
+      Tokens           : Token_Group;
+      Count            : Group_Count := 0;
+      Expected         : Head_Snapshot;
+      Attempted        : Head_Snapshot;
+      Batch            : Runtime_Batch;
+      Preparation      : Outcome_Code := Invalid_State;
+      Fence_On_Failure : Boolean := False;
+      Started          : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      Phases           : Test_Adaptive_Cohort_Phase_Durations;
+   end record;
+   type Pipeline_Array is array (Pipeline_Position) of Pipeline_Descriptor;
 
    procedure Adopt_Receipt (Target : out Commit_Receipt; Source : in out Internal_Receipt) is
    begin
@@ -2294,7 +2419,8 @@ package body Flyology.DB is
       Release_Image (Image);
    end Release_Retained_Manifest;
 
-   type Slot_State is (Free, Queued, Running, Completed);
+   type Slot_State is (Free, Queued, Member_Preparing, Member_Joining, Member_Ready, Running, Completed);
+   subtype Unfrozen_Slot_State is Slot_State range Queued .. Member_Ready;
    type Completion_Slot is record
       State             : Slot_State := Free;
       Generation        : Interfaces.Unsigned_64 := 0;
@@ -2302,6 +2428,10 @@ package body Flyology.DB is
       Work              : Work_Item;
       Receipt           : Internal_Receipt;
       Result            : Outcome_Code := Invalid_State;
+      --  A terminal request cannot reclaim an arena while a member worker
+      --  borrows it or retires detached raw payloads. The first request wins.
+      Pending_Terminal  : Boolean := False;
+      Pending_Outcome   : Outcome_Code := Invalid_State;
       --  Borrowed from an admitted composable commit's completion set. Atomic
       --  groups attach it only to member one. A negative value denotes no
       --  external completion source; the operation's lifecycle lease keeps
@@ -2895,9 +3025,103 @@ package body Flyology.DB is
          Head       : out Head_Snapshot;
          Generation : out Generation_Value;
          Next_Wake  : out Ada.Real_Time.Time;
+         Pipeline   : out Boolean;
          Stop       : out Boolean);
 
-      entry Await_Work_Change;
+      procedure Select_Group_Core
+        (Now           : Ada.Real_Time.Time;
+         Pipeline_Mode : Boolean;
+         Items         : out Work_Group;
+         Tokens        : out Token_Group;
+         Count         : out Group_Count;
+         Head          : out Head_Snapshot;
+         Generation    : out Generation_Value;
+         Next_Wake     : out Ada.Real_Time.Time;
+         Stop          : out Boolean);
+
+      procedure Select_Pipeline_Group
+        (Now       : Ada.Real_Time.Time;
+         Token     : out Pipeline_Token;
+         Items     : out Work_Group;
+         Count     : out Group_Count;
+         Expected  : out Head_Snapshot;
+         Attempted : out Head_Snapshot;
+         Next_Wake : out Ada.Real_Time.Time;
+         Stop      : out Boolean);
+
+      procedure Claim_Member_Preparation (Token : out Slot_Token; Item : out Work_Item; Found : out Boolean);
+      procedure Adopt_Member_Preparation
+        (Token    : Slot_Token;
+         Fragment : in out Owned_Byte_Array_Access;
+         Raw      : in out Raw_Payload_Array;
+         Outcome  : Outcome_Code;
+         Taken    : out Boolean);
+      procedure Finish_Member_Preparation (Token : Slot_Token);
+
+      procedure Return_Pipeline_Preparation
+        (Token            : Pipeline_Token;
+         Attempted        : Head_Snapshot;
+         Batch            : in out Runtime_Batch;
+         Result           : Outcome_Code;
+         Fence_On_Failure : Boolean;
+         Phases           : Test_Adaptive_Cohort_Phase_Durations;
+         Taken            : out Boolean);
+
+      entry Take_Pipeline_Put
+        (Token     : out Pipeline_Token;
+         Items     : out Work_Group;
+         Count     : out Group_Count;
+         Expected  : out Head_Snapshot;
+         Attempted : out Head_Snapshot;
+         Batch     : out Runtime_Batch;
+         Phases    : out Test_Adaptive_Cohort_Phase_Durations;
+         Stop      : out Boolean);
+      procedure Return_Pipeline_Put
+        (Token            : Pipeline_Token;
+         Batch            : in out Runtime_Batch;
+         Result           : Outcome_Code;
+         Fence_On_Failure : Boolean;
+         Phases           : Test_Adaptive_Cohort_Phase_Durations;
+         Taken            : out Boolean);
+
+      entry Take_Pipeline_Front
+        (Token            : out Pipeline_Token;
+         Items            : out Work_Group;
+         Tokens           : out Token_Group;
+         Count            : out Group_Count;
+         Expected         : out Head_Snapshot;
+         Attempted        : out Head_Snapshot;
+         Batch            : out Runtime_Batch;
+         Result           : out Outcome_Code;
+         Fence_On_Failure : out Boolean;
+         Abandoned        : out Boolean;
+         Started          : out Ada.Real_Time.Time;
+         Phases           : out Test_Adaptive_Cohort_Phase_Durations;
+         Stop             : out Boolean);
+
+      procedure Validate_Pipeline_Front
+        (Token      : Pipeline_Token;
+         Items      : Work_Group;
+         Count      : Group_Count;
+         Batch      : Runtime_Batch;
+         Generation : out Generation_Value;
+         Result     : out Outcome_Code);
+
+      procedure Retire_Pipeline_Front (Token : Pipeline_Token; Halt : Boolean; Terminal_Halt : Boolean);
+
+      --  Caller must have joined the native-task master and stopped publisher
+      --  access. Stopped counters alone do not establish that boundary after
+      --  partial task activation. The caller releases the moved batch.
+      procedure Take_Abandoned_Pipeline_Batch (Position : Pipeline_Position; Batch : out Runtime_Batch);
+
+      procedure Mark_Pipeline_Preparation_Stopped;
+      procedure Mark_Pipeline_Put_Stopped;
+      procedure Register_CPU_Worker (Index : out Pipeline_Position);
+      entry Await_CPU_Change (Pipeline_Position);
+      procedure Abort_Pipeline;
+      entry Await_Pipeline_Enabled (Stop : out Boolean);
+
+      entry Await_Publisher_Work;
 
       procedure Prepublication_Check (Items : Work_Group; Count : Group_Count; Result : out Outcome_Code);
 
@@ -3042,11 +3266,14 @@ package body Flyology.DB is
       procedure Configure_Aggregate_Cohort
         (Width : Positive; First_Batch_Ordinal : Interfaces.Unsigned_64; Result : out Outcome_Code);
       procedure Configure_Adaptive_Aggregate_Cohort
-        (Maximum_Members       : Positive;
-         Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
-         Maximum_Wait          : Ada.Real_Time.Time_Span;
-         Admission_Depth       : Positive;
-         Result                : out Outcome_Code);
+        (Maximum_Members                 : Positive;
+         Maximum_Encoded_Bytes           : Interfaces.Unsigned_64;
+         Maximum_Wait                    : Ada.Real_Time.Time_Span;
+         Admission_Depth                 : Positive;
+         Preparation_Concurrency         : Positive;
+         Pipeline_Depth                  : Positive;
+         Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
+         Result                          : out Outcome_Code);
       procedure Begin_Adaptive_Cohort_Diagnostics (Result : out Outcome_Code);
       procedure Finish_Adaptive_Cohort_Diagnostics
         (Diagnostics : out Test_Adaptive_Cohort_Diagnostics; Result : out Outcome_Code);
@@ -3079,76 +3306,98 @@ package body Flyology.DB is
       entry Join;
       function Highest return Sequence_Number;
    private
-      Slots                        : Completion_Array;
-      Queue_Order                  : Interfaces.Unsigned_64 := 0;
-      In_Use_Count                 : Natural range 0 .. Maximum_Commit_Slots := 0;
-      Queued_Count                 : Natural range 0 .. Maximum_Commit_Slots := 0;
-      In_Flight_Bytes              : Interfaces.Unsigned_64 := 0;
-      Current_Head                 : Head_Snapshot;
-      Head_Generation              : Generation_Value;
-      Current_Manifest             : Manifests.Manifest;
-      Incarnation                  : Engine_Incarnation := No_Incarnation;
-      Live_State_Bytes             : Interfaces.Unsigned_64 := 0;
-      Entries                      : State_Entry_Array (1 .. Entry_Capacity);
+      procedure Complete_Queued_Slot (Index : Commit_Slot; Outcome : Outcome_Code);
+      function Active_Preparation_Count return Natural;
+      procedure Notify_CPU_Workers;
+
+      Slots                              : Completion_Array;
+      Queue_Order                        : Interfaces.Unsigned_64 := 0;
+      In_Use_Count                       : Natural range 0 .. Maximum_Commit_Slots := 0;
+      Queued_Count                       : Natural range 0 .. Maximum_Commit_Slots := 0;
+      --  Member preparation and aggregate sealing share the caller-selected
+      --  CPU budget. PUT ownership is separately bounded by pipeline depth.
+      Member_Preparation_Count           : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
+      In_Flight_Bytes                    : Interfaces.Unsigned_64 := 0;
+      Current_Head                       : Head_Snapshot;
+      Head_Generation                    : Generation_Value;
+      Current_Manifest                   : Manifests.Manifest;
+      Incarnation                        : Engine_Incarnation := No_Incarnation;
+      Live_State_Bytes                   : Interfaces.Unsigned_64 := 0;
+      Entries                            : State_Entry_Array (1 .. Entry_Capacity);
       --  Private exact-key index over the dense live-entry array. Bucket and
       --  chain storage derive from the authenticated live-entry capacity;
       --  hashes only select candidates and exact bytes remain authoritative.
-      Entry_Buckets                : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
-      Entry_Links                  : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
+      Entry_Buckets                      : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
+      Entry_Links                        : State_Entry_Link_Array (1 .. Entry_Capacity) := [others => 0];
       --  Preallocated projection scratch keeps potentially large allocation
       --  and Storage_Error outside protected operations.  Apply_Batch writes
       --  only this scratch until every final-state limit has passed.
-      Projected_Entries            : State_Entry_Array (1 .. Entry_Capacity);
-      Entry_Count                  : Natural := 0;
-      Prepared_Batch               : Boolean := False;
-      Prepared_Descriptor          : Runtime_Batch;
-      Prepared_Head                : Head_Snapshot;
-      Prepared_Generation          : Generation_Value;
-      Prepared_Incarnation         : Engine_Incarnation := No_Incarnation;
-      Prepared_Original_Count      : Natural := 0;
-      Prepared_Original_Bytes      : Interfaces.Unsigned_64 := 0;
-      Prepared_Seen_Count          : Natural := 0;
-      Prepared_History_Count       : Natural := 0;
-      Prepared_Entry_Count         : Natural := 0;
-      Prepared_State_Bytes         : Interfaces.Unsigned_64 := 0;
-      Seen                         : Seen_Transaction_Array (1 .. Seen_Capacity) :=
+      Projected_Entries                  : State_Entry_Array (1 .. Entry_Capacity);
+      Entry_Count                        : Natural := 0;
+      Prepared_Batch                     : Boolean := False;
+      Prepared_Descriptor                : Runtime_Batch;
+      Prepared_Head                      : Head_Snapshot;
+      Prepared_Generation                : Generation_Value;
+      Prepared_Incarnation               : Engine_Incarnation := No_Incarnation;
+      Prepared_Original_Count            : Natural := 0;
+      Prepared_Original_Bytes            : Interfaces.Unsigned_64 := 0;
+      Prepared_Seen_Count                : Natural := 0;
+      Prepared_History_Count             : Natural := 0;
+      Prepared_Entry_Count               : Natural := 0;
+      Prepared_State_Bytes               : Interfaces.Unsigned_64 := 0;
+      Seen                               : Seen_Transaction_Array (1 .. Seen_Capacity) :=
         [others => Zero_Transaction_ID];
-      Seen_Count                   : Natural := 0;
-      Used_Batches                 : Used_Batch_ID_Array (1 .. History_Capacity) :=
+      Seen_Count                         : Natural := 0;
+      Used_Batches                       : Used_Batch_ID_Array (1 .. History_Capacity) :=
         [others => Zero_Identifier];
-      History_Count                : Natural := 0;
+      History_Count                      : Natural := 0;
       --  Retain exact decoded batch descriptors lazily with their already-owned
       --  immutable images. They are the post-checkpoint write authority used
       --  for snapshot conflict checks; no theoretical key table is allocated.
-      History_Batches              : Runtime_Batch_Array (1 .. History_Capacity) :=
+      History_Batches                    : Runtime_Batch_Array (1 .. History_Capacity) :=
         [others => (others => <>)];
-      Reserved                     : Reserved_Identity_Array (1 .. Reserved_Capacity) :=
+      Reserved                           : Reserved_Identity_Array (1 .. Reserved_Capacity) :=
         [others => Zero_Identifier];
-      Reserved_Count               : Natural := 0;
+      Reserved_Count                     : Natural := 0;
       --  Zero is the authenticated root/legacy replay boundary. A nonzero
       --  boundary comes only from the persisted checkpoint authority and makes
       --  older snapshots conservatively unverifiable.
-      Retained_History_Boundary    : Sequence_Number := 0;
+      Retained_History_Boundary          : Sequence_Number := 0;
       --  Private exact-width experiment control. Zero retains the disabled
       --  compatibility state; no persisted or public default derives from it.
-      Configured_Cohort_Width      : Group_Count := 0;
-      Configured_Aggregate_Cohort  : Boolean := False;
-      Configured_Adaptive_Cohort   : Boolean := False;
-      Configured_Cohort_Byte_Limit : Interfaces.Unsigned_64 := 0;
-      Configured_Cohort_Wait       : Ada.Real_Time.Time_Span := Ada.Real_Time.Time_Span_Zero;
-      Configured_Admission_Depth   : Group_Count := Maximum_Commit_Slots;
-      Last_Adaptive_Byte_Freeze    : Boolean := False;
-      Adaptive_Diagnostics_Enabled : Boolean := False;
-      Adaptive_Diagnostics         : Test_Adaptive_Cohort_Diagnostics;
-      Next_Aggregate_Batch_Ordinal : Interfaces.Unsigned_64 := 0;
-      Aggregate_Profile_Required   : Boolean := False;
-      Work_Changed                 : Boolean := False;
-      Uncertain                    : Boolean := False;
-      Fenced                       : Boolean := False;
-      Closing                      : Boolean := False;
-      Stopped                      : Boolean := False;
-      Paused                       : Boolean := False;
-      Fail_Install                 : Boolean := False;
+      Configured_Cohort_Width            : Group_Count := 0;
+      Configured_Aggregate_Cohort        : Boolean := False;
+      Configured_Adaptive_Cohort         : Boolean := False;
+      Configured_Cohort_Byte_Limit       : Interfaces.Unsigned_64 := 0;
+      Configured_Cohort_Wait             : Ada.Real_Time.Time_Span := Ada.Real_Time.Time_Span_Zero;
+      Configured_Admission_Depth         : Positive := Maximum_Group_Transactions;
+      Configured_In_Flight_Payload       : Interfaces.Unsigned_64 := 0;
+      Configured_Preparation_Concurrency : Pipeline_Position := Pipeline_Position'First;
+      Configured_Pipeline_Depth          : Pipeline_Position := Pipeline_Position'First;
+      Pipeline                           : Pipeline_Array;
+      Pipeline_First                     : Pipeline_Position := Pipeline_Position'First;
+      Pipeline_Count                     : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
+      Pipeline_Halted                    : Boolean := False;
+      Pipeline_Terminal_Halt             : Boolean := False;
+      Pipeline_Preparation_Stopped       : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
+      Pipeline_Put_Stopped               : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
+      Pipeline_Awaiting_Put_Count        : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
+      --  Worker identities select wake slots only. Both arrays and enrollment
+      --  derive from the maintained fixed preparation-task pool.
+      CPU_Worker_Registered              : Natural range 0 .. Maximum_Pipeline_Cohorts := 0;
+      CPU_Worker_Changed                 : CPU_Worker_Changed_Array := [others => False];
+      Last_Adaptive_Byte_Freeze          : Boolean := False;
+      Adaptive_Diagnostics_Enabled       : Boolean := False;
+      Adaptive_Diagnostics               : Test_Adaptive_Cohort_Diagnostics;
+      Next_Aggregate_Batch_Ordinal       : Interfaces.Unsigned_64 := 0;
+      Aggregate_Profile_Required         : Boolean := False;
+      Work_Changed                       : Boolean := False;
+      Uncertain                          : Boolean := False;
+      Fenced                             : Boolean := False;
+      Closing                            : Boolean := False;
+      Stopped                            : Boolean := False;
+      Paused                             : Boolean := False;
+      Fail_Install                       : Boolean := False;
    end Coordinator;
 
    procedure Visit_Scan_Batch
@@ -3303,6 +3552,42 @@ package body Flyology.DB is
    protected body Coordinator is
 
       procedure Clear_Prepared_Batch;
+
+      procedure Notify_CPU_Workers is
+      begin
+         CPU_Worker_Changed := [others => True];
+      end Notify_CPU_Workers;
+
+      --  Unfrozen completion waits for every preparation borrower and raw
+      --  retirement to join. Running publication retains its separate
+      --  receipt/certainty transition in Complete_Group.
+      procedure Complete_Queued_Slot (Index : Commit_Slot; Outcome : Outcome_Code) is
+      begin
+         if Slots (Index).State in Member_Preparing | Member_Joining then
+            if not Slots (Index).Pending_Terminal then
+               Slots (Index).Pending_Terminal := True;
+               Slots (Index).Pending_Outcome := Outcome;
+            end if;
+            return;
+         elsif Slots (Index).State not in Queued | Member_Ready then
+            return;
+         end if;
+         Slots (Index).Receipt.Current_Outcome := Outcome;
+         Slots (Index).Result := Outcome;
+         Slots (Index).State := Completed;
+         Queued_Count := Queued_Count - 1;
+      end Complete_Queued_Slot;
+
+      function Active_Preparation_Count return Natural is
+         Total : Natural := Member_Preparation_Count;
+      begin
+         for Index in Pipeline_Position loop
+            if Pipeline (Index).Phase = Preparing then
+               Total := Total + 1;
+            end if;
+         end loop;
+         return Total;
+      end Active_Preparation_Count;
 
       procedure Add_Saturating (Target : in out Interfaces.Unsigned_64; Value : Interfaces.Unsigned_64) is
       begin
@@ -3874,18 +4159,44 @@ package body Flyology.DB is
       function Conflicts_With_Earlier (Candidate, Earlier : Work_Item) return Boolean is
          Point : Owned_Point_Read_Access;
          Scan  : Owned_Scan_Range_Access;
+
+         function Candidate_Has_Key (Mutation : Owned_Mutation) return Boolean is
+            Remaining : Natural;
+            Index     : Natural;
+         begin
+            Remaining := Candidate.Arena.Count;
+            Index :=
+              Candidate.Arena.Mutation_Buckets
+                (Candidate.Arena.Mutation_Buckets'First
+                 + Natural
+                     (Mutation.Key_Hash
+                      mod Interfaces.Unsigned_64 (Candidate.Arena.Mutation_Buckets'Length)));
+            while Index /= 0 loop
+               if Remaining = 0 or else Index > Candidate.Arena.Count then
+                  return True;
+               elsif Same_Admitted_Key (Mutation, Candidate.Arena.Mutations (Index)) then
+                  return True;
+               end if;
+               Remaining := Remaining - 1;
+               Index := Candidate.Arena.Mutations (Index).Next_In_Bucket;
+            end loop;
+            return False;
+         exception
+            when Constraint_Error =>
+               return True;
+         end Candidate_Has_Key;
       begin
          if Candidate.Arena = null or else Earlier.Arena = null then
             return True;
+         elsif Candidate.Arena.Count > Candidate.Arena.Mutations'Length
+           or else Earlier.Arena.Count > Earlier.Arena.Mutations'Length
+         then
+            return True;
          end if;
          for Earlier_Index in Positive range 1 .. Earlier.Arena.Count loop
-            for Candidate_Index in Positive range 1 .. Candidate.Arena.Count loop
-               if Same_Admitted_Key
-                    (Earlier.Arena.Mutations (Earlier_Index), Candidate.Arena.Mutations (Candidate_Index))
-               then
-                  return True;
-               end if;
-            end loop;
+            if Candidate_Has_Key (Earlier.Arena.Mutations (Earlier_Index)) then
+               return True;
+            end if;
             Point := Candidate.Arena.Point_Reads;
             while Point /= null loop
                if Same_Admitted_Key (Earlier.Arena.Mutations (Earlier_Index), Point.all) then
@@ -5029,10 +5340,16 @@ package body Flyology.DB is
          then
             Result := Capacity_Exceeded;
             return;
-         elsif In_Use_Count = Maximum_Commit_Slots
-           or else (Configured_Adaptive_Cohort and then In_Use_Count >= Natural (Configured_Admission_Depth))
-           or else Payload_Bytes (Txn) > Current_Manifest.Limits.Maximum_Batch_Payload_Bytes
-           or else In_Flight_Bytes > Current_Manifest.Limits.Maximum_Batch_Payload_Bytes - Payload_Bytes (Txn)
+         elsif In_Use_Count >= Natural (Configured_Admission_Depth)
+           or else Payload_Bytes (Txn)
+                   > (if Configured_In_Flight_Payload = 0
+                      then Current_Manifest.Limits.Maximum_Batch_Payload_Bytes
+                      else Configured_In_Flight_Payload)
+           or else In_Flight_Bytes
+                   > (if Configured_In_Flight_Payload = 0
+                      then Current_Manifest.Limits.Maximum_Batch_Payload_Bytes
+                      else Configured_In_Flight_Payload)
+                     - Payload_Bytes (Txn)
            or else History_Count = History_Capacity
            or else Interfaces.Unsigned_32 (History_Count) = Current_Manifest.Limits.Maximum_Batch_History
            or else Seen_Count = Seen_Capacity
@@ -5102,17 +5419,20 @@ package body Flyology.DB is
          Slots (Selected).Work.Schedule_By := Scheduling_Deadline;
          Slots (Selected).Work.Batch_ID := Candidate_Batch_ID;
          Slots (Selected).Work.Group_ID := Queue_Order;
-         Slots (Selected).Work.Group_Member := Commit_Slot'First;
+         Slots (Selected).Work.Group_Member := Cohort_Member'First;
          Slots (Selected).Receipt := (others => <>);
          Slots (Selected).Receipt.Transaction_ID := Txn.Transaction_ID;
          Slots (Selected).Receipt.Batch_ID := Candidate_Batch_ID;
          Slots (Selected).Receipt.Expected_Head := Current_Head;
          Slots (Selected).Signal_Descriptor := Signal_Descriptor;
          Slots (Selected).State := Queued;
+         Slots (Selected).Pending_Terminal := False;
+         Slots (Selected).Pending_Outcome := Invalid_State;
          In_Use_Count := In_Use_Count + 1;
          Queued_Count := Queued_Count + 1;
          In_Flight_Bytes := In_Flight_Bytes + Payload_Bytes (Slots (Selected).Work);
          Work_Changed := True;
+         Notify_CPU_Workers;
          Slot := (Index => Selected, Generation => Slots (Selected).Generation);
          Result := Success;
       end Admit;
@@ -5168,7 +5488,9 @@ package body Flyology.DB is
          elsif Deadline <= Ada.Real_Time.Clock then
             Result := Timed_Out;
             return;
-         elsif In_Use_Count > Maximum_Commit_Slots - Transactions'Length then
+         elsif In_Use_Count >= Natural (Configured_Admission_Depth)
+           or else Transactions'Length > Natural (Configured_Admission_Depth) - In_Use_Count
+         then
             Result := Capacity_Exceeded;
             return;
          elsif History_Count = History_Capacity
@@ -5315,7 +5637,7 @@ package body Flyology.DB is
                Slots (Selected).Work.Deadline := Deadline;
                Slots (Selected).Work.Batch_ID := Batch_ID;
                Slots (Selected).Work.Group_ID := Queue_Order;
-               Slots (Selected).Work.Group_Member := Commit_Slot (Offset + 1);
+               Slots (Selected).Work.Group_Member := Cohort_Member (Offset + 1);
                Slots (Selected).Receipt := (others => <>);
                Slots (Selected).Receipt.Transaction_ID := Item.Transaction_ID;
                Slots (Selected).Receipt.Batch_ID := Batch_ID;
@@ -5326,6 +5648,8 @@ package body Flyology.DB is
                --  after the complete atomic group is ready for collection.
                Slots (Selected).Signal_Descriptor := (if Offset = 0 then Signal_Descriptor else -1);
                Slots (Selected).State := Queued;
+               Slots (Selected).Pending_Terminal := False;
+               Slots (Selected).Pending_Outcome := Invalid_State;
                Tokens (Offset + 1) := (Index => Selected, Generation => Slots (Selected).Generation);
             end;
          end loop;
@@ -5333,18 +5657,168 @@ package body Flyology.DB is
          Queued_Count := Queued_Count + Count;
          In_Flight_Bytes := In_Flight_Bytes + Total_Bytes;
          Work_Changed := True;
+         Notify_CPU_Workers;
          Result := Success;
       end Admit_Group;
 
-      procedure Select_Group
-        (Now        : Ada.Real_Time.Time;
-         Items      : out Work_Group;
-         Tokens     : out Token_Group;
-         Count      : out Group_Count;
-         Head       : out Head_Snapshot;
-         Generation : out Generation_Value;
-         Next_Wake  : out Ada.Real_Time.Time;
-         Stop       : out Boolean)
+      procedure Claim_Member_Preparation (Token : out Slot_Token; Item : out Work_Item; Found : out Boolean)
+      is
+         Selected : Commit_Slot := Commit_Slot'First;
+         Oldest   : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
+      begin
+         Token := (others => <>);
+         Item := (others => <>);
+         Found := False;
+         if not Configured_Adaptive_Cohort
+           or else Pipeline_Halted
+           or else Pipeline_Terminal_Halt
+           or else Fenced
+           or else Uncertain
+           or else Stopped
+           or else (Paused and then not Closing)
+           or else Active_Preparation_Count >= Natural (Configured_Preparation_Concurrency)
+         then
+            return;
+         end if;
+         for Index in Commit_Slot loop
+            if Slots (Index).State = Queued and then Slots (Index).Order < Oldest then
+               Selected := Index;
+               Oldest := Slots (Index).Order;
+               Found := True;
+            end if;
+         end loop;
+         if Found then
+            Slots (Selected).State := Member_Preparing;
+            Member_Preparation_Count := Member_Preparation_Count + 1;
+            Token := (Index => Selected, Generation => Slots (Selected).Generation);
+            Item := Slots (Selected).Work;
+            Work_Changed := True;
+            Notify_CPU_Workers;
+         end if;
+      end Claim_Member_Preparation;
+
+      procedure Adopt_Member_Preparation
+        (Token    : Slot_Token;
+         Fragment : in out Owned_Byte_Array_Access;
+         Raw      : in out Raw_Payload_Array;
+         Outcome  : Outcome_Code;
+         Taken    : out Boolean)
+      is
+         Slot   : Completion_Slot renames Slots (Token.Index);
+         Arena  : Transaction_Arena_Access;
+         Cursor : Natural := 0;
+         Length : Natural;
+
+         procedure Reject (Failure : Outcome_Code) is
+         begin
+            Complete_Queued_Slot (Token.Index, Failure);
+            Slot.State := Member_Joining;
+            Taken := True;
+         end Reject;
+      begin
+         Taken := False;
+         if Slot.Generation /= Token.Generation or else Slot.State /= Member_Preparing then
+            return;
+         elsif Outcome /= Success then
+            --  Failure must also join when candidate/cleanup allocation never
+            --  succeeded, so neither Fragment nor Raw is required here.
+            Reject (Outcome);
+            return;
+         elsif Slot.Pending_Terminal then
+            Slot.State := Member_Joining;
+            Taken := True;
+            return;
+         end if;
+         Arena := Slot.Work.Arena;
+         if Arena = null
+           or else Arena.Count = 0
+           or else Arena.Count > Arena.Mutations'Length
+           or else Arena.Prepared_Body /= null
+           or else Fragment = null
+           or else Raw'Length /= Arena.Count
+         then
+            Reject (Invalid_State);
+            return;
+         end if;
+         for Payload of Raw loop
+            if Payload /= null then
+               Reject (Invalid_State);
+               return;
+            end if;
+         end loop;
+         Length := Fragment.all'Length;
+         --  Validate all extents before transferring any ownership. The
+         --  prefix width is the established batch-v1 mutation-frame width.
+         for Index in Positive range 1 .. Arena.Count loop
+            declare
+               Mutation : Owned_Mutation renames Arena.Mutations (Index);
+               Payload  : constant Natural := Mutation_Payload_Length (Mutation);
+            begin
+               if Mutation.Prepared_Body /= null
+                 or else Mutation.Key_Length > Payload
+                 or else Mutation.Value_Length /= Payload - Mutation.Key_Length
+                 or else Cursor > Length
+                 or else Mutation_Frame_Header_Length > Length - Cursor
+               then
+                  Reject (Invalid_State);
+                  return;
+               end if;
+               Cursor := Cursor + Mutation_Frame_Header_Length;
+               if Payload > Length - Cursor then
+                  Reject (Invalid_State);
+                  return;
+               end if;
+               Cursor := Cursor + Payload;
+            end;
+         end loop;
+         if Cursor /= Length then
+            Reject (Invalid_State);
+            return;
+         end if;
+         Cursor := 0;
+         Arena.Prepared_Body := Fragment;
+         Fragment := null;
+         for Index in Positive range 1 .. Arena.Count loop
+            declare
+               Mutation : Owned_Mutation renames Arena.Mutations (Index);
+            begin
+               Cursor := Cursor + Mutation_Frame_Header_Length;
+               Raw (Raw'First + (Index - 1)) := Mutation.Payload;
+               Mutation.Payload := null;
+               Mutation.Prepared_Body := Arena.Prepared_Body;
+               Mutation.Prepared_Offset := Cursor;
+               Cursor := Cursor + Mutation.Key_Length + Mutation.Value_Length;
+            end;
+         end loop;
+         Slot.State := Member_Joining;
+         Taken := True;
+      end Adopt_Member_Preparation;
+
+      procedure Finish_Member_Preparation (Token : Slot_Token) is
+         Slot : Completion_Slot renames Slots (Token.Index);
+      begin
+         if Slot.Generation /= Token.Generation or else Slot.State /= Member_Joining then
+            return;
+         end if;
+         Member_Preparation_Count := Member_Preparation_Count - 1;
+         Slot.State := Member_Ready;
+         if Slot.Pending_Terminal then
+            Complete_Queued_Slot (Token.Index, Slot.Pending_Outcome);
+         end if;
+         Work_Changed := True;
+         Notify_CPU_Workers;
+      end Finish_Member_Preparation;
+
+      procedure Select_Group_Core
+        (Now           : Ada.Real_Time.Time;
+         Pipeline_Mode : Boolean;
+         Items         : out Work_Group;
+         Tokens        : out Token_Group;
+         Count         : out Group_Count;
+         Head          : out Head_Snapshot;
+         Generation    : out Generation_Value;
+         Next_Wake     : out Ada.Real_Time.Time;
+         Stop          : out Boolean)
       is
          Selected           : Commit_Slot;
          Selected_Order     : Interfaces.Unsigned_64;
@@ -5362,6 +5836,29 @@ package body Flyology.DB is
          Byte_Boundary      : Boolean := False;
          Hard_Boundary      : Boolean := False;
          Wait_Boundary      : Boolean := False;
+         Pipeline_Boundary  : Boolean := False;
+
+         function Position_At (Offset : Natural) return Pipeline_Position
+         is (Pipeline_Position (((Natural (Pipeline_First) - 1 + Offset) mod Maximum_Pipeline_Cohorts) + 1));
+
+         function Conflicts_With_Pipeline (Item : Work_Item) return Boolean is
+         begin
+            if not Pipeline_Mode or else Pipeline_Count = 0 then
+               return False;
+            end if;
+            for Offset in Natural range 0 .. Pipeline_Count - 1 loop
+               declare
+                  Descriptor : Pipeline_Descriptor renames Pipeline (Position_At (Offset));
+               begin
+                  for Member in Cohort_Member range 1 .. Descriptor.Count loop
+                     if Conflicts_With_Earlier (Item, Descriptor.Items (Member)) then
+                        return True;
+                     end if;
+                  end loop;
+               end;
+            end loop;
+            return False;
+         end Conflicts_With_Pipeline;
 
          function Wire_Contribution (Item : Work_Item; Value : out Interfaces.Unsigned_64) return Boolean is
             Mutation_Bytes : Interfaces.Unsigned_64;
@@ -5386,7 +5883,7 @@ package body Flyology.DB is
 
          function Already_Selected (Index : Commit_Slot) return Boolean is
          begin
-            for Position in Commit_Slot range 1 .. Selected_Count loop
+            for Position in Cohort_Member range 1 .. Selected_Count loop
                if Selected_Slots (Position).Index = Index then
                   return True;
                end if;
@@ -5400,7 +5897,8 @@ package body Flyology.DB is
             Selected := Commit_Slot'First;
             Selected_Order := Interfaces.Unsigned_64'Last;
             for Index in Commit_Slot loop
-               if Slots (Index).State = Queued
+               if (Slots (Index).State = Queued
+                   or else (Pipeline_Mode and then Slots (Index).State in Unfrozen_Slot_State))
                  and then not Already_Selected (Index)
                  and then Slots (Index).Order < Selected_Order
                then
@@ -5413,17 +5911,16 @@ package body Flyology.DB is
 
          procedure Complete_Queued (Index : Commit_Slot; Outcome : Outcome_Code) is
          begin
-            Slots (Index).Receipt.Current_Outcome := Outcome;
-            Slots (Index).Result := Outcome;
-            Slots (Index).State := Completed;
-            Queued_Count := Queued_Count - 1;
+            Complete_Queued_Slot (Index, Outcome);
          end Complete_Queued;
 
          procedure Take_Selected (Index : Commit_Slot) is
          begin
             Count := Count + 1;
             Items (Count) := Slots (Index).Work;
-            Slots (Index).Work.Arena := null;
+            if not Pipeline_Mode then
+               Slots (Index).Work.Arena := null;
+            end if;
             Tokens (Count) := (Index => Index, Generation => Slots (Index).Generation);
             Slots (Index).State := Running;
             Queued_Count := Queued_Count - 1;
@@ -5432,13 +5929,16 @@ package body Flyology.DB is
          Items := [others => <>];
          Tokens := [others => <>];
          Count := 0;
-         Head := Current_Head;
+         Head :=
+           (if Pipeline_Mode and then Pipeline_Count > 0
+            then Pipeline (Position_At (Pipeline_Count - 1)).Attempted
+            else Current_Head);
          Generation := Head_Generation;
          Next_Wake := Ada.Real_Time.Time_Last;
          Work_Changed := False;
          if Fenced then
             for Index in Commit_Slot loop
-               if Slots (Index).State = Queued then
+               if Slots (Index).State in Unfrozen_Slot_State then
                   Complete_Queued (Index, Stale_Writer);
                end if;
             end loop;
@@ -5446,7 +5946,7 @@ package body Flyology.DB is
             return;
          elsif Closing and then Configured_Adaptive_Cohort and then Uncertain then
             for Index in Commit_Slot loop
-               if Slots (Index).State = Queued then
+               if Slots (Index).State in Unfrozen_Slot_State then
                   Complete_Queued (Index, Storage_Failure);
                end if;
             end loop;
@@ -5470,21 +5970,36 @@ package body Flyology.DB is
             loop
                Find_Oldest_Queued;
                exit when not Found;
+               --  Readiness never permits younger members to overtake an
+               --  older admitted preparation. With no ready prefix the
+               --  join, not an expired scheduling deadline, wakes selection.
+               exit when Pipeline_Mode and then Slots (Selected).State /= Member_Ready;
                declare
                   Has_Conflict : Boolean :=
                     Has_Transaction_Conflict (Slots (Selected).Work.Arena, Slots (Selected).Work.Snapshot_At);
                begin
                   if not Has_Conflict then
-                     for Position in Commit_Slot range 1 .. Selected_Count loop
+                     for Position in Cohort_Member range 1 .. Selected_Count loop
                         if Conflicts_With_Earlier
                              (Slots (Selected).Work, Slots (Selected_Slots (Position).Index).Work)
                         then
-                           Has_Conflict := True;
+                           if Pipeline_Mode then
+                              --  An unpublished prefix can still fail. Keep
+                              --  this member pending for conclusive history
+                              --  revalidation after its predecessor retires.
+                              Pipeline_Boundary := True;
+                           else
+                              Has_Conflict := True;
+                           end if;
                            exit;
                         end if;
                      end loop;
                   end if;
-                  if Has_Conflict then
+                  if Pipeline_Boundary then
+                     null;
+                  elsif not Has_Conflict and then Conflicts_With_Pipeline (Slots (Selected).Work) then
+                     Pipeline_Boundary := True;
+                  elsif Has_Conflict then
                      Complete_Queued (Selected, Conflict);
                   elsif not Configured_Adaptive_Cohort then
                      Selected_Count := Selected_Count + 1;
@@ -5545,13 +6060,17 @@ package body Flyology.DB is
                      end;
                   end if;
                end;
-               exit when Selection_Boundary or else Selected_Count = Configured_Cohort_Width;
+               exit when
+                 Pipeline_Boundary
+                 or else Selection_Boundary
+                 or else Selected_Count = Configured_Cohort_Width;
             end loop;
             if Selected_Count = 0 then
                Stop := Closing and then Queued_Count = 0;
                return;
             elsif Configured_Adaptive_Cohort
               and then not Selection_Boundary
+              and then not Pipeline_Boundary
               and then not Wait_Boundary
               and then Selected_Count < Configured_Cohort_Width
               and then not Closing
@@ -5564,7 +6083,7 @@ package body Flyology.DB is
             if Configured_Aggregate_Cohort then
                if Configured_Adaptive_Cohort then
                   Aggregate_ID := Identifier (Slots (Selected_Slots (1).Index).Work.Transaction_ID);
-                  for Position in Commit_Slot range 1 .. Selected_Count loop
+                  for Position in Cohort_Member range 1 .. Selected_Count loop
                      Slots (Selected_Slots (Position).Index).Work.Batch_ID := Aggregate_ID;
                   end loop;
                else
@@ -5572,7 +6091,7 @@ package body Flyology.DB is
                     or else Next_Aggregate_Batch_Ordinal = 0
                     or else Next_Aggregate_Batch_Ordinal = Interfaces.Unsigned_64'Last
                   then
-                     for Position in Commit_Slot range 1 .. Selected_Count loop
+                     for Position in Cohort_Member range 1 .. Selected_Count loop
                         Complete_Queued (Selected_Slots (Position).Index, Capacity_Exceeded);
                      end loop;
                      return;
@@ -5587,7 +6106,7 @@ package body Flyology.DB is
                   if Identity_Clash then
                      Fenced := True;
                      for Index in Commit_Slot loop
-                        if Slots (Index).State = Queued then
+                        if Slots (Index).State in Unfrozen_Slot_State then
                            Complete_Queued (Index, Stale_Writer);
                         end if;
                      end loop;
@@ -5597,7 +6116,7 @@ package body Flyology.DB is
                   Reserved_Count := Reserved_Count + 1;
                   Reserved (Reserved_Count) := Aggregate_ID;
                   Next_Aggregate_Batch_Ordinal := Next_Aggregate_Batch_Ordinal + 1;
-                  for Position in Commit_Slot range 1 .. Selected_Count loop
+                  for Position in Cohort_Member range 1 .. Selected_Count loop
                      Slots (Selected_Slots (Position).Index).Work.Batch_ID := Aggregate_ID;
                   end loop;
                end if;
@@ -5613,14 +6132,14 @@ package body Flyology.DB is
                   Wait_Boundary   => Wait_Boundary,
                   Close_Boundary  => Closing);
             end if;
-            for Position in Commit_Slot range 1 .. Selected_Count loop
+            for Position in Cohort_Member range 1 .. Selected_Count loop
                Take_Selected (Selected_Slots (Position).Index);
             end loop;
             return;
          end if;
 
          Selected_Group := Slots (Selected).Work.Group_ID;
-         for Member in Commit_Slot loop
+         for Member in Cohort_Member loop
             Found := False;
             for Index in Commit_Slot loop
                if Slots (Index).State = Queued
@@ -5635,12 +6154,484 @@ package body Flyology.DB is
             exit when not Found;
             Take_Selected (Selected);
          end loop;
+      end Select_Group_Core;
+
+      procedure Select_Group
+        (Now        : Ada.Real_Time.Time;
+         Items      : out Work_Group;
+         Tokens     : out Token_Group;
+         Count      : out Group_Count;
+         Head       : out Head_Snapshot;
+         Generation : out Generation_Value;
+         Next_Wake  : out Ada.Real_Time.Time;
+         Pipeline   : out Boolean;
+         Stop       : out Boolean) is
+      begin
+         Pipeline := Configured_Adaptive_Cohort;
+         if Pipeline then
+            Items := [others => <>];
+            Tokens := [others => <>];
+            Count := 0;
+            Head := Current_Head;
+            Generation := Head_Generation;
+            Next_Wake := Ada.Real_Time.Time_Last;
+            Stop := False;
+         else
+            Select_Group_Core (Now, False, Items, Tokens, Count, Head, Generation, Next_Wake, Stop);
+         end if;
       end Select_Group;
 
-      entry Await_Work_Change when Work_Changed is
+      procedure Select_Pipeline_Group
+        (Now       : Ada.Real_Time.Time;
+         Token     : out Pipeline_Token;
+         Items     : out Work_Group;
+         Count     : out Group_Count;
+         Expected  : out Head_Snapshot;
+         Attempted : out Head_Snapshot;
+         Next_Wake : out Ada.Real_Time.Time;
+         Stop      : out Boolean)
+      is
+         Tokens             : Token_Group;
+         Ignored_Generation : Generation_Value;
+         Position           : Pipeline_Position;
+         Publication_ID     : Identifier;
+
+         procedure Complete_Queued (Outcome : Outcome_Code) is
+         begin
+            for Index in Commit_Slot loop
+               if Slots (Index).State in Unfrozen_Slot_State then
+                  Complete_Queued_Slot (Index, Outcome);
+               end if;
+            end loop;
+         end Complete_Queued;
+      begin
+         Token := (others => <>);
+         Items := [others => <>];
+         Count := 0;
+         Expected := Current_Head;
+         Attempted := Current_Head;
+         Next_Wake := Ada.Real_Time.Time_Last;
+         Stop := False;
+         if not Configured_Adaptive_Cohort then
+            Stop := True;
+            return;
+         elsif Pipeline_Terminal_Halt or else Fenced or else Uncertain then
+            Complete_Queued ((if Fenced then Stale_Writer else Storage_Failure));
+            Stop := True;
+            return;
+         elsif Pipeline_Halted then
+            if Closing and then Pipeline_Count = 0 then
+               Complete_Queued (Storage_Failure);
+               Stop := True;
+            end if;
+            return;
+         elsif Pipeline_Count = Natural (Configured_Pipeline_Depth)
+           or else Active_Preparation_Count >= Natural (Configured_Preparation_Concurrency)
+         then
+            return;
+         end if;
+         Select_Group_Core (Now, True, Items, Tokens, Count, Expected, Ignored_Generation, Next_Wake, Stop);
+         if Count = 0 then
+            return;
+         end if;
+         if Expected.Highest > Sequence_Number'Last - Sequence_Number (Count)
+           or else Expected.Transition_Number = Interfaces.Unsigned_64'Last
+         then
+            Pipeline_Halted := True;
+            Pipeline_Terminal_Halt := True;
+         else
+            Publication_ID := Structural_ID (16#C3#, Expected.Transition_Number + 1);
+            if Publication_ID = Expected.Transition_ID then
+               Publication_ID := Structural_ID (16#C4#, Expected.Transition_Number + 1);
+            end if;
+            Attempted :=
+              (Database_ID            => Expected.Database_ID,
+               Version                => Expected.Version,
+               Epoch                  => Expected.Epoch,
+               Highest                => Expected.Highest + Sequence_Number (Count),
+               Latest_Batch           => Items (1).Batch_ID,
+               Latest_Manifest        => Expected.Latest_Manifest,
+               Transition_ID          => Publication_ID,
+               Predecessor_Transition => Expected.Transition_ID,
+               Transition_Number      => Expected.Transition_Number + 1);
+         end if;
+         Position :=
+           Pipeline_Position
+             (((Natural (Pipeline_First) - 1 + Pipeline_Count) mod Maximum_Pipeline_Cohorts) + 1);
+         Pipeline (Position).Generation := Pipeline (Position).Generation + 1;
+         Pipeline (Position).Phase := Preparing;
+         Pipeline (Position).Items := Items;
+         Pipeline (Position).Tokens := Tokens;
+         Pipeline (Position).Count := Count;
+         Pipeline (Position).Expected := Expected;
+         Pipeline (Position).Attempted := Attempted;
+         Pipeline (Position).Batch := (others => <>);
+         Pipeline (Position).Preparation := Invalid_State;
+         Pipeline (Position).Fence_On_Failure := False;
+         Pipeline (Position).Started := Now;
+         Pipeline (Position).Phases := (others => <>);
+         Token := (Position => Position, Generation => Pipeline (Position).Generation);
+         Pipeline_Count := Pipeline_Count + 1;
+         if Queued_Count > 0 and then Pipeline_Count < Natural (Configured_Pipeline_Depth) then
+            Work_Changed := True;
+            Notify_CPU_Workers;
+         end if;
+      end Select_Pipeline_Group;
+
+      procedure Return_Pipeline_Preparation
+        (Token            : Pipeline_Token;
+         Attempted        : Head_Snapshot;
+         Batch            : in out Runtime_Batch;
+         Result           : Outcome_Code;
+         Fence_On_Failure : Boolean;
+         Phases           : Test_Adaptive_Cohort_Phase_Durations;
+         Taken            : out Boolean) is
+      begin
+         Taken := False;
+         if Pipeline (Token.Position).Phase /= Preparing
+           or else Pipeline (Token.Position).Generation /= Token.Generation
+         then
+            return;
+         end if;
+         Pipeline (Token.Position).Attempted := Attempted;
+         Pipeline (Token.Position).Batch := Batch;
+         Batch := (others => <>);
+         Pipeline (Token.Position).Preparation := Result;
+         Pipeline (Token.Position).Fence_On_Failure := Fence_On_Failure;
+         Pipeline (Token.Position).Phases := Phases;
+         if Result = Success
+           and then not Pipeline_Halted
+           and then not Pipeline_Terminal_Halt
+           and then not Fenced
+           and then not Uncertain
+         then
+            Pipeline (Token.Position).Phase := Awaiting_Put;
+            Pipeline_Awaiting_Put_Count := Pipeline_Awaiting_Put_Count + 1;
+         else
+            --  A later CPU failure is published to the ordered front only;
+            --  predecessors retain their already-admitted publication fate.
+            Pipeline (Token.Position).Phase := Ready;
+            if Result = Success then
+               --  Idle PUT workers may already have stopped on terminal
+               --  halt. A late CPU join retains its batch for front cleanup
+               --  and must never enqueue work requiring those workers.
+               Pipeline (Token.Position).Preparation := (if Fenced then Stale_Writer else Storage_Failure);
+            end if;
+         end if;
+         Work_Changed := True;
+         Notify_CPU_Workers;
+         Taken := True;
+      end Return_Pipeline_Preparation;
+
+      entry Take_Pipeline_Put
+        (Token     : out Pipeline_Token;
+         Items     : out Work_Group;
+         Count     : out Group_Count;
+         Expected  : out Head_Snapshot;
+         Attempted : out Head_Snapshot;
+         Batch     : out Runtime_Batch;
+         Phases    : out Test_Adaptive_Cohort_Phase_Durations;
+         Stop      : out Boolean)
+        when Pipeline_Awaiting_Put_Count > 0
+        or else Pipeline_Preparation_Stopped = Maximum_Pipeline_Cohorts
+        or else Pipeline_Terminal_Halt
+        or else Fenced
+        or else Uncertain
+      is
+         Awaiting_Descriptors : Natural := 0;
+      begin
+         Token := (others => <>);
+         Items := [others => <>];
+         Count := 0;
+         Expected := Current_Head;
+         Attempted := Current_Head;
+         Batch := (others => <>);
+         Phases := (others => <>);
+         Stop := Pipeline_Awaiting_Put_Count = 0;
+         if Pipeline_Halted or else Pipeline_Terminal_Halt or else Fenced or else Uncertain then
+            --  A sealed successor has no authority to start a new immutable
+            --  PUT after its predecessor halts. Keep the image in its
+            --  descriptor for ordered front classification and cleanup.
+            for Position in Pipeline_Position loop
+               if Pipeline (Position).Phase = Awaiting_Put then
+                  Awaiting_Descriptors := Awaiting_Descriptors + 1;
+               end if;
+            end loop;
+            if Awaiting_Descriptors /= Pipeline_Awaiting_Put_Count then
+               raise Program_Error with "halted pipeline PUT count has no descriptor";
+            end if;
+            for Position in Pipeline_Position loop
+               if Pipeline (Position).Phase = Awaiting_Put then
+                  Pipeline (Position).Preparation := (if Fenced then Stale_Writer else Storage_Failure);
+                  Pipeline (Position).Phase := Ready;
+                  Pipeline_Awaiting_Put_Count := Pipeline_Awaiting_Put_Count - 1;
+               end if;
+            end loop;
+            Work_Changed := True;
+            Notify_CPU_Workers;
+            --  A definite pre-HEAD failure may clear a transient halt after
+            --  the pipeline drains. Keep PUT workers available until then.
+            Stop :=
+              Pipeline_Terminal_Halt
+              or else Fenced
+              or else Uncertain
+              or else Pipeline_Preparation_Stopped = Maximum_Pipeline_Cohorts;
+            if Stop then
+               return;
+            else
+               requeue Take_Pipeline_Put with abort;
+            end if;
+         end if;
+         if Stop then
+            return;
+         end if;
+         for Offset in Natural range 0 .. Pipeline_Count - 1 loop
+            declare
+               Position   : constant Pipeline_Position :=
+                 Pipeline_Position
+                   (((Natural (Pipeline_First) - 1 + Offset) mod Maximum_Pipeline_Cohorts) + 1);
+               Descriptor : Pipeline_Descriptor renames Pipeline (Position);
+            begin
+               if Descriptor.Phase = Awaiting_Put then
+                  Token := (Position => Position, Generation => Descriptor.Generation);
+                  Items := Descriptor.Items;
+                  Count := Descriptor.Count;
+                  Expected := Descriptor.Expected;
+                  Attempted := Descriptor.Attempted;
+                  Batch := Descriptor.Batch;
+                  Descriptor.Batch := (others => <>);
+                  Phases := Descriptor.Phases;
+                  Descriptor.Phase := Putting;
+                  Pipeline_Awaiting_Put_Count := Pipeline_Awaiting_Put_Count - 1;
+                  return;
+               end if;
+            end;
+         end loop;
+         raise Program_Error with "queued pipeline PUT count has no descriptor";
+      end Take_Pipeline_Put;
+
+      procedure Return_Pipeline_Put
+        (Token            : Pipeline_Token;
+         Batch            : in out Runtime_Batch;
+         Result           : Outcome_Code;
+         Fence_On_Failure : Boolean;
+         Phases           : Test_Adaptive_Cohort_Phase_Durations;
+         Taken            : out Boolean) is
+      begin
+         Taken := False;
+         if Pipeline (Token.Position).Phase /= Putting
+           or else Pipeline (Token.Position).Generation /= Token.Generation
+         then
+            return;
+         end if;
+         Pipeline (Token.Position).Batch := Batch;
+         Batch := (others => <>);
+         Pipeline (Token.Position).Preparation := Result;
+         Pipeline (Token.Position).Fence_On_Failure := Fence_On_Failure;
+         Pipeline (Token.Position).Phases := Phases;
+         Pipeline (Token.Position).Phase := Ready;
+         Work_Changed := True;
+         Notify_CPU_Workers;
+         Taken := True;
+      end Return_Pipeline_Put;
+
+      entry Take_Pipeline_Front
+        (Token            : out Pipeline_Token;
+         Items            : out Work_Group;
+         Tokens           : out Token_Group;
+         Count            : out Group_Count;
+         Expected         : out Head_Snapshot;
+         Attempted        : out Head_Snapshot;
+         Batch            : out Runtime_Batch;
+         Result           : out Outcome_Code;
+         Fence_On_Failure : out Boolean;
+         Abandoned        : out Boolean;
+         Started          : out Ada.Real_Time.Time;
+         Phases           : out Test_Adaptive_Cohort_Phase_Durations;
+         Stop             : out Boolean)
+        when (Pipeline_Count > 0 and then Pipeline (Pipeline_First).Phase = Ready)
+        or else (Pipeline_Preparation_Stopped = Maximum_Pipeline_Cohorts
+                 and then Pipeline_Put_Stopped = Maximum_Pipeline_Cohorts
+                 and then Pipeline_Count = 0
+                 and then Member_Preparation_Count = 0)
+      is
+         Descriptor : Pipeline_Descriptor renames Pipeline (Pipeline_First);
+      begin
+         Token := (others => <>);
+         Items := [others => <>];
+         Tokens := [others => <>];
+         Count := 0;
+         Expected := Current_Head;
+         Attempted := Current_Head;
+         Batch := (others => <>);
+         Result := Invalid_State;
+         Fence_On_Failure := False;
+         Abandoned := False;
+         Started := Ada.Real_Time.Time_First;
+         Phases := (others => <>);
+         Stop := Pipeline_Count = 0;
+         if Stop then
+            return;
+         end if;
+         Token := (Position => Pipeline_First, Generation => Descriptor.Generation);
+         Items := Descriptor.Items;
+         Tokens := Descriptor.Tokens;
+         Count := Descriptor.Count;
+         Expected := Descriptor.Expected;
+         Attempted := Descriptor.Attempted;
+         Batch := Descriptor.Batch;
+         Descriptor.Batch := (others => <>);
+         Result := Descriptor.Preparation;
+         Fence_On_Failure := Descriptor.Fence_On_Failure;
+         Abandoned := Pipeline_Halted;
+         Started := Descriptor.Started;
+         Phases := Descriptor.Phases;
+         Descriptor.Phase := Publishing;
+      end Take_Pipeline_Front;
+
+      procedure Validate_Pipeline_Front
+        (Token      : Pipeline_Token;
+         Items      : Work_Group;
+         Count      : Group_Count;
+         Batch      : Runtime_Batch;
+         Generation : out Generation_Value;
+         Result     : out Outcome_Code) is
+      begin
+         Generation := Head_Generation;
+         if Pipeline_Count = 0
+           or else Token.Position /= Pipeline_First
+           or else Pipeline (Pipeline_First).Phase /= Publishing
+           or else Pipeline (Pipeline_First).Generation /= Token.Generation
+           or else Pipeline_Halted
+           or else Fenced
+           or else Uncertain
+           or else not Same_Head (Pipeline (Pipeline_First).Expected, Current_Head)
+         then
+            Result := Stale_Writer;
+            return;
+         end if;
+         Prepublication_Check (Items, Count, Result);
+         if Result = Success then
+            Validate_Batch (Batch, Result);
+         end if;
+      end Validate_Pipeline_Front;
+
+      procedure Retire_Pipeline_Front (Token : Pipeline_Token; Halt : Boolean; Terminal_Halt : Boolean) is
+         Saved_Generation : Interfaces.Unsigned_64;
+      begin
+         if Pipeline_Count = 0
+           or else Token.Position /= Pipeline_First
+           or else Pipeline (Pipeline_First).Phase /= Publishing
+           or else Pipeline (Pipeline_First).Generation /= Token.Generation
+         then
+            Pipeline_Halted := True;
+            Pipeline_Terminal_Halt := True;
+            Work_Changed := True;
+            Notify_CPU_Workers;
+            return;
+         end if;
+         Saved_Generation := Pipeline (Pipeline_First).Generation;
+         Pipeline (Pipeline_First) := (others => <>);
+         Pipeline (Pipeline_First).Generation := Saved_Generation;
+         Pipeline_First := Pipeline_Position ((Natural (Pipeline_First) mod Maximum_Pipeline_Cohorts) + 1);
+         Pipeline_Count := Pipeline_Count - 1;
+         Pipeline_Halted := Pipeline_Halted or Halt;
+         Pipeline_Terminal_Halt := Pipeline_Terminal_Halt or Terminal_Halt;
+         if Pipeline_Count = 0
+           and then Pipeline_Halted
+           and then not Pipeline_Terminal_Halt
+           and then not Fenced
+           and then not Uncertain
+           and then not Closing
+         then
+            Pipeline_Halted := False;
+         end if;
+         Work_Changed := True;
+         Notify_CPU_Workers;
+      end Retire_Pipeline_Front;
+
+      procedure Take_Abandoned_Pipeline_Batch (Position : Pipeline_Position; Batch : out Runtime_Batch) is
+         Descriptor       : Pipeline_Descriptor renames Pipeline (Position);
+         Saved_Generation : constant Interfaces.Unsigned_64 := Descriptor.Generation;
+      begin
+         Batch := (others => <>);
+         if (Descriptor.Phase = Awaiting_Put and then Pipeline_Awaiting_Put_Count = 0)
+           or else (Descriptor.Phase /= Vacant and then Pipeline_Count = 0)
+         then
+            raise Program_Error with "abandoned pipeline descriptor has inconsistent counts";
+         end if;
+         Batch := Descriptor.Batch;
+         Descriptor.Batch := (others => <>);
+         if Descriptor.Phase = Awaiting_Put then
+            Pipeline_Awaiting_Put_Count := Pipeline_Awaiting_Put_Count - 1;
+         end if;
+         if Descriptor.Phase /= Vacant then
+            Pipeline_Count := Pipeline_Count - 1;
+         end if;
+         Descriptor := (others => <>);
+         Descriptor.Generation := Saved_Generation;
+         if Pipeline_Count = 0 then
+            Pipeline_First := Pipeline_Position'First;
+         end if;
+      end Take_Abandoned_Pipeline_Batch;
+
+      procedure Mark_Pipeline_Preparation_Stopped is
+      begin
+         if Pipeline_Preparation_Stopped < Maximum_Pipeline_Cohorts then
+            Pipeline_Preparation_Stopped := Pipeline_Preparation_Stopped + 1;
+         end if;
+         Work_Changed := True;
+         Notify_CPU_Workers;
+      end Mark_Pipeline_Preparation_Stopped;
+
+      procedure Mark_Pipeline_Put_Stopped is
+      begin
+         if Pipeline_Put_Stopped < Maximum_Pipeline_Cohorts then
+            Pipeline_Put_Stopped := Pipeline_Put_Stopped + 1;
+         end if;
+         Work_Changed := True;
+         Notify_CPU_Workers;
+      end Mark_Pipeline_Put_Stopped;
+
+      procedure Register_CPU_Worker (Index : out Pipeline_Position) is
+      begin
+         if CPU_Worker_Registered = Maximum_Pipeline_Cohorts then
+            raise Program_Error with "CPU worker enrollment exceeds its fixed pool";
+         end if;
+         CPU_Worker_Registered := CPU_Worker_Registered + 1;
+         Index := Pipeline_Position (CPU_Worker_Registered);
+         CPU_Worker_Changed (Index) := True;
+      end Register_CPU_Worker;
+
+      entry Await_CPU_Change (for Index in Pipeline_Position) when CPU_Worker_Changed (Index) is
+      begin
+         CPU_Worker_Changed (Index) := False;
+      end Await_CPU_Change;
+
+      procedure Abort_Pipeline is
+      begin
+         Pipeline_Halted := True;
+         Pipeline_Terminal_Halt := True;
+         for Index in Commit_Slot loop
+            if Slots (Index).State in Unfrozen_Slot_State then
+               Complete_Queued_Slot (Index, Storage_Failure);
+            end if;
+         end loop;
+         Work_Changed := True;
+         Notify_CPU_Workers;
+      end Abort_Pipeline;
+
+      entry Await_Pipeline_Enabled (Stop : out Boolean)
+        when Configured_Adaptive_Cohort or else Closing or else Fenced or else Pipeline_Terminal_Halt
+      is
+      begin
+         Stop := not Configured_Adaptive_Cohort or else Fenced or else Pipeline_Terminal_Halt;
+      end Await_Pipeline_Enabled;
+
+      entry Await_Publisher_Work when Work_Changed or else Configured_Adaptive_Cohort is
       begin
          Work_Changed := False;
-      end Await_Work_Change;
+      end Await_Publisher_Work;
 
       procedure Prepublication_Check (Items : Work_Group; Count : Group_Count; Result : out Outcome_Code) is
          Required_Batches : constant Natural :=
@@ -5656,7 +6647,7 @@ package body Flyology.DB is
             Result := Capacity_Exceeded;
             return;
          end if;
-         for Left in Commit_Slot range 1 .. Count loop
+         for Left in Cohort_Member range 1 .. Count loop
             if Has_Transaction_Conflict (Items (Left).Arena, Items (Left).Snapshot_At) then
                Result := Conflict;
                return;
@@ -5667,7 +6658,7 @@ package body Flyology.DB is
                   return;
                end if;
             end loop;
-            for Right in Commit_Slot range 1 .. Left - 1 loop
+            for Right in Cohort_Member range 1 .. Left - 1 loop
                if Items (Right).Transaction_ID = Items (Left).Transaction_ID then
                   Result := Conflict;
                   return;
@@ -5777,7 +6768,7 @@ package body Flyology.DB is
             return;
          end if;
 
-         for Index in Commit_Slot range 1 .. Count loop
+         for Index in Cohort_Member range 1 .. Count loop
             declare
                Candidate          : Runtime_Batch := Batches (Index);
                Member             : Runtime_Batch renames Batches (Index);
@@ -5834,7 +6825,7 @@ package body Flyology.DB is
                      return;
                   end if;
                end loop;
-               for Earlier in Commit_Slot range 1 .. Index - 1 loop
+               for Earlier in Cohort_Member range 1 .. Index - 1 loop
                   if Batches (Earlier).Batch_ID = Member.Batch_ID then
                      Result := Corrupt;
                      return;
@@ -5934,7 +6925,7 @@ package body Flyology.DB is
             Result := Corrupt;
             return;
          end if;
-         for Index in Commit_Slot range 1 .. Count loop
+         for Index in Cohort_Member range 1 .. Count loop
             if Batches (Index).Image = null
               or else Batches (Index).Transactions = null
               or else Batches (Index).Transaction_Total /= 1
@@ -5965,7 +6956,7 @@ package body Flyology.DB is
             Fenced := True;
             return;
          end if;
-         for Index in Commit_Slot range 1 .. Count loop
+         for Index in Cohort_Member range 1 .. Count loop
             Seen_Count := Seen_Count + 1;
             Seen (Seen_Count) := Batches (Index).Transactions (1).Transaction_ID;
             History_Count := History_Count + 1;
@@ -5990,7 +6981,7 @@ package body Flyology.DB is
          Mark_Uncertain : Boolean;
          Mark_Fenced    : Boolean) is
       begin
-         for Group_Index in Commit_Slot range 1 .. Count loop
+         for Group_Index in Cohort_Member range 1 .. Count loop
             declare
                --  Derived coordinator slot returned by admission; it is not a
                --  fixed slot choice or extra capacity limit.
@@ -6008,16 +6999,15 @@ package body Flyology.DB is
          if Mark_Uncertain and then Count > 0 then
             Uncertain := True;
             Work_Changed := True;
+            Notify_CPU_Workers;
          end if;
          if Mark_Fenced then
             Fenced := True;
             Work_Changed := True;
+            Notify_CPU_Workers;
             for Index in Commit_Slot loop
-               if Slots (Index).State = Queued then
-                  Slots (Index).Receipt.Current_Outcome := Stale_Writer;
-                  Slots (Index).Result := Stale_Writer;
-                  Slots (Index).State := Completed;
-                  Queued_Count := Queued_Count - 1;
+               if Slots (Index).State in Unfrozen_Slot_State then
+                  Complete_Queued_Slot (Index, Stale_Writer);
                end if;
             end loop;
          end if;
@@ -6955,12 +7945,10 @@ package body Flyology.DB is
          Fenced := True;
          Uncertain := False;
          Work_Changed := True;
+         Notify_CPU_Workers;
          for Index in Commit_Slot loop
-            if Slots (Index).State = Queued then
-               Slots (Index).Receipt.Current_Outcome := Stale_Writer;
-               Slots (Index).Result := Stale_Writer;
-               Slots (Index).State := Completed;
-               Queued_Count := Queued_Count - 1;
+            if Slots (Index).State in Unfrozen_Slot_State then
+               Complete_Queued_Slot (Index, Stale_Writer);
             end if;
          end loop;
       end Fence;
@@ -6968,12 +7956,10 @@ package body Flyology.DB is
       procedure Drain_Queued_For_Resolution is
       begin
          Work_Changed := True;
+         Notify_CPU_Workers;
          for Index in Commit_Slot loop
-            if Slots (Index).State = Queued then
-               Slots (Index).Receipt.Current_Outcome := Storage_Failure;
-               Slots (Index).Result := Storage_Failure;
-               Slots (Index).State := Completed;
-               Queued_Count := Queued_Count - 1;
+            if Slots (Index).State in Unfrozen_Slot_State then
+               Complete_Queued_Slot (Index, Storage_Failure);
             end if;
          end loop;
       end Drain_Queued_For_Resolution;
@@ -6982,13 +7968,19 @@ package body Flyology.DB is
       begin
          Paused := Value;
          Work_Changed := True;
+         Notify_CPU_Workers;
       end Set_Paused;
 
       procedure Configure_Independent_Cohort (Width : Positive; Result : out Outcome_Code) is
       begin
-         if In_Use_Count /= 0 or else Queued_Count /= 0 or else Uncertain or else Fenced then
+         if In_Use_Count /= 0
+           or else Queued_Count /= 0
+           or else Uncertain
+           or else Fenced
+           or else Configured_Adaptive_Cohort
+         then
             Result := Invalid_State;
-         elsif Width > Maximum_Commit_Slots
+         elsif Width > Maximum_Group_Transactions
            or else Width > History_Capacity
            or else Width > Seen_Capacity
            or else Interfaces.Unsigned_32 (Width) > Current_Manifest.Limits.Maximum_Batch_History
@@ -7000,10 +7992,14 @@ package body Flyology.DB is
             Configured_Adaptive_Cohort := False;
             Configured_Cohort_Byte_Limit := 0;
             Configured_Cohort_Wait := Ada.Real_Time.Time_Span_Zero;
-            Configured_Admission_Depth := Maximum_Commit_Slots;
+            Configured_Admission_Depth := Maximum_Group_Transactions;
+            Configured_In_Flight_Payload := 0;
+            Configured_Preparation_Concurrency := Pipeline_Position'First;
+            Configured_Pipeline_Depth := Pipeline_Position'First;
             Last_Adaptive_Byte_Freeze := False;
             Next_Aggregate_Batch_Ordinal := 0;
             Work_Changed := True;
+            Notify_CPU_Workers;
             Result := Success;
          end if;
       end Configure_Independent_Cohort;
@@ -7011,11 +8007,16 @@ package body Flyology.DB is
       procedure Configure_Aggregate_Cohort
         (Width : Positive; First_Batch_Ordinal : Interfaces.Unsigned_64; Result : out Outcome_Code) is
       begin
-         if In_Use_Count /= 0 or else Queued_Count /= 0 or else Uncertain or else Fenced then
+         if In_Use_Count /= 0
+           or else Queued_Count /= 0
+           or else Uncertain
+           or else Fenced
+           or else Configured_Adaptive_Cohort
+         then
             Result := Invalid_State;
          elsif First_Batch_Ordinal = 0 or else First_Batch_Ordinal = Interfaces.Unsigned_64'Last then
             Result := Invalid_State;
-         elsif Width > Maximum_Commit_Slots
+         elsif Width > Maximum_Group_Transactions
            or else Width > Seen_Capacity
            or else Reserved_Count = Reserved_Capacity
            or else Interfaces.Unsigned_32 (Width) > Current_Manifest.Limits.Maximum_Transactions_Per_Batch
@@ -7027,27 +8028,49 @@ package body Flyology.DB is
             Configured_Adaptive_Cohort := False;
             Configured_Cohort_Byte_Limit := 0;
             Configured_Cohort_Wait := Ada.Real_Time.Time_Span_Zero;
-            Configured_Admission_Depth := Maximum_Commit_Slots;
+            Configured_Admission_Depth := Maximum_Group_Transactions;
+            Configured_In_Flight_Payload := 0;
+            Configured_Preparation_Concurrency := Pipeline_Position'First;
+            Configured_Pipeline_Depth := Pipeline_Position'First;
             Last_Adaptive_Byte_Freeze := False;
             Next_Aggregate_Batch_Ordinal := First_Batch_Ordinal;
             Work_Changed := True;
+            Notify_CPU_Workers;
             Result := Success;
          end if;
       end Configure_Aggregate_Cohort;
 
       procedure Configure_Adaptive_Aggregate_Cohort
-        (Maximum_Members       : Positive;
-         Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
-         Maximum_Wait          : Ada.Real_Time.Time_Span;
-         Admission_Depth       : Positive;
-         Result                : out Outcome_Code) is
+        (Maximum_Members                 : Positive;
+         Maximum_Encoded_Bytes           : Interfaces.Unsigned_64;
+         Maximum_Wait                    : Ada.Real_Time.Time_Span;
+         Admission_Depth                 : Positive;
+         Preparation_Concurrency         : Positive;
+         Pipeline_Depth                  : Positive;
+         Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
+         Result                          : out Outcome_Code) is
       begin
-         if In_Use_Count /= 0 or else Queued_Count /= 0 or else Uncertain or else Fenced then
+         if In_Use_Count /= 0
+           or else Queued_Count /= 0
+           or else Uncertain
+           or else Fenced
+           or else Closing
+           or else Pipeline_Terminal_Halt
+           or else Pipeline_Count /= 0
+           or else Pipeline_Preparation_Stopped /= 0
+           or else Pipeline_Put_Stopped /= 0
+         then
             Result := Invalid_State;
-         elsif Maximum_Encoded_Bytes = 0 or else Maximum_Wait <= Ada.Real_Time.Time_Span_Zero then
+         elsif Maximum_Encoded_Bytes = 0
+           or else Maximum_Wait <= Ada.Real_Time.Time_Span_Zero
+           or else Maximum_In_Flight_Payload_Bytes = 0
+         then
             Result := Invalid_State;
-         elsif Maximum_Members > Admission_Depth
+         elsif Maximum_Members > Maximum_Group_Transactions
+           or else Maximum_Members > Admission_Depth
            or else Admission_Depth > Maximum_Commit_Slots
+           or else Preparation_Concurrency > Maximum_Pipeline_Cohorts
+           or else Pipeline_Depth > Maximum_Pipeline_Cohorts
            or else Maximum_Members > Seen_Capacity
            or else Interfaces.Unsigned_32 (Maximum_Members)
                    > Current_Manifest.Limits.Maximum_Transactions_Per_Batch
@@ -7061,10 +8084,14 @@ package body Flyology.DB is
             Configured_Adaptive_Cohort := True;
             Configured_Cohort_Byte_Limit := Maximum_Encoded_Bytes;
             Configured_Cohort_Wait := Maximum_Wait;
-            Configured_Admission_Depth := Group_Count (Admission_Depth);
+            Configured_Admission_Depth := Admission_Depth;
+            Configured_In_Flight_Payload := Maximum_In_Flight_Payload_Bytes;
+            Configured_Preparation_Concurrency := Pipeline_Position (Preparation_Concurrency);
+            Configured_Pipeline_Depth := Pipeline_Position (Pipeline_Depth);
             Last_Adaptive_Byte_Freeze := False;
             Next_Aggregate_Batch_Ordinal := 0;
             Work_Changed := True;
+            Notify_CPU_Workers;
             Result := Success;
          end if;
       end Configure_Adaptive_Aggregate_Cohort;
@@ -7167,14 +8194,12 @@ package body Flyology.DB is
             return;
          end if;
          for Index in Commit_Slot loop
-            if Slots (Index).State = Queued then
-               Slots (Index).Receipt.Current_Outcome := Storage_Failure;
-               Slots (Index).Result := Storage_Failure;
-               Slots (Index).State := Completed;
-               Queued_Count := Queued_Count - 1;
+            if Slots (Index).State in Unfrozen_Slot_State then
+               Complete_Queued_Slot (Index, Storage_Failure);
             end if;
          end loop;
          Work_Changed := True;
+         Notify_CPU_Workers;
          Result := Success;
       end Abort_Independent_Cohort;
 
@@ -7196,13 +8221,11 @@ package body Flyology.DB is
       begin
          Closing := True;
          Work_Changed := True;
+         Notify_CPU_Workers;
          if not Configured_Adaptive_Cohort then
             for Index in Commit_Slot loop
-               if Slots (Index).State = Queued then
-                  Slots (Index).Receipt.Current_Outcome := Storage_Failure;
-                  Slots (Index).Result := Storage_Failure;
-                  Slots (Index).State := Completed;
-                  Queued_Count := Queued_Count - 1;
+               if Slots (Index).State in Unfrozen_Slot_State then
+                  Complete_Queued_Slot (Index, Storage_Failure);
                end if;
             end loop;
          end if;
@@ -7211,10 +8234,9 @@ package body Flyology.DB is
       procedure Mark_Stopped is
       begin
          for Index in Commit_Slot loop
-            if Slots (Index).State in Queued | Running then
-               if Slots (Index).State = Queued then
-                  Queued_Count := Queued_Count - 1;
-               end if;
+            if Slots (Index).State in Unfrozen_Slot_State then
+               Complete_Queued_Slot (Index, Storage_Failure);
+            elsif Slots (Index).State = Running then
                Slots (Index).Receipt.Current_Outcome := Storage_Failure;
                Slots (Index).Result := Storage_Failure;
                Slots (Index).State := Completed;
@@ -7222,6 +8244,7 @@ package body Flyology.DB is
          end loop;
          Stopped := True;
          Work_Changed := True;
+         Notify_CPU_Workers;
       end Mark_Stopped;
 
       function History_Length return Natural is
@@ -7317,7 +8340,7 @@ package body Flyology.DB is
          end if;
       end Take_History_Batch;
 
-      entry Join when Stopped and then In_Use_Count = 0 is
+      entry Join when Stopped and then In_Use_Count = 0 and then Member_Preparation_Count = 0 is
       begin
          null;
       end Join;
@@ -8748,7 +9771,7 @@ package body Flyology.DB is
       State  : Engine_State_Access := null;
       Tokens : Token_Group;
       Count  : Group_Count := 0;
-      Next   : Natural range 1 .. Maximum_Commit_Slots + 1 := 1;
+      Next   : Natural range 1 .. Maximum_Group_Transactions + 1 := 1;
       Active : Boolean := False;
    end record;
 
@@ -8760,7 +9783,7 @@ package body Flyology.DB is
    begin
       if Item.Active then
          if Item.Next <= Item.Count then
-            for Index in Commit_Slot range Item.Next .. Item.Count loop
+            for Index in Cohort_Member range Item.Next .. Item.Count loop
                Item.State.Gate.Await_Result (Item.Tokens (Index).Index)
                  (Item.Tokens (Index).Generation, Ignored_Receipt, Ignored_Arena, Ignored_Result);
                Release_Image (Ignored_Receipt.Image);
@@ -8970,9 +9993,255 @@ package body Flyology.DB is
          raise;
    end Prepare_Checkpoint_Base;
 
-   procedure Build_Runtime_Batch_Image
-     (Items                         : Work_Group;
+   --  Immutable borrowed preparation view. The Work_Group that owns each
+   --  arena must outlive this view and may not mutate or release it until the
+   --  corresponding build has joined.
+   type Prepared_Transaction_View is record
+      Work              : Work_Item;
+      Mutation_Total    : Natural := 0;
+      Body_Length       : Interfaces.Unsigned_64 := 0;
+      Wire_Contribution : Interfaces.Unsigned_64 := 0;
+   end record;
+   type Prepared_Work_Group_View is array (Cohort_Member) of Prepared_Transaction_View;
+
+   procedure Prepare_Runtime_Work
+     (Items          : Work_Group;
+      Count          : Group_Count;
+      Prepared       : out Prepared_Work_Group_View;
+      Mutation_Total : out Natural;
+      Wire_Length    : out Interfaces.Unsigned_64;
+      Result         : out Outcome_Code) is
+   begin
+      Prepared := [others => <>];
+      Mutation_Total := 0;
+      Wire_Length := Batch_Header_Length + Batch_Trailer_Length;
+      if Count = 0 then
+         Result := Invalid_State;
+         return;
+      end if;
+      for Index in Cohort_Member range 1 .. Count loop
+         Prepared (Index).Work := Items (Index);
+         Prepared (Index).Mutation_Total := Mutation_Count (Items (Index));
+         if Items (Index).Arena = null
+           or else Prepared (Index).Mutation_Total = 0
+           or else Prepared (Index).Mutation_Total > Natural'Last - Mutation_Total
+           or else (Natural'Size > Interfaces.Unsigned_32'Size
+                    and then (Interfaces.Unsigned_64 (Mutation_Total)
+                              > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
+                              or else Interfaces.Unsigned_64 (Prepared (Index).Mutation_Total)
+                                      > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
+                                        - Interfaces.Unsigned_64 (Mutation_Total)))
+         then
+            Result := Invalid_State;
+            return;
+         end if;
+         Mutation_Total := Mutation_Total + Prepared (Index).Mutation_Total;
+         for Mutation_Index in Positive range 1 .. Prepared (Index).Mutation_Total loop
+            declare
+               Mutation     : Owned_Mutation renames Items (Index).Arena.Mutations (Mutation_Index);
+               Key_Bytes    : constant Interfaces.Unsigned_64 := Interfaces.Unsigned_64 (Mutation.Key_Length);
+               Value_Bytes  : constant Interfaces.Unsigned_64 :=
+                 Interfaces.Unsigned_64 (Mutation.Value_Length);
+               Frame_Length : Interfaces.Unsigned_64;
+            begin
+               if Key_Bytes > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
+                 or else Value_Bytes > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
+                 or else Key_Bytes > Interfaces.Unsigned_64'Last - Value_Bytes
+                 or else Key_Bytes + Value_Bytes
+                         > Interfaces.Unsigned_64'Last - Interfaces.Unsigned_64 (Mutation_Frame_Header_Length)
+                 or else Interfaces.Unsigned_64 (Mutation_Payload_Length (Mutation))
+                         /= Key_Bytes + Value_Bytes
+               then
+                  Result := Capacity_Exceeded;
+                  return;
+               end if;
+               Frame_Length :=
+                 Interfaces.Unsigned_64 (Mutation_Frame_Header_Length) + Key_Bytes + Value_Bytes;
+               if Prepared (Index).Body_Length > Interfaces.Unsigned_64'Last - Frame_Length then
+                  Result := Capacity_Exceeded;
+                  return;
+               end if;
+               Prepared (Index).Body_Length := Prepared (Index).Body_Length + Frame_Length;
+            end;
+         end loop;
+         if Prepared (Index).Body_Length > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last) then
+            Result := Capacity_Exceeded;
+            return;
+         end if;
+         if Prepared (Index).Body_Length
+           > Interfaces.Unsigned_64'Last - Interfaces.Unsigned_64 (Transaction_Frame_Header_Length)
+         then
+            Result := Capacity_Exceeded;
+            return;
+         end if;
+         Prepared (Index).Wire_Contribution :=
+           Interfaces.Unsigned_64 (Transaction_Frame_Header_Length) + Prepared (Index).Body_Length;
+         if Wire_Length > Interfaces.Unsigned_64'Last - Prepared (Index).Wire_Contribution then
+            Result := Capacity_Exceeded;
+            return;
+         end if;
+         Wire_Length := Wire_Length + Prepared (Index).Wire_Contribution;
+      end loop;
+      if Mutation_Total = 0
+        or else Wire_Length > Interfaces.Unsigned_64 (Natural'Last)
+        or else Wire_Length > Interfaces.Unsigned_64 (Ada.Streams.Stream_Element_Offset'Last)
+      then
+         Result := Capacity_Exceeded;
+      else
+         Result := Success;
+      end if;
+   exception
+      when Storage_Error =>
+         Result := Capacity_Exceeded;
+      when others =>
+         Result := Invalid_State;
+   end Prepare_Runtime_Work;
+
+   --  Encode only sequence-independent mutation frames. The slot owns the
+   --  immutable input throughout this native job; the returned candidate is
+   --  not installed until the gate validates its generation and joins it.
+   procedure Prepare_Canonical_Member
+     (Item : Work_Item; Fragment : out Owned_Byte_Array_Access; Result : out Outcome_Code)
+   is
+      Items               : constant Work_Group := [1 => Item, others => <>];
+      Prepared            : Prepared_Work_Group_View;
+      Mutation_Total      : Natural;
+      Ignored_Wire_Length : Interfaces.Unsigned_64;
+      Candidate           : Owned_Bytes_Guard;
+      Cursor              : Natural := 0;
+      Prefix              : Formats.Byte_Array (0 .. Mutation_Frame_Header_Length - 1);
+   begin
+      Fragment := null;
+      if Item.Arena = null or else Item.Arena.Prepared_Body /= null then
+         Result := Invalid_State;
+         return;
+      end if;
+      Prepare_Runtime_Work (Items, 1, Prepared, Mutation_Total, Ignored_Wire_Length, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Allocation_Faults.Check (Transaction_Payload_Allocation);
+      Candidate.Data :=
+        new Ada.Streams.Stream_Element_Array
+              (1 .. Ada.Streams.Stream_Element_Offset (Prepared (1).Body_Length));
+      for Index in Positive range 1 .. Mutation_Total loop
+         declare
+            Mutation : Owned_Mutation renames Item.Arena.Mutations (Index);
+            Length   : constant Natural := Mutation_Payload_Length (Mutation);
+         begin
+            Prefix := [others => 0];
+            Put_U32 (Prefix, 0, Interfaces.Unsigned_32 (Mutation.Family));
+            Prefix (4) :=
+              (if Mutation.Operation = Put_Mutation then Put_Operation_Code else Delete_Operation_Code);
+            Put_U32 (Prefix, 6, Interfaces.Unsigned_32 (Mutation.Key_Length));
+            Put_U32 (Prefix, 10, Interfaces.Unsigned_32 (Mutation.Value_Length));
+            for Offset in Natural range 0 .. Prefix'Length - 1 loop
+               Candidate.Data (Ada.Streams.Stream_Element_Offset (Cursor + Offset + 1)) :=
+                 Ada.Streams.Stream_Element (Prefix (Prefix'First + Offset));
+            end loop;
+            Cursor := Cursor + Mutation_Frame_Header_Length;
+            if Length > 0 then
+               Copy_Mutation_Payload
+                 (Mutation,
+                  Candidate.Data
+                    (Ada.Streams.Stream_Element_Offset (Cursor + 1)
+                     .. Ada.Streams.Stream_Element_Offset (Cursor + Length)));
+            end if;
+            Cursor := Cursor + Length;
+         end;
+      end loop;
+      if Cursor /= Candidate.Data'Length then
+         Result := Invalid_State;
+         return;
+      end if;
+      Move_Guarded_Bytes (Candidate, Fragment);
+      Result := Success;
+   exception
+      when Storage_Error =>
+         Result := Capacity_Exceeded;
+      when others =>
+         Result := Invalid_State;
+   end Prepare_Canonical_Member;
+
+   procedure Prepare_Next_Canonical_Member (State : not null Engine_State_Access; Found : out Boolean) is
+      Token          : Slot_Token;
+      Item           : Work_Item;
+      Candidate      : Owned_Bytes_Guard;
+      Outcome        : Outcome_Code := Storage_Failure;
+      Taken          : Boolean := False;
+      Held           : Boolean := False;
+      Joining        : Boolean := False;
+      Empty_Raw      : Raw_Payload_Array (1 .. 0);
+      Abort_Deferred : Boolean := False;
+
+      procedure Fail_Join (Failure : Outcome_Code) is
+      begin
+         Free_Owned_Bytes (Candidate.Data);
+         if Held then
+            if not Joining then
+               State.Gate.Adopt_Member_Preparation (Token, Candidate.Data, Empty_Raw, Failure, Taken);
+               Joining := Taken;
+            end if;
+            if Joining then
+               State.Gate.Finish_Member_Preparation (Token);
+               Held := False;
+            else
+               State.Gate.Abort_Pipeline;
+            end if;
+         end if;
+      end Fail_Join;
+   begin
+      --  Claim hands out a raw arena borrower. Defer abort through candidate
+      --  ownership, adoption, detached retirement and the final gate join.
+      Found := False;
+      System.Soft_Links.Abort_Defer.all;
+      Abort_Deferred := True;
+      begin
+         State.Gate.Claim_Member_Preparation (Token, Item, Found);
+         Held := Found;
+         if Found then
+            declare
+               Raw : Raw_Payload_Guard (Item.Arena.Count);
+            begin
+               Prepare_Canonical_Member (Item, Candidate.Data, Outcome);
+               if Outcome /= Success then
+                  Free_Owned_Bytes (Candidate.Data);
+               end if;
+               State.Gate.Adopt_Member_Preparation (Token, Candidate.Data, Raw.Data, Outcome, Taken);
+               Joining := Taken;
+               if not Taken then
+                  raise Program_Error with "canonical preparation lost its slot generation";
+               end if;
+            --  Raw finalization retires detached allocations outside the
+            --  gate, while Member_Joining still prevents collection.
+            end;
+            Free_Owned_Bytes (Candidate.Data);
+            State.Gate.Finish_Member_Preparation (Token);
+            Held := False;
+         end if;
+      exception
+         when Storage_Error =>
+            Fail_Join (Capacity_Exceeded);
+         when others =>
+            --  The inner controlled cleanup has already joined here. Failed
+            --  construction leaves original arena payloads intact.
+            Fail_Join (Storage_Failure);
+      end;
+      Abort_Deferred := False;
+      System.Soft_Links.Abort_Undefer.all;
+   exception
+      when others =>
+         if Abort_Deferred then
+            System.Soft_Links.Abort_Undefer.all;
+         end if;
+         raise;
+   end Prepare_Next_Canonical_Member;
+
+   procedure Build_Prepared_Runtime_Batch_Image
+     (Prepared                      : Prepared_Work_Group_View;
       Count                         : Group_Count;
+      Mutation_Total                : Natural;
+      Wire_Length                   : Interfaces.Unsigned_64;
       Expected                      : Head_Snapshot;
       Format_Version                : Interfaces.Unsigned_16;
       Previous_Batch_ID             : Identifier;
@@ -8985,8 +10254,6 @@ package body Flyology.DB is
       Header           : Formats.Byte_Array (0 .. Batch_Header_Length - 1) := [others => 0];
       Transaction_Head : Formats.Byte_Array (0 .. Transaction_Frame_Header_Length - 1) := [others => 0];
       Mutation_Head    : Formats.Byte_Array (0 .. Mutation_Frame_Header_Length - 1) := [others => 0];
-      Mutation_Total   : Natural := 0;
-      Wire_Length      : Interfaces.Unsigned_64 := Batch_Header_Length + Batch_Trailer_Length;
       Next_Mutation    : Natural := 1;
       Cursor           : Natural := Batch_Header_Length;
       procedure Store_Array (Position : Natural; Source : Formats.Byte_Array) is
@@ -9037,69 +10304,14 @@ package body Flyology.DB is
         or else Publication_Transition_ID = Expected.Transition_ID
         or else (Is_Zero (Previous_Batch_ID) /= (First_Sequence = 1))
         or else (Format_Version = Cohort_Batch_Format_Version_Code
-                 and then (Count /= 1 or else Items (1).Batch_ID /= Identifier (Items (1).Transaction_ID)))
-      then
-         Result := Invalid_State;
-         return;
-      end if;
-      for Index in Commit_Slot range 1 .. Count loop
-         if Items (Index).Arena = null
-           or else Mutation_Count (Items (Index)) = 0
-           or else Mutation_Count (Items (Index)) > Natural'Last - Mutation_Total
-           or else (Natural'Size > Interfaces.Unsigned_32'Size
-                    and then (Interfaces.Unsigned_64 (Mutation_Total)
-                              > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
-                              or else Interfaces.Unsigned_64 (Mutation_Count (Items (Index)))
-                                      > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
-                                        - Interfaces.Unsigned_64 (Mutation_Total)))
-         then
-            Result := Invalid_State;
-            return;
-         end if;
-         Mutation_Total := Mutation_Total + Mutation_Count (Items (Index));
-         if Wire_Length
-           > Interfaces.Unsigned_64'Last - Interfaces.Unsigned_64 (Transaction_Frame_Header_Length)
-         then
-            Result := Capacity_Exceeded;
-            return;
-         end if;
-         Wire_Length := Wire_Length + Transaction_Frame_Header_Length;
-         for Mutation_Index in Positive range 1 .. Mutation_Count (Items (Index)) loop
-            declare
-               Mutation     : Owned_Mutation renames Items (Index).Arena.Mutations (Mutation_Index);
-               --  Derived exact byte extents from the caller-owned mutation;
-               --  U32/wire and aggregate checks below are the only admission.
-               Key_Bytes    : constant Interfaces.Unsigned_64 := Interfaces.Unsigned_64 (Mutation.Key_Length);
-               Value_Bytes  : constant Interfaces.Unsigned_64 :=
-                 Interfaces.Unsigned_64 (Mutation.Value_Length);
-               Frame_Length : Interfaces.Unsigned_64;
-            begin
-               if Key_Bytes > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
-                 or else Value_Bytes > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
-                 or else Key_Bytes > Interfaces.Unsigned_64'Last - Value_Bytes
-                 or else Key_Bytes + Value_Bytes
-                         > Interfaces.Unsigned_64'Last - Interfaces.Unsigned_64 (Mutation_Frame_Header_Length)
-                 or else Interfaces.Unsigned_64 (Mutation_Payload_Length (Mutation))
-                         /= Key_Bytes + Value_Bytes
-               then
-                  Result := Capacity_Exceeded;
-                  return;
-               end if;
-               Frame_Length :=
-                 Interfaces.Unsigned_64 (Mutation_Frame_Header_Length) + Key_Bytes + Value_Bytes;
-               if Wire_Length > Interfaces.Unsigned_64'Last - Frame_Length then
-                  Result := Capacity_Exceeded;
-                  return;
-               end if;
-               Wire_Length := Wire_Length + Frame_Length;
-            end;
-         end loop;
-      end loop;
-      if Mutation_Total = 0
+                 and then (Count /= 1
+                           or else Prepared (1).Work.Batch_ID
+                                   /= Identifier (Prepared (1).Work.Transaction_ID)))
+        or else Mutation_Total = 0
         or else Wire_Length > Interfaces.Unsigned_64 (Natural'Last)
         or else Wire_Length > Interfaces.Unsigned_64 (Ada.Streams.Stream_Element_Offset'Last)
       then
-         Result := Capacity_Exceeded;
+         Result := Invalid_State;
          return;
       end if;
       Allocation_Faults.Check (Batch_Descriptor_Allocation);
@@ -9112,7 +10324,7 @@ package body Flyology.DB is
       Batch.Format_Version := Format_Version;
       Batch.Database_ID := Expected.Database_ID;
       Batch.Epoch := Expected.Epoch;
-      Batch.Batch_ID := Items (1).Batch_ID;
+      Batch.Batch_ID := Prepared (1).Work.Batch_ID;
       Batch.Previous_Batch_ID := Previous_Batch_ID;
       Batch.Expected_Transition_ID := Expected.Transition_ID;
       Batch.Expected_Transition_Number := Expected.Transition_Number;
@@ -9152,51 +10364,25 @@ package body Flyology.DB is
       Put_U32 (Header, 152, Interfaces.Unsigned_32 (Mutation_Total));
       Put_U32 (Header, 40, Formats.CRC_32C (Header));
       Store_Array (0, Header);
-      for Transaction_Index in Commit_Slot range 1 .. Count loop
+      for Transaction_Index in Cohort_Member range 1 .. Count loop
          declare
-            Item        : Work_Item renames Items (Transaction_Index);
-            Body_Length : Interfaces.Unsigned_64 := 0;
+            Item        : Work_Item renames Prepared (Transaction_Index).Work;
+            Body_Length : constant Interfaces.Unsigned_64 := Prepared (Transaction_Index).Body_Length;
          begin
-            for Mutation_Index in Positive range 1 .. Mutation_Count (Item) loop
-               declare
-                  Mutation    : Owned_Mutation renames Item.Arena.Mutations (Mutation_Index);
-                  --  Derived exact byte extents repeated while emitting the
-                  --  already-admitted frame; they introduce no new limits.
-                  Key_Bytes   : constant Interfaces.Unsigned_64 :=
-                    Interfaces.Unsigned_64 (Mutation.Key_Length);
-                  Value_Bytes : constant Interfaces.Unsigned_64 :=
-                    Interfaces.Unsigned_64 (Mutation.Value_Length);
-                  Frame_Bytes : Interfaces.Unsigned_64;
-               begin
-                  if Key_Bytes > Interfaces.Unsigned_64'Last - Value_Bytes
-                    or else Key_Bytes + Value_Bytes
-                            > Interfaces.Unsigned_64'Last
-                              - Interfaces.Unsigned_64 (Mutation_Frame_Header_Length)
-                  then
-                     Release_Runtime_Batch (Batch);
-                     Result := Capacity_Exceeded;
-                     return;
-                  end if;
-                  Frame_Bytes :=
-                    Interfaces.Unsigned_64 (Mutation_Frame_Header_Length) + Key_Bytes + Value_Bytes;
-                  if Body_Length > Interfaces.Unsigned_64'Last - Frame_Bytes then
-                     Release_Runtime_Batch (Batch);
-                     Result := Capacity_Exceeded;
-                     return;
-                  end if;
-                  Body_Length := Body_Length + Frame_Bytes;
-               end;
-            end loop;
-            if Body_Length > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last) then
+            if Item.Arena = null
+              or else Prepared (Transaction_Index).Mutation_Total = 0
+              or else Prepared (Transaction_Index).Mutation_Total /= Mutation_Count (Item)
+              or else Body_Length > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
+            then
                Release_Runtime_Batch (Batch);
-               Result := Capacity_Exceeded;
+               Result := Invalid_State;
                return;
             end if;
             Batch.Transactions (Transaction_Index) :=
               (Transaction_ID => Item.Transaction_ID,
                Sequence       => First_Sequence + Sequence_Number (Transaction_Index - 1),
                First_Mutation => Next_Mutation,
-               Mutation_Count => Mutation_Count (Item));
+               Mutation_Count => Prepared (Transaction_Index).Mutation_Total);
             Transaction_Head := [others => 0];
             for Index in Identifier_Index loop
                Transaction_Head (Index - 1) := Item.Transaction_ID (Index);
@@ -9205,22 +10391,38 @@ package body Flyology.DB is
               (Transaction_Head,
                16,
                Interfaces.Unsigned_64 (First_Sequence + Sequence_Number (Transaction_Index - 1)));
-            Put_U32 (Transaction_Head, 24, Interfaces.Unsigned_32 (Mutation_Count (Item)));
+            Put_U32
+              (Transaction_Head, 24, Interfaces.Unsigned_32 (Prepared (Transaction_Index).Mutation_Total));
             Put_U32 (Transaction_Head, 28, Interfaces.Unsigned_32 (Body_Length));
             Store_Array (Cursor, Transaction_Head);
             Cursor := Cursor + Transaction_Frame_Header_Length;
-            for Source_Index in Positive range 1 .. Mutation_Count (Item) loop
+            if Item.Arena.Prepared_Body /= null then
+               if Interfaces.Unsigned_64 (Item.Arena.Prepared_Body'Length) /= Body_Length then
+                  raise Constraint_Error with "canonical mutation body extent differs from batch";
+               end if;
+               Batch.Image.Exact_Data
+                 (Batch.Image.Exact_Data'First
+                  + Ada.Streams.Stream_Element_Offset (Cursor)
+                  .. Batch.Image.Exact_Data'First
+                     + Ada.Streams.Stream_Element_Offset (Cursor + Natural (Body_Length) - 1)) :=
+                 Item.Arena.Prepared_Body.all;
+            end if;
+            for Source_Index in Positive range 1 .. Prepared (Transaction_Index).Mutation_Total loop
                declare
                   Source : Owned_Mutation renames Item.Arena.Mutations (Source_Index);
                   Target : Runtime_Mutation renames Batch.Mutations (Next_Mutation);
                begin
-                  Mutation_Head := [others => 0];
-                  Put_U32 (Mutation_Head, 0, Interfaces.Unsigned_32 (Source.Family));
-                  Mutation_Head (4) :=
-                    (if Source.Operation = Put_Mutation then Put_Operation_Code else Delete_Operation_Code);
-                  Put_U32 (Mutation_Head, 6, Interfaces.Unsigned_32 (Source.Key_Length));
-                  Put_U32 (Mutation_Head, 10, Interfaces.Unsigned_32 (Source.Value_Length));
-                  Store_Array (Cursor, Mutation_Head);
+                  if Item.Arena.Prepared_Body = null then
+                     Mutation_Head := [others => 0];
+                     Put_U32 (Mutation_Head, 0, Interfaces.Unsigned_32 (Source.Family));
+                     Mutation_Head (4) :=
+                       (if Source.Operation = Put_Mutation
+                        then Put_Operation_Code
+                        else Delete_Operation_Code);
+                     Put_U32 (Mutation_Head, 6, Interfaces.Unsigned_32 (Source.Key_Length));
+                     Put_U32 (Mutation_Head, 10, Interfaces.Unsigned_32 (Source.Value_Length));
+                     Store_Array (Cursor, Mutation_Head);
+                  end if;
                   Target :=
                     (Family             => Source.Family,
                      Operation          => Source.Operation,
@@ -9230,17 +10432,18 @@ package body Flyology.DB is
                      Value_Offset       => Cursor + Mutation_Frame_Header_Length + Source.Key_Length,
                      Value_Length       => Source.Value_Length,
                      Matched_Live_Entry => False);
-                  if Mutation_Payload_Length (Source) > 0 then
-                     Batch.Image.Exact_Data
-                       (Batch.Image.Exact_Data'First
-                        + Ada.Streams.Stream_Element_Offset (Cursor + Mutation_Frame_Header_Length)
-                        .. Batch.Image.Exact_Data'First
-                           + Ada.Streams.Stream_Element_Offset
-                               (Cursor
-                                + Mutation_Frame_Header_Length
-                                + Mutation_Payload_Length (Source)
-                                - 1)) :=
-                       Source.Payload.all;
+                  if Item.Arena.Prepared_Body = null and then Mutation_Payload_Length (Source) > 0 then
+                     Copy_Mutation_Payload
+                       (Source,
+                        Batch.Image.Exact_Data
+                          (Batch.Image.Exact_Data'First
+                           + Ada.Streams.Stream_Element_Offset (Cursor + Mutation_Frame_Header_Length)
+                           .. Batch.Image.Exact_Data'First
+                              + Ada.Streams.Stream_Element_Offset
+                                  (Cursor
+                                   + Mutation_Frame_Header_Length
+                                   + Mutation_Payload_Length (Source)
+                                   - 1)));
                   end if;
                   Target.Key_Hash := Runtime_Key_Hash (Batch.Image, Target.Key_Offset, Target.Key_Length);
                   Cursor := Cursor + Mutation_Frame_Header_Length + Source.Key_Length + Source.Value_Length;
@@ -9266,6 +10469,42 @@ package body Flyology.DB is
       when others =>
          Release_Runtime_Batch (Batch);
          Result := Invalid_State;
+   end Build_Prepared_Runtime_Batch_Image;
+
+   procedure Build_Runtime_Batch_Image
+     (Items                         : Work_Group;
+      Count                         : Group_Count;
+      Expected                      : Head_Snapshot;
+      Format_Version                : Interfaces.Unsigned_16;
+      Previous_Batch_ID             : Identifier;
+      First_Sequence                : Sequence_Number;
+      Publication_Transition_ID     : Identifier;
+      Publication_Transition_Number : Interfaces.Unsigned_64;
+      Batch                         : out Runtime_Batch;
+      Result                        : out Outcome_Code)
+   is
+      Prepared       : Prepared_Work_Group_View;
+      Mutation_Total : Natural;
+      Wire_Length    : Interfaces.Unsigned_64;
+   begin
+      Batch := (others => <>);
+      Prepare_Runtime_Work (Items, Count, Prepared, Mutation_Total, Wire_Length, Result);
+      if Result /= Success then
+         return;
+      end if;
+      Build_Prepared_Runtime_Batch_Image
+        (Prepared,
+         Count,
+         Mutation_Total,
+         Wire_Length,
+         Expected,
+         Format_Version,
+         Previous_Batch_ID,
+         First_Sequence,
+         Publication_Transition_ID,
+         Publication_Transition_Number,
+         Batch,
+         Result);
    end Build_Runtime_Batch_Image;
 
    procedure Build_Runtime_Batch
@@ -9799,7 +11038,7 @@ package body Flyology.DB is
       Mark_Uncertain : Boolean := False;
       Mark_Fenced    : Boolean := False) is
    begin
-      for Index in Commit_Slot range 1 .. Count loop
+      for Index in Cohort_Member range 1 .. Count loop
          Receipts (Index).Current_Outcome := Result;
          if Result = Success then
             Receipts (Index).Phase := Resolved;
@@ -9819,7 +11058,7 @@ package body Flyology.DB is
       Head            : Head_Snapshot;
       Head_Generation : Generation_Value)
    is
-      Batches              : Runtime_Batch_Array (Commit_Slot) := [others => (others => <>)];
+      Batches              : Runtime_Batch_Array (Cohort_Member) := [others => (others => <>)];
       Validation_Batch     : Runtime_Batch;
       Member_Items         : Work_Group;
       Receipts             : Receipt_Group;
@@ -9841,7 +11080,7 @@ package body Flyology.DB is
 
       procedure Release_Work_Arenas is
       begin
-         for Index in Commit_Slot range 1 .. Count loop
+         for Index in Cohort_Member range 1 .. Count loop
             Release_Arena (Items (Index).Arena);
          end loop;
       end Release_Work_Arenas;
@@ -9849,7 +11088,7 @@ package body Flyology.DB is
       procedure Release_Batches is
       begin
          Release_Runtime_Batch (Validation_Batch);
-         for Index in Commit_Slot loop
+         for Index in Cohort_Member loop
             Release_Runtime_Batch (Batches (Index));
          end loop;
       end Release_Batches;
@@ -9870,7 +11109,7 @@ package body Flyology.DB is
       end Member_Failure;
    begin
       Receipts := [others => <>];
-      for Index in Commit_Slot range 1 .. Count loop
+      for Index in Cohort_Member range 1 .. Count loop
          Receipts (Index).Aggregate_Authority :=
            State.LSM_Authority.Commit_Profile = LSM_Runtime.Commit_Profiles.Aggregate_Coalescing;
          Receipts (Index).Transaction_ID := Items (Index).Transaction_ID;
@@ -9904,7 +11143,7 @@ package body Flyology.DB is
          Publication_ID := Structural_ID (16#C4#, Head.Transition_Number + 1);
       end if;
       Previous_Batch := (if Head.Highest = 0 then Zero_Identifier else Head.Latest_Batch);
-      for Index in Commit_Slot range 1 .. Count loop
+      for Index in Cohort_Member range 1 .. Count loop
          Member_Items := [others => <>];
          Member_Items (1) := Items (Index);
          Build_Runtime_Batch_Image
@@ -9938,7 +11177,7 @@ package body Flyology.DB is
          Transition_ID          => Publication_ID,
          Predecessor_Transition => Head.Transition_ID,
          Transition_Number      => Head.Transition_Number + 1);
-      for Index in Commit_Slot range 1 .. Count loop
+      for Index in Cohort_Member range 1 .. Count loop
          Receipts (Index).Attempted_Head := Attempted_Head;
       end loop;
       State.Gate.Prepare_Independent_Cohort
@@ -9950,7 +11189,7 @@ package body Flyology.DB is
          return;
       end if;
 
-      for Index in Commit_Slot range 1 .. Count loop
+      for Index in Cohort_Member range 1 .. Count loop
          Flyology.Bytes.Clear (Read_Data);
          Read_Result := Read_Failed;
          Storage_Port.Put_Create
@@ -10036,7 +11275,7 @@ package body Flyology.DB is
             Finish_Work (State, Tokens, Receipts, Count, Stale_Writer, Mark_Fenced => True);
 
          when Put_Outcome_Unknown     =>
-            for Index in Commit_Slot range 1 .. Count loop
+            for Index in Cohort_Member range 1 .. Count loop
                Receipts (Index).Image := Batches (Index).Image;
                Batches (Index).Image := null;
             end loop;
@@ -10080,6 +11319,152 @@ package body Flyology.DB is
       when Constraint_Error =>
          return Interfaces.Unsigned_64'Last;
    end Diagnostic_Nanoseconds;
+
+   procedure Seal_Pipeline_Group
+     (Items            : Work_Group;
+      Count            : Group_Count;
+      Expected         : Head_Snapshot;
+      Attempted        : Head_Snapshot;
+      Batch            : out Runtime_Batch;
+      Result           : out Outcome_Code;
+      Fence_On_Failure : out Boolean;
+      Phases           : out Test_Adaptive_Cohort_Phase_Durations)
+   is
+      Deadline      : Ada.Real_Time.Time := Ada.Real_Time.Time_Last;
+      Phase_Started : Ada.Real_Time.Time := Ada.Real_Time.Clock;
+
+      procedure Finish_Phase (Target : in out Interfaces.Unsigned_64) is
+         Now : constant Ada.Real_Time.Time := Ada.Real_Time.Clock;
+      begin
+         Target := Diagnostic_Nanoseconds (Phase_Started, Now);
+         Phase_Started := Now;
+      end Finish_Phase;
+   begin
+      Batch := (others => <>);
+      Result := Invalid_State;
+      Fence_On_Failure := False;
+      Phases := (others => <>);
+      if Count = 0 then
+         return;
+      end if;
+      Deadline := Items (1).Deadline;
+      for Index in Cohort_Member range 2 .. Count loop
+         if Items (Index).Deadline < Deadline then
+            Deadline := Items (Index).Deadline;
+         end if;
+      end loop;
+      if Deadline <= Ada.Real_Time.Clock then
+         Result := Timed_Out;
+         return;
+      end if;
+      Build_Runtime_Batch (Items, Count, Expected, Batch, Result);
+      Finish_Phase (Phases.Build_Nanoseconds);
+      if Result /= Success then
+         return;
+      elsif not Runtime_Published_By (Batch, Attempted) then
+         Release_Runtime_Batch (Batch);
+         Result := Invalid_State;
+         Fence_On_Failure := True;
+         return;
+      end if;
+   exception
+      when Storage_Error =>
+         Release_Runtime_Batch (Batch);
+         Result := Capacity_Exceeded;
+      when others =>
+         Release_Runtime_Batch (Batch);
+         Result := Storage_Failure;
+   end Seal_Pipeline_Group;
+
+   --  This bounded native lane owns only durable immutable publication and
+   --  its exact-byte readback. It cannot monopolize the CPU preparation pool.
+   procedure Put_Pipeline_Group
+     (State            : not null Engine_State_Access;
+      Items            : Work_Group;
+      Count            : Group_Count;
+      Attempted        : Head_Snapshot;
+      Batch            : in out Runtime_Batch;
+      Result           : out Outcome_Code;
+      Fence_On_Failure : out Boolean;
+      Phases           : in out Test_Adaptive_Cohort_Phase_Durations)
+   is
+      Put_Result         : Put_Outcome;
+      Read_Result        : Read_Outcome;
+      Ignored_Generation : Generation_Value;
+      Read_Data          : Flyology.Bytes.Unbounded_Bytes;
+      Deadline           : Ada.Real_Time.Time := Ada.Real_Time.Time_Last;
+      Cancellation       : constant access Flyology.Cancellation.Token := null;
+      Started            : constant Ada.Real_Time.Time := Ada.Real_Time.Clock;
+   begin
+      Result := Invalid_State;
+      Fence_On_Failure := False;
+      if Count = 0 or else Batch.Image = null or else not Runtime_Published_By (Batch, Attempted) then
+         return;
+      end if;
+      Deadline := Items (1).Deadline;
+      for Index in Cohort_Member range 2 .. Count loop
+         if Items (Index).Deadline < Deadline then
+            Deadline := Items (Index).Deadline;
+         end if;
+      end loop;
+      if Deadline <= Ada.Real_Time.Clock then
+         Result := Timed_Out;
+         return;
+      end if;
+      Storage_Port.Put_Create
+        (State.Storage.all,
+         Batch_Key (State.Storage.all, Batch.Batch_ID),
+         Batch.Image,
+         Batch_Object,
+         Deadline,
+         Cancellation,
+         Ignored_Generation,
+         Put_Result);
+      if Put_Result = Put_Outcome_Unknown then
+         Storage_Port.Get_Whole
+           (State.Storage.all,
+            Batch_Key (State.Storage.all, Batch.Batch_ID),
+            Batch_Object,
+            Deadline,
+            Cancellation,
+            Read_Data,
+            Ignored_Generation,
+            Read_Result,
+            Image_Length (Batch.Image));
+         if Read_Result = Object_Read and then Exact_Bytes (Batch.Image, Read_Data) then
+            Put_Result := Object_Published;
+         else
+            Result :=
+              (if Read_Result = Read_Cancelled
+               then Cancelled
+               elsif Read_Result = Read_Timed_Out
+               then Timed_Out
+               elsif Read_Result = Read_Capacity_Exceeded
+               then Capacity_Exceeded
+               else Storage_Failure);
+         end if;
+      end if;
+      if Put_Result = Object_Published then
+         Result := Success;
+      elsif Put_Result = Put_Precondition_Failed then
+         Result := Conflict;
+         Fence_On_Failure := True;
+      elsif Put_Result = Put_Cancelled then
+         Result := Cancelled;
+      elsif Put_Result = Put_Timed_Out then
+         Result := Timed_Out;
+      elsif Put_Result = Put_Definite_Failure then
+         Result := Storage_Failure;
+      end if;
+      Phases.Batch_Put_Nanoseconds := Diagnostic_Nanoseconds (Started, Ada.Real_Time.Clock);
+   exception
+      when Storage_Error =>
+         Release_Runtime_Batch (Batch);
+         Result := Capacity_Exceeded;
+      when others =>
+         Release_Runtime_Batch (Batch);
+         Result := Storage_Failure;
+   end Put_Pipeline_Group;
 
    procedure Process_Group
      (State           : not null Engine_State_Access;
@@ -10135,7 +11520,7 @@ package body Flyology.DB is
 
       procedure Release_Work_Arenas is
       begin
-         for Index in Commit_Slot range 1 .. Count loop
+         for Index in Cohort_Member range 1 .. Count loop
             Release_Arena (Items (Index).Arena);
          end loop;
       end Release_Work_Arenas;
@@ -10151,14 +11536,14 @@ package body Flyology.DB is
          Phase_Started := Worker_Started;
       end if;
       Receipts := [others => <>];
-      for Index in Commit_Slot range 1 .. Count loop
+      for Index in Cohort_Member range 1 .. Count loop
          Receipts (Index).Aggregate_Authority :=
            State.LSM_Authority.Commit_Profile = LSM_Runtime.Commit_Profiles.Aggregate_Coalescing;
          Receipts (Index).Transaction_ID := Items (Index).Transaction_ID;
          Receipts (Index).Batch_ID := Items (Index).Batch_ID;
          Receipts (Index).Expected_Head := Head;
       end loop;
-      for Index in Commit_Slot range 2 .. Count loop
+      for Index in Cohort_Member range 2 .. Count loop
          if Items (Index).Deadline < Deadline then
             Deadline := Items (Index).Deadline;
          end if;
@@ -10184,7 +11569,7 @@ package body Flyology.DB is
          Finish_Work (State, Tokens, Receipts, Count, Result);
          return;
       end if;
-      for Index in Commit_Slot range 1 .. Count loop
+      for Index in Cohort_Member range 1 .. Count loop
          Receipts (Index).Transaction_ID := Items (Index).Transaction_ID;
          Receipts (Index).Assigned_Sequence := Head.Highest + Sequence_Number (Index);
          Receipts (Index).Batch_ID := Batch.Batch_ID;
@@ -10306,7 +11691,7 @@ package body Flyology.DB is
             Finish_Work (State, Tokens, Receipts, Count, Stale_Writer, Mark_Fenced => True);
 
          when Put_Outcome_Unknown     =>
-            for Index in Commit_Slot range 1 .. Count loop
+            for Index in Cohort_Member range 1 .. Count loop
                if Index > 1 then
                   Batch.Image.References.Retain;
                end if;
@@ -10341,6 +11726,163 @@ package body Flyology.DB is
          end if;
    end Process_Group;
 
+   procedure Process_Pipeline_Front
+     (State            : not null Engine_State_Access;
+      Pipeline_Item    : Pipeline_Token;
+      Items            : Work_Group;
+      Tokens           : Token_Group;
+      Count            : Group_Count;
+      Expected         : Head_Snapshot;
+      Attempted        : Head_Snapshot;
+      Batch            : in out Runtime_Batch;
+      Preparation      : Outcome_Code;
+      Fence_On_Failure : Boolean;
+      Abandoned        : Boolean;
+      Started          : Ada.Real_Time.Time;
+      Phases           : in out Test_Adaptive_Cohort_Phase_Durations)
+   is
+      Receipts             : Receipt_Group := [others => <>];
+      Result               : Outcome_Code;
+      Put_Result           : Put_Outcome;
+      Published_Generation : Generation_Value;
+      Head_Generation      : Generation_Value;
+      Head_Image           : Formats.Head_Image;
+      Head_Owner           : Shared_Image_Access := null;
+      Deadline             : Ada.Real_Time.Time := Ada.Real_Time.Time_Last;
+      Cancellation         : constant access Flyology.Cancellation.Token := null;
+      Phase_Started        : Ada.Real_Time.Time := Ada.Real_Time.Clock;
+      Head_Confirmed       : Boolean := False;
+      Retired              : Boolean := False;
+
+      procedure Finish_Phase (Target : in out Interfaces.Unsigned_64) is
+         Now : constant Ada.Real_Time.Time := Ada.Real_Time.Clock;
+      begin
+         Target := Diagnostic_Nanoseconds (Phase_Started, Now);
+         Phase_Started := Now;
+      end Finish_Phase;
+
+      procedure Release_Batch is
+      begin
+         State.Gate.Discard_Prepared_Batch;
+         Release_Runtime_Batch (Batch);
+      end Release_Batch;
+
+      procedure Retire
+        (Halt           : Boolean;
+         Terminal_Halt  : Boolean;
+         Outcome        : Outcome_Code;
+         Mark_Uncertain : Boolean := False;
+         Mark_Fenced    : Boolean := False) is
+      begin
+         State.Gate.Retire_Pipeline_Front (Pipeline_Item, Halt, Terminal_Halt);
+         Retired := True;
+         Finish_Work (State, Tokens, Receipts, Count, Outcome, Mark_Uncertain, Mark_Fenced);
+      end Retire;
+
+      procedure Record_Diagnostics is
+         Finished : constant Ada.Real_Time.Time := Ada.Real_Time.Clock;
+      begin
+         Phases.Precompletion_Nanoseconds := Diagnostic_Nanoseconds (Started, Finished);
+         State.Gate.Record_Adaptive_Cohort_Phases (Phases);
+      end Record_Diagnostics;
+   begin
+      if Count = 0 then
+         State.Gate.Retire_Pipeline_Front (Pipeline_Item, True, True);
+         return;
+      end if;
+      Deadline := Items (1).Deadline;
+      for Index in Cohort_Member range 1 .. Count loop
+         Receipts (Index).Aggregate_Authority := True;
+         Receipts (Index).Transaction_ID := Items (Index).Transaction_ID;
+         Receipts (Index).Assigned_Sequence := Batch.First_Sequence + Sequence_Number (Index - 1);
+         Receipts (Index).Batch_ID := Items (Index).Batch_ID;
+         Receipts (Index).Expected_Head := Expected;
+         Receipts (Index).Attempted_Head := Attempted;
+         if Items (Index).Deadline < Deadline then
+            Deadline := Items (Index).Deadline;
+         end if;
+      end loop;
+      if Abandoned then
+         Release_Batch;
+         Retire (False, Fence_On_Failure, Storage_Failure, Mark_Fenced => Fence_On_Failure);
+         return;
+      elsif Preparation /= Success then
+         Release_Batch;
+         Retire (True, Fence_On_Failure, Preparation, Mark_Fenced => Fence_On_Failure);
+         return;
+      end if;
+      State.Gate.Validate_Pipeline_Front (Pipeline_Item, Items, Count, Batch, Head_Generation, Result);
+      Finish_Phase (Phases.Validation_Nanoseconds);
+      if Result /= Success then
+         Release_Batch;
+         Retire (True, Result = Stale_Writer, Result, Mark_Fenced => Result = Stale_Writer);
+         return;
+      end if;
+      Head_Image := Formats.Encode_Head (To_Head (Attempted));
+      Head_Owner := New_Image (Head_Image);
+      Finish_Phase (Phases.Head_Encode_Nanoseconds);
+      Storage_Port.Put_Replace
+        (State.Storage.all,
+         Full_Key (State.Storage.all, Head_Key_Suffix),
+         Head_Owner,
+         Head_Generation,
+         Deadline,
+         Cancellation,
+         Published_Generation,
+         Put_Result);
+      Release_Image (Head_Owner);
+      Finish_Phase (Phases.Head_Put_Nanoseconds);
+      case Put_Result is
+         when Object_Published        =>
+            Head_Confirmed := True;
+            State.Gate.Install_Published (Batch, Attempted, Published_Generation, Result);
+            Release_Batch;
+            State.Life.Set_Visible (Attempted.Highest);
+            Finish_Phase (Phases.Installation_Nanoseconds);
+            Record_Diagnostics;
+            Retire (Result /= Success, Result /= Success, Success, Mark_Fenced => Result /= Success);
+
+         when Put_Precondition_Failed =>
+            Release_Batch;
+            Retire (True, True, Stale_Writer, Mark_Fenced => True);
+
+         when Put_Outcome_Unknown     =>
+            for Index in Cohort_Member range 1 .. Count loop
+               if Index > 1 then
+                  Batch.Image.References.Retain;
+               end if;
+               Receipts (Index).Image := Batch.Image;
+            end loop;
+            Batch.Image := null;
+            Release_Batch;
+            Retire (True, True, Outcome_Unknown, Mark_Uncertain => True);
+
+         when Put_Cancelled           =>
+            Release_Batch;
+            Retire (True, False, Cancelled);
+
+         when Put_Timed_Out           =>
+            Release_Batch;
+            Retire (True, False, Timed_Out);
+
+         when Put_Definite_Failure    =>
+            Release_Batch;
+            Retire (True, False, Storage_Failure);
+      end case;
+   exception
+      when others =>
+         Release_Image (Head_Owner);
+         Release_Batch;
+         if not Retired then
+            if Head_Confirmed then
+               State.Life.Set_Visible (Attempted.Highest);
+               Retire (True, True, Success, Mark_Fenced => True);
+            else
+               Retire (True, False, Storage_Failure);
+            end if;
+         end if;
+   end Process_Pipeline_Front;
+
    task body Commit_Worker is
       Items      : Work_Group;
       Tokens     : Token_Group;
@@ -10348,29 +11890,307 @@ package body Flyology.DB is
       Head       : Head_Snapshot;
       Generation : Generation_Value;
       Next_Wake  : Ada.Real_Time.Time;
+      Pipeline   : Boolean;
       Stop       : Boolean;
 
+      --  Call only after the nested native-task master has joined. No worker
+      --  or publisher can then borrow a descriptor or its exact batch image.
+      procedure Release_Abandoned_Pipeline_Batches is
+         Batch : Runtime_Batch;
+      begin
+         System.Soft_Links.Abort_Defer.all;
+         begin
+            for Position in Pipeline_Position loop
+               State.Gate.Take_Abandoned_Pipeline_Batch (Position, Batch);
+               Release_Runtime_Batch (Batch);
+            end loop;
+         exception
+            when others =>
+               Release_Runtime_Batch (Batch);
+               raise;
+         end;
+         System.Soft_Links.Abort_Undefer.all;
+      exception
+         when others =>
+            System.Soft_Links.Abort_Undefer.all;
+            raise;
+      end Release_Abandoned_Pipeline_Batches;
+
    begin
-      loop
-         State.Gate.Select_Group
-           (Ada.Real_Time.Clock, Items, Tokens, Count, Head, Generation, Next_Wake, Stop);
-         exit when Stop;
-         Signal_Ready_Completions (State);
-         if Count > 0 then
-            Process_Group (State, Items, Tokens, Count, Head, Generation);
-         elsif Next_Wake = Ada.Real_Time.Time_Last then
-            State.Gate.Await_Work_Change;
-         else
+      declare
+         task type Pipeline_Preparer_Task is
+            pragma Task_Info (Flyology.Native_Task);
+            entry Start;
+         end Pipeline_Preparer_Task;
+
+         task body Pipeline_Preparer_Task is
+            Pipeline_Item    : Pipeline_Token;
+            Pipeline_Items   : Work_Group;
+            Pipeline_Count   : Group_Count;
+            Expected         : Head_Snapshot;
+            Attempted        : Head_Snapshot;
+            Batch            : Runtime_Batch;
+            Result           : Outcome_Code;
+            Fence_On_Failure : Boolean;
+            Phases           : Test_Adaptive_Cohort_Phase_Durations;
+            Taken            : Boolean;
+            Held             : Boolean := False;
+            Wake             : Ada.Real_Time.Time;
+            Done             : Boolean;
+            Prepared_Member  : Boolean;
+            Worker_Index     : Pipeline_Position;
+            Abort_Deferred   : Boolean := False;
+         begin
+            --  An unstarted dependent can terminate if task activation or
+            --  master initialization fails before the publisher begins.
             select
-               State.Gate.Await_Work_Change;
+               accept Start;
             or
-               delay until Next_Wake;
+               terminate;
             end select;
-         end if;
-      end loop;
+            State.Gate.Register_CPU_Worker (Worker_Index);
+            State.Gate.Await_Pipeline_Enabled (Done);
+            while not Done loop
+               System.Soft_Links.Abort_Defer.all;
+               Abort_Deferred := True;
+               State.Gate.Select_Pipeline_Group
+                 (Ada.Real_Time.Clock,
+                  Pipeline_Item,
+                  Pipeline_Items,
+                  Pipeline_Count,
+                  Expected,
+                  Attempted,
+                  Wake,
+                  Done);
+               Held := not Done and then Pipeline_Count > 0;
+               Signal_Ready_Completions (State);
+               if Done then
+                  Abort_Deferred := False;
+                  System.Soft_Links.Abort_Undefer.all;
+                  exit;
+               elsif Pipeline_Count > 0 then
+                  Seal_Pipeline_Group
+                    (Pipeline_Items,
+                     Pipeline_Count,
+                     Expected,
+                     Attempted,
+                     Batch,
+                     Result,
+                     Fence_On_Failure,
+                     Phases);
+                  State.Gate.Return_Pipeline_Preparation
+                    (Pipeline_Item, Attempted, Batch, Result, Fence_On_Failure, Phases, Taken);
+                  if not Taken then
+                     Release_Runtime_Batch (Batch);
+                     State.Gate.Abort_Pipeline;
+                     Abort_Deferred := False;
+                     System.Soft_Links.Abort_Undefer.all;
+                     exit;
+                  end if;
+                  Held := False;
+                  Abort_Deferred := False;
+                  System.Soft_Links.Abort_Undefer.all;
+               else
+                  Abort_Deferred := False;
+                  System.Soft_Links.Abort_Undefer.all;
+                  Prepare_Next_Canonical_Member (State, Prepared_Member);
+                  if Prepared_Member then
+                     Signal_Ready_Completions (State);
+                  elsif Wake = Ada.Real_Time.Time_Last then
+                     State.Gate.Await_CPU_Change (Worker_Index);
+                  else
+                     select
+                        State.Gate.Await_CPU_Change (Worker_Index);
+                     or
+                        delay until Wake;
+                     end select;
+                  end if;
+               end if;
+            end loop;
+            State.Gate.Mark_Pipeline_Preparation_Stopped;
+         exception
+            when others =>
+               if Held then
+                  Result := Storage_Failure;
+                  Fence_On_Failure := True;
+                  State.Gate.Return_Pipeline_Preparation
+                    (Pipeline_Item, Attempted, Batch, Result, Fence_On_Failure, Phases, Taken);
+                  if not Taken then
+                     Release_Runtime_Batch (Batch);
+                  end if;
+               else
+                  Release_Runtime_Batch (Batch);
+               end if;
+               State.Gate.Abort_Pipeline;
+               State.Gate.Mark_Pipeline_Preparation_Stopped;
+               if Abort_Deferred then
+                  System.Soft_Links.Abort_Undefer.all;
+               end if;
+         end Pipeline_Preparer_Task;
+
+         Pipeline_Preparers : array (Pipeline_Position) of Pipeline_Preparer_Task;
+
+         --  The existing pipeline-position bound fixes this native task set;
+         --  configured depth bounds active PUTs. CPU concurrency remains its
+         --  separately configured bound, never an inferred hardware shape.
+         task type Pipeline_Put_Task is
+            pragma Task_Info (Flyology.Native_Task);
+            entry Start;
+         end Pipeline_Put_Task;
+
+         task body Pipeline_Put_Task is
+            Token            : Pipeline_Token;
+            Items            : Work_Group;
+            Count            : Group_Count;
+            Ignored_Expected : Head_Snapshot;
+            Attempted        : Head_Snapshot;
+            Batch            : Runtime_Batch;
+            Phases           : Test_Adaptive_Cohort_Phase_Durations;
+            Result           : Outcome_Code;
+            Fence_On_Failure : Boolean;
+            Taken            : Boolean;
+            Stop             : Boolean;
+            Held             : Boolean := False;
+            Abort_Deferred   : Boolean := False;
+         begin
+            select
+               accept Start;
+            or
+               terminate;
+            end select;
+            loop
+               System.Soft_Links.Abort_Defer.all;
+               Abort_Deferred := True;
+               State.Gate.Take_Pipeline_Put
+                 (Token, Items, Count, Ignored_Expected, Attempted, Batch, Phases, Stop);
+               Held := not Stop;
+               if Stop then
+                  Abort_Deferred := False;
+                  System.Soft_Links.Abort_Undefer.all;
+                  exit;
+               end if;
+               Put_Pipeline_Group (State, Items, Count, Attempted, Batch, Result, Fence_On_Failure, Phases);
+               State.Gate.Return_Pipeline_Put (Token, Batch, Result, Fence_On_Failure, Phases, Taken);
+               Held := False;
+               if not Taken then
+                  Release_Runtime_Batch (Batch);
+                  State.Gate.Abort_Pipeline;
+               end if;
+               Abort_Deferred := False;
+               System.Soft_Links.Abort_Undefer.all;
+               exit when not Taken;
+            end loop;
+            State.Gate.Mark_Pipeline_Put_Stopped;
+         exception
+            when others =>
+               if Held then
+                  State.Gate.Return_Pipeline_Put (Token, Batch, Storage_Failure, True, Phases, Taken);
+               end if;
+               Release_Runtime_Batch (Batch);
+               State.Gate.Abort_Pipeline;
+               State.Gate.Mark_Pipeline_Put_Stopped;
+               if Abort_Deferred then
+                  System.Soft_Links.Abort_Undefer.all;
+               end if;
+         end Pipeline_Put_Task;
+
+         Pipeline_Putters : array (Pipeline_Position) of Pipeline_Put_Task;
+
+         Pipeline_Item        : Pipeline_Token;
+         Pipeline_Items       : Work_Group;
+         Pipeline_Tokens      : Token_Group;
+         Pipeline_Count       : Group_Count;
+         Expected             : Head_Snapshot;
+         Attempted            : Head_Snapshot;
+         Batch                : Runtime_Batch;
+         Result               : Outcome_Code;
+         Fence_On_Failure     : Boolean;
+         Abandoned            : Boolean;
+         Started              : Ada.Real_Time.Time;
+         Phases               : Test_Adaptive_Cohort_Phase_Durations;
+         Front_Abort_Deferred : Boolean := False;
+      begin
+         --  Enter the publisher loop only after the whole fixed task set has
+         --  activated. Partial startup falls through the halt-and-join path.
+         for Position in Pipeline_Position loop
+            Pipeline_Preparers (Position).Start;
+            Pipeline_Putters (Position).Start;
+         end loop;
+         loop
+            State.Gate.Select_Group
+              (Ada.Real_Time.Clock, Items, Tokens, Count, Head, Generation, Next_Wake, Pipeline, Stop);
+            exit when Stop;
+            Signal_Ready_Completions (State);
+            if Pipeline then
+               loop
+                  --  The descriptor transfers its image to this local owner.
+                  --  Keep that ownership episode intact through processing,
+                  --  including exceptions during call elaboration.
+                  System.Soft_Links.Abort_Defer.all;
+                  Front_Abort_Deferred := True;
+                  State.Gate.Take_Pipeline_Front
+                    (Pipeline_Item,
+                     Pipeline_Items,
+                     Pipeline_Tokens,
+                     Pipeline_Count,
+                     Expected,
+                     Attempted,
+                     Batch,
+                     Result,
+                     Fence_On_Failure,
+                     Abandoned,
+                     Started,
+                     Phases,
+                     Stop);
+                  if Stop then
+                     Front_Abort_Deferred := False;
+                     System.Soft_Links.Abort_Undefer.all;
+                     exit;
+                  end if;
+                  Process_Pipeline_Front
+                    (State,
+                     Pipeline_Item,
+                     Pipeline_Items,
+                     Pipeline_Tokens,
+                     Pipeline_Count,
+                     Expected,
+                     Attempted,
+                     Batch,
+                     Result,
+                     Fence_On_Failure,
+                     Abandoned,
+                     Started,
+                     Phases);
+                  Release_Runtime_Batch (Batch);
+                  Front_Abort_Deferred := False;
+                  System.Soft_Links.Abort_Undefer.all;
+               end loop;
+               exit;
+            elsif Count > 0 then
+               Process_Group (State, Items, Tokens, Count, Head, Generation);
+            elsif Next_Wake = Ada.Real_Time.Time_Last then
+               State.Gate.Await_Publisher_Work;
+            else
+               select
+                  State.Gate.Await_Publisher_Work;
+               or
+                  delay until Next_Wake;
+               end select;
+            end if;
+         end loop;
+      exception
+         when others =>
+            State.Gate.Abort_Pipeline;
+            Release_Runtime_Batch (Batch);
+            if Front_Abort_Deferred then
+               System.Soft_Links.Abort_Undefer.all;
+            end if;
+      end;
+      Release_Abandoned_Pipeline_Batches;
       Mark_Engine_Stopped (State);
    exception
       when others =>
+         Release_Abandoned_Pipeline_Batches;
          Mark_Engine_Stopped (State);
    end Commit_Worker;
 
@@ -14589,6 +16409,45 @@ package body Flyology.DB is
       Candidate     : Owned_Bytes_Guard;
       Prior_Payload : Owned_Byte_Array_Access := null;
       Configuration : Column_Family_Configuration;
+
+      function Copy_Octets
+        (Destination : System.Address; Source : System.Address; Count : Interfaces.C.size_t)
+         return System.Address
+      with Import, Convention => C, External_Name => "memcpy";
+
+      --  Opaque keys and values are octets. Use the C byte-copy ABI only when
+      --  both Ada components and C char are eight bits and Natural fits size_t.
+      Native_Copy_Compatible : constant Boolean :=
+        System.Storage_Unit = 8
+        and then Byte'Size = 8
+        and then Ada.Streams.Stream_Element'Size = 8
+        and then Interfaces.C.char'Size = 8
+        and then Byte_Array'Component_Size = 8
+        and then Ada.Streams.Stream_Element_Array'Component_Size = 8
+        and then Interfaces.C.size_t'Size >= Natural'Size;
+
+      procedure Copy_Into_Candidate
+        (Destination_First : Ada.Streams.Stream_Element_Offset; Source : Byte_Array)
+      is
+         Ignored_Destination : System.Address;
+      begin
+         if Source'Length = 0 then
+            return;
+         elsif Native_Copy_Compatible then
+            --  The complete candidate is independent and already allocated.
+            --  memcpy retains neither source nor destination storage.
+            Ignored_Destination :=
+              Copy_Octets
+                (Candidate.Data (Destination_First)'Address,
+                 Source (Source'First)'Address,
+                 Interfaces.C.size_t (Source'Length));
+         else
+            for Offset in Natural range 0 .. Source'Length - 1 loop
+               Candidate.Data (Destination_First + Ada.Streams.Stream_Element_Offset (Offset)) :=
+                 Ada.Streams.Stream_Element (Source (Source'First + Offset));
+            end loop;
+         end if;
+      end Copy_Into_Candidate;
    begin
       if not Txn.Active or else Txn.Owner.Arena = null then
          Result := Invalid_State;
@@ -14669,16 +16528,10 @@ package body Flyology.DB is
          Candidate.Data :=
            new Ada.Streams.Stream_Element_Array (1 .. Ada.Streams.Stream_Element_Offset (New_Bytes));
          if Item_Key'Length > 0 then
-            for Offset in Natural range 0 .. Item_Key'Length - 1 loop
-               Candidate.Data (Ada.Streams.Stream_Element_Offset (Offset + 1)) :=
-                 Ada.Streams.Stream_Element (Item_Key (Item_Key'First + Offset));
-            end loop;
+            Copy_Into_Candidate (1, Item_Key);
          end if;
          if Operation = Put_Mutation and then Data'Length > 0 then
-            for Offset in Natural range 0 .. Data'Length - 1 loop
-               Candidate.Data (Ada.Streams.Stream_Element_Offset (Item_Key'Length + Offset + 1)) :=
-                 Ada.Streams.Stream_Element (Data (Data'First + Offset));
-            end loop;
+            Copy_Into_Candidate (Ada.Streams.Stream_Element_Offset (Item_Key'Length + 1), Data);
          end if;
       end if;
 
@@ -28772,12 +30625,15 @@ package body Flyology.DB is
    end Set_Test_Aggregate_Cohort_Width;
 
    procedure Set_Test_Adaptive_Aggregate_Cohort
-     (Item                  : in out Database;
-      Maximum_Members       : Positive;
-      Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
-      Maximum_Wait          : Ada.Real_Time.Time_Span;
-      Admission_Depth       : Positive;
-      Result                : out Outcome_Code)
+     (Item                            : in out Database;
+      Maximum_Members                 : Positive;
+      Maximum_Encoded_Bytes           : Interfaces.Unsigned_64;
+      Maximum_Wait                    : Ada.Real_Time.Time_Span;
+      Admission_Depth                 : Positive;
+      Preparation_Concurrency         : Positive;
+      Pipeline_Depth                  : Positive;
+      Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
+      Result                          : out Outcome_Code)
    is
       Lease : Lifecycle_Lease;
    begin
@@ -28787,7 +30643,14 @@ package body Flyology.DB is
             Result := Unsupported_Format;
          else
             Lease.State.Gate.Configure_Adaptive_Aggregate_Cohort
-              (Maximum_Members, Maximum_Encoded_Bytes, Maximum_Wait, Admission_Depth, Result);
+              (Maximum_Members,
+               Maximum_Encoded_Bytes,
+               Maximum_Wait,
+               Admission_Depth,
+               Preparation_Concurrency,
+               Pipeline_Depth,
+               Maximum_In_Flight_Payload_Bytes,
+               Result);
          end if;
       end if;
    end Set_Test_Adaptive_Aggregate_Cohort;
@@ -28868,6 +30731,26 @@ package body Flyology.DB is
 
    function Test_Get_Waiting (Item : Storage_Context) return Boolean
    is (Item.Test_Control.Get_Waiting);
+
+   procedure Set_Test_Head_Put_Paused (Item : in out Storage_Context; Value : Boolean) is
+   begin
+      Item.Test_Control.Set_Head_Put_Paused (Value);
+   end Set_Test_Head_Put_Paused;
+
+   procedure Wait_For_Test_Head_Put (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean)
+   is
+   begin
+      Arrived := False;
+      select
+         delay Timeout;
+      then abort
+         Item.Test_Control.Await_Head_Put;
+         Arrived := True;
+      end select;
+   end Wait_For_Test_Head_Put;
+
+   function Test_Head_Put_Waiting (Item : Storage_Context) return Boolean
+   is (Item.Test_Control.Head_Put_Waiting);
 
    procedure Test_Image_Statistics
      (Allocated, Released, Arenas_Allocated, Arenas_Released, Transaction_Bytes, Source_Bytes, Sink_Bytes :
@@ -30785,7 +32668,7 @@ package body Flyology.DB is
             --  parity artifacts stable and have no persisted-format authority.
             Batch_ID : constant Identifier := Structural_ID (16#B1#, Interfaces.Unsigned_64 (Case_Number));
          begin
-            for Transaction_Index in Commit_Slot range 1 .. Case_Number loop
+            for Transaction_Index in Cohort_Member range 1 .. Case_Number loop
                declare
                   Arena : Transaction_Arena_Access := new Transaction_Arena (1);
                begin

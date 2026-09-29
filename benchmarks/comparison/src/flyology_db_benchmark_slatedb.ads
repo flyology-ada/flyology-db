@@ -2,6 +2,9 @@ with GNAT.SHA256;
 
 package Flyology_DB_Benchmark_SlateDB is
 
+   function Last_Run_Preparation_Diagnostics_NDJSON
+     (Execution_Ordinal : Natural; Transactions : Positive) return String;
+
    type Flush_Profile is (Default_Flush, One_Millisecond_Flush);
 
    procedure Run_Local

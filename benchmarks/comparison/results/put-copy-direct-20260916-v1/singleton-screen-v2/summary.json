@@ -1,0 +1,244 @@
+{
+  "baseline_median_ms": 63.9709115,
+  "baseline_source_diff_sha256": "b4850b89330e9489d84e63c166410c6da9ffb2f515b0cda43dff0e794df902a3",
+  "benchmark_build_log_sha256": "c0078706056c38e35d878132185c25c3b71edad01c7779492fd48abae7a05001",
+  "classification": "exploratory_unknown_power_profile",
+  "direct_median_ms": 64.981738,
+  "direct_source_diff_sha256": "5e9b4cf6e1b41e51b80daa34d9108d6d32e45f9b0fb782c225064d7067267df2",
+  "expected_reopened_keys": 11008,
+  "expected_state_sha256": "090e348abcc1353f6cb651a378cbafc890ee7a9c50fd707c9ab9667ee12ccbbb",
+  "gpr_source_map_sha256": "77ac39838d72ed5fdcc603c157ebb7913d39f1138e2dc3d995c9f84b51c78362",
+  "improvement_fraction": -0.015801345897658692,
+  "order": [
+    "baseline",
+    "direct",
+    "direct",
+    "baseline"
+  ],
+  "records": [
+    {
+      "batch_counts": [
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35
+      ],
+      "binary_sha256": "c3541db1a5ed46836ad1d1b03502f2682460b7f99cf483a2b1fc80d3f695af65",
+      "condition": "baseline",
+      "db_median_ms": 66.2993265,
+      "db_ms": [
+        65.734434,
+        74.690588,
+        63.043337,
+        63.138499,
+        73.890836,
+        73.505719,
+        73.748154,
+        62.443484,
+        66.864219,
+        64.019412
+      ],
+      "host_load_average": [
+        0.77392578125,
+        0.4453125,
+        0.69287109375
+      ],
+      "index": 1,
+      "json_sha256": "24d05620285f07ab5241a79f47ce771e97e4519faca84cfd969f18e3861a0aa9",
+      "metrics_sha256": "8dde3e8ae7abf2177ca603fb709eb9f0c7047b0f866f0d49c0a99420fdc93786",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 24.050017,
+      "slate_ms": [
+        23.429295,
+        25.595001,
+        27.755996,
+        29.210137,
+        23.958694,
+        22.803892,
+        24.14134,
+        23.684444,
+        25.125001,
+        23.433384
+      ]
+    },
+    {
+      "batch_counts": [
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35
+      ],
+      "binary_sha256": "c60815178eece0dea36d099c0de75f02ad1bad40d51e809e3814783f09067f73",
+      "condition": "direct",
+      "db_median_ms": 65.0210455,
+      "db_ms": [
+        68.6554,
+        65.733038,
+        64.213816,
+        63.778717,
+        64.309053,
+        62.908085,
+        69.126437,
+        69.392223,
+        69.571165,
+        63.309317
+      ],
+      "host_load_average": [
+        1.0654296875,
+        0.59423828125,
+        0.7314453125
+      ],
+      "index": 2,
+      "json_sha256": "1afc53faa30ca97de2a5909bd64c5837acb0c40aa61ae54a9803bbf6b5a08ada",
+      "metrics_sha256": "680bbc252602c49e9cc73983500d88f5e2de4a5293da17b734c99d352ffdd634",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 23.295987,
+      "slate_ms": [
+        31.221491,
+        24.545686,
+        22.085982,
+        23.365524,
+        23.22645,
+        23.488016,
+        23.063549,
+        24.028336,
+        22.957909,
+        23.130427
+      ]
+    },
+    {
+      "batch_counts": [
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35
+      ],
+      "binary_sha256": "c60815178eece0dea36d099c0de75f02ad1bad40d51e809e3814783f09067f73",
+      "condition": "direct",
+      "db_median_ms": 64.981738,
+      "db_ms": [
+        69.546445,
+        65.255501,
+        63.745072,
+        64.0724,
+        64.707975,
+        63.763224,
+        62.51663,
+        68.988946,
+        66.393273,
+        69.273007
+      ],
+      "host_load_average": [
+        1.1025390625,
+        0.6875,
+        0.75439453125
+      ],
+      "index": 3,
+      "json_sha256": "1870130e0d38fce894d46f6b8fa092613ad34fb9936085e46e09f1c729baa3ae",
+      "metrics_sha256": "4eed652d9a432e74fefcb396414e33381235c7b937b02c5206f3b2983b895f16",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 23.782229,
+      "slate_ms": [
+        24.997284,
+        23.869197,
+        25.203632,
+        23.152083,
+        23.695261,
+        22.63546,
+        24.80693,
+        23.690434,
+        22.818074,
+        24.164773
+      ]
+    },
+    {
+      "batch_counts": [
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35,
+        35
+      ],
+      "binary_sha256": "c3541db1a5ed46836ad1d1b03502f2682460b7f99cf483a2b1fc80d3f695af65",
+      "condition": "baseline",
+      "db_median_ms": 63.633539,
+      "db_ms": [
+        64.176704,
+        71.075726,
+        63.201123,
+        62.592757,
+        62.993956,
+        63.358586,
+        63.468661,
+        64.10367,
+        63.798417,
+        63.922411
+      ],
+      "host_load_average": [
+        1.17822265625,
+        0.7841796875,
+        0.78369140625
+      ],
+      "index": 4,
+      "json_sha256": "41f4377bff2c2f9b558ff1969cbc8e132547fd91c2d39e4e2e62f56a1739ffd6",
+      "metrics_sha256": "528d0692cdaa8a78a30b649310f5f59a00c8816f9c10c76c635f8bd6d433148a",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 23.28573,
+      "slate_ms": [
+        27.937256,
+        25.894011,
+        23.083245,
+        22.838254,
+        22.955798,
+        23.057463,
+        23.488215,
+        25.884253,
+        23.063914,
+        24.112872
+      ]
+    }
+  ],
+  "schema": "flyology.db.benchmark.put_copy_screen.v1",
+  "workload": {
+    "key_bytes": 16,
+    "mutations": 256,
+    "transactions": 35,
+    "value_bytes": 1024,
+    "warmup_transactions": 8
+  }
+}

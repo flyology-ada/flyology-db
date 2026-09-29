@@ -1,0 +1,374 @@
+--- a/tests/src/flyology-db-engine_tests.adb
++++ b/tests/src/flyology-db-engine_tests.adb
+@@ -1291,6 +1291,167 @@
+       Expect (Result, Success, "dynamic-mutation reopened close failed");
+    end Test_Dynamic_Mutation_Descriptors;
+ 
++   procedure Test_Owned_Copy_Boundaries
++     (Backend : not null access Backends.Backend'Class; Prefix : String; Tag : Byte)
++   is
++      Context      : aliased Storage_Context;
++      Lost_Context : aliased Storage_Context;
++      Item         : Database;
++      Reopened     : Database;
++      Family       : Column_Family;
++      Txn          : Transaction;
++      Receipt      : Commit_Receipt;
++      Result       : Outcome_Code;
++      Case_Number  : Natural := 0;
++      --  These are adversarial corpus dimensions, not library tuning. Four
++      --  64-byte keys cover every octet; every full value also covers 0..255.
++      --  Sixteen-byte parent alignment makes element two an adversarial
++      --  one-byte-offset source; it is test geometry, not copy dispatch.
++      Key_Parent   : Byte_Array (1 .. 66) with Alignment => 16;
++      Value_Parent : Byte_Array (1 .. 258) with Alignment => 16;
++      High_Key     : Byte_Array (Positive'Last - 63 .. Positive'Last);
++      High_Value   : Byte_Array (Positive'Last - 255 .. Positive'Last);
++      type Copy_Length_Array is array (Positive range <>) of Natural;
++      Copy_Lengths : constant Copy_Length_Array := [1, 3, 7, 15, 16, 31, 63, 64, 127, 255, 256];
++
++      procedure Check (Target : in out Database; Item_Key, Expected : Byte_Array) is
++         Data : Flyology.Bytes.Unbounded_Bytes;
++      begin
++         Root_DB.Get (Target, Txn, Family, Item_Key, Data, Result);
++         Expect (Result, Success, "owned copy exact read failed");
++         if Flyology.Bytes.Length (Data) /= Expected'Length then
++            raise Program_Error with "owned copy exact length changed";
++         end if;
++         if Expected'Length > 0 then
++            for Offset in Natural range 0 .. Expected'Length - 1 loop
++               if Byte (Flyology.Bytes.Element (Data, Offset + 1)) /= Expected (Expected'First + Offset) then
++                  raise Program_Error with "owned copy exact octet changed";
++               end if;
++            end loop;
++         end if;
++      end Check;
++
++      procedure Run_Case (Item_Key, Value_Data : Byte_Array) is
++         Before       : constant Ownership_Snapshot := Current_Ownership;
++         Before_Count : Natural;
++         Before_Bytes : Interfaces.Unsigned_64;
++         Owned        : Flyology.Bytes.Unbounded_Bytes;
++      begin
++         Case_Number := Case_Number + 1;
++         Begin_Transaction (Item, Numbered_TX_ID (81_000 + Case_Number), Txn, Result);
++         Expect (Result, Success, "owned copy boundary transaction begin failed");
++         declare
++            Borrowed_Key   : Byte_Array (Item_Key'Range) := Item_Key;
++            Borrowed_Value : Byte_Array (Value_Data'Range) := Value_Data;
++            --  Only overwrite views are volatile. Passing a volatile actual
++            --  to the ordinary Put formal would introduce an Ada by-copy
++            --  boundary and would not test overwriting its exact source.
++            Overwrite_Key : Byte_Array (Borrowed_Key'Range)
++              with Import, Address => Borrowed_Key'Address, Volatile;
++            Overwrite_Value : Byte_Array (Borrowed_Value'Range)
++              with Import, Address => Borrowed_Value'Address, Volatile;
++         begin
++            Root_DB.Put (Item, Txn, Family, Borrowed_Key, Borrowed_Value, Result);
++            Expect (Result, Success, "owned copy boundary put failed");
++            Overwrite_Key := [others => 16#FF#];
++            Overwrite_Value := [others => 16#FF#];
++         end;
++         --  Observable caller overwrites and scope exit precede the read.
++         Check (Item, Item_Key, Value_Data);
++         Before_Count := Txn.Owner.Arena.Count;
++         Before_Bytes := Txn.Owner.Arena.Bytes_Used;
++         Testing.Fail_Next_Allocation (Testing.Transaction_Payload);
++         Root_DB.Put (Item, Txn, Family, Item_Key, [16#FE#, 16#FD#, 16#FC#], Result);
++         Expect (Result, Capacity_Exceeded, "owned copy replacement failure was not typed capacity");
++         if Txn.Owner.Arena.Count /= Before_Count or else Txn.Owner.Arena.Bytes_Used /= Before_Bytes then
++            raise Program_Error with "owned copy failed allocation changed accounting";
++         end if;
++         Check (Item, Item_Key, Value_Data);
++         Root_DB.Put (Item, Txn, Family, Item_Key, [], Result);
++         Expect (Result, Success, "owned copy empty replacement failed");
++         Check (Item, Item_Key, []);
++         Root_DB.Put (Item, Txn, Family, Item_Key, [1, 2, 3], Result);
++         Expect (Result, Success, "owned copy three-byte replacement failed");
++         Check (Item, Item_Key, [1, 2, 3]);
++         Root_DB.Put (Item, Txn, Family, Item_Key, Value_Data, Result);
++         Expect (Result, Success, "owned copy original-value replacement failed");
++         Check (Item, Item_Key, Value_Data);
++         Root_DB.Delete (Item, Txn, Family, Item_Key, Result);
++         Expect (Result, Success, "owned copy delete failed");
++         Root_DB.Get (Item, Txn, Family, Item_Key, Owned, Result);
++         Expect (Result, Not_Found, "owned copy delete retained bytes");
++         Rollback (Txn, Result);
++         Expect (Result, Success, "owned copy rollback failed");
++         Expect_No_Owner_Growth (Before, "owned copy boundary rollback");
++      end Run_Case;
++   begin
++      Bind_Context (Context, Backend, Prefix);
++      Create_DB (Item, Context'Access, DB_ID (Tag), Numbered_ID (80_000 + Natural (Tag)), Result);
++      Expect (Result, Success, "owned copy database create failed");
++      Open_Column_Family (Item, 1, Family, Result);
++      Expect (Result, Success, "owned copy family open failed");
++      for Offset in Natural range 0 .. 257 loop
++         Value_Parent (Offset + 1) := Byte ((Offset + 255) mod 256);
++      end loop;
++      for Quarter in Natural range 0 .. 3 loop
++         for Offset in Natural range 0 .. 65 loop
++            Key_Parent (Offset + 1) := Byte ((Quarter * 64 + Offset + 255) mod 256);
++         end loop;
++         --  The copied locals retain these adversarial non-one bounds.
++         Run_Case (Key_Parent (2 .. 65), Value_Parent (2 .. 257));
++      end loop;
++      Begin_Transaction (Item, Numbered_TX_ID (81_100), Txn, Result);
++      Expect (Result, Success, "owned copy unaligned transaction begin failed");
++      --  Pass the original aligned parents' offset slices directly, without
++      --  staging them in standalone locals before the production Put call.
++      Root_DB.Put (Item, Txn, Family, Key_Parent (2 .. 65), Value_Parent (2 .. 257), Result);
++      Expect (Result, Success, "owned copy unaligned put failed");
++      Check (Item, Key_Parent (2 .. 65), Value_Parent (2 .. 257));
++      Rollback (Txn, Result);
++      Expect (Result, Success, "owned copy unaligned rollback failed");
++      for Offset in Natural range 0 .. 63 loop
++         High_Key (High_Key'First + Offset) := Byte (Offset);
++      end loop;
++      for Offset in Natural range 0 .. 255 loop
++         High_Value (High_Value'First + Offset) := Byte (Offset);
++      end loop;
++      Run_Case (High_Key, High_Value);
++      Run_Case ([], []);
++      Run_Case ([], Value_Parent (2 .. 257));
++      Run_Case (Key_Parent (2 .. 65), []);
++      --  Native-copy size boundaries remain test cases, never dispatch policy.
++      for Length of Copy_Lengths loop
++         Run_Case (Key_Parent (2 .. 2), Value_Parent (2 .. Length + 1));
++      end loop;
++      Begin_Transaction (Item, Numbered_TX_ID (82_000), Txn, Result);
++      Expect (Result, Success, "owned copy durable transaction begin failed");
++      Root_DB.Put (Item, Txn, Family, High_Key, High_Value, Result);
++      Expect (Result, Success, "owned copy durable put failed");
++      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
++      Expect (Result, Success, "owned copy durable commit failed");
++      if Receipt_Transaction_ID (Receipt) /= Numbered_TX_ID (82_000)
++        or else Receipt_Batch_ID (Receipt) /= Numbered_ID (82_000)
++        or else Receipt_Outcome (Receipt) /= Success
++        or else Receipt_Sequence (Receipt) /= 1
++      then
++         raise Program_Error with "owned copy durable receipt identity changed";
++      end if;
++      Close (Item, Result);
++      Expect (Result, Success, "owned copy database close failed");
++      Bind_Context (Lost_Context, Backend, Prefix);
++      Open (Reopened, Lost_Context'Access, DB_ID (Tag), Test_Operation_Timeout, Result => Result);
++      Expect (Result, Success, "owned copy cacheless reopen failed");
++      Open_Column_Family (Reopened, 1, Family, Result);
++      Expect (Result, Success, "owned copy reopened family failed");
++      Begin_Transaction (Reopened, Numbered_TX_ID (82_001), Txn, Result);
++      Expect (Result, Success, "owned copy reopened reader failed");
++      Check (Reopened, High_Key, High_Value);
++      Rollback (Txn, Result);
++      Expect (Result, Success, "owned copy reopened rollback failed");
++      Close (Reopened, Result);
++      Expect (Result, Success, "owned copy reopened close failed");
++   end Test_Owned_Copy_Boundaries;
++
+    procedure Test_Allocation_Failures (Backend : not null access Backends.Backend'Class) is
+       Context      : aliased Storage_Context;
+       Item         : Database;
+@@ -7139,14 +7300,14 @@
+          Expect (Result, Success, "adaptive cohort family open failed");
+          Testing.Configure_Adaptive_Aggregate_Cohort
+            (Item,
+-            Maximum_Members       => 4,
+-            Maximum_Encoded_Bytes => 4_096,
+-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (0.01),
+-            Admission_Depth       => 4,
+-            Preparation_Concurrency => 1,
+-            Pipeline_Depth          => 1,
++            Maximum_Members                 => 4,
++            Maximum_Encoded_Bytes           => 4_096,
++            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (0.01),
++            Admission_Depth                 => 4,
++            Preparation_Concurrency         => 1,
++            Pipeline_Depth                  => 1,
+             Maximum_In_Flight_Payload_Bytes => 4_096,
+-            Result                => Result);
++            Result                          => Result);
+          Expect (Result, Success, "adaptive cohort configuration failed");
+ 
+          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+@@ -7205,20 +7366,20 @@
+          --  the ordered publication lane is still waiting on the front HEAD.
+          Testing.Configure_Adaptive_Aggregate_Cohort
+            (Item,
+-            Maximum_Members       => 2,
+-            Maximum_Encoded_Bytes => 4_096,
+-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
+-            Admission_Depth       => 4,
+-            Preparation_Concurrency => 2,
+-            Pipeline_Depth          => 2,
++            Maximum_Members                 => 2,
++            Maximum_Encoded_Bytes           => 4_096,
++            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (1.0),
++            Admission_Depth                 => 4,
++            Preparation_Concurrency         => 2,
++            Pipeline_Depth                  => 2,
+             Maximum_In_Flight_Payload_Bytes => 4_096,
+-            Result                => Result);
++            Result                          => Result);
+          Expect (Result, Success, "adaptive overlap configuration failed");
+          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+          declare
+             Set            : aliased Flyology.Operations.Completion_Set (4);
+-            Work           : array (Positive range 1 .. 4) of
+-              Commit_Operation (Set'Access, Item'Access, null);
++            Work           :
++              array (Positive range 1 .. 4) of Commit_Operation (Set'Access, Item'Access, null);
+             Receipts       : array (Positive range 1 .. 4) of Commit_Receipt;
+             Results        : array (Positive range 1 .. 4) of Outcome_Code;
+             Active         : array (Positive range 1 .. 4) of Boolean := [others => False];
+@@ -7231,13 +7392,7 @@
+             begin
+                Begin_Transaction (Item, Numbered_TX_ID (65_200 + Index), Txn, Result);
+                Expect (Result, Success, "adaptive overlap member begin failed");
+-               Put
+-                 (Item,
+-                  Txn,
+-                  Family,
+-                  To_Key ([Byte (20 + Index)]),
+-                  To_Value ([Byte (20 + Index)]),
+-                  Result);
++               Put (Item, Txn, Family, To_Key ([Byte (20 + Index)]), To_Value ([Byte (20 + Index)]), Result);
+                Expect (Result, Success, "adaptive overlap mutation failed");
+                Commit (Txn, Duration'Last, Work (Index));
+                Active (Index) := True;
+@@ -7352,14 +7507,14 @@
+          --  for its otherwise distant scheduler boundary.
+          Testing.Configure_Adaptive_Aggregate_Cohort
+            (Item,
+-            Maximum_Members       => 4,
+-            Maximum_Encoded_Bytes => 256,
+-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
+-            Admission_Depth       => 4,
+-            Preparation_Concurrency => 1,
+-            Pipeline_Depth          => 1,
++            Maximum_Members                 => 4,
++            Maximum_Encoded_Bytes           => 256,
++            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (1.0),
++            Admission_Depth                 => 4,
++            Preparation_Concurrency         => 1,
++            Pipeline_Depth                  => 1,
+             Maximum_In_Flight_Payload_Bytes => 4_096,
+-            Result                => Result);
++            Result                          => Result);
+          Expect (Result, Success, "adaptive exact-byte equality configuration failed");
+          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+          declare
+@@ -7431,14 +7586,14 @@
+          --  publishes separately.
+          Testing.Configure_Adaptive_Aggregate_Cohort
+            (Item,
+-            Maximum_Members       => 4,
+-            Maximum_Encoded_Bytes => 256,
+-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (0.01),
+-            Admission_Depth       => 4,
+-            Preparation_Concurrency => 1,
+-            Pipeline_Depth          => 1,
++            Maximum_Members                 => 4,
++            Maximum_Encoded_Bytes           => 256,
++            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (0.01),
++            Admission_Depth                 => 4,
++            Preparation_Concurrency         => 1,
++            Pipeline_Depth                  => 1,
+             Maximum_In_Flight_Payload_Bytes => 4_096,
+-            Result                => Result);
++            Result                          => Result);
+          Expect (Result, Success, "adaptive exact-byte configuration failed");
+          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+          declare
+@@ -7519,14 +7674,14 @@
+          --  alone instead of becoming permanently unselectable.
+          Testing.Configure_Adaptive_Aggregate_Cohort
+            (Item,
+-            Maximum_Members       => 4,
+-            Maximum_Encoded_Bytes => 200,
+-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (0.01),
+-            Admission_Depth       => 4,
+-            Preparation_Concurrency => 1,
+-            Pipeline_Depth          => 1,
++            Maximum_Members                 => 4,
++            Maximum_Encoded_Bytes           => 200,
++            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (0.01),
++            Admission_Depth                 => 4,
++            Preparation_Concurrency         => 1,
++            Pipeline_Depth                  => 1,
+             Maximum_In_Flight_Payload_Bytes => 4_096,
+-            Result                => Result);
++            Result                          => Result);
+          Expect (Result, Success, "adaptive oversized-singleton configuration failed");
+          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+          declare
+@@ -7561,14 +7716,14 @@
+          --  forces the conclusive queued pair to a final durable cohort.
+          Testing.Configure_Adaptive_Aggregate_Cohort
+            (Item,
+-            Maximum_Members       => 2,
+-            Maximum_Encoded_Bytes => 4_096,
+-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
+-            Admission_Depth       => 2,
+-            Preparation_Concurrency => 1,
+-            Pipeline_Depth          => 1,
++            Maximum_Members                 => 2,
++            Maximum_Encoded_Bytes           => 4_096,
++            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (1.0),
++            Admission_Depth                 => 2,
++            Preparation_Concurrency         => 1,
++            Pipeline_Depth                  => 1,
+             Maximum_In_Flight_Payload_Bytes => 4_096,
+-            Result                => Result);
++            Result                          => Result);
+          Expect (Result, Success, "adaptive admission-depth configuration failed");
+          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+          declare
+@@ -7704,14 +7859,14 @@
+ 
+          Testing.Configure_Adaptive_Aggregate_Cohort
+            (Item,
+-            Maximum_Members       => 2,
+-            Maximum_Encoded_Bytes => 4_096,
+-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
+-            Admission_Depth       => 4,
+-            Preparation_Concurrency => 1,
+-            Pipeline_Depth          => 2,
++            Maximum_Members                 => 2,
++            Maximum_Encoded_Bytes           => 4_096,
++            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (1.0),
++            Admission_Depth                 => 4,
++            Preparation_Concurrency         => 1,
++            Pipeline_Depth                  => 2,
+             Maximum_In_Flight_Payload_Bytes => 4_096,
+-            Result                => Result);
++            Result                          => Result);
+          Expect (Result, Success, "adaptive two-member configuration failed");
+          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+          Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
+@@ -13396,6 +13551,18 @@
+       end;
+ 
+       declare
++         --  One bucket and exactly manifest/HEAD/batch objects isolate this
++         --  added fixture without consuming the shared 669-object corpus.
++         Store : aliased Memory.Store (1, 3, 8_000_000);
++      begin
++         Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
++         if Status /= OS.Success then
++            raise Program_Error with "owned copy memory bucket create failed";
++         end if;
++         Test_Owned_Copy_Boundaries (Store'Access, "memory-owned-copy", 250);
++      end;
++
++      declare
+          --  Disposable files-backend campaign root under the runner's obj tree;
+          --  changing it affects only retained local test artifacts.
+          Root : constant String :=
+@@ -13420,6 +13587,7 @@
+             Test_Runtime_Sized_Value (Store'Access, "files-runtime-sized", 21);
+             Test_Large_Production_Profile (Store'Access, "files-large-profile", 22);
+             Test_Dynamic_Mutation_Descriptors (Store'Access, "files-dynamic-mutations", 23);
++            Test_Owned_Copy_Boundaries (Store'Access, "files-owned-copy", 251);
+             Test_Manifest_And_Family_API (Store'Access);
+             Test_Column_Family_Append (Store'Access, "files-family-append", 33_600);
+             Test_Checkpoint_Recovery_Failures (Store'Access);

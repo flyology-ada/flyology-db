@@ -1,0 +1,49 @@
+diff --git a/src/flyology-db.adb b/src/flyology-db.adb
+--- a/src/flyology-db.adb
++++ b/src/flyology-db.adb
+@@ -1973,10 +1973,11 @@
+       is
+          Source   : Buffer_Source;
+          Info     : OS.Object_Information;
+          Status   : OS.Status;
+          Fault    : Storage_Fault_Mode;
+          Entered  : Boolean := False;
+          Borrowed : Shared_Image_Access := Image;
+          Held     : Boolean := False;
++         Options  : OS.Put_Options := OS.Default_Put_Options;
+       begin
+          Generation := (others => <>);
+@@ -2016,4 +2017,10 @@
+             return;
+          end if;
++         if Before_Point = Before_Batch_Put then
++            --  Experiment only: the immutable batch key supplies an opaque,
++            --  never-reused object generation; HEAD publication is unchanged.
++            Options.Entity_Tag :=
++              UStrings.To_Unbounded_String (Key (Key'Last - Identifier_Length * 2 + 1 .. Key'Last));
++         end if;
+          Storage.Test_Control.Record_Put
+            (Is_Head     => Before_Point = Before_Head_Put,
+@@ -2028,8 +2035,8 @@
+          Storage.Backend.Put_Object
+            (Bucket     => UStrings.To_String (Storage.Bucket),
+             Key        => Key,
+             Source     => Source,
+-            Options    => OS.Default_Put_Options,
++            Options    => Options,
+             Token      => Token,
+             Deadline   => Deadline,
+             Info       => Info,
+diff --git a/benchmarks/comparison/.deps/flyology_object_storage_0.1.0_5eaf79cf/src/flyology-object_storage-backends-files.adb b/benchmarks/comparison/.deps/flyology_object_storage_0.1.0_5eaf79cf/src/flyology-object_storage-backends-files.adb
+--- a/benchmarks/comparison/.deps/flyology_object_storage_0.1.0_5eaf79cf/src/flyology-object_storage-backends-files.adb
++++ b/benchmarks/comparison/.deps/flyology_object_storage_0.1.0_5eaf79cf/src/flyology-object_storage-backends-files.adb
+@@ -4025,6 +4025,8 @@
+                   return;
+                end if;
+                SIO.Write (File, Buffer (Buffer'First .. Last));
+-               GNAT.MD5.Update (Hash, Buffer (Buffer'First .. Last));
++               if Generate_ETag then
++                  GNAT.MD5.Update (Hash, Buffer (Buffer'First .. Last));
++               end if;
+                if Options.Checksum.Algorithm /= No_Checksum then
+                   Checksum_Engine.Update

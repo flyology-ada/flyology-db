@@ -61,6 +61,9 @@ package body Flyology.DB.Benchmark_Controls is
       Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
       Maximum_Wait          : Duration;
       Admission_Depth       : Positive;
+      Preparation_Concurrency : Positive;
+      Pipeline_Depth          : Positive;
+      Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
       Timeout               : Duration;
       Result                : out Outcome_Code) is
    begin
@@ -83,6 +86,9 @@ package body Flyology.DB.Benchmark_Controls is
          Maximum_Encoded_Bytes,
          Ada.Real_Time.To_Time_Span (Maximum_Wait),
          Admission_Depth,
+         Preparation_Concurrency,
+         Pipeline_Depth,
+         Maximum_In_Flight_Payload_Bytes,
          Result);
    end Enable_Adaptive_Aggregate_Coalescing;
 
@@ -91,6 +97,16 @@ package body Flyology.DB.Benchmark_Controls is
    begin
       Abort_Test_Independent_Cohort (Item, Result);
    end Abort_Independent_Coalescing;
+
+   procedure Pause_Cohort_Selection (Item : in out Database; Result : out Outcome_Code) is
+   begin
+      Set_Test_Paused (Item, True, Result);
+   end Pause_Cohort_Selection;
+
+   procedure Resume_Cohort_Selection (Item : in out Database; Result : out Outcome_Code) is
+   begin
+      Set_Test_Paused (Item, False, Result);
+   end Resume_Cohort_Selection;
 
    procedure Begin_Adaptive_Cohort_Diagnostics
      (Item : in out Database; Result : out Outcome_Code) is

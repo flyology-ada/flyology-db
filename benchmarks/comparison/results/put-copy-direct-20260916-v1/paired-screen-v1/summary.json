@@ -1,0 +1,464 @@
+{
+  "baseline_median_ms": 59.726249,
+  "baseline_source_diff_sha256": "b4850b89330e9489d84e63c166410c6da9ffb2f515b0cda43dff0e794df902a3",
+  "benchmark_build_log_sha256": "c0078706056c38e35d878132185c25c3b71edad01c7779492fd48abae7a05001",
+  "classification": "exploratory_unknown_power_profile",
+  "direct_median_ms": 40.319969,
+  "direct_source_diff_sha256": "5e9b4cf6e1b41e51b80daa34d9108d6d32e45f9b0fb782c225064d7067267df2",
+  "expected_reopened_keys": 11008,
+  "expected_state_sha256": "090e348abcc1353f6cb651a378cbafc890ee7a9c50fd707c9ab9667ee12ccbbb",
+  "gpr_source_map_sha256": "77ac39838d72ed5fdcc603c157ebb7913d39f1138e2dc3d995c9f84b51c78362",
+  "improvement_fraction": 0.32492045499123845,
+  "order": [
+    "baseline",
+    "direct",
+    "direct",
+    "baseline",
+    "direct",
+    "baseline",
+    "baseline",
+    "direct"
+  ],
+  "records": [
+    {
+      "batch_counts": [
+        23,
+        23,
+        24,
+        24,
+        22,
+        24,
+        23,
+        21,
+        25,
+        25
+      ],
+      "binary_sha256": "c3541db1a5ed46836ad1d1b03502f2682460b7f99cf483a2b1fc80d3f695af65",
+      "condition": "baseline",
+      "db_median_ms": 59.982881500000005,
+      "db_ms": [
+        61.799821,
+        60.092388,
+        60.902551,
+        59.836948,
+        59.803552,
+        59.873375,
+        56.916155,
+        57.564438,
+        60.960226,
+        61.847815
+      ],
+      "host_load_average": [
+        0.796875,
+        0.5869140625,
+        0.95068359375
+      ],
+      "index": 1,
+      "json_sha256": "47d36c1ff74bc4edd86eda01746e2a0b2eabaa7a330cb75993efbe3ee2652597",
+      "metrics_sha256": "9a6994da1e2fa80bc4bcfbb28cfcb02041e8471a34f98b25bcbc5dcbbb8eca65",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 24.325060999999998,
+      "slate_ms": [
+        24.260042,
+        24.577572,
+        22.144133,
+        24.951655,
+        24.39008,
+        24.599739,
+        22.28359,
+        22.630638,
+        22.958057,
+        24.65737
+      ]
+    },
+    {
+      "batch_counts": [
+        6,
+        7,
+        7,
+        8,
+        7,
+        7,
+        7,
+        9,
+        8,
+        6
+      ],
+      "binary_sha256": "c60815178eece0dea36d099c0de75f02ad1bad40d51e809e3814783f09067f73",
+      "condition": "direct",
+      "db_median_ms": 40.8771925,
+      "db_ms": [
+        40.872814,
+        42.316497,
+        40.539871,
+        41.423154,
+        40.881571,
+        38.664545,
+        40.158338,
+        42.283338,
+        41.963078,
+        40.113926
+      ],
+      "host_load_average": [
+        1.154296875,
+        0.7275390625,
+        0.9775390625
+      ],
+      "index": 2,
+      "json_sha256": "778af12424a8d602062fb775444c35666492efc3fb5a7c3c097a72cbe21bd707",
+      "metrics_sha256": "c21ae37eafb53eab0ab557da41fd2dcadb3ab33c89d53ed9e63f844682aab445",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 24.2552375,
+      "slate_ms": [
+        29.430619,
+        23.955813,
+        23.084227,
+        27.838672,
+        22.590196,
+        21.897626,
+        25.041935,
+        24.554662,
+        23.836663,
+        25.573146
+      ]
+    },
+    {
+      "batch_counts": [
+        6,
+        7,
+        7,
+        7,
+        7,
+        7,
+        7,
+        8,
+        7,
+        7
+      ],
+      "binary_sha256": "c60815178eece0dea36d099c0de75f02ad1bad40d51e809e3814783f09067f73",
+      "condition": "direct",
+      "db_median_ms": 40.4726235,
+      "db_ms": [
+        42.371252,
+        40.310722,
+        40.634525,
+        41.756302,
+        39.832159,
+        41.835345,
+        39.219704,
+        41.284118,
+        39.546048,
+        39.926145
+      ],
+      "host_load_average": [
+        1.14453125,
+        0.796875,
+        0.98828125
+      ],
+      "index": 3,
+      "json_sha256": "41422a14edc3ce5400679479f8682def5c8b101e904d8a170a0ee4c5e1a86dcf",
+      "metrics_sha256": "14ab5e543190501baae5f93525fe0ebc4dd900f171fcb483be0a02e84f8dd1ad",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 24.5463325,
+      "slate_ms": [
+        26.428727,
+        29.729854,
+        23.220188,
+        22.088229,
+        26.47078,
+        24.213938,
+        24.278376,
+        24.979902,
+        23.134105,
+        24.814289
+      ]
+    },
+    {
+      "batch_counts": [
+        23,
+        17,
+        25,
+        22,
+        20,
+        23,
+        21,
+        21,
+        21,
+        24
+      ],
+      "binary_sha256": "c3541db1a5ed46836ad1d1b03502f2682460b7f99cf483a2b1fc80d3f695af65",
+      "condition": "baseline",
+      "db_median_ms": 59.826054,
+      "db_ms": [
+        63.02153,
+        55.582298,
+        60.938074,
+        56.764085,
+        60.372133,
+        61.037359,
+        57.583076,
+        57.603796,
+        59.279975,
+        63.500803
+      ],
+      "host_load_average": [
+        1.09765625,
+        0.84228515625,
+        0.994140625
+      ],
+      "index": 4,
+      "json_sha256": "2fb7618b81d19782793cc1f86019b12dc02359f85440ff6c1c0cb95860871bf2",
+      "metrics_sha256": "3d0723808402d86e1517e61a400e57980589f1cc586f17d7a4707346577a690b",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 23.560526,
+      "slate_ms": [
+        26.528183,
+        22.854961,
+        24.07897,
+        23.519555,
+        25.583006,
+        23.601497,
+        22.888771,
+        23.172278,
+        23.184098,
+        26.864465
+      ]
+    },
+    {
+      "batch_counts": [
+        6,
+        6,
+        7,
+        7,
+        7,
+        7,
+        7,
+        8,
+        7,
+        7
+      ],
+      "binary_sha256": "c60815178eece0dea36d099c0de75f02ad1bad40d51e809e3814783f09067f73",
+      "condition": "direct",
+      "db_median_ms": 39.801443000000006,
+      "db_ms": [
+        39.173162,
+        39.1865,
+        41.316639,
+        40.946382,
+        39.160142,
+        39.476483,
+        39.656497,
+        41.0344,
+        39.946389,
+        40.068963
+      ],
+      "host_load_average": [
+        1.2783203125,
+        0.93603515625,
+        1.013671875
+      ],
+      "index": 5,
+      "json_sha256": "bc967d9ccc981e5d20e8c9deff3ea522fb3d92e0ca1cfd05b68a57b77602c1b1",
+      "metrics_sha256": "a9a9b13b6ebfaab6e588a90fc3f7a93eac35aa9bd82c8a29c9aca827ec96d2eb",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 24.3637245,
+      "slate_ms": [
+        28.640282,
+        22.849221,
+        27.619934,
+        23.563925,
+        24.983552,
+        23.680332,
+        24.242159,
+        23.635455,
+        24.48529,
+        25.295797
+      ]
+    },
+    {
+      "batch_counts": [
+        20,
+        22,
+        21,
+        26,
+        21,
+        24,
+        25,
+        21,
+        21,
+        20
+      ],
+      "binary_sha256": "c3541db1a5ed46836ad1d1b03502f2682460b7f99cf483a2b1fc80d3f695af65",
+      "condition": "baseline",
+      "db_median_ms": 59.473313,
+      "db_ms": [
+        59.246052,
+        59.648946,
+        59.454291,
+        62.938856,
+        59.492335,
+        61.888445,
+        62.208349,
+        58.11086,
+        59.393973,
+        57.528117
+      ],
+      "host_load_average": [
+        1.22509765625,
+        0.99462890625,
+        1.02490234375
+      ],
+      "index": 6,
+      "json_sha256": "3898ea461da11279868ee2d8b3b1a63a574ef7ca6cac63c01db765930cc84de0",
+      "metrics_sha256": "c23acd048fd7e3435feac68760f4005463bcfc94087565c3267c898ff4926854",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 24.263388499999998,
+      "slate_ms": [
+        23.359167,
+        23.947629,
+        25.171336,
+        24.629602,
+        24.579148,
+        23.525398,
+        24.909299,
+        23.606913,
+        23.554593,
+        24.804209
+      ]
+    },
+    {
+      "batch_counts": [
+        21,
+        21,
+        21,
+        21,
+        24,
+        20,
+        20,
+        21,
+        21,
+        24
+      ],
+      "binary_sha256": "c3541db1a5ed46836ad1d1b03502f2682460b7f99cf483a2b1fc80d3f695af65",
+      "condition": "baseline",
+      "db_median_ms": 59.136843999999996,
+      "db_ms": [
+        59.887194,
+        59.300975,
+        58.018073,
+        61.258897,
+        61.079921,
+        58.79173,
+        58.951353,
+        57.922447,
+        58.972713,
+        60.427941
+      ],
+      "host_load_average": [
+        1.26025390625,
+        1.0546875,
+        1.0419921875
+      ],
+      "index": 7,
+      "json_sha256": "0d23f4808139f54acb956ad82c2b72a05025fc293272e2e565863dbd91e3a5a2",
+      "metrics_sha256": "e5f757cd7be86bdde61dac82c1cadc95033ceaefb8272af7dc2774dcee877850",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 24.345303,
+      "slate_ms": [
+        27.759734,
+        24.219862,
+        24.470744,
+        25.829325,
+        22.736235,
+        24.752207,
+        23.858114,
+        23.54309,
+        26.009057,
+        23.560274
+      ]
+    },
+    {
+      "batch_counts": [
+        6,
+        6,
+        6,
+        7,
+        8,
+        7,
+        8,
+        8,
+        7,
+        7
+      ],
+      "binary_sha256": "c60815178eece0dea36d099c0de75f02ad1bad40d51e809e3814783f09067f73",
+      "condition": "direct",
+      "db_median_ms": 40.14618,
+      "db_ms": [
+        42.702362,
+        39.963144,
+        39.375751,
+        41.117203,
+        39.864541,
+        40.329216,
+        41.52683,
+        40.614818,
+        38.313836,
+        38.135001
+      ],
+      "host_load_average": [
+        1.2578125,
+        1.087890625,
+        1.05322265625
+      ],
+      "index": 8,
+      "json_sha256": "66135ebf5b1f37039db1ce05857b7699c0e30ccf131474e1ef83b0cc56a4e34a",
+      "metrics_sha256": "cfcdc25927b29fa65009836255215f2144ee043bf976705f52e6c7998f46fbf1",
+      "power": {
+        "output": "os=linux\ndetector=unavailable\nprofile=unknown\nreduced_performance=unknown\npower_source=unknown\n",
+        "status": 2
+      },
+      "slate_median_ms": 25.086994,
+      "slate_ms": [
+        28.056302,
+        25.052671,
+        23.266255,
+        25.573704,
+        22.829259,
+        25.927881,
+        25.121317,
+        24.698483,
+        25.564973,
+        23.90775
+      ]
+    }
+  ],
+  "schema": "flyology.db.benchmark.put_copy_screen.v1",
+  "workload": {
+    "key_bytes": 16,
+    "mutations": 256,
+    "transactions": 35,
+    "value_bytes": 1024,
+    "warmup_transactions": 8
+  }
+}

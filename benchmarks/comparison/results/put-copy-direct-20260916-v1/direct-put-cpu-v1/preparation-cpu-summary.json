@@ -1,0 +1,40 @@
+{
+  "all_cpu_samples": 31026,
+  "categories": {
+    "db_store_mutation": 460,
+    "fixture_value_for": 626,
+    "other_preparation": 30
+  },
+  "event": "cpu-clock/period=250000/u",
+  "prepare_transaction_stack_samples": 1116,
+  "schema": "flyology.db.benchmark.direct_preparation_cpu_samples.v1",
+  "scope": "whole_process_including_warmup; sampled_user_cpu_not_wall_time",
+  "source": "/mnt/flyology-bench/experiments/put-copy-direct-20260916-v1-x86_64/evidence/direct-put-cpu-v1/samples.txt",
+  "top_preparation_leaf_counts": [
+    ["flyology_db_benchmark_flyology__value_for", 624],
+    ["system__tasking__queuing__select_protected_entry_call", 118],
+    ["[unknown]", 49],
+    ["flyology__db__store_mutation", 48],
+    ["pthread_mutex_lock", 44],
+    ["pthread_mutex_unlock", 30],
+    ["malloc", 24],
+    ["system__tasking__initialization__abort_defer", 19],
+    ["system__flyology__scheduler__current_task", 18],
+    ["system__task_primitives__operations__self", 10],
+    ["system__tasking__detect_blocking", 9],
+    ["flyology__db__coordinator__await_cpu_change_B2528b", 8],
+    ["flyology__db__coordinator__find_familyN", 8],
+    ["flyology__db__database_lifecycle__acquireP", 8],
+    ["system__tasking__protected_objects__entries__lock_entries_with_status", 7],
+    ["system__tasking__protected_objects__operations__po_service_entries", 7],
+    ["flyology__db__find_owned_mutation", 6],
+    ["flyology__db__coordinatorF", 6],
+    ["flyology__db__coordinator__validate_familyP", 6],
+    ["system__tasking__initialization__abort_undefer", 6],
+    ["flyology_db_benchmark_flyology__prepare_transaction__2", 5],
+    ["system__task_primitives__operations__write_lock", 5],
+    ["flyology__db__coordinator__take_pipeline_put_B2524b", 5],
+    ["pthread_mutex_lock@plt", 4],
+    ["flyology__db__begin_transaction__2", 4]
+  ]
+}

@@ -1,0 +1,2 @@
+[ perf record: Woken up 5915 times to write data ]
+[ perf record: Captured and wrote 1479.144 MB /mnt/flyology-bench/experiments/put-copy-direct-20260916-v1-x86_64/evidence/direct-put-cpu-v1/perf.data (183993 samples) ]

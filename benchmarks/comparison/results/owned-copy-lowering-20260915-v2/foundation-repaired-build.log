@@ -1,0 +1,55 @@
+Note: Running pre-build actions for flyology=0.1.1-dev...
+Note: Building flyology_tla=0.1.0-dev/flyology_tla.gpr...
+Build Libraries
+   [gprlib]       Flyology_JSON.lexch
+   [archive]      libFlyology_JSON.a
+   [index]        libFlyology_JSON.a
+Bind
+   [gprbind]      flyology_tla_main.bexch
+   [Ada]          flyology_tla_main.ali
+Link
+   [link]         flyology_tla_main.adb
+Note: Building flyology_db=0.1.0-dev/flyology_db.gpr...
+Compile
+   [Ada]          flyology-db.adb
+Build Libraries
+   [gprlib]       flyology_allocators.lexch
+   [gprlib]       Flyology.lexch
+   [archive]      libflyology_allocators.a
+   [index]        libflyology_allocators.a
+   [gprlib]       flyology_cachelines.lexch
+   [gprlib]       Flyology_QUIC.lexch
+   [archive]      libFlyology.a
+   [archive]      libflyology_cachelines.a
+   [index]        libflyology_cachelines.a
+   [index]        libFlyology.a
+   [gprlib]       Flyology_HTTP.lexch
+   [archive]      libFlyology_QUIC.a
+   [index]        libFlyology_QUIC.a
+   [gprlib]       xmlada_unicode.lexch
+   [gprlib]       xmlada_input_sources.lexch
+   [archive]      libFlyology_HTTP.a
+   [archive]      libxmlada_unicode.a
+   [index]        libFlyology_HTTP.a
+   [index]        libxmlada_unicode.a
+   [gprlib]       xmlada_sax.lexch
+   [archive]      libxmlada_input_sources.a
+   [index]        libxmlada_input_sources.a
+   [gprlib]       xmlada_dom.lexch
+   [archive]      libxmlada_sax.a
+   [index]        libxmlada_sax.a
+   [gprlib]       xmlada_schema.lexch
+   [archive]      libxmlada_dom.a
+   [index]        libxmlada_dom.a
+   [gprlib]       Flyology_Object_Storage.lexch
+   [archive]      libxmlada_schema.a
+   [index]        libxmlada_schema.a
+   [gprlib]       flyology_crc.lexch
+   [gprlib]       Flyology_Db.lexch
+   [archive]      libFlyology_Object_Storage.a
+   [archive]      libflyology_crc.a
+   [index]        libflyology_crc.a
+   [index]        libFlyology_Object_Storage.a
+   [archive]      libFlyology_Db.a
+   [index]        libFlyology_Db.a
+Success: Build finished successfully in 15.18 seconds.

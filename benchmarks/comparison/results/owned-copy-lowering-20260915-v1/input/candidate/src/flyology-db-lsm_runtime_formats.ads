@@ -1,0 +1,456 @@
+with Flyology.DB.Commit_Profiles;
+with Flyology.DB.Commit_Profile_Formats;
+with Flyology.DB.Formats;
+with Flyology.DB.Head_Policy;
+with Flyology.DB.LSM_Formats;
+with Flyology.DB.Manifest_Formats;
+with Interfaces;
+
+--  Provides the operational checkpoint-manifest-v2/v3/v4 and SST-v1/v2 codecs. Unlike
+--  the bounded proof oracle, retained arrays are sized exactly from validated
+--  persisted state and no library-selected key, value, run, or ledger ceiling
+--  is introduced.
+
+private package Flyology.DB.LSM_Runtime_Formats is
+
+   package Formats renames Flyology.DB.Formats;
+   package Commit_Profiles renames Flyology.DB.Commit_Profiles;
+   package Profile_Formats renames Flyology.DB.Commit_Profile_Formats;
+   package Head_Policy renames Flyology.DB.Head_Policy;
+   package LSM renames Flyology.DB.LSM_Formats;
+   package Manifests renames Flyology.DB.Manifest_Formats;
+
+   subtype Run_Descriptor is LSM.Run_Descriptor;
+
+   type Allocation_Status is (Allocated, Invalid_Extent, Allocation_Failed);
+
+   type Decode_Status is
+     (Decoded,
+      Limit_Exceeded,
+      Allocation_Failed,
+      Invalid_Magic,
+      Unsupported_Version,
+      Invalid_Object_Kind,
+      Invalid_Flags,
+      Wrong_Database,
+      Invalid_Length,
+      Header_Checksum_Failed,
+      Frame_Checksum_Failed,
+      Index_Checksum_Failed,
+      Object_Checksum_Failed,
+      Invalid_Manifest_State,
+      Runtime_Incompatible,
+      Invalid_Family,
+      Invalid_Run,
+      Invalid_Identity,
+      Invalid_SST_State,
+      Invalid_Entry);
+
+   type Encode_Status is (Encoded, Invalid_Value, Length_Overflow, Allocation_Failed);
+
+   --  Runtime-only merge classification; enumeration positions are neither
+   --  persisted nor exposed. Failure always leaves the output vacant.
+   type Merge_Status is
+     (Merge_Completed, Merge_Invalid_Input, Merge_Length_Overflow, Merge_Allocation_Failed);
+
+   type Image_Access is access all Formats.Byte_Array;
+
+   --  Header-only admission result. Object_Length is the exact retained extent;
+   --  Maximum_Object_Length is derived from the authenticated family count,
+   --  database run ceiling, actual identity count, and frozen field widths.
+   type Checkpoint_Header_Admission is record
+      Object_Length                       : Natural := 0;
+      Format_Version                      : Interfaces.Unsigned_16 := 0;
+      Header_Length                       : Natural := 0;
+      Family_Total                        : Natural := 0;
+      Identity_Total                      : Natural := 0;
+      Maximum_Total_L0_Runs               : Interfaces.Unsigned_32 := 0;
+      Maximum_Checkpoint_Identities       : Interfaces.Unsigned_32 := 0;
+      Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32 := 0;
+      Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32 := 0;
+      Commit_Profile                      : Commit_Profiles.Commit_Publication_Profile :=
+        Commit_Profiles.Standard_Publication;
+      Maximum_Object_Length               : Interfaces.Unsigned_64 := 0;
+   end record;
+
+   --  Canonical no-admission output. Zero fields never authorize a read or a
+   --  fallback allocation and therefore have no compatibility meaning.
+   Empty_Checkpoint_Header_Admission : constant Checkpoint_Header_Admission := (others => <>);
+
+   --  Validate the exact frozen manifest header and authenticate a transport-
+   --  reported whole-object length before the caller retains that whole object.
+   --  The maximum is a formula consequence, not an allocation request.
+   procedure Inspect_Checkpoint_Manifest_Header
+     (Header            : Formats.Byte_Array;
+      Expected_Database : Head_Policy.Identifier;
+      Object_Length     : Interfaces.Unsigned_64;
+      Admission         : out Checkpoint_Header_Admission;
+      Status            : out Decode_Status);
+
+   type Family_LSM_State is record
+      --  Persisted per-family allocation and backpressure authority. Zero is
+      --  invalid and never selects a library fallback.
+      Memtable_Max_Bytes   : Interfaces.Unsigned_64 := 0;
+      Memtable_Max_Entries : Interfaces.Unsigned_32 := 0;
+      Maximum_L0_Runs      : Interfaces.Unsigned_32 := 0;
+      --  Exact slice into the enclosing flat run array. A runless family uses
+      --  First_Run=0, Run_Total=0; no unused run slots are retained.
+      First_Run            : Natural := 0;
+      Run_Total            : Natural := 0;
+   end record;
+
+   type Family_LSM_Array is array (Positive range <>) of Family_LSM_State;
+   type Run_Array is array (Positive range <>) of Run_Descriptor;
+   type Identity_Array is array (Positive range <>) of Head_Policy.Identifier;
+
+   --  One exact heap object retains only actual family/run/identity extents.
+   --  The fixed Base registry is the current public 64-family compatibility
+   --  boundary; all LSM collections themselves are dynamically sized.
+   type Checkpoint_Manifest (Family_Total, Run_Total, Identity_Total : Natural) is record
+      Base                                : Manifests.Manifest := Manifests.Empty_Manifest;
+      Replay_Boundary                     : Interfaces.Unsigned_64 := 0;
+      Maximum_Total_L0_Runs               : Interfaces.Unsigned_32 := 0;
+      Maximum_Checkpoint_Identities       : Interfaces.Unsigned_32 := 0;
+      Maximum_Point_Reads_Per_Transaction : Interfaces.Unsigned_32 := 0;
+      Maximum_Scan_Ranges_Per_Transaction : Interfaces.Unsigned_32 := 0;
+      Commit_Profile                      : Commit_Profiles.Commit_Publication_Profile :=
+        Commit_Profiles.Standard_Publication;
+      Families                            : Family_LSM_Array (1 .. Family_Total);
+      Runs                                : Run_Array (1 .. Run_Total);
+      Identities                          : Identity_Array (1 .. Identity_Total);
+   end record;
+
+   type Checkpoint_Manifest_Access is access all Checkpoint_Manifest;
+
+   --  Allocate one exact builder shape. Invalid representational extents and
+   --  storage exhaustion are typed and Value remains null on every failure.
+   procedure Create_Checkpoint_Manifest
+     (Family_Total   : Natural;
+      Run_Total      : Natural;
+      Identity_Total : Natural;
+      Value          : out Checkpoint_Manifest_Access;
+      Status         : out Allocation_Status);
+
+   procedure Release (Value : in out Checkpoint_Manifest_Access);
+
+   function Structurally_Valid (Value : Checkpoint_Manifest) return Boolean;
+
+   --  Encode immutable manifest-v3/v4 objects and decode v2/v3/v4. Decode performs a
+   --  nonallocating structural pass first and publishes Value only after the
+   --  exact allocation has been populated and revalidated.
+   procedure Encode_Checkpoint_Manifest
+     (Value : Checkpoint_Manifest; Image : out Image_Access; Status : out Encode_Status);
+
+   procedure Decode_Checkpoint_Manifest
+     (Image             : Formats.Byte_Array;
+      Expected_Database : Head_Policy.Identifier;
+      Value             : out Checkpoint_Manifest_Access;
+      Status            : out Decode_Status);
+
+   --  Manifest-v4 appends one U32 publication-profile selector to the exact
+   --  v3 header. Version 4 is emitted only for the experimental profile;
+   --  standard databases remain byte-identical v3 objects.
+   Experimental_Checkpoint_Manifest_Format_Version : constant Interfaces.Unsigned_16 :=
+     Profile_Formats.Experimental_Manifest_Format_Version;
+   Experimental_Checkpoint_Manifest_Header_Length  : constant :=
+     Profile_Formats.Experimental_Manifest_Header_Length;
+
+   --  SST-v2 retains the SST object family and advances its format selector.
+   --  Version 2 is persisted compatibility authority; changing it would make
+   --  existing v2 objects unreadable or ambiguous with v1.
+   SST_V2_Format_Version : constant Interfaces.Unsigned_16 := 2;
+
+   --  Persisted SST-v2 header 128 = v1 authenticated prefix 96 + four U64
+   --  frame/index offset-and-extent fields. Each frame reuses the frozen
+   --  20-byte entry prefix and adds one U32 CRC. Each index record 36 = U64
+   --  frame offset + U64 extent + U64 sequence + U8 operation + U8 flags +
+   --  U16 reserved + U32 key length + U32 value length; exact key bytes and
+   --  one trailing U32 index CRC follow. Changing a term is v2-incompatible.
+   SST_V2_Header_Length             : constant := 128;
+   SST_V2_Frame_Header_Length       : constant := LSM.SST_Entry_Header_Length;
+   SST_V2_Frame_Trailer_Length      : constant := 4;
+   SST_V2_Index_Entry_Header_Length : constant := 36;
+   SST_V2_Index_Trailer_Length      : constant := 4;
+
+   type SST_Header_Admission is record
+      --  Exact extent follows from the authenticated header and the manifest's
+      --  exact descriptor; it is the only whole-object allocation authority.
+      Object_Length  : Natural := 0;
+      Entry_Total    : Natural := 0;
+      Payload_Bytes  : Natural := 0;
+      --  Versioned authenticated extents. Version 1 reports its single entry
+      --  stream as the frame region and has no index region.
+      Format_Version : Interfaces.Unsigned_16 := 0;
+      Header_Length  : Natural := 0;
+      Frame_Offset   : Natural := 0;
+      Frame_Bytes    : Natural := 0;
+      Index_Offset   : Natural := 0;
+      Index_Bytes    : Natural := 0;
+   end record;
+
+   --  Canonical no-admission output. Zero fields never authorize a retained
+   --  SST extent and are not persisted defaults.
+   Empty_SST_Header_Admission : constant SST_Header_Admission := (others => <>);
+
+   procedure Inspect_SST_Header
+     (Header              : Formats.Byte_Array;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Object_Length       : Interfaces.Unsigned_64;
+      Admission           : out SST_Header_Admission;
+      Status              : out Decode_Status);
+
+   --  Validate one exact SST-v2 header observed through a generation-bound
+   --  range read. No variable allocation or output publication occurs here.
+   procedure Inspect_SST_V2_Header
+     (Header              : Formats.Byte_Array;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Object_Length       : Interfaces.Unsigned_64;
+      Admission           : out SST_Header_Admission;
+      Status              : out Decode_Status);
+
+   type SST_V2_Index_Entry is record
+      Frame_Offset     : Natural := 0;
+      Frame_Byte_Total : Natural := 0;
+      Sequence         : Interfaces.Unsigned_64 := 0;
+      Operation        : Formats.Byte := 0;
+      Key_Offset       : Natural := 0;
+      Key_Byte_Total   : Natural := 0;
+      Value_Byte_Total : Natural := 0;
+   end record;
+
+   type SST_V2_Index_Entry_Array is array (Positive range <>) of SST_V2_Index_Entry;
+
+   --  An authenticated index retains exact descriptor and frame-region
+   --  authority plus only the canonical index keys. Its discriminants derive
+   --  from the admitted header and authenticated index bytes, not a cache cap.
+   type SST_V2_Index (Entry_Total, Key_Byte_Total : Natural) is record
+      Database_ID           : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Run_ID                : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Family_ID             : Interfaces.Unsigned_32 := 0;
+      Lowest_Sequence       : Interfaces.Unsigned_64 := 0;
+      Highest_Sequence      : Interfaces.Unsigned_64 := 0;
+      Logical_Payload_Bytes : Interfaces.Unsigned_64 := 0;
+      Frame_Offset          : Natural := 0;
+      Frame_Byte_Total      : Natural := 0;
+      Entries               : SST_V2_Index_Entry_Array (1 .. Entry_Total);
+      Keys                  : Formats.Byte_Array (1 .. Key_Byte_Total);
+   end record;
+
+   type SST_V2_Index_Access is access all SST_V2_Index;
+
+   --  Authenticate one exact index range before parsing records, then retain
+   --  one exact dynamic index. Persisted family limits are caller authority.
+   procedure Decode_SST_V2_Index
+     (Image               : Formats.Byte_Array;
+      Admission           : SST_Header_Admission;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Maximum_Key_Bytes   : Interfaces.Unsigned_64;
+      Maximum_Value_Bytes : Interfaces.Unsigned_64;
+      Value               : out SST_V2_Index_Access;
+      Status              : out Decode_Status);
+
+   procedure Release (Value : in out SST_V2_Index_Access);
+
+   --  Select the first canonical key/version admitted by the caller's exact
+   --  snapshot and normalized scan bounds. Zero is a runtime-only no-selection
+   --  sentinel; persisted positions remain one-based and are never encoded
+   --  through this interface.
+   function Next_Visible_Position
+     (Value           : SST_V2_Index;
+      Snapshot_At     : Interfaces.Unsigned_64;
+      Has_Start       : Boolean;
+      Start_Key       : Formats.Byte_Array;
+      Start_Inclusive : Boolean;
+      Has_Upper       : Boolean;
+      Upper_Key       : Formats.Byte_Array) return Natural;
+
+   type SST_V2_Frame (Payload_Byte_Total : Natural) is record
+      Sequence         : Interfaces.Unsigned_64 := 0;
+      Operation        : Formats.Byte := 0;
+      Key_Byte_Total   : Natural := 0;
+      Value_Byte_Total : Natural := 0;
+      Payload          : Formats.Byte_Array (1 .. Payload_Byte_Total);
+   end record;
+
+   type SST_V2_Frame_Access is access all SST_V2_Frame;
+
+   --  Authenticate one exact frame range and bind every duplicated field and
+   --  key byte to an already authenticated index entry before allocation.
+   procedure Decode_SST_V2_Frame
+     (Image    : Formats.Byte_Array;
+      Index    : SST_V2_Index;
+      Position : Positive;
+      Value    : out SST_V2_Frame_Access;
+      Status   : out Decode_Status);
+
+   procedure Release (Value : in out SST_V2_Frame_Access);
+
+   type SST_Entry is record
+      Sequence         : Interfaces.Unsigned_64 := 0;
+      Operation        : Formats.Byte := 0;
+      Key_Offset       : Natural := 0;
+      Key_Byte_Total   : Natural := 0;
+      Value_Offset     : Natural := 0;
+      Value_Byte_Total : Natural := 0;
+   end record;
+
+   type SST_Entry_Array is array (Positive range <>) of SST_Entry;
+
+   --  Entry offsets describe one canonical compact key/value payload. The
+   --  discriminants allocate only actual descriptors and logical bytes.
+   type SST (Entry_Total, Payload_Byte_Total : Natural) is record
+      Database_ID           : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Run_ID                : Head_Policy.Identifier := Head_Policy.Zero_Identifier;
+      Family_ID             : Interfaces.Unsigned_32 := 0;
+      Lowest_Sequence       : Interfaces.Unsigned_64 := 0;
+      Highest_Sequence      : Interfaces.Unsigned_64 := 0;
+      Logical_Payload_Bytes : Interfaces.Unsigned_64 := 0;
+      Entries               : SST_Entry_Array (1 .. Entry_Total);
+      Payload               : Formats.Byte_Array (1 .. Payload_Byte_Total);
+   end record;
+
+   type SST_Access is access all SST;
+
+   procedure Create_SST
+     (Entry_Total        : Natural;
+      Payload_Byte_Total : Natural;
+      Value              : out SST_Access;
+      Status             : out Allocation_Status);
+
+   procedure Release (Value : in out SST_Access);
+
+   function Structurally_Valid (Value : SST) return Boolean;
+
+   --  Apply the same next-visible-entry rule to a fully authenticated v1/v2
+   --  table. This is the required v1 fallback and the whole-object test oracle
+   --  for the v2 index selector above; zero has the same no-selection meaning.
+   function Next_Visible_Position
+     (Value           : SST;
+      Snapshot_At     : Interfaces.Unsigned_64;
+      Has_Start       : Boolean;
+      Start_Key       : Formats.Byte_Array;
+      Start_Inclusive : Boolean;
+      Has_Upper       : Boolean;
+      Upper_Key       : Formats.Byte_Array) return Natural;
+
+   --  Coalesce two validated consecutive sequence ranges without pruning any
+   --  version or tombstone. Exact output extents derive from the two inputs;
+   --  checked arithmetic and allocation failure publish no partial SST. The
+   --  candidate output identity is caller authority, not a generated default;
+   --  this lower kernel rejects zero and input reuse, while the manifest-aware
+   --  entry point below also rejects collision with every retained run.
+   procedure Merge_Consecutive_SSTs
+     (Older         : SST;
+      Newer         : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status);
+
+   --  Admit a merge only when the two SSTs exactly match adjacent descriptors
+   --  in one structurally valid authenticated manifest family. Adjacency is
+   --  persisted manifest authority, not a trigger or size policy. A publisher
+   --  must still bind Current to the current HEAD generation before effects.
+   procedure Merge_Manifest_Adjacent_SSTs
+     (Current       : Checkpoint_Manifest;
+      Older         : SST;
+      Newer         : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status);
+
+   --  Build one exact checkpoint successor and merged SST without effects.
+   --  Successor_Base must be the next persisted checkpoint base after Current;
+   --  every limit, family rule, replay boundary, and identity remains exact.
+   --  Only the admitted adjacent descriptors become one fresh descriptor.
+   procedure Build_Adjacent_Merge_Successor
+     (Current        : Checkpoint_Manifest;
+      Successor_Base : Manifests.Manifest;
+      Older          : SST;
+      Newer          : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Merged         : out SST_Access;
+      Successor      : out Checkpoint_Manifest_Access;
+      Status         : out Merge_Status);
+
+   --  Coalesce one caller-selected slice of exactly three consecutive SSTs.
+   --  Three is an algorithm-qualification shape, not a trigger, fanout, level,
+   --  or capacity policy. All versions and tombstones remain in the exact
+   --  output allocation; no pairwise temporary SST is constructed.
+   procedure Merge_Three_Consecutive_SSTs
+     (First_Run     : SST;
+      Middle_Run    : SST;
+      Last_Run      : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status);
+
+   --  Admit the exact three-run merge only for three adjacent authenticated
+   --  descriptors in one family of Current. The caller still selects the
+   --  slice and must bind Current to HEAD before any publication effects.
+   procedure Merge_Manifest_Three_Adjacent_SSTs
+     (Current       : Checkpoint_Manifest;
+      First_Run     : SST;
+      Middle_Run    : SST;
+      Last_Run      : SST;
+      Output_Run_ID : Head_Policy.Identifier;
+      Value         : out SST_Access;
+      Status        : out Merge_Status);
+
+   --  Replace only the admitted three-descriptor slice with one fresh run.
+   --  This effect-free builder preserves all other family slices, replay and
+   --  identity authority, and persisted limits exactly.
+   procedure Build_Three_Run_Merge_Successor
+     (Current        : Checkpoint_Manifest;
+      Successor_Base : Manifests.Manifest;
+      First_Run      : SST;
+      Middle_Run     : SST;
+      Last_Run       : SST;
+      Output_Run_ID  : Head_Policy.Identifier;
+      Merged         : out SST_Access;
+      Successor      : out Checkpoint_Manifest_Access;
+      Status         : out Merge_Status);
+
+   function Descriptor_Matches
+     (Value             : SST;
+      Expected_Database : Head_Policy.Identifier;
+      Expected_Family   : Interfaces.Unsigned_32;
+      Descriptor        : Run_Descriptor) return Boolean;
+
+   procedure Encode_SST (Value : SST; Image : out Image_Access; Status : out Encode_Status);
+
+   --  Encode the active SST-v2 entry-frame/index layout. Encode_SST remains
+   --  the v1 compatibility encoder for golden and mixed-recovery fixtures.
+   procedure Encode_SST_V2 (Value : SST; Image : out Image_Access; Status : out Encode_Status);
+
+   procedure Decode_SST
+     (Image               : Formats.Byte_Array;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Maximum_Key_Bytes   : Interfaces.Unsigned_64;
+      Maximum_Value_Bytes : Interfaces.Unsigned_64;
+      Value               : out SST_Access;
+      Status              : out Decode_Status);
+
+   --  Decode one complete SST-v2 image. This whole-object entry point proves
+   --  the wire codec before later range-decoder and lazy-operation activation.
+   procedure Decode_SST_V2
+     (Image               : Formats.Byte_Array;
+      Expected_Database   : Head_Policy.Identifier;
+      Expected_Family     : Interfaces.Unsigned_32;
+      Expected_Descriptor : Run_Descriptor;
+      Maximum_Key_Bytes   : Interfaces.Unsigned_64;
+      Maximum_Value_Bytes : Interfaces.Unsigned_64;
+      Value               : out SST_Access;
+      Status              : out Decode_Status);
+
+   --  Release an exact encoded image returned by either encoder.
+   procedure Release (Image : in out Image_Access);
+
+end Flyology.DB.LSM_Runtime_Formats;

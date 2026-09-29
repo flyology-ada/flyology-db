@@ -1,0 +1,18 @@
+diff --git a/tests/src/flyology-db-engine_tests.adb b/tests/src/flyology-db-engine_tests.adb
+--- a/tests/src/flyology-db-engine_tests.adb
++++ b/tests/src/flyology-db-engine_tests.adb
+@@ -13431,6 +13431,6 @@
+-         --  batch, six collision-index fixture objects, and 12 adaptive-cohort
+-         --  fixture objects.
++         --  batch, six collision-index fixture objects, and 14 adaptive-cohort
++         --  fixture objects, including the two distinct overlap batches.
+          --  Eight million bytes cover the complete deterministic engine corpus
+          --  while retaining explicit backend backpressure.
+-         Store : aliased Memory.Store (4, 669, 8_000_000);
++         Store : aliased Memory.Store (4, 671, 8_000_000);
+       begin
+@@ -13554,3 +13554,3 @@
+          --  One bucket and exactly manifest/HEAD/batch objects isolate this
+-         --  added fixture without consuming the shared 669-object corpus.
++         --  added fixture without consuming the shared 671-object corpus.
+          Store : aliased Memory.Store (1, 3, 8_000_000);

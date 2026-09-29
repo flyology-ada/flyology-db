@@ -16,10 +16,12 @@ independent-member publication semantics. Ordinary roots and explicit `Commit_Gr
 
 Before admission, invalid, cancelled, or expired candidates terminate independently. After
 admission and before freeze, candidates that conflict with newly committed history or earlier cohort
-members terminate independently. An admitted cancellation request drains to an exact terminal
-result; it does not remove an underfilled member from the queue. An exact-width conflict-free cohort
-then receives contiguous sequences and one caller-owned physical batch identity. The coordinator
-encodes all members into one batch-v1 object, publishes it once, and attempts one HEAD transition
+members terminate independently in the initial exact-width experiment. The pipelined successor instead
+keeps conflicts with unpublished candidates pending until their predecessor outcome is conclusive;
+only installed history can establish that conflict rejection. An admitted cancellation request drains
+to an exact terminal result; it does not remove an underfilled member from the queue. An exact-width
+conflict-free cohort then receives contiguous sequences and one caller-owned physical batch identity.
+The coordinator encodes all members into one batch-v1 object, publishes it once, and attempts one HEAD transition
 over the complete sequence range. No member succeeds before the HEAD transition is authoritative.
 A lost HEAD response returns a separate receipt for every member; each receipt resolves the same
 retained batch and HEAD read-only without replaying a transaction.
@@ -106,6 +108,132 @@ authority, and stalled-provider executions. Its liveness claims require explicit
 coordinator, and provider progress; unknown resolution additionally requires caller action and
 responsive authoritative reads. The unbounded TLAPS kernel proves safety only. Neither finite geometry
 nor fairness assumptions become runtime policy.
+
+The pipelined source foundation extends this boundary in place with independent bounded admission,
+canonical per-transaction preparation, bounded aggregate assembly and ready ownership, and overlapping
+successor preparation/immutable PUTs. Width, bytes, wait, admission depth, preparation concurrency,
+pipeline depth, and total retained bytes are finite qualification parameters, not runtime profile
+defaults. Admission reserves the current input, one future input-sized preparation or aggregate credit,
+and one abstract envelope unit per pending member. Starting preparation transfers the future fragment
+credit into resident storage; joining it transfers that credit to the future aggregate; freezing a
+cohort consumes the member credits and releases all but its single aggregate envelope. This derived
+reservation is conservative model geometry, not a public byte-limit formula or encoded runtime size.
+The cohort `MaxBytes` target normally limits one encoded cohort independently of the total retained-byte
+budget; the existing oversized-singleton rule may exceed that target but never the total byte budget.
+Freeze preserves admission order, immutable predecessor identity, and independent member sequence
+receipts. A candidate conflicting with an unpublished predecessor stays unfrozen until
+conclusive revalidation. The finite conflict relation abstracts transaction-owned snapshot, mutation,
+point-read, and normalized range evidence; canonical preparation must retain that evidence through join
+and cohort selection. Its concrete encoding and ownership remain Ada correspondence obligations.
+Completion slots remain occupied until coordinator `CollectTerminal`, independently of retained receipt
+authority; publication alone does not release admission capacity. Public `Finish` is represented only by
+`DeliverReceipt`, a later transfer from the detached operation to its caller. Export, resolution, and
+caller receipt release require delivery. Operation finalization instead uses `DiscardCollected` for an
+undelivered collected result. Final close and caller-driven resolution wait for all admitted operations
+to be collected; neither close nor worker successor draining depends on public receipt delivery.
+The returned-authority crash lane requires every admitted result to have been publicly delivered.
+
+Only the publication front may run `ValidateFront` against the exact installed predecessor and token.
+Success enters `HeadReady`, owns one mutable installation projection, and records successful validation
+history that outlives that projection. `StartHead` requires the same installed predecessor and token.
+A failed validation enters definite `PreHeadFailed` and abandons the front and its suffix with no HEAD
+attempt or unknown receipt authority. A failed later cohort preparation records `prepareFailed` without
+halting successful predecessors; `FailPreparedFront` halts and drains it only when it reaches the front.
+Successor cleanup may release its own resources but cannot clear another cohort's projection.
+Canonical successor preparation and immutable PUT may overlap front validation and publication; local
+installation remains front-only, and publication join or retirement releases the projection.
+Normal close drains compatible work only behind a conclusive predecessor;
+an unknown front instead joins and abandons every queued or not-yet-HEAD successor before front
+resolution or close. Successful resolution does not restart the halted episode, and no successor is
+rebased, resequenced, or replayed. Finite deadlines remain unsupported in this private profile.
+Focused progress and lifecycle lanes distinguish responsive joins from a permanently stalled provider.
+The changed safety proof source covers dynamic membership and exclusive reservation ownership; FIFO
+selection, conflict predicates, sequence arithmetic, encoding sizes, tokens, and fallible installation
+remain explicit concrete-model or implementation correspondence obligations. The changed sources are
+not yet qualified: fresh TLC graphs, named negative controls and witnesses, conditional progress,
+strict clean-fingerprint TLAPS results, and later Ada trace replay must precede runtime adoption.
+The exhaustive safety campaign covers the four-transaction graph with all 24 fixed admission-order
+slices. Every finite admission history is a prefix of one such permutation because an identity is
+admitted at most once; every snapshot choice and every non-admission transition remains available.
+Each slice retains the complete operational state while erasing the diagnostic last-action field,
+history-only cancellation and conflict-wait membership, and write-only evidence for preparation and
+batch overlap, out-of-order completion, close-tail selection, local activation failure, close
+completion, and ignored stale completions. It also canonicalizes transaction-preparation and batch-PUT
+outcomes after their requests have joined, when retained fragments, failure ledgers, phase, and storage
+state determine every successor. Completed-but-unjoined outcomes remain exact. Cancellation,
+conflict-wait, and stale-completion observations become projected stutters; the retained transitions do
+not read any erased evidence.
+The full diagnostic witnesses and every lifecycle and progress lane retain the unquotiented state.
+Crash, reopen, collection, delivery, receipt, and authority state are never erased. The quotient is a
+finite safety-search reduction justified by this concrete dependency boundary; it is not an Ada
+refinement proof or a liveness reduction.
+The runner deliberately rejects qualification until reviewed geometry, action coverage, and proof
+totals replace its pending markers. This foundation changes neither public API nor persisted format,
+and establishes no throughput or hardware-specific policy.
+
+## Concrete preparation ownership correspondence still required
+
+The unqualified Ada source now constructs an arena-owned canonical mutation body before cohort
+selection, while `Prepared_Transaction_View` remains a borrowed extent calculation. Native CPU workers
+prepare members and seal cohorts; separate bounded native workers publish immutable batches. The
+following ownership boundary still requires executable conformance, formal qualification and matched
+performance evidence; source structure alone is not a safety or performance result.
+
+Each independently admitted completion slot must remain the sole owner of its transaction arena.
+Preparation borrows that arena under the exact slot generation and constructs one sequence-independent
+mutation body of `payload bytes + 14 * mutation count` bytes. The 14-byte prefix is the established
+batch-v1 mutation-frame format, not a scheduler parameter. The fragment preserves mutation order and
+exact bytes. Arena mutation descriptors, hashes, bucket links, snapshot, point reads and normalized
+scan ranges remain isolation evidence; releasing raw payload allocations does not release the arena.
+Mutation-byte accessors must continue to return identical bytes from the arena-owned canonical image.
+
+A preparing slot must not remain ordinary `Queued`: existing fence, resolution drain, pipeline abort
+and worker-stop paths can immediately make queued slots terminal, and `Await_Result` then transfers
+their arena for reclamation. Preparation must instead have explicit borrowed/joining states that all
+those paths drain before exposing terminal collection. Installing the completed fragment, retiring raw
+allocations and finishing the join form one ownership episode. If raw retirement runs outside the
+protected coordinator, the slot stays nonselectable and noncollectible until retirement has joined.
+Neither collection nor a reused generation may outrun that cleanup. Failed construction leaves the
+original bytes intact; every exceptional/cancelled join must classify the admitted work and release
+temporary storage without publishing or leaking a borrower.
+
+Only joined ready members may enter the existing admission-ordered, conflict-compatible cohort prefix.
+An older admitted member still preparing blocks selection of younger ready members; readiness does not
+reorder admission.
+Sequence and predecessor fields are assigned at that freeze, not by transaction preparation. Sealing
+copies canonical bodies into one final aggregate, relocates runtime offsets and emits transaction and
+batch headers/checksums without repeating body encoding. Batch PUT workers are separate from CPU
+preparation so storage latency cannot monopolize the entire preparation pool. Authoritative front
+validation, HEAD ordering, coupled publication certainty and per-member receipt identities stay intact.
+The existing private profile's finite-deadline restriction is not general deadline qualification.
+
+On exceptional publisher exit, the coordinator halts admission and wakes both worker pools. The
+native-task master must join before descriptor-owned batch images are moved out of the coordinator
+and released outside its protected lock. Only then may engine-stop classification expose admitted
+arenas for collection. This post-join cleanup is not available to a live publisher or worker borrower.
+
+For an implementation with one outstanding preparation/fragment per slot and one current aggregate per
+pipeline position, let `Q` be configured admission depth, `M` authenticated per-transaction mutation
+capacity, `I` the existing logical in-flight payload cap and `P` configured pipeline depth. Original
+payloads stay charged until `Await_Result` transfers their arena out of the admission slot.
+Admission-accounted pending extents are raw payload at most `I`,
+canonical bodies at most `I + 14*Q*M`, and aggregate images at most
+`I + 14*Q*M + 32*Q + 160*P`. The 32-byte transaction prefix and 160-byte batch header/trailer derive
+from batch-v1. The aggregate extent covers only images belonging to active pipeline cohorts, including
+their temporary worker or publisher ownership. These are checked derivations, not an enforced total
+resident-byte admission policy. They exclude arena/lookup descriptors, read/range storage, allocator
+overhead, installed-history images and all receipt custody, including internal and collected-but-undelivered
+receipts. Preparation's detached raw retirement finishes before the preparation join while admission
+credit remains held. Collection instead releases that credit at arena transfer, before outside-lock
+arena reclamation; new admissions can therefore overlap collector-owned raw or canonical storage.
+Detached collector arenas need separate ownership accounting. A stricter total resident cap requires
+an explicit policy and enforcement covering those arenas and retained images, rather than
+reinterpreting the logical payload cap.
+
+The concrete conformance lane must cover preparation success/failure, out-of-order ready completion,
+retirement-before-collection, fence/resolution/close while a job borrows input, stale generation joins,
+ready-prefix conflict ordering, byte backpressure and genuine preparation/publication overlap. The
+authority-recovery replay below does not establish those scheduler or byte-ownership properties.
 
 ## Executable authority-recovery replay
 

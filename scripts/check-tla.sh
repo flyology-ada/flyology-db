@@ -7,6 +7,16 @@ tla_cli="$project_root/.deps/flyology-tla-cli/bin/flyology-tla"
 model_root="$project_root/formal/tla"
 trace_root="$model_root/traces"
 trace_update_mode=${FLYOLOGY_DB_TLA_UPDATE_TRACES:-0}
+pipeline_slice_jobs=${FLYOLOGY_DB_TLA_SLICE_JOBS:-1}
+
+case "$pipeline_slice_jobs" in
+  1|2|3|4)
+    ;;
+  *)
+    printf '%s\n' 'FLYOLOGY_DB_TLA_SLICE_JOBS must be an integer from 1 through 4' >&2
+    exit 1
+    ;;
+esac
 
 test -x "$tla_cli"
 "$tla_cli" toolchain verify "$toolchain_root"
@@ -28,8 +38,23 @@ toolchain_identity=tla2tools-1.8.0+9787e65
 
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/flyology-db-tla.XXXXXX")
 trace_update_staging=
+pipeline_slice_pids=
+pipeline_slice_registering=0
+pipeline_pending_signal_status=
 
 cleanup() {
+  if test -n "$pipeline_slice_pids"
+  then
+    for pipeline_slice_pid in $pipeline_slice_pids
+    do
+      kill -TERM "$pipeline_slice_pid" 2>/dev/null || :
+    done
+    for pipeline_slice_pid in $pipeline_slice_pids
+    do
+      wait "$pipeline_slice_pid" 2>/dev/null || :
+    done
+    pipeline_slice_pids=
+  fi
   if test -n "$trace_update_staging"
   then
     case "$trace_update_staging" in
@@ -44,7 +69,27 @@ cleanup() {
   rm -rf "$temporary_root"
 }
 
-trap cleanup EXIT HUP INT TERM
+terminate() {
+  signal_status=$1
+  trap - EXIT HUP INT TERM
+  cleanup
+  exit "$signal_status"
+}
+
+handle_signal() {
+  signal_status=$1
+  if test "$pipeline_slice_registering" -eq 1
+  then
+    pipeline_pending_signal_status=$signal_status
+    return
+  fi
+  terminate "$signal_status"
+}
+
+trap cleanup EXIT
+trap 'handle_signal 129' HUP
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1
@@ -3419,91 +3464,328 @@ then
   exit 1
 fi
 
-set +e
-"$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
-  -workers 1 -coverage 1 \
-  -metadir "$temporary_root/tlc-pipelined-adaptive-coalescing-states" \
-  -config PipelinedAdaptiveAggregateCommitCoalescing.cfg \
-  PipelinedAdaptiveAggregateCommitCoalescing \
-  >"$temporary_root/tlc-pipelined-adaptive-coalescing.log" 2>&1
-pipelined_adaptive_status=$?
-set -e
-if test "$pipelined_adaptive_status" -ne 0
-then
-  printf '%s\n' \
-    "Flyology.DB TLA pipelined adaptive coalescing TLC exited $pipelined_adaptive_status" >&2
-  cat "$temporary_root/tlc-pipelined-adaptive-coalescing.log" >&2
-  exit "$pipelined_adaptive_status"
-fi
-grep -q 'Model checking completed. No error has been found.' \
-  "$temporary_root/tlc-pipelined-adaptive-coalescing.log"
-if grep -q '^Warning:' "$temporary_root/tlc-pipelined-adaptive-coalescing.log"
-then
-  printf '%s\n' 'Flyology.DB TLA pipelined adaptive coalescing TLC warned' >&2
-  cat "$temporary_root/tlc-pipelined-adaptive-coalescing.log" >&2
-  exit 1
-fi
-adaptive_extract_geometry \
-  "$temporary_root/tlc-pipelined-adaptive-coalescing.log" pipeline
-pipelined_adaptive_generated=$adaptive_generated
-pipelined_adaptive_distinct=$adaptive_distinct
-pipelined_adaptive_depth=$adaptive_depth
-pipelined_adaptive_action_report="$temporary_root/pipelined-adaptive-action-coverage.txt"
-adaptive_write_action_report \
-  "$temporary_root/tlc-pipelined-adaptive-coalescing.log" \
-  "$pipelined_adaptive_action_report" Freeze RequestCancellation StartBatch \
-  StoreBatch CompleteBatch JoinBatch IgnoreStaleCompletion ObserveBatch StartHead \
-  ApplyHead RivalHead CompleteHead JoinHead RetireSuccess AbandonSuffix BeginClose \
-  DrainAbandoned ObserveFrontResolution FinishFrontResolution ResolveDetachedMember \
-  ResolveRejected DetachUnknown CollectImage Close CrashAfterReturn Reopen
-if test "$pipelined_adaptive_generated" -ne 1742242 || \
-  test "$pipelined_adaptive_distinct" -ne 445238 || \
-  test "$pipelined_adaptive_depth" -ne 51
-then
-  printf '%s\n' \
-    'Flyology.DB TLA pipelined adaptive coalescing geometry changed' >&2
-  exit 1
-fi
-pipelined_adaptive_expected_action_report="$temporary_root/pipelined-adaptive-action-coverage.expected.txt"
-cat >"$pipelined_adaptive_expected_action_report" <<'EOF'
-    Freeze 98:596
-    RequestCancellation 0:113284
-    StartBatch 202:956
-    StoreBatch 526:3820
-    CompleteBatch 2382:15280
-    JoinBatch 2382:15280
-    IgnoreStaleCompletion 0:45060
-    ObserveBatch 220:1426
-    StartHead 170:724
-    ApplyHead 249:706
-    RivalHead 14307:57793
-    CompleteHead 3862:5790
-    JoinHead 3774:5790
-    RetireSuccess 2104:3248
-    AbandonSuffix 4292:41094
-    BeginClose 1952:71581
-    DrainAbandoned 6016:10224
-    ObserveFrontResolution 4236:7484
-    FinishFrontResolution 6354:14120
-    ResolveDetachedMember 16780:66028
-    ResolveRejected 5430:9920
-    DetachUnknown 2056:2616
-    CollectImage 298612:505914
-    Close 22669:132223
-    CrashAfterReturn 25819:394660
-    Reopen 20745:216624
+pipelined_adaptive_actions="$temporary_root/pipelined-adaptive-actions.txt"
+cat >"$pipelined_adaptive_actions" <<'EOF'
+Admit
+Tick
+WaitForPredecessor
+RejectQueuedConflict
+StartPrepare
+CompletePrepare
+JoinPrepare
+IgnoreStalePrepareCompletion
+Freeze
+RequestCancellation
+CollectTerminal
+DeliverReceipt
+StartBatch
+StoreBatch
+CompleteBatch
+JoinBatch
+IgnoreStaleCompletion
+ObserveBatch
+FailPreparedFront
+ValidateFront
+StartHead
+ApplyHead
+RivalHead
+CompleteHead
+JoinHead
+RetireSuccess
+AbandonPending
+AbandonSuccessors
+AbandonSuffix
+BeginClose
+DrainAbandoned
+ObserveFrontResolution
+FinishFrontResolution
+ResolveDetachedMember
+ResolveRejected
+DetachUnknown
+CollectImage
+Close
+CrashAfterReturn
+Reopen
 EOF
-if ! cmp "$pipelined_adaptive_expected_action_report" \
-    "$pipelined_adaptive_action_report"
+
+pipelined_adaptive_slice_rows="$temporary_root/pipelined-adaptive-slice-coverage.txt"
+pipelined_adaptive_geometry_report="$temporary_root/pipelined-adaptive-slice-geometry.txt"
+pipelined_adaptive_orders="$temporary_root/pipelined-adaptive-orders.txt"
+: >"$pipelined_adaptive_slice_rows"
+: >"$pipelined_adaptive_geometry_report"
+pipelined_adaptive_generated=0
+pipelined_adaptive_summed_distinct=0
+pipelined_adaptive_depth=0
+cat >"$pipelined_adaptive_orders" <<'EOF'
+1234
+1243
+1324
+1342
+1423
+1432
+2134
+2143
+2314
+2341
+2413
+2431
+3124
+3142
+3214
+3241
+3412
+3421
+4123
+4132
+4213
+4231
+4312
+4321
+EOF
+
+start_pipelined_adaptive_slice() {
+  pipeline_order=$1
+  pipeline_slice_config="$temporary_root/pipelined-adaptive-$pipeline_order.cfg"
+  pipeline_slice_log="$temporary_root/tlc-pipelined-adaptive-$pipeline_order.log"
+  cat >"$pipeline_slice_config" <<EOF
+SPECIFICATION SafetySpec
+CONSTRAINT AdmissionOrderConstraint
+VIEW PipelineSafetyView
+INVARIANT Safety
+CHECK_DEADLOCK FALSE
+ALIAS Trace
+CONSTANTS
+    AdmissionPermutation <- Order$pipeline_order
+    MaxWidth = 2
+    MaxBytes = 4
+    MaxWait = 1
+    Depth = 4
+    PipelineCapacity = 2
+    PrepareCapacity = 2
+    ByteCapacity = 32
+    TxnBytes <- TxnBytesModel
+    ConflictPairs <- ConflictPairsModel
+EOF
+  pipeline_slice_registering=1
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -coverage 1 \
+    -metadir "$temporary_root/tlc-pipelined-adaptive-$pipeline_order-states" \
+    -config "$pipeline_slice_config" \
+    PipelinedAdaptiveAggregateCommitCoalescingAdmissionSlices \
+    >"$pipeline_slice_log" 2>&1 &
+  pipeline_slice_pid=$!
+  pipeline_slice_pids="$pipeline_slice_pids $pipeline_slice_pid"
+  printf '%s %s\n' "$pipeline_slice_pid" "$pipeline_order" \
+    >>"$pipelined_adaptive_batch"
+  pipeline_slice_registering=0
+  if test -n "$pipeline_pending_signal_status"
+  then
+    terminate "$pipeline_pending_signal_status"
+  fi
+}
+
+remove_pipeline_slice_pid() {
+  completed_pipeline_slice_pid=$1
+  remaining_pipeline_slice_pids=
+  for tracked_pipeline_slice_pid in $pipeline_slice_pids
+  do
+    if test "$tracked_pipeline_slice_pid" != "$completed_pipeline_slice_pid"
+    then
+      remaining_pipeline_slice_pids="$remaining_pipeline_slice_pids $tracked_pipeline_slice_pid"
+    fi
+  done
+  pipeline_slice_pids=$remaining_pipeline_slice_pids
+}
+
+wait_pipelined_adaptive_batch() {
+  pipeline_batch_wait_status=0
+  while read -r pipeline_slice_pid pipeline_order
+  do
+    set +e
+    wait "$pipeline_slice_pid"
+    pipeline_slice_wait_status=$?
+    set -e
+    remove_pipeline_slice_pid "$pipeline_slice_pid"
+    printf '%s\n' "$pipeline_slice_wait_status" \
+      >"$temporary_root/tlc-pipelined-adaptive-$pipeline_order.status"
+    if test "$pipeline_slice_wait_status" -ne 0
+    then
+      pipeline_batch_wait_status=$pipeline_slice_wait_status
+      printf '%s\n' \
+        "Flyology.DB TLA pipeline admission slice $pipeline_order" \
+        "exited $pipeline_slice_wait_status" >&2
+      cat "$temporary_root/tlc-pipelined-adaptive-$pipeline_order.log" >&2
+    fi
+  done <"$pipelined_adaptive_batch"
+  : >"$pipelined_adaptive_batch"
+  if test "$pipeline_batch_wait_status" -ne 0
+  then
+    exit "$pipeline_batch_wait_status"
+  fi
+}
+
+pipelined_adaptive_batch="$temporary_root/pipelined-adaptive-batch.txt"
+: >"$pipelined_adaptive_batch"
+pipeline_slice_active=0
+while IFS= read -r pipeline_order
+do
+  start_pipelined_adaptive_slice "$pipeline_order"
+  pipeline_slice_active=$((pipeline_slice_active + 1))
+  if test "$pipeline_slice_active" -eq "$pipeline_slice_jobs"
+  then
+    wait_pipelined_adaptive_batch
+    pipeline_slice_active=0
+  fi
+done <"$pipelined_adaptive_orders"
+if test "$pipeline_slice_active" -ne 0
 then
-  printf '%s\n' \
-    'Flyology.DB TLA pipelined adaptive coalescing action coverage changed:' >&2
-  cat "$pipelined_adaptive_action_report" >&2
-  exit 1
+  wait_pipelined_adaptive_batch
 fi
+
+while IFS= read -r pipeline_order
+do
+  pipeline_slice_log="$temporary_root/tlc-pipelined-adaptive-$pipeline_order.log"
+  pipeline_slice_coverage="$temporary_root/tlc-pipelined-adaptive-$pipeline_order.coverage"
+  pipeline_slice_status_file="$temporary_root/tlc-pipelined-adaptive-$pipeline_order.status"
+  if test ! -f "$pipeline_slice_status_file"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA pipeline admission slice $pipeline_order has no status" >&2
+    exit 1
+  fi
+  pipeline_slice_status=$(cat "$pipeline_slice_status_file")
+  case "$pipeline_slice_status" in
+    ''|*[!0-9]*)
+      printf '%s\n' \
+        "Flyology.DB TLA pipeline admission slice $pipeline_order has malformed status" >&2
+      exit 1
+      ;;
+  esac
+  if test "$pipeline_slice_status" -ne 0
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA pipeline admission slice $pipeline_order exited $pipeline_slice_status" \
+      >&2
+    cat "$pipeline_slice_log" >&2
+    exit "$pipeline_slice_status"
+  fi
+  grep -q 'Model checking completed. No error has been found.' "$pipeline_slice_log"
+  if grep -q '^Warning:' "$pipeline_slice_log"
+  then
+    printf '%s\n' "Flyology.DB TLA pipeline admission slice $pipeline_order warned" >&2
+    cat "$pipeline_slice_log" >&2
+    exit 1
+  fi
+  adaptive_extract_geometry "$pipeline_slice_log" "pipeline-$pipeline_order"
+  printf '%s %s %s %s\n' "$pipeline_order" "$adaptive_generated" \
+    "$adaptive_distinct" "$adaptive_depth" >>"$pipelined_adaptive_geometry_report"
+  pipelined_adaptive_generated=$((pipelined_adaptive_generated + adaptive_generated))
+  pipelined_adaptive_summed_distinct=$((pipelined_adaptive_summed_distinct + adaptive_distinct))
+  if test "$adaptive_depth" -gt "$pipelined_adaptive_depth"
+  then
+    pipelined_adaptive_depth=$adaptive_depth
+  fi
+  if ! awk '
+    /^Model checking completed\. No error has been found\.$/ {
+      completed++
+      next
+    }
+    /^The coverage statistics at / {
+      if (completed == 0) {
+        next
+      }
+      if (completed != 1 || capture || reports != 0) {
+        invalid = 1
+        next
+      }
+      block = ""
+      capture = 1
+      reports++
+    }
+    capture {
+      block = block $0 ORS
+    }
+    capture && /^End of statistics/ {
+      final = block
+      capture = 0
+    }
+    END {
+      if (invalid || completed != 1 || reports != 1 || capture || final == "") {
+        exit 1
+      }
+      printf "%s", final
+    }
+  ' "$pipeline_slice_log" >"$pipeline_slice_coverage"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA pipeline admission slice $pipeline_order coverage is incomplete" >&2
+    exit 1
+  fi
+  while IFS= read -r pipeline_action
+  do
+    pipeline_action_lines=$(grep -E "^<$pipeline_action " "$pipeline_slice_coverage" || :)
+    if test -z "$pipeline_action_lines"
+    then
+      continue
+    fi
+    pipeline_action_unique=$(printf '%s\n' "$pipeline_action_lines" | LC_ALL=C sort -u)
+    if test "$(printf '%s\n' "$pipeline_action_unique" | wc -l | tr -d ' ')" -ne 1 || \
+      ! printf '%s\n' "$pipeline_action_unique" | \
+        grep -Eq "^<$pipeline_action .*: [0-9][0-9]*(:[0-9]+)?$"
+    then
+      printf '%s\n' \
+        "Flyology.DB TLA pipeline admission slice $pipeline_order action $pipeline_action" \
+        'coverage is conflicting or malformed' >&2
+      printf '%s\n' "$pipeline_action_lines" >&2
+      exit 1
+    fi
+    pipeline_action_counts=${pipeline_action_unique##*: }
+    case "$pipeline_action_counts" in
+      *:*) pipeline_action_invocations=${pipeline_action_counts##*:} ;;
+      *) pipeline_action_invocations=$pipeline_action_counts ;;
+    esac
+    case "$pipeline_action_invocations" in
+      ''|*[!0-9]*)
+        printf '%s\n' \
+          "Flyology.DB TLA pipeline admission slice $pipeline_order action $pipeline_action" \
+          'has malformed invocation coverage' >&2
+        exit 1
+        ;;
+    esac
+    printf '%s %s %s\n' "$pipeline_order" "$pipeline_action" \
+      "$pipeline_action_invocations" >>"$pipelined_adaptive_slice_rows"
+  done <"$pipelined_adaptive_actions"
+done <"$pipelined_adaptive_orders"
+
+pipelined_adaptive_action_report="$temporary_root/pipelined-adaptive-action-coverage.txt"
+: >"$pipelined_adaptive_action_report"
+while IFS= read -r pipeline_action
+do
+  pipeline_action_total=$(awk -v action="$pipeline_action" \
+    '$2 == action { total += $3 } END { print total + 0 }' \
+    "$pipelined_adaptive_slice_rows")
+  if test "$pipeline_action_total" -le 0
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA pipeline action $pipeline_action has no admission-slice coverage" >&2
+    exit 1
+  fi
+  printf '    %s %s\n' "$pipeline_action" "$pipeline_action_total" \
+    >>"$pipelined_adaptive_action_report"
+done <"$pipelined_adaptive_actions"
+# Source-only extension: do not inherit the preceding fixed-membership pins.
+# Run all focused lanes and strict proof before failing closed below. Replace
+# these markers only with independently reviewed, retained qualification data.
+pipelined_adaptive_expected_geometry_sha256=UNQUALIFIED
+pipelined_adaptive_expected_action_sha256=UNQUALIFIED
+pipelined_adaptive_expected_focused_sha256=UNQUALIFIED
+pipelined_adaptive_expected_obligations=UNQUALIFIED
 
 for probe in \
   PipelinedAdaptiveAggregateCommitCoalescingHeadOrderProbe:OrderedHead \
+  PipelinedAdaptiveAggregateCommitCoalescingHeadValidationProbe:HeadValidation \
+  PipelinedAdaptiveAggregateCommitCoalescingProjectionOwnershipProbe:ProjectionOwnership \
+  PipelinedAdaptiveAggregateCommitCoalescingReceiptDeliveryProbe:ReceiptDelivery \
   PipelinedAdaptiveAggregateCommitCoalescingVisibilityProbe:NoPrematureSuccess \
   PipelinedAdaptiveAggregateCommitCoalescingUnknownBarrierProbe:UnknownBarrier \
   PipelinedAdaptiveAggregateCommitCoalescingReplayProbe:NoReplay \
@@ -3515,7 +3797,21 @@ for probe in \
   PipelinedAdaptiveAggregateCommitCoalescingResolutionOrderProbe:\
 NoPrematureResolutionSuccess \
   PipelinedAdaptiveAggregateCommitCoalescingDetachedResolutionProbe:ResolutionInstalled \
-  PipelinedAdaptiveAggregateCommitCoalescingResolutionOwnershipProbe:ResolutionOwnership
+  PipelinedAdaptiveAggregateCommitCoalescingResolutionOwnershipProbe:ResolutionOwnership \
+  PipelinedAdaptiveAggregateCommitCoalescingFragmentProbe:PreparedBeforeFreeze \
+  PipelinedAdaptiveAggregateCommitCoalescingSealProbe:BatchRequiresSeal \
+  PipelinedAdaptiveAggregateCommitCoalescingMemberReceiptProbe:MemberReceiptBinding \
+  PipelinedAdaptiveAggregateCommitCoalescingAdmissionOrderProbe:AdmissionOrder \
+  PipelinedAdaptiveAggregateCommitCoalescingConflictProbe:ConflictSafety \
+  PipelinedAdaptiveAggregateCommitCoalescingPrepareOwnershipProbe:PreparationOwnership \
+  PipelinedAdaptiveAggregateCommitCoalescingReadyQueueProbe:ReadyQueueSafety \
+  PipelinedAdaptiveAggregateCommitCoalescingPrepareBoundProbe:ResourceBounds \
+  PipelinedAdaptiveAggregateCommitCoalescingByteBoundProbe:ResourceBounds \
+  PipelinedAdaptiveAggregateCommitCoalescingSuccessorDrainProbe:UnknownBarrier \
+  PipelinedAdaptiveAggregateCommitCoalescingEpisodeProbe:UnknownBarrier \
+  PipelinedAdaptiveAggregateCommitCoalescingPrepareCloseProbe:Ownership \
+  PipelinedAdaptiveAggregateCommitCoalescingCompletionOwnershipProbe:CompletionOwnership \
+  PipelinedAdaptiveAggregateCommitCoalescingCompletionBoundProbe:ResourceBounds
 do
   probe_module=${probe%%:*}
   probe_invariant=${probe#*:}
@@ -3551,6 +3847,12 @@ done
 
 for witness in \
   PipelinedAdaptiveAggregateCommitCoalescingOrderedSuccessWitness:OrderedSuccessPending \
+  PipelinedAdaptiveAggregateCommitCoalescingFrontValidationFailureWitness:\
+FrontValidationFailurePending \
+  PipelinedAdaptiveAggregateCommitCoalescingLaterPrepareFailureWitness:LaterPrepareFailurePending \
+  PipelinedAdaptiveAggregateCommitCoalescingLaterBatchFailureWitness:LaterBatchFailurePending \
+  PipelinedAdaptiveAggregateCommitCoalescingCollectionBeforeDeliveryWitness:\
+CollectionBeforeDeliveryPending \
   PipelinedAdaptiveAggregateCommitCoalescingPredecessorFailureWitness:\
 PredecessorFailureOrphanPending \
   PipelinedAdaptiveAggregateCommitCoalescingUnknownCloseRecoveryWitness:\
@@ -3558,7 +3860,26 @@ UnknownCloseRecoveryPending \
   PipelinedAdaptiveAggregateCommitCoalescingCancellationLocalFailureWitness:\
 CancellationLocalFailurePending \
   PipelinedAdaptiveAggregateCommitCoalescingActiveUnknownResolutionWitness:\
-ActiveUnknownResolutionPending
+ActiveUnknownResolutionPending \
+  PipelinedAdaptiveAggregateCommitCoalescingPreparationOverlapWitness:PreparationOverlapPending \
+  PipelinedAdaptiveAggregateCommitCoalescingReadyOutOfOrderWitness:ReadyOutOfOrderPending \
+  PipelinedAdaptiveAggregateCommitCoalescingCloseTailWitness:CloseTailPending \
+  PipelinedAdaptiveAggregateCommitCoalescingCloseOverlapWitness:CloseOverlapPending \
+  PipelinedAdaptiveAggregateCommitCoalescingConflictWaitWitness:ConflictWaitPending \
+  PipelinedAdaptiveAggregateCommitCoalescingBoundedBackpressureWitness:BoundedBackpressurePending \
+  PipelinedAdaptiveAggregateCommitCoalescingOversizedSingletonWitness:OversizedSingletonPending \
+  PipelinedAdaptiveAggregateCommitCoalescingByteTailWitness:ByteTailPending \
+  PipelinedAdaptiveAggregateCommitCoalescingPrepareFailureWitness:PrepareFailurePending \
+  PipelinedAdaptiveAggregateCommitCoalescingUnknownPreparingTailWitness:UnknownPreparingTailPending \
+  PipelinedAdaptiveAggregateCommitCoalescingTerminalSlotsHeldWitness:TerminalSlotsHeldPending \
+  PipelinedAdaptiveAggregateCommitCoalescingByteCapacityOneCloseWitness:\
+TightBackpressureClosePending \
+  PipelinedAdaptiveAggregateCommitCoalescingByteCapacityTwoCloseWitness:\
+TightBackpressureClosePending \
+  PipelinedAdaptiveAggregateCommitCoalescingTightSingletonDrainWitness:\
+TightSingletonDrainPending \
+  PipelinedAdaptiveAggregateCommitCoalescingTightMultiMemberFreezeWitness:\
+TightMultiMemberFreezePending
 do
   witness_module=${witness%%:*}
   witness_invariant=${witness#*:}
@@ -3592,6 +3913,63 @@ do
   fi
 done
 
+pipelined_adaptive_focused_report="$temporary_root/pipelined-adaptive-focused-geometry.txt"
+: >"$pipelined_adaptive_focused_report"
+for lane in Lifecycle Progress CloseProgress ConflictCloseProgress \
+  ByteCapacityOneCloseProgress ByteCapacityTwoCloseProgress \
+  TightSingletonCloseProgress StalledProvider
+do
+  pipeline_lane_config="PipelinedAdaptiveAggregateCommitCoalescing$lane"
+  case "$lane" in
+    Lifecycle)
+      pipeline_lane_module=PipelinedAdaptiveAggregateCommitCoalescingLifecycle
+      pipeline_lane_expected_status=0
+      ;;
+    StalledProvider)
+      pipeline_lane_module=PipelinedAdaptiveAggregateCommitCoalescingProgress
+      pipeline_lane_expected_status=13
+      ;;
+    *)
+      pipeline_lane_module=PipelinedAdaptiveAggregateCommitCoalescingProgress
+      pipeline_lane_expected_status=0
+      ;;
+  esac
+  pipeline_lane_log="$temporary_root/tlc-$pipeline_lane_config.log"
+  set +e
+  "$java_command" -Xmx2g -XX:+UseParallelGC -cp "$tlc_jar" tlc2.TLC \
+    -workers 1 -noGenerateSpecTE \
+    -metadir "$temporary_root/tlc-$pipeline_lane_config-states" \
+    -config "$pipeline_lane_config.cfg" "$pipeline_lane_module" \
+    >"$pipeline_lane_log" 2>&1
+  pipeline_lane_status=$?
+  set -e
+  if test "$pipeline_lane_status" -ne "$pipeline_lane_expected_status"
+  then
+    printf '%s\n' \
+      "Flyology.DB TLA pipeline $lane exited $pipeline_lane_status;" \
+      "expected $pipeline_lane_expected_status" >&2
+    cat "$pipeline_lane_log" >&2
+    exit 1
+  fi
+  if test "$pipeline_lane_expected_status" -eq 13
+  then
+    # The configuration contains exactly one temporal property. Safety failure
+    # (exit 12), deadlock, syntax failure and arbitrary nonzero status do not pass.
+    grep -q 'Temporal properties were violated.' "$pipeline_lane_log"
+  else
+    grep -q 'Model checking completed. No error has been found.' "$pipeline_lane_log"
+    adaptive_extract_geometry "$pipeline_lane_log" "pipeline-$lane"
+    printf '%s %s %s %s\n' "$lane" "$adaptive_generated" "$adaptive_distinct" \
+      "$adaptive_depth" >>"$pipelined_adaptive_focused_report"
+  fi
+  if grep -q '^Warning:' "$pipeline_lane_log"
+  then
+    printf '%s\n' "Flyology.DB TLA pipeline $lane warned" >&2
+    cat "$pipeline_lane_log" >&2
+    exit 1
+  fi
+done
+
 set +e
 "$tlapm" --cache-dir "$temporary_root/tlapm-pipelined-adaptive-cache" \
   --cleanfp --nofp --strict --method smt \
@@ -3613,7 +3991,7 @@ then
   exit 1
 fi
 pipelined_adaptive_tlaps_lines=$(grep -E \
-  '^(\[INFO\]: )?All [0-9][0-9]* obligations proved[.]$' \
+  '^(\[INFO\]: )?All [1-9][0-9]* obligations proved[.]$' \
   "$temporary_root/tlaps-pipelined-adaptive.log" || :)
 if test -z "$pipelined_adaptive_tlaps_lines" || \
   test "$(printf '%s\n' "$pipelined_adaptive_tlaps_lines" | wc -l | tr -d ' ')" -ne 1
@@ -3623,11 +4001,28 @@ then
   cat "$temporary_root/tlaps-pipelined-adaptive.log" >&2
   exit 1
 fi
-if ! printf '%s\n' "$pipelined_adaptive_tlaps_lines" | \
-  grep -Eq '^(\[INFO\]: )?All 118 obligations proved[.]$'
+pipelined_adaptive_obligations=$(printf '%s\n' "$pipelined_adaptive_tlaps_lines" |
+  sed -E 's/^(\[INFO\]: )?All ([1-9][0-9]*) obligations proved[.]$/\2/')
+pipelined_adaptive_geometry_sha256=$(sha256_file "$pipelined_adaptive_geometry_report")
+pipelined_adaptive_action_sha256=$(sha256_file "$pipelined_adaptive_action_report")
+pipelined_adaptive_focused_sha256=$(sha256_file "$pipelined_adaptive_focused_report")
+if test "$pipelined_adaptive_geometry_sha256" != \
+    "$pipelined_adaptive_expected_geometry_sha256" || \
+  test "$pipelined_adaptive_action_sha256" != "$pipelined_adaptive_expected_action_sha256" || \
+  test "$pipelined_adaptive_focused_sha256" != "$pipelined_adaptive_expected_focused_sha256" || \
+  test "$pipelined_adaptive_obligations" != "$pipelined_adaptive_expected_obligations"
 then
-  printf '%s\n' 'Flyology.DB TLA pipelined adaptive TLAPS total changed' >&2
-  cat "$temporary_root/tlaps-pipelined-adaptive.log" >&2
+  printf '%s\n' \
+    'Flyology.DB TLA pipeline source is unqualified or its reviewed evidence changed.' \
+    "Admission-slice geometry SHA-256: $pipelined_adaptive_geometry_sha256" \
+    "Admission-slice totals: $pipelined_adaptive_generated generated," \
+    "$pipelined_adaptive_summed_distinct summed per-slice distinct (shared prefixes repeated)," \
+    "maximum depth $pipelined_adaptive_depth" \
+    "Action SHA-256: $pipelined_adaptive_action_sha256" \
+    "Focused SHA-256: $pipelined_adaptive_focused_sha256" \
+    "TLAPS obligations: $pipelined_adaptive_obligations" >&2
+  cat "$pipelined_adaptive_geometry_report" "$pipelined_adaptive_action_report" \
+    "$pipelined_adaptive_focused_report" >&2
   exit 1
 fi
 
@@ -3963,17 +4358,20 @@ printf '%s\n' \
   "  Adaptive coalescing pre-admission/safety/progress/failure/recovery witnesses reached" \
   "  Negative adaptive visibility/replay/cancellation/split/alias/authority/identity probes detected"
 printf '%s\n' \
-  "  Pipelined adaptive coalescing TLC $pipelined_adaptive_generated generated," \
-  "        $pipelined_adaptive_distinct distinct, depth $pipelined_adaptive_depth"
+  "  Pipelined adaptive coalescing TLC 24 admission-order slices:" \
+  "        $pipelined_adaptive_generated generated," \
+  "        $pipelined_adaptive_summed_distinct summed per-slice distinct," \
+  "        shared prefixes repeated, maximum depth $pipelined_adaptive_depth"
+cat "$pipelined_adaptive_geometry_report"
 printf '%s\n' "  Pipelined adaptive coalescing action coverage"
 cat "$pipelined_adaptive_action_report"
 printf '%s\n' \
-  "  Pipelined adaptive coalescing TLAPS 118/118 obligations" \
-  "  Pipelined adaptive ordered/failure/unknown-close/cancellation/recovery witnesses reached" \
-  "  Positive pipeline TLC excludes authority export/import/drop lifecycle actions" \
-  "  Export/import recovery is witnessed; TLAPS abstracts lifecycle safety" \
-  "  Negative pipelined head-order/visibility/unknown/replay/rebase/ownership/"\
-"stale/validation/resolution-token/install/receipt-ownership probes detected"
+  "  Pipelined adaptive coalescing TLAPS $pipelined_adaptive_obligations obligations proved" \
+  "  Pipeline admission/preparation/ready/close/conflict/authority witnesses reached" \
+  "  Pipeline front-validation/later-failure/collection-delivery witnesses reached" \
+  "  Focused pipeline authority lifecycle safety and conditional progress checked" \
+  "  Permanently stalled provider refutes progress as intended" \
+  "  Negative pipeline ordering/identity/ownership/bounds/successor-drain probes detected"
 printf '%s\n' "  Aggregate encoded-identity reservation TLC"
 cat "$aggregate_identity_report"
 printf '%s\n' \

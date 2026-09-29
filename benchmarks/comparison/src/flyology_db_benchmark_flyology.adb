@@ -52,6 +52,12 @@ package body Flyology_DB_Benchmark_Flyology is
       Member_Total             : Interfaces.Unsigned_64 := 0;
       Width_Counts             : Benchmark_Controls.Diagnostic_Cohort_Width_Counts := [others => 0];
       Preparation_Nanoseconds  : Interfaces.Unsigned_64 := 0;
+      Fixture_Generation_Nanoseconds : Interfaces.Unsigned_64 := 0;
+      Begin_Nanoseconds        : Interfaces.Unsigned_64 := 0;
+      Mutation_Put_Nanoseconds : Interfaces.Unsigned_64 := 0;
+      Prepared_Transactions    : Interfaces.Unsigned_64 := 0;
+      Prepared_Mutations       : Interfaces.Unsigned_64 := 0;
+      Preparation_Wait_Nanoseconds : Interfaces.Unsigned_64 := 0;
       Admission_Nanoseconds    : Interfaces.Unsigned_64 := 0;
       Completion_Drive_Nanoseconds : Interfaces.Unsigned_64 := 0;
    end record;
@@ -63,6 +69,12 @@ package body Flyology_DB_Benchmark_Flyology is
    Latest_Batch_Publications    : Natural := 0;
    Latest_Manifest_Publications : Natural := 0;
    Latest_Head_Publications     : Natural := 0;
+   Latest_Caller_Pipeline_Depth : Positive := 1;
+   Latest_Caller_Preparation_Width : Positive := 1;
+   Latest_Preparation_Breakdown_Available : Boolean := False;
+   Latest_Runtime_Preparation_Concurrency : Positive := 1;
+   Latest_Runtime_Pipeline_Depth : Positive := 1;
+   Latest_Runtime_Unattributed_Nanoseconds : Interfaces.Unsigned_64 := 0;
 
    procedure Require (Condition : Boolean; Message : String) is
    begin
@@ -155,6 +167,11 @@ package body Flyology_DB_Benchmark_Flyology is
         & ",""batch_publications"":" & Image (Latest_Batch_Publications)
         & ",""manifest_publications"":" & Image (Latest_Manifest_Publications)
         & ",""head_publications"":" & Image (Latest_Head_Publications)
+        & ",""caller_pipeline_depth"":" & Image (Latest_Caller_Pipeline_Depth)
+        & ",""caller_preparation_width"":" & Image (Latest_Caller_Preparation_Width)
+        & ",""runtime_preparation_concurrency"":"
+        & Image (Latest_Runtime_Preparation_Concurrency)
+        & ",""runtime_pipeline_depth"":" & Image (Latest_Runtime_Pipeline_Depth)
         & "}";
    end Last_Run_Configuration_NDJSON;
 
@@ -170,11 +187,11 @@ package body Flyology_DB_Benchmark_Flyology is
         UStrings.To_Unbounded_String
           ("{""schema"":""flyology.db.benchmark.commit_diagnostics.v1"""
          & ",""kind"":""flyology_db_commit_diagnostics"""
-           & ",""attribution"":""elapsed_upper_bounds_nonadditive"""
-           & ",""worker_span_semantics"":""provider_inclusive_sequential"""
+           & ",""attribution"":""elapsed_per_cohort_nonadditive_with_unattributed_gap"""
+           & ",""worker_span_semantics"":""provider_inclusive_per_cohort_nonadditive"""
            & ",""caller_span_semantics"":""overlaps_worker_completion_includes_driver"""
            & ",""boundary_semantics"":""nonexclusive_predicates"""
-           & ",""precompletion_semantics"":""inclusive_worker_total"""
+           & ",""precompletion_semantics"":""summed_selection_to_completion_per_cohort"""
            & ",""execution_ordinal"":" & Image (Execution_Ordinal)
            & ",""transactions"":" & Image (Transactions)
            & ",""cohort_total"":" & Image (Latest_Runtime_Diagnostics.Cohort_Total)
@@ -210,7 +227,35 @@ package body Flyology_DB_Benchmark_Flyology is
          & ",""installation_ns"":" & Image (Latest_Runtime_Diagnostics.Phases.Installation_Nanoseconds)
          & ",""precompletion_ns"":"
          & Image (Latest_Runtime_Diagnostics.Phases.Precompletion_Nanoseconds)
+         & ",""pipeline_unattributed_ns"":"
+         & Image (Latest_Runtime_Unattributed_Nanoseconds)
          & ",""caller_preparation_ns"":" & Image (Latest_Caller_Diagnostics.Preparation_Nanoseconds)
+         & ",""caller_preparation_breakdown_semantics"":""elapsed_wall_spans_inside_preparation"""
+         & ",""caller_mutation_put_boundary"":""Ada_DB_Put_call_scope_owned_arrays"""
+         & ",""caller_preparation_breakdown_available"":"
+         & (if Latest_Preparation_Breakdown_Available then "true" else "false")
+         & ",""caller_fixture_generation_ns"":"
+         & (if Latest_Preparation_Breakdown_Available
+            then Image (Latest_Caller_Diagnostics.Fixture_Generation_Nanoseconds)
+            else "null")
+         & ",""caller_begin_ns"":"
+         & (if Latest_Preparation_Breakdown_Available
+            then Image (Latest_Caller_Diagnostics.Begin_Nanoseconds)
+            else "null")
+         & ",""caller_mutation_put_ns"":"
+         & (if Latest_Preparation_Breakdown_Available
+            then Image (Latest_Caller_Diagnostics.Mutation_Put_Nanoseconds)
+            else "null")
+         & ",""caller_measured_prepared_transactions"":"
+         & (if Latest_Preparation_Breakdown_Available
+            then Image (Latest_Caller_Diagnostics.Prepared_Transactions)
+            else "null")
+         & ",""caller_measured_prepared_mutations"":"
+         & (if Latest_Preparation_Breakdown_Available
+            then Image (Latest_Caller_Diagnostics.Prepared_Mutations)
+            else "null")
+         & ",""caller_preparation_wait_ns"":"
+         & Image (Latest_Caller_Diagnostics.Preparation_Wait_Nanoseconds)
          & ",""caller_admission_ns"":" & Image (Latest_Caller_Diagnostics.Admission_Nanoseconds)
          & ",""caller_completion_drive_ns"":"
          & Image (Latest_Caller_Diagnostics.Completion_Drive_Nanoseconds)
@@ -246,6 +291,26 @@ package body Flyology_DB_Benchmark_Flyology is
       when Constraint_Error =>
          raise Program_Error with "FLYOLOGY_DB_BENCH_PIPELINE_DEPTH must be a positive integer";
    end Requested_Pipeline_Depth;
+
+   function Requested_Preparation_Width return Positive is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_PREPARATION_WIDTH");
+   begin
+      return (if Raw'Length = 0 then 1 else Positive'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error with "FLYOLOGY_DB_BENCH_PREPARATION_WIDTH must be a positive integer";
+   end Requested_Preparation_Width;
+
+   function Requested_Packed_Admission return Boolean is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_PACKED_ADMISSION");
+   begin
+      if Raw'Length = 0 or else Raw = "0" then
+         return False;
+      elsif Raw = "1" then
+         return True;
+      end if;
+      raise Program_Error with "FLYOLOGY_DB_BENCH_PACKED_ADMISSION must be 0 or 1";
+   end Requested_Packed_Admission;
 
    function Requested_Wave_Scheduling return Boolean is
       Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_PIPELINE_SCHEDULE");
@@ -323,6 +388,27 @@ package body Flyology_DB_Benchmark_Flyology is
       when Constraint_Error =>
          raise Program_Error with "FLYOLOGY_DB_BENCH_ADAPTIVE_ADMISSION_DEPTH must be a natural number";
    end Requested_Adaptive_Admission_Depth;
+
+   function Requested_Adaptive_Preparation_Concurrency return Natural is
+      Raw : constant String :=
+        Optional_Environment ("FLYOLOGY_DB_BENCH_ADAPTIVE_PREPARATION_CONCURRENCY");
+   begin
+      return (if Raw'Length = 0 then 1 else Natural'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error
+           with "FLYOLOGY_DB_BENCH_ADAPTIVE_PREPARATION_CONCURRENCY must be a natural number";
+   end Requested_Adaptive_Preparation_Concurrency;
+
+   function Requested_Adaptive_Pipeline_Depth return Natural is
+      Raw : constant String := Optional_Environment ("FLYOLOGY_DB_BENCH_ADAPTIVE_PIPELINE_COHORTS");
+   begin
+      return (if Raw'Length = 0 then 1 else Natural'Value (Raw));
+   exception
+      when Constraint_Error =>
+         raise Program_Error
+           with "FLYOLOGY_DB_BENCH_ADAPTIVE_PIPELINE_COHORTS must be a natural number";
+   end Requested_Adaptive_Pipeline_Depth;
 
    function Adaptive_Wait_Duration (Microseconds : Interfaces.Unsigned_64) return Duration is
       Whole_Seconds : constant Interfaces.Unsigned_64 := Microseconds / 1_000_000;
@@ -405,10 +491,15 @@ package body Flyology_DB_Benchmark_Flyology is
       Mutations    : Positive;
       Key_Length   : Positive;
       Value_Length : Positive;
-      Transaction  : in out DB.Transaction)
+      Transaction  : in out DB.Transaction;
+      Diagnostics  : access Caller_Diagnostics := null)
    is
-      Result : DB.Outcome_Code;
+      Result  : DB.Outcome_Code;
+      Started : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
    begin
+      if Diagnostics /= null then
+         Started := Ada.Real_Time.Clock;
+      end if;
       DB.Begin_Transaction
         (Item,
          DB.Transaction_Identifier
@@ -417,21 +508,45 @@ package body Flyology_DB_Benchmark_Flyology is
          Transaction,
          Result);
       Expect (Result, "begin failed");
+      if Diagnostics /= null then
+         Add_Elapsed (Diagnostics.all.Begin_Nanoseconds, Started, Ada.Real_Time.Clock);
+      end if;
       for Mutation in 1 .. Mutations loop
          declare
             Key_Index : constant Positive :=
               (Index - 1) * Mutations + Mutation;
          begin
-            DB.Put
-              (Item,
-               Transaction,
-               Family,
-               Key_For (Key_Index, Key_Length),
-               Value_For (Key_Index, Value_Length),
-               Result);
+            if Diagnostics /= null then
+               declare
+                  Generated_At : constant Ada.Real_Time.Time := Ada.Real_Time.Clock;
+                  Key          : constant DB.Byte_Array := Key_For (Key_Index, Key_Length);
+                  Value        : constant DB.Byte_Array := Value_For (Key_Index, Value_Length);
+               begin
+                  Add_Elapsed
+                    (Diagnostics.all.Fixture_Generation_Nanoseconds,
+                     Generated_At,
+                     Ada.Real_Time.Clock);
+                  Started := Ada.Real_Time.Clock;
+                  DB.Put (Item, Transaction, Family, Key, Value, Result);
+                  Add_Elapsed
+                    (Diagnostics.all.Mutation_Put_Nanoseconds, Started, Ada.Real_Time.Clock);
+                  Diagnostics.all.Prepared_Mutations := Diagnostics.all.Prepared_Mutations + 1;
+               end;
+            else
+               DB.Put
+                 (Item,
+                  Transaction,
+                  Family,
+                  Key_For (Key_Index, Key_Length),
+                  Value_For (Key_Index, Value_Length),
+                  Result);
+            end if;
             Expect (Result, "put failed");
          end;
       end loop;
+      if Diagnostics /= null then
+         Diagnostics.all.Prepared_Transactions := Diagnostics.all.Prepared_Transactions + 1;
+      end if;
    exception
       when others =>
          DB.Rollback (Transaction, Result);
@@ -472,6 +587,8 @@ package body Flyology_DB_Benchmark_Flyology is
       First_Index    : Positive;
       Count          : Positive;
       Pipeline_Depth : Positive;
+      Preparation_Width : Positive;
+      Packed_Admission : Boolean;
       Mutations      : Positive;
       Key_Length     : Positive;
       Value_Length   : Positive;
@@ -481,7 +598,7 @@ package body Flyology_DB_Benchmark_Flyology is
       Adaptive_Cohort : Boolean;
       Wave_Scheduling : Boolean;
       Collect_Diagnostics : Boolean;
-      Diagnostics         : in out Caller_Diagnostics)
+      Diagnostics         : aliased in out Caller_Diagnostics)
    is
       type Operation_Access is access DB.Commit_Operation;
       procedure Free is new Ada.Unchecked_Deallocation
@@ -520,7 +637,16 @@ package body Flyology_DB_Benchmark_Flyology is
               (Aggregate_First_Ordinal
                + Interfaces.Unsigned_64 ((Index - 1) / Cohort_Width)));
       begin
-         DB.Finish (Work (Slot).all, Receipt, Result);
+         begin
+            DB.Finish (Work (Slot).all, Receipt, Result);
+         exception
+            when others =>
+               Operations.Release (Work (Slot).all);
+               Active (Slot) := False;
+               Active_Count := Active_Count - 1;
+               Finished := Finished + 1;
+               raise;
+         end;
          Operations.Release (Work (Slot).all);
          Active (Slot) := False;
          Active_Count := Active_Count - 1;
@@ -574,54 +700,415 @@ package body Flyology_DB_Benchmark_Flyology is
             end if;
          end loop;
       end Release_All;
+
+      procedure Submit_Prepared
+        (Transaction : in out DB.Transaction;
+         Index       : Positive)
+      is
+         Slot    : Positive := Work'First;
+         Started : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+      begin
+         while Active (Slot) loop
+            Slot := Slot + 1;
+         end loop;
+         if Collect_Diagnostics then
+            Started := Ada.Real_Time.Clock;
+         end if;
+         Index_For (Slot) := Index;
+         Active (Slot) := True;
+         Active_Count := Active_Count + 1;
+         begin
+            DB.Commit (Transaction, Deadline, Work (Slot).all);
+         exception
+            when others =>
+               if not Operations.Is_Active (Work (Slot).all)
+                 and then not Operations.Is_Terminal (Work (Slot).all)
+               then
+                  Active (Slot) := False;
+                  Active_Count := Active_Count - 1;
+               end if;
+               raise;
+         end;
+         if Collect_Diagnostics then
+            Add_Elapsed
+              (Diagnostics.Admission_Nanoseconds, Started, Ada.Real_Time.Clock);
+         end if;
+         Submitted := Submitted + 1;
+      end Submit_Prepared;
+
+      procedure Prepare_Parallel_Wave
+        (Wave_First : Positive;
+         Wave_Count : Positive)
+      is
+         Transactions : DB.Transaction_Array (1 .. Wave_Count);
+
+         protected Tracker is
+            procedure Complete (Succeeded : Boolean);
+            entry Await_All (Succeeded : out Boolean);
+         private
+            Completed : Natural := 0;
+            All_Succeeded : Boolean := True;
+         end Tracker;
+
+         protected body Tracker is
+            procedure Complete (Succeeded : Boolean) is
+            begin
+               Completed := Completed + 1;
+               All_Succeeded := All_Succeeded and Succeeded;
+            end Complete;
+
+            entry Await_All (Succeeded : out Boolean) when Completed = Preparation_Width is
+            begin
+               Succeeded := All_Succeeded;
+            end Await_All;
+         end Tracker;
+
+         task type Preparation_Worker is
+            entry Start (Worker : Positive);
+         end Preparation_Worker;
+
+         task body Preparation_Worker is
+            Worker_ID : Positive := 1;
+            Succeeded : Boolean := True;
+         begin
+            accept Start (Worker : Positive) do
+               Worker_ID := Worker;
+            end Start;
+            for Slot in Transactions'Range loop
+               if (Slot - Transactions'First) mod Preparation_Width = Worker_ID - 1 then
+                  begin
+                     Prepare_Transaction
+                       (Item,
+                        Family,
+                        Wave_First + Slot - Transactions'First,
+                        Mutations,
+                        Key_Length,
+                        Value_Length,
+                        Transactions (Slot));
+                  exception
+                     when others =>
+                        Succeeded := False;
+                  end;
+               end if;
+            end loop;
+            Tracker.Complete (Succeeded);
+         end Preparation_Worker;
+
+         Workers : array (1 .. Preparation_Width) of Preparation_Worker;
+         Succeeded : Boolean;
+         Ignored_Result : DB.Outcome_Code;
+      begin
+         for Worker in Workers'Range loop
+            Workers (Worker).Start (Worker);
+         end loop;
+         Tracker.Await_All (Succeeded);
+         if not Succeeded then
+            for Transaction of Transactions loop
+               DB.Rollback (Transaction, Ignored_Result);
+            end loop;
+            raise Program_Error with "parallel transaction preparation failed";
+         end if;
+         for Slot in Transactions'Range loop
+            Submit_Prepared
+              (Transactions (Slot), Wave_First + Slot - Transactions'First);
+         end loop;
+      end Prepare_Parallel_Wave;
+
+      procedure Run_Packed is
+         type Bank_Index is range 1 .. 2;
+         subtype Transaction_Bank is DB.Transaction_Array (1 .. Pipeline_Depth);
+         type Transaction_Banks is array (Bank_Index) of Transaction_Bank;
+         Banks : Transaction_Banks;
+
+         procedure Rollback_Bank (Bank : Bank_Index; Wave_Count : Positive) is
+            Ignored_Result : DB.Outcome_Code;
+         begin
+            for Slot in Positive range 1 .. Wave_Count loop
+               DB.Rollback (Banks (Bank) (Slot), Ignored_Result);
+            end loop;
+         end Rollback_Bank;
+
+         task type Preparation_Worker is
+            entry Start
+              (Worker : Positive; Bank : Bank_Index; Wave_First : Positive; Wave_Count : Positive);
+            entry Await_Ready (Was_Successful : out Boolean);
+            entry Stop;
+         end Preparation_Worker;
+
+         task body Preparation_Worker is
+            Worker_ID      : Positive := 1;
+            Selected_Bank  : Bank_Index := Bank_Index'First;
+            Selected_First : Positive := First_Index;
+            Selected_Count : Positive := 1;
+            Succeeded      : Boolean := True;
+            Stopping       : Boolean := False;
+         begin
+            loop
+               select
+                  accept Start
+                    (Worker : Positive;
+                     Bank : Bank_Index;
+                     Wave_First : Positive;
+                     Wave_Count : Positive)
+                  do
+                     Worker_ID := Worker;
+                     Selected_Bank := Bank;
+                     Selected_First := Wave_First;
+                     Selected_Count := Wave_Count;
+                  end Start;
+               or
+                  accept Stop do
+                     Stopping := True;
+                  end Stop;
+               end select;
+               exit when Stopping;
+               Succeeded := True;
+               begin
+                  for Slot in Positive range 1 .. Selected_Count loop
+                     if (Slot - 1) mod Preparation_Width = Worker_ID - 1 then
+                        Prepare_Transaction
+                          (Item,
+                           Family,
+                           Selected_First + Slot - 1,
+                           Mutations,
+                           Key_Length,
+                           Value_Length,
+                           Banks (Selected_Bank) (Slot));
+                     end if;
+                  end loop;
+               exception
+                  when others =>
+                     Succeeded := False;
+               end;
+               select
+                  accept Await_Ready (Was_Successful : out Boolean) do
+                     Was_Successful := Succeeded;
+                  end Await_Ready;
+               or
+                  accept Stop do
+                     for Slot in Positive range 1 .. Selected_Count loop
+                        if (Slot - 1) mod Preparation_Width = Worker_ID - 1 then
+                           declare
+                              Ignored_Result : DB.Outcome_Code;
+                           begin
+                              DB.Rollback (Banks (Selected_Bank) (Slot), Ignored_Result);
+                           end;
+                        end if;
+                     end loop;
+                     Stopping := True;
+                  end Stop;
+               end select;
+               exit when Stopping;
+            end loop;
+         end Preparation_Worker;
+
+         Workers : array (1 .. Preparation_Width) of Preparation_Worker;
+
+         Current_Bank       : Bank_Index := Bank_Index'First;
+         Next_Bank          : Bank_Index := Bank_Index'Last;
+         Current_First      : Positive := First_Index;
+         Current_Count      : Positive := Positive'Min (Pipeline_Depth, Count);
+         Pool_Active        : Boolean := False;
+         Pool_Started       : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+
+         procedure Dispatch_Pool
+           (Bank : Bank_Index; Wave_First : Positive; Wave_Count : Positive) is
+         begin
+            Require (not Pool_Active, "packed preparation pool is already active");
+            Pool_Started := Ada.Real_Time.Clock;
+            for Worker in Workers'Range loop
+               Workers (Worker).Start (Worker, Bank, Wave_First, Wave_Count);
+            end loop;
+            Pool_Active := True;
+         end Dispatch_Pool;
+
+         procedure Await_Pool is
+            Worker_Succeeded : Boolean;
+            All_Succeeded    : Boolean := True;
+            Started   : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+         begin
+            Require (Pool_Active, "packed preparation pool is not active");
+            if Collect_Diagnostics then
+               Started := Ada.Real_Time.Clock;
+            end if;
+            for Worker in Workers'Range loop
+               begin
+                  Workers (Worker).Await_Ready (Worker_Succeeded);
+                  All_Succeeded := All_Succeeded and Worker_Succeeded;
+               exception
+                  when Tasking_Error =>
+                     All_Succeeded := False;
+               end;
+            end loop;
+            Pool_Active := False;
+            if Collect_Diagnostics then
+               Add_Elapsed
+                 (Diagnostics.Preparation_Wait_Nanoseconds, Started, Ada.Real_Time.Clock);
+               Add_Elapsed
+                 (Diagnostics.Preparation_Nanoseconds, Pool_Started, Ada.Real_Time.Clock);
+            end if;
+            Require (All_Succeeded, "packed-cohort transaction preparation failed");
+         end Await_Pool;
+
+         procedure Stop_Workers is
+         begin
+            for Worker in Workers'Range loop
+               begin
+                  Workers (Worker).Stop;
+               exception
+                  when Tasking_Error =>
+                     null;
+               end;
+            end loop;
+            Pool_Active := False;
+         end Stop_Workers;
+
+         procedure Submit_Packed_Bank
+           (Bank       : Bank_Index;
+            Wave_First : Positive;
+            Wave_Count : Positive)
+         is
+            Submitted_In_Wave : Natural := 0;
+            Selection_Paused  : Boolean := False;
+            Result            : DB.Outcome_Code;
+         begin
+            Benchmark_Controls.Pause_Cohort_Selection (Item, Result);
+            Expect (Result, "packed-cohort selection pause failed");
+            Selection_Paused := True;
+            for Slot in Positive range 1 .. Wave_Count loop
+               Submit_Prepared (Banks (Bank) (Slot), Wave_First + Slot - 1);
+               Submitted_In_Wave := Submitted_In_Wave + 1;
+            end loop;
+            Benchmark_Controls.Resume_Cohort_Selection (Item, Result);
+            Expect (Result, "packed-cohort selection resume failed");
+            Selection_Paused := False;
+         exception
+            when others =>
+               if Selection_Paused then
+                  Benchmark_Controls.Resume_Cohort_Selection (Item, Result);
+               end if;
+               for Slot in Submitted_In_Wave + 1 .. Wave_Count loop
+                  DB.Rollback (Banks (Bank) (Slot), Result);
+               end loop;
+               raise;
+         end Submit_Packed_Bank;
+
+      begin
+         Dispatch_Pool (Current_Bank, Current_First, Current_Count);
+         Await_Pool;
+         loop
+            declare
+               Has_Next   : constant Boolean := Submitted + Current_Count < Count;
+               Next_First : constant Positive := Current_First + Current_Count;
+               Next_Count : constant Positive :=
+                 (if Has_Next
+                  then Positive'Min (Pipeline_Depth, Count - Submitted - Current_Count)
+                  else 1);
+            begin
+               if Has_Next then
+                  Dispatch_Pool (Next_Bank, Next_First, Next_Count);
+               end if;
+               Require (Active_Count = 0, "packed admission requires an empty cohort boundary");
+               Submit_Packed_Bank (Current_Bank, Current_First, Current_Count);
+               while Active_Count > 0 loop
+                  Drain_Ready;
+               end loop;
+               exit when not Has_Next;
+               Await_Pool;
+               Current_Bank := Next_Bank;
+               Next_Bank := (if Next_Bank = Bank_Index'First then Bank_Index'Last else Bank_Index'First);
+               Current_First := Next_First;
+               Current_Count := Next_Count;
+            end;
+         end loop;
+         Stop_Workers;
+      exception
+         when others =>
+            Stop_Workers;
+            for Bank in Banks'Range loop
+               Rollback_Bank (Bank, Pipeline_Depth);
+            end loop;
+            raise;
+      end Run_Packed;
    begin
       for Slot in Work'Range loop
          Work (Slot) := new DB.Commit_Operation (Set'Access, Item'Access, null);
       end loop;
-      while Finished < Count loop
-         while Submitted < Count and then Active_Count < Pipeline_Depth loop
+      if Packed_Admission then
+         Run_Packed;
+      elsif Preparation_Width > 1 then
+         while Finished < Count loop
             declare
-               Slot        : Positive := Work'First;
-               Index       : constant Positive := First_Index + Submitted;
-               Transaction : DB.Transaction;
-               Result      : DB.Outcome_Code;
-               Started     : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+               Wave_Count : constant Positive :=
+                 Positive'Min (Pipeline_Depth, Count - Submitted);
             begin
-               while Active (Slot) loop
-                  Slot := Slot + 1;
-               end loop;
-               if Collect_Diagnostics then
-                  Started := Ada.Real_Time.Clock;
-               end if;
-               Prepare_Transaction
-                 (Item, Family, Index, Mutations, Key_Length, Value_Length, Transaction);
-               if Collect_Diagnostics then
-                  Add_Elapsed
-                    (Diagnostics.Preparation_Nanoseconds, Started, Ada.Real_Time.Clock);
-                  Started := Ada.Real_Time.Clock;
-               end if;
-               DB.Commit (Transaction, Deadline, Work (Slot).all);
-               if Collect_Diagnostics then
-                  Add_Elapsed
-                    (Diagnostics.Admission_Nanoseconds, Started, Ada.Real_Time.Clock);
-               end if;
-               Index_For (Slot) := Index;
-               Active (Slot) := True;
-               Active_Count := Active_Count + 1;
-               Submitted := Submitted + 1;
-            exception
-               when others =>
-                  DB.Rollback (Transaction, Result);
-                  raise;
+               Require (Active_Count = 0, "parallel preparation requires an empty wave");
+               Prepare_Parallel_Wave (First_Index + Submitted, Wave_Count);
             end;
-         end loop;
-         Drain_Ready;
-         if Wave_Scheduling then
             while Active_Count > 0 loop
                Drain_Ready;
             end loop;
-         end if;
-      end loop;
+         end loop;
+      else
+         while Finished < Count loop
+            while Submitted < Count and then Active_Count < Pipeline_Depth loop
+               declare
+                  Index       : constant Positive := First_Index + Submitted;
+                  Transaction : DB.Transaction;
+                  Result      : DB.Outcome_Code;
+                  Started     : Ada.Real_Time.Time := Ada.Real_Time.Time_First;
+               begin
+                  if Collect_Diagnostics then
+                     Started := Ada.Real_Time.Clock;
+                  end if;
+                  Prepare_Transaction
+                    (Item,
+                     Family,
+                     Index,
+                     Mutations,
+                     Key_Length,
+                     Value_Length,
+                     Transaction,
+                     (if Collect_Diagnostics then Diagnostics'Access else null));
+                  if Collect_Diagnostics then
+                     Add_Elapsed
+                       (Diagnostics.Preparation_Nanoseconds, Started, Ada.Real_Time.Clock);
+                  end if;
+                  Submit_Prepared (Transaction, Index);
+               exception
+                  when others =>
+                     DB.Rollback (Transaction, Result);
+                     raise;
+               end;
+            end loop;
+            Drain_Ready;
+            if Wave_Scheduling then
+               while Active_Count > 0 loop
+                  Drain_Ready;
+               end loop;
+            end if;
+         end loop;
+      end if;
+      if Collect_Diagnostics and then Preparation_Width = 1 and then not Packed_Admission then
+         Require
+           (Diagnostics.Prepared_Transactions = Interfaces.Unsigned_64 (Count)
+              and then
+                Diagnostics.Prepared_Mutations = Interfaces.Unsigned_64 (Count * Mutations),
+            "caller preparation diagnostics omitted a measured transaction or mutation");
+         Require
+           (Diagnostics.Fixture_Generation_Nanoseconds
+              <= Diagnostics.Preparation_Nanoseconds
+              and then
+                Diagnostics.Begin_Nanoseconds
+                <= Diagnostics.Preparation_Nanoseconds
+                   - Diagnostics.Fixture_Generation_Nanoseconds
+              and then
+                Diagnostics.Mutation_Put_Nanoseconds
+                <= Diagnostics.Preparation_Nanoseconds
+                   - Diagnostics.Fixture_Generation_Nanoseconds
+                   - Diagnostics.Begin_Nanoseconds,
+            "caller preparation breakdown exceeds its measured bracket");
+      end if;
       for Index in Sequences'Range loop
          Require
            (Sequences (Index) > 0
@@ -647,6 +1134,9 @@ package body Flyology_DB_Benchmark_Flyology is
                   Width := Last - First + 1;
                   Require
                     (Width <= Cohort_Width
+                       and then
+                         (not Packed_Admission
+                          or else Width = Positive'Min (Cohort_Width, Sequences'Last - First + 1))
                        and then Batch_IDs (First)
                                   = Numbered_ID (Interfaces.Unsigned_64 (1_000 + First)),
                      "adaptive cohort leader identity or member bound changed");
@@ -713,8 +1203,20 @@ package body Flyology_DB_Benchmark_Flyology is
                   Receipt : DB.Commit_Receipt;
                   Result  : DB.Outcome_Code;
                begin
-                  DB.Finish (Work (Slot).all, Receipt, Result);
-                  Operations.Release (Work (Slot).all);
+                  begin
+                     DB.Finish (Work (Slot).all, Receipt, Result);
+                  exception
+                     when others =>
+                        null;
+                  end;
+                  begin
+                     Operations.Release (Work (Slot).all);
+                  exception
+                     when others =>
+                        null;
+                  end;
+                  Active (Slot) := False;
+                  Active_Count := Active_Count - 1;
                end;
             end if;
          end loop;
@@ -950,6 +1452,8 @@ package body Flyology_DB_Benchmark_Flyology is
       Group_Size         : constant Positive := Requested_Group_Size;
       Explicit_Group     : constant Boolean := Requested_Explicit_Group;
       Pipeline_Depth     : constant Positive := Requested_Pipeline_Depth;
+      Preparation_Width  : constant Positive := Requested_Preparation_Width;
+      Packed_Admission   : constant Boolean := Requested_Packed_Admission;
       Wave_Scheduling    : constant Boolean := Requested_Wave_Scheduling;
       Independent_Cohort_Width : constant Natural := Requested_Independent_Cohort_Width;
       Aggregate_Cohort_Width   : constant Natural := Requested_Aggregate_Cohort_Width;
@@ -961,6 +1465,9 @@ package body Flyology_DB_Benchmark_Flyology is
       Adaptive_Maximum_Wait_Microseconds : constant Interfaces.Unsigned_64 :=
         Requested_Adaptive_Maximum_Wait_Microseconds;
       Adaptive_Admission_Depth : constant Natural := Requested_Adaptive_Admission_Depth;
+      Adaptive_Preparation_Concurrency : constant Natural :=
+        Requested_Adaptive_Preparation_Concurrency;
+      Adaptive_Pipeline_Depth : constant Natural := Requested_Adaptive_Pipeline_Depth;
       Adaptive_Cohort    : constant Boolean := Adaptive_Maximum_Members > 0;
       Collect_Diagnostics : constant Boolean := Effective_Commit_Diagnostics;
       Cohort_Width       : constant Natural :=
@@ -1022,7 +1529,7 @@ package body Flyology_DB_Benchmark_Flyology is
       Warmup_Batch_After, Warmup_Manifest_After, Warmup_Head_After    : Natural := 0;
       Measured_Batch_After, Measured_Manifest_After, Measured_Head_After : Natural := 0;
       Runtime_Diagnostics : Benchmark_Controls.Adaptive_Cohort_Diagnostics;
-      Caller_Snapshot     : Caller_Diagnostics;
+      Caller_Snapshot     : aliased Caller_Diagnostics;
 
       procedure Require_Cohort_Geometry
         (Batch_Before, Manifest_Before, Head_Before : Natural;
@@ -1060,6 +1567,15 @@ package body Flyology_DB_Benchmark_Flyology is
       Latest_Batch_Publications := 0;
       Latest_Manifest_Publications := 0;
       Latest_Head_Publications := 0;
+      Latest_Caller_Pipeline_Depth := Pipeline_Depth;
+      Latest_Caller_Preparation_Width := Preparation_Width;
+      Latest_Preparation_Breakdown_Available :=
+        Collect_Diagnostics and then Preparation_Width = 1 and then not Packed_Admission;
+      Latest_Runtime_Preparation_Concurrency :=
+        (if Adaptive_Cohort then Positive (Adaptive_Preparation_Concurrency) else 1);
+      Latest_Runtime_Pipeline_Depth :=
+        (if Adaptive_Cohort then Positive (Adaptive_Pipeline_Depth) else 1);
+      Latest_Runtime_Unattributed_Nanoseconds := 0;
       Require
         (Total_Transactions <= Maximum_Operations,
          "operation count exceeds benchmark fixture limit");
@@ -1067,8 +1583,23 @@ package body Flyology_DB_Benchmark_Flyology is
         (Group_Size <= Maximum_Pipeline_Depth,
          "benchmark group size exceeds the eight-slot fixture capacity");
       Require
-        (Pipeline_Depth <= Maximum_Pipeline_Depth,
-         "benchmark pipeline depth exceeds the eight-slot fixture capacity");
+        (Pipeline_Depth
+           <= (if Adaptive_Cohort then Maximum_Operations else Maximum_Pipeline_Depth),
+         "benchmark pipeline depth exceeds the selected profile capacity");
+      Require
+        (Preparation_Width <= Pipeline_Depth
+           and then (Preparation_Width = 1 or else Wave_Scheduling),
+         "parallel preparation requires wave scheduling and must fit the pipeline depth");
+      Require
+        (Preparation_Width = 1 or else not Collect_Diagnostics or else Packed_Admission,
+         "parallel preparation diagnostics require a distinct attribution schema");
+      Require
+        (not Packed_Admission
+           or else
+             (Adaptive_Cohort
+              and then Wave_Scheduling
+              and then Pipeline_Depth = Adaptive_Maximum_Members),
+         "packed admission requires adaptive full-width waves");
       Require
         ((if Independent_Cohort_Width > 0 then 1 else 0)
            + (if Aggregate_Cohort_Width > 0 then 1 else 0)
@@ -1107,15 +1638,19 @@ package body Flyology_DB_Benchmark_Flyology is
         ((not Adaptive_Cohort
             and then Adaptive_Maximum_Encoded_Bytes = 0
             and then Adaptive_Maximum_Wait_Microseconds = 0
-            and then Adaptive_Admission_Depth = 0)
+            and then Adaptive_Admission_Depth = 0
+            and then Adaptive_Preparation_Concurrency = 1
+            and then Adaptive_Pipeline_Depth = 1)
            or else
              (Adaptive_Cohort
               and then not Explicit_Group
               and then Adaptive_Maximum_Encoded_Bytes > 0
               and then Adaptive_Maximum_Wait_Microseconds > 0
               and then Adaptive_Admission_Depth >= Adaptive_Maximum_Members
-              and then Adaptive_Admission_Depth <= Maximum_Pipeline_Depth
-              and then Pipeline_Depth <= Adaptive_Admission_Depth),
+              and then Adaptive_Admission_Depth <= Maximum_Operations
+              and then Pipeline_Depth <= Adaptive_Admission_Depth
+              and then Adaptive_Preparation_Concurrency in 1 .. Maximum_Pipeline_Depth
+              and then Adaptive_Pipeline_Depth in 1 .. Maximum_Pipeline_Depth),
          "adaptive cohort scheduling requires a complete caller-selected profile");
       Require
         ((Explicit_Group
@@ -1183,6 +1718,9 @@ package body Flyology_DB_Benchmark_Flyology is
             Adaptive_Maximum_Encoded_Bytes,
             Adaptive_Wait_Duration (Adaptive_Maximum_Wait_Microseconds),
             Positive (Adaptive_Admission_Depth),
+            Positive (Adaptive_Preparation_Concurrency),
+            Positive (Adaptive_Pipeline_Depth),
+            Batch_Bytes * Interfaces.Unsigned_64 (Adaptive_Admission_Depth),
             Timeout,
             Result);
          Expect (Result, "adaptive aggregate-coalescing profile setup failed");
@@ -1224,6 +1762,8 @@ package body Flyology_DB_Benchmark_Flyology is
                1,
                Positive (Warmup),
                Pipeline_Depth,
+               Preparation_Width,
+               Packed_Admission,
                Mutations,
                Key_Length,
                Value_Length,
@@ -1283,6 +1823,8 @@ package body Flyology_DB_Benchmark_Flyology is
             Warmup + 1,
             Measured,
             Pipeline_Depth,
+            Preparation_Width,
+            Packed_Admission,
             Mutations,
             Key_Length,
             Value_Length,
@@ -1315,6 +1857,13 @@ package body Flyology_DB_Benchmark_Flyology is
             Measured_Head_After,
             Measured,
             "measured");
+         if Packed_Admission then
+            Require
+              (Latest_Batch_Publications
+                 = (Measured + Adaptive_Maximum_Members - 1) / Adaptive_Maximum_Members
+                 and then Latest_Head_Publications = Latest_Batch_Publications,
+               "packed admission did not produce the exact full-cohort publication ceiling");
+         end if;
       end if;
       if Collect_Diagnostics then
          declare
@@ -1326,11 +1875,11 @@ package body Flyology_DB_Benchmark_Flyology is
               Nanoseconds_Between (Started, Finished);
             Worker_Component_Total : Interfaces.Unsigned_64 := 0;
             Caller_Component_Total : Interfaces.Unsigned_64 := 0;
-            Worker_Difference      : Interfaces.Unsigned_64;
+            Worker_Unattributed    : Interfaces.Unsigned_64;
             Worker_Rounding_Tolerance : constant Interfaces.Unsigned_64 :=
               16 * Runtime_Diagnostics.Cohort_Total;
             Caller_Rounding_Tolerance : constant Interfaces.Unsigned_64 :=
-              2 * Interfaces.Unsigned_64 (3 * Measured + 1);
+              2 * Interfaces.Unsigned_64 (4 * Measured + 1);
 
             procedure Add_Component
               (Target : in out Interfaces.Unsigned_64; Value : Interfaces.Unsigned_64) is
@@ -1355,11 +1904,12 @@ package body Flyology_DB_Benchmark_Flyology is
             Add_Component (Worker_Component_Total, Runtime_Diagnostics.Phases.Head_Put_Nanoseconds);
             Add_Component (Worker_Component_Total, Runtime_Diagnostics.Phases.Installation_Nanoseconds);
             Add_Component (Caller_Component_Total, Caller_Snapshot.Preparation_Nanoseconds);
+            Add_Component (Caller_Component_Total, Caller_Snapshot.Preparation_Wait_Nanoseconds);
             Add_Component (Caller_Component_Total, Caller_Snapshot.Admission_Nanoseconds);
             Add_Component (Caller_Component_Total, Caller_Snapshot.Completion_Drive_Nanoseconds);
-            Worker_Difference :=
+            Worker_Unattributed :=
               (if Worker_Component_Total >= Runtime_Diagnostics.Phases.Precompletion_Nanoseconds
-               then Worker_Component_Total - Runtime_Diagnostics.Phases.Precompletion_Nanoseconds
+               then 0
                else Runtime_Diagnostics.Phases.Precompletion_Nanoseconds - Worker_Component_Total);
             --  Each cohort converts seven adjacent phases and one inclusive
             --  span independently. Caller conversion count is bounded by two
@@ -1389,17 +1939,56 @@ package body Flyology_DB_Benchmark_Flyology is
                  and then Runtime_Diagnostics.Phase_Cohort_Total /= Interfaces.Unsigned_64'Last
                  and then Runtime_Diagnostics.Phases.Precompletion_Nanoseconds
                             /= Interfaces.Unsigned_64'Last
+                 and then Caller_Snapshot.Preparation_Nanoseconds /= Interfaces.Unsigned_64'Last
+                 and then Caller_Snapshot.Fixture_Generation_Nanoseconds
+                            /= Interfaces.Unsigned_64'Last
+                 and then Caller_Snapshot.Begin_Nanoseconds /= Interfaces.Unsigned_64'Last
+                 and then Caller_Snapshot.Mutation_Put_Nanoseconds
+                            /= Interfaces.Unsigned_64'Last
+                 and then Caller_Snapshot.Preparation_Wait_Nanoseconds
+                            /= Interfaces.Unsigned_64'Last
+                 and then Caller_Snapshot.Admission_Nanoseconds /= Interfaces.Unsigned_64'Last
+                 and then Caller_Snapshot.Completion_Drive_Nanoseconds
+                            /= Interfaces.Unsigned_64'Last
                  and then Worker_Component_Total /= Interfaces.Unsigned_64'Last
                  and then Caller_Component_Total /= Interfaces.Unsigned_64'Last
-                 and then Worker_Difference <= Worker_Rounding_Tolerance
                  and then
                    Within_Rounding
-                     (Runtime_Diagnostics.Phases.Precompletion_Nanoseconds,
-                      Primary_Nanoseconds,
+                     (Worker_Component_Total,
+                      Runtime_Diagnostics.Phases.Precompletion_Nanoseconds,
                       Worker_Rounding_Tolerance)
                  and then
-                   Within_Rounding
-                     (Caller_Component_Total, Primary_Nanoseconds, Caller_Rounding_Tolerance),
+                   (Adaptive_Pipeline_Depth > 1
+                    or else
+                      Within_Rounding
+                        (Runtime_Diagnostics.Phases.Precompletion_Nanoseconds,
+                         Primary_Nanoseconds,
+                         Worker_Rounding_Tolerance))
+                 and then
+                   (if Packed_Admission
+                    then
+                      Within_Rounding
+                        (Caller_Snapshot.Preparation_Nanoseconds,
+                         Primary_Nanoseconds,
+                         Caller_Rounding_Tolerance)
+                      and then
+                        Within_Rounding
+                          (Caller_Snapshot.Preparation_Wait_Nanoseconds,
+                           Primary_Nanoseconds,
+                           Caller_Rounding_Tolerance)
+                      and then
+                        Within_Rounding
+                          (Caller_Snapshot.Admission_Nanoseconds,
+                           Primary_Nanoseconds,
+                           Caller_Rounding_Tolerance)
+                      and then
+                        Within_Rounding
+                          (Caller_Snapshot.Completion_Drive_Nanoseconds,
+                           Primary_Nanoseconds,
+                           Caller_Rounding_Tolerance)
+                    else
+                      Within_Rounding
+                        (Caller_Component_Total, Primary_Nanoseconds, Caller_Rounding_Tolerance)),
                "adaptive cohort diagnostic timing is saturated or internally inconsistent");
             for Width in Benchmark_Controls.Diagnostic_Cohort_Width loop
                Require
@@ -1409,6 +1998,7 @@ package body Flyology_DB_Benchmark_Flyology is
             end loop;
             Latest_Runtime_Diagnostics := Runtime_Diagnostics;
             Latest_Caller_Diagnostics := Caller_Snapshot;
+            Latest_Runtime_Unattributed_Nanoseconds := Worker_Unattributed;
             Latest_Diagnostics_Available := True;
          end;
       end if;

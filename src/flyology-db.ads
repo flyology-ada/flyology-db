@@ -2138,10 +2138,12 @@ package Flyology.DB is
 
 private
 
-   --  Bounded synchronous coordinator policy: eight visible operation slots
-   --  match the maximum public group width. Raising it changes memory and
-   --  backpressure behavior; it does not change persisted bytes.
-   Maximum_Commit_Slots     : constant := 8;
+   --  One cohort remains bounded by the public group width. The private
+   --  pipeline representation can retain eight such cohorts, while the
+   --  ordinary profile keeps its existing eight-operation admission bound.
+   --  These are local memory bounds and do not change persisted bytes.
+   Maximum_Pipeline_Cohorts : constant := 8;
+   Maximum_Commit_Slots     : constant := Maximum_Group_Transactions * Maximum_Pipeline_Cohorts;
    --  Current operational representation bound for manifest/batch history,
    --  aligned with the persisted-format runtime-compatibility contract. A
    --  larger persisted limit is not silently accepted by this implementation.
@@ -2336,18 +2338,24 @@ private
    --  not an application default; zero lengths become meaningful only for an
    --  admitted empty-key or empty-value mutation.
    type Owned_Mutation is record
-      Family         : Column_Family_ID := Column_Family_ID'First;
-      Operation      : Mutation_Kind := Put_Mutation;
+      Family          : Column_Family_ID := Column_Family_ID'First;
+      Operation       : Mutation_Kind := Put_Mutation;
       --  This transient hash only screens transaction-local candidates;
       --  exact payload bytes remain authoritative for key identity. The link
       --  is transient too; zero is the vacant chain sentinel.
-      Key_Hash       : Interfaces.Unsigned_64 := 0;
-      Next_In_Bucket : Natural := 0;
-      Key_Length     : Natural := 0;
-      Value_Length   : Natural := 0;
+      Key_Hash        : Interfaces.Unsigned_64 := 0;
+      Next_In_Bucket  : Natural := 0;
+      Key_Length      : Natural := 0;
+      Value_Length    : Natural := 0;
       --  One exact owned key || value image. Null represents an admitted
-      --  zero-byte payload; no descriptor may share this allocation.
-      Payload        : Owned_Byte_Array_Access := null;
+      --  zero-byte payload or a joined canonical view; no descriptor may
+      --  share this allocation. Prepared_Body below is borrowed instead.
+      Payload         : Owned_Byte_Array_Access := null;
+      --  Runtime-only view into the owning arena's canonical mutation body.
+      --  Prepared_Offset is its zero-based key start, derived from batch-v1's
+      --  mutation-frame prefix. Neither field is persisted or owns storage.
+      Prepared_Body   : Owned_Byte_Array_Access := null;
+      Prepared_Offset : Natural := 0;
    end record;
    type Owned_Mutation_Array is array (Positive range <>) of Owned_Mutation;
    type Mutation_Bucket_Array is array (Positive range <>) of Natural;
@@ -2391,6 +2399,10 @@ private
       Mutation_Buckets : Mutation_Bucket_Array (1 .. Mutation_Capacity) := [others => 0];
       Count            : Natural := 0;
       Bytes_Used       : Interfaces.Unsigned_64 := 0;
+      --  Sole owner of a sequence-independent batch-v1 mutation body after
+      --  preparation joins. Mutation views borrow it; raw payload retirement
+      --  must join before selection or collection can reclaim this arena.
+      Prepared_Body    : Owned_Byte_Array_Access := null;
       Point_Reads      : Owned_Point_Read_Access := null;
       Point_Read_Count : Interfaces.Unsigned_32 := 0;
       Scan_Ranges      : Owned_Scan_Range_Access := null;
@@ -3057,16 +3069,23 @@ private
       entry Await_Get;
       entry Continue_Get;
       function Get_Waiting return Boolean;
+      procedure Set_Head_Put_Paused (Value : Boolean);
+      procedure Arrive_Head_Put;
+      entry Await_Head_Put;
+      entry Continue_Head_Put;
+      function Head_Put_Waiting return Boolean;
    private
-      Fault_Counts  : Storage_Fault_Count := [others => 0];
-      Fault_Skips   : Storage_Fault_Count := [others => 0];
-      Fault_Modes   : Storage_Fault_Modes := [others => No_Fault];
-      Batch_Puts    : Natural := 0;
-      Run_Puts      : Natural := 0;
-      Manifest_Puts : Natural := 0;
-      Head_Puts     : Natural := 0;
-      Get_Paused    : Boolean := False;
-      Waiting_Gets  : Natural := 0;
+      Fault_Counts      : Storage_Fault_Count := [others => 0];
+      Fault_Skips       : Storage_Fault_Count := [others => 0];
+      Fault_Modes       : Storage_Fault_Modes := [others => No_Fault];
+      Batch_Puts        : Natural := 0;
+      Run_Puts          : Natural := 0;
+      Manifest_Puts     : Natural := 0;
+      Head_Puts         : Natural := 0;
+      Get_Paused        : Boolean := False;
+      Waiting_Gets      : Natural := 0;
+      Head_Put_Paused   : Boolean := False;
+      Waiting_Head_Puts : Natural := 0;
    end Storage_Test_Control;
 
    type Storage_Context is limited record
@@ -3225,14 +3244,17 @@ private
       First_Batch_Ordinal : Interfaces.Unsigned_64;
       Result              : out Outcome_Code);
    procedure Set_Test_Adaptive_Aggregate_Cohort
-     (Item                  : in out Database;
-      Maximum_Members       : Positive;
-      Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
-      Maximum_Wait          : Ada.Real_Time.Time_Span;
-      Admission_Depth       : Positive;
-      Result                : out Outcome_Code);
+     (Item                            : in out Database;
+      Maximum_Members                 : Positive;
+      Maximum_Encoded_Bytes           : Interfaces.Unsigned_64;
+      Maximum_Wait                    : Ada.Real_Time.Time_Span;
+      Admission_Depth                 : Positive;
+      Preparation_Concurrency         : Positive;
+      Pipeline_Depth                  : Positive;
+      Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
+      Result                          : out Outcome_Code);
    type Test_Adaptive_Cohort_Width_Counts is
-     array (Positive range 1 .. Maximum_Commit_Slots) of Interfaces.Unsigned_64;
+     array (Positive range 1 .. Maximum_Group_Transactions) of Interfaces.Unsigned_64;
    type Test_Adaptive_Cohort_Phase_Durations is record
       Prepublication_Nanoseconds : Interfaces.Unsigned_64 := 0;
       Build_Nanoseconds          : Interfaces.Unsigned_64 := 0;
@@ -3266,6 +3288,10 @@ private
    procedure Set_Test_Get_Paused (Item : in out Storage_Context; Value : Boolean);
    procedure Wait_For_Test_Get (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean);
    function Test_Get_Waiting (Item : Storage_Context) return Boolean;
+   procedure Set_Test_Head_Put_Paused (Item : in out Storage_Context; Value : Boolean);
+   procedure Wait_For_Test_Head_Put
+     (Item : in out Storage_Context; Timeout : Duration; Arrived : out Boolean);
+   function Test_Head_Put_Waiting (Item : Storage_Context) return Boolean;
    procedure Test_Image_Statistics
      (Allocated, Released, Arenas_Allocated, Arenas_Released, Transaction_Bytes, Source_Bytes, Sink_Bytes :
         out Interfaces.Unsigned_64);

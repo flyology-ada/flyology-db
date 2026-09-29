@@ -38,6 +38,9 @@ package Flyology.DB.Benchmark_Controls is
       Maximum_Encoded_Bytes : Interfaces.Unsigned_64;
       Maximum_Wait          : Duration;
       Admission_Depth       : Positive;
+      Preparation_Concurrency : Positive;
+      Pipeline_Depth          : Positive;
+      Maximum_In_Flight_Payload_Bytes : Interfaces.Unsigned_64;
       Timeout               : Duration;
       Result                : out Outcome_Code);
 
@@ -45,6 +48,12 @@ package Flyology.DB.Benchmark_Controls is
    --  exact-width tail waiting cannot trap exception cleanup.
    procedure Abort_Independent_Coalescing
      (Item : in out Database; Result : out Outcome_Code);
+
+   --  Hold or release private adaptive-cohort selection at a quiescent
+   --  benchmark boundary. This exposes a fully ready cohort as a diagnostic
+   --  ceiling; it is not runtime scheduling policy.
+   procedure Pause_Cohort_Selection (Item : in out Database; Result : out Outcome_Code);
+   procedure Resume_Cohort_Selection (Item : in out Database; Result : out Outcome_Code);
 
    subtype Diagnostic_Cohort_Width is Positive range 1 .. Maximum_Group_Transactions;
    type Diagnostic_Cohort_Width_Counts is

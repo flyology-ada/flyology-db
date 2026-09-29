@@ -16,6 +16,7 @@ with Flyology.DB.Object_Storage;
 with Flyology.DB.Testing;
 with Flyology.HTTP;
 with Flyology.HTTP.Client;
+with Flyology.IO.Timers;
 with Flyology.Object_Storage;
 with Flyology.Object_Storage.Backends;
 with Flyology.Object_Storage.Backends.Files;
@@ -170,22 +171,17 @@ package body Flyology.DB.Engine_Tests is
       Mapping    : constant Partition_Batch_Index_Array := [1, 2, 2];
 
       procedure Expect_Partition
-        (Expected         : Boolean;
-         Reserved_Value   : Partition_Identity_Array;
-         Checkpoint_Value : Partition_Identity_Array;
-         Batch_Value      : Partition_Identity_Array;
-         Member_Value     : Partition_Identity_Array;
-         Mapping_Value    : Partition_Batch_Index_Array;
+        (Expected           : Boolean;
+         Reserved_Value     : Partition_Identity_Array;
+         Checkpoint_Value   : Partition_Identity_Array;
+         Batch_Value        : Partition_Identity_Array;
+         Member_Value       : Partition_Identity_Array;
+         Mapping_Value      : Partition_Batch_Index_Array;
          Allow_Leader_Alias : Boolean;
-         Context          : String) is
+         Context            : String) is
       begin
          if Identity_Partitions.Valid_Partition
-              (Reserved_Value,
-               Checkpoint_Value,
-               Batch_Value,
-               Member_Value,
-               Mapping_Value,
-               Allow_Leader_Alias)
+              (Reserved_Value, Checkpoint_Value, Batch_Value, Member_Value, Mapping_Value, Allow_Leader_Alias)
            /= Expected
          then
             raise Program_Error with Context;
@@ -193,16 +189,33 @@ package body Flyology.DB.Engine_Tests is
       end Expect_Partition;
    begin
       Expect_Partition
-        (True, Reserved, Checkpoint, Batches, Members, Mapping, False,
+        (True,
+         Reserved,
+         Checkpoint,
+         Batches,
+         Members,
+         Mapping,
+         False,
          "valid identity partition was rejected");
       Expect_Partition
-        (False, Reserved, [1, 1], Batches, Members, Mapping, False,
+        (False,
+         Reserved,
+         [1, 1],
+         Batches,
+         Members,
+         Mapping,
+         False,
          "duplicate checkpoint identity was accepted");
       Expect_Partition
-        (False, Reserved, [1], Batches, Members, Mapping, False,
-         "missing checkpoint identity was accepted");
+        (False, Reserved, [1], Batches, Members, Mapping, False, "missing checkpoint identity was accepted");
       Expect_Partition
-        (False, Reserved, Checkpoint, Batches, [5, 5, 6], Mapping, False,
+        (False,
+         Reserved,
+         Checkpoint,
+         Batches,
+         [5, 5, 6],
+         Mapping,
+         False,
          "malformed singleton alias was accepted");
       Expect_Partition
         (False,
@@ -1278,6 +1291,169 @@ package body Flyology.DB.Engine_Tests is
       Close (Reopened, Result);
       Expect (Result, Success, "dynamic-mutation reopened close failed");
    end Test_Dynamic_Mutation_Descriptors;
+
+   procedure Test_Owned_Copy_Boundaries
+     (Backend : not null access Backends.Backend'Class; Prefix : String; Tag : Byte)
+   is
+      Context      : aliased Storage_Context;
+      Lost_Context : aliased Storage_Context;
+      Item         : Database;
+      Reopened     : Database;
+      Family       : Column_Family;
+      Txn          : Transaction;
+      Receipt      : Commit_Receipt;
+      Result       : Outcome_Code;
+      Case_Number  : Natural := 0;
+      --  These are adversarial corpus dimensions, not library tuning. Four
+      --  64-byte keys cover every octet; every full value also covers 0..255.
+      --  Sixteen-byte parent alignment makes element two an adversarial
+      --  one-byte-offset source; it is test geometry, not copy dispatch.
+      Key_Parent   : Byte_Array (1 .. 66)
+      with Alignment => 16;
+      Value_Parent : Byte_Array (1 .. 258)
+      with Alignment => 16;
+      High_Key     : Byte_Array (Positive'Last - 63 .. Positive'Last);
+      High_Value   : Byte_Array (Positive'Last - 255 .. Positive'Last);
+      type Copy_Length_Array is array (Positive range <>) of Natural;
+      Copy_Lengths : constant Copy_Length_Array := [1, 3, 7, 15, 16, 31, 63, 64, 127, 255, 256];
+
+      procedure Check (Target : in out Database; Item_Key, Expected : Byte_Array) is
+         Data : Flyology.Bytes.Unbounded_Bytes;
+      begin
+         Root_DB.Get (Target, Txn, Family, Item_Key, Data, Result);
+         Expect (Result, Success, "owned copy exact read failed");
+         if Flyology.Bytes.Length (Data) /= Expected'Length then
+            raise Program_Error with "owned copy exact length changed";
+         end if;
+         if Expected'Length > 0 then
+            for Offset in Natural range 0 .. Expected'Length - 1 loop
+               if Byte (Flyology.Bytes.Element (Data, Offset + 1)) /= Expected (Expected'First + Offset) then
+                  raise Program_Error with "owned copy exact octet changed";
+               end if;
+            end loop;
+         end if;
+      end Check;
+
+      procedure Run_Case (Item_Key, Value_Data : Byte_Array) is
+         Before       : constant Ownership_Snapshot := Current_Ownership;
+         Before_Count : Natural;
+         Before_Bytes : Interfaces.Unsigned_64;
+         Owned        : Flyology.Bytes.Unbounded_Bytes;
+      begin
+         Case_Number := Case_Number + 1;
+         Begin_Transaction (Item, Numbered_TX_ID (81_000 + Case_Number), Txn, Result);
+         Expect (Result, Success, "owned copy boundary transaction begin failed");
+         declare
+            Borrowed_Key    : Byte_Array (Item_Key'Range) := Item_Key;
+            Borrowed_Value  : Byte_Array (Value_Data'Range) := Value_Data;
+            --  Only overwrite views are volatile. Passing a volatile actual
+            --  to the ordinary Put formal would introduce an Ada by-copy
+            --  boundary and would not test overwriting its exact source.
+            Overwrite_Key   : Byte_Array (Borrowed_Key'Range)
+            with Import, Address => Borrowed_Key'Address, Volatile;
+            Overwrite_Value : Byte_Array (Borrowed_Value'Range)
+            with Import, Address => Borrowed_Value'Address, Volatile;
+         begin
+            Root_DB.Put (Item, Txn, Family, Borrowed_Key, Borrowed_Value, Result);
+            Expect (Result, Success, "owned copy boundary put failed");
+            Overwrite_Key := [others => 16#FF#];
+            Overwrite_Value := [others => 16#FF#];
+         end;
+         --  Observable caller overwrites and scope exit precede the read.
+         Check (Item, Item_Key, Value_Data);
+         Before_Count := Txn.Owner.Arena.Count;
+         Before_Bytes := Txn.Owner.Arena.Bytes_Used;
+         Testing.Fail_Next_Allocation (Testing.Transaction_Payload);
+         Root_DB.Put (Item, Txn, Family, Item_Key, [16#FE#, 16#FD#, 16#FC#], Result);
+         Expect (Result, Capacity_Exceeded, "owned copy replacement failure was not typed capacity");
+         if Txn.Owner.Arena.Count /= Before_Count or else Txn.Owner.Arena.Bytes_Used /= Before_Bytes then
+            raise Program_Error with "owned copy failed allocation changed accounting";
+         end if;
+         Check (Item, Item_Key, Value_Data);
+         Root_DB.Put (Item, Txn, Family, Item_Key, [], Result);
+         Expect (Result, Success, "owned copy empty replacement failed");
+         Check (Item, Item_Key, []);
+         Root_DB.Put (Item, Txn, Family, Item_Key, [1, 2, 3], Result);
+         Expect (Result, Success, "owned copy three-byte replacement failed");
+         Check (Item, Item_Key, [1, 2, 3]);
+         Root_DB.Put (Item, Txn, Family, Item_Key, Value_Data, Result);
+         Expect (Result, Success, "owned copy original-value replacement failed");
+         Check (Item, Item_Key, Value_Data);
+         Root_DB.Delete (Item, Txn, Family, Item_Key, Result);
+         Expect (Result, Success, "owned copy delete failed");
+         Root_DB.Get (Item, Txn, Family, Item_Key, Owned, Result);
+         Expect (Result, Not_Found, "owned copy delete retained bytes");
+         Rollback (Txn, Result);
+         Expect (Result, Success, "owned copy rollback failed");
+         Expect_No_Owner_Growth (Before, "owned copy boundary rollback");
+      end Run_Case;
+   begin
+      Bind_Context (Context, Backend, Prefix);
+      Create_DB (Item, Context'Access, DB_ID (Tag), Numbered_ID (80_000 + Natural (Tag)), Result);
+      Expect (Result, Success, "owned copy database create failed");
+      Open_Column_Family (Item, 1, Family, Result);
+      Expect (Result, Success, "owned copy family open failed");
+      for Offset in Natural range 0 .. 257 loop
+         Value_Parent (Offset + 1) := Byte ((Offset + 255) mod 256);
+      end loop;
+      for Quarter in Natural range 0 .. 3 loop
+         for Offset in Natural range 0 .. 65 loop
+            Key_Parent (Offset + 1) := Byte ((Quarter * 64 + Offset + 255) mod 256);
+         end loop;
+         --  The copied locals retain these adversarial non-one bounds.
+         Run_Case (Key_Parent (2 .. 65), Value_Parent (2 .. 257));
+      end loop;
+      Begin_Transaction (Item, Numbered_TX_ID (81_100), Txn, Result);
+      Expect (Result, Success, "owned copy unaligned transaction begin failed");
+      --  Pass the original aligned parents' offset slices directly, without
+      --  staging them in standalone locals before the production Put call.
+      Root_DB.Put (Item, Txn, Family, Key_Parent (2 .. 65), Value_Parent (2 .. 257), Result);
+      Expect (Result, Success, "owned copy unaligned put failed");
+      Check (Item, Key_Parent (2 .. 65), Value_Parent (2 .. 257));
+      Rollback (Txn, Result);
+      Expect (Result, Success, "owned copy unaligned rollback failed");
+      for Offset in Natural range 0 .. 63 loop
+         High_Key (High_Key'First + Offset) := Byte (Offset);
+      end loop;
+      for Offset in Natural range 0 .. 255 loop
+         High_Value (High_Value'First + Offset) := Byte (Offset);
+      end loop;
+      Run_Case (High_Key, High_Value);
+      Run_Case ([], []);
+      Run_Case ([], Value_Parent (2 .. 257));
+      Run_Case (Key_Parent (2 .. 65), []);
+      --  Native-copy size boundaries remain test cases, never dispatch policy.
+      for Length of Copy_Lengths loop
+         Run_Case (Key_Parent (2 .. 2), Value_Parent (2 .. Length + 1));
+      end loop;
+      Begin_Transaction (Item, Numbered_TX_ID (82_000), Txn, Result);
+      Expect (Result, Success, "owned copy durable transaction begin failed");
+      Root_DB.Put (Item, Txn, Family, High_Key, High_Value, Result);
+      Expect (Result, Success, "owned copy durable put failed");
+      Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
+      Expect (Result, Success, "owned copy durable commit failed");
+      if Receipt_Transaction_ID (Receipt) /= Numbered_TX_ID (82_000)
+        or else Receipt_Batch_ID (Receipt) /= Numbered_ID (82_000)
+        or else Receipt_Outcome (Receipt) /= Success
+        or else Receipt_Sequence (Receipt) /= 1
+      then
+         raise Program_Error with "owned copy durable receipt identity changed";
+      end if;
+      Close (Item, Result);
+      Expect (Result, Success, "owned copy database close failed");
+      Bind_Context (Lost_Context, Backend, Prefix);
+      Open (Reopened, Lost_Context'Access, DB_ID (Tag), Test_Operation_Timeout, Result => Result);
+      Expect (Result, Success, "owned copy cacheless reopen failed");
+      Open_Column_Family (Reopened, 1, Family, Result);
+      Expect (Result, Success, "owned copy reopened family failed");
+      Begin_Transaction (Reopened, Numbered_TX_ID (82_001), Txn, Result);
+      Expect (Result, Success, "owned copy reopened reader failed");
+      Check (Reopened, High_Key, High_Value);
+      Rollback (Txn, Result);
+      Expect (Result, Success, "owned copy reopened rollback failed");
+      Close (Reopened, Result);
+      Expect (Result, Success, "owned copy reopened close failed");
+   end Test_Owned_Copy_Boundaries;
 
    procedure Test_Allocation_Failures (Backend : not null access Backends.Backend'Class) is
       Context      : aliased Storage_Context;
@@ -5583,8 +5759,7 @@ package body Flyology.DB.Engine_Tests is
             Actual  : Sequence_Number;
             Inspect : Outcome_Code;
          begin
-            Testing.Live_Entry_Sequence
-              (Target, 1, Item_Key.Bytes (1 .. Item_Key.Length), Actual, Inspect);
+            Testing.Live_Entry_Sequence (Target, 1, Item_Key.Bytes (1 .. Item_Key.Length), Actual, Inspect);
             if Inspect /= Expected_Code or else (Inspect = Success and then Actual /= Expected) then
                raise Program_Error with Context_Text & " has the wrong live-index sequence";
             end if;
@@ -5809,16 +5984,16 @@ package body Flyology.DB.Engine_Tests is
             Batch_Before, Manifest_Before, Head_Before : Natural;
             Batch_After, Manifest_After, Head_After    : Natural;
             type Operation_Access is access Commit_Operation;
-            procedure Free is new Ada.Unchecked_Deallocation
-              (Object => Commit_Operation, Name => Operation_Access);
+            procedure Free is new
+              Ada.Unchecked_Deallocation (Object => Commit_Operation, Name => Operation_Access);
             type Operation_Array is array (Positive range <>) of Operation_Access;
             type Receipt_Array is array (Positive range <>) of Commit_Receipt;
             type Boolean_Array is array (Positive range <>) of Boolean;
-            Set      : aliased Flyology.Operations.Completion_Set (Width);
-            Work     : Operation_Array (1 .. Width) := [others => null];
-            Active   : Boolean_Array (1 .. Width) := [others => False];
-            Receipts : Receipt_Array (1 .. Width);
-            Results  : array (Positive range 1 .. Width) of Outcome_Code;
+            Set                                        : aliased Flyology.Operations.Completion_Set (Width);
+            Work                                       : Operation_Array (1 .. Width) := [others => null];
+            Active                                     : Boolean_Array (1 .. Width) := [others => False];
+            Receipts                                   : Receipt_Array (1 .. Width);
+            Results                                    : array (Positive range 1 .. Width) of Outcome_Code;
 
             procedure Release_Work is
             begin
@@ -5932,7 +6107,8 @@ package body Flyology.DB.Engine_Tests is
             when others =>
                Testing.Abort_Independent_Cohort (Item, Result);
                for Index in Work'Range loop
-                  if Work (Index) /= null and then Active (Index)
+                  if Work (Index) /= null
+                    and then Active (Index)
                     and then Flyology.Operations.Is_Active (Work (Index).all)
                   then
                      Flyology.Operations.Cancel (Work (Index).all);
@@ -5942,7 +6118,8 @@ package body Flyology.DB.Engine_Tests is
                   Flyology.Operations.Wait_All (Set);
                end if;
                for Index in Work'Range loop
-                  if Work (Index) /= null and then Active (Index)
+                  if Work (Index) /= null
+                    and then Active (Index)
                     and then Flyology.Operations.Is_Terminal (Work (Index).all)
                   then
                      Finish (Work (Index).all, Receipts (Index), Results (Index));
@@ -5952,6 +6129,118 @@ package body Flyology.DB.Engine_Tests is
                Release_Work;
                raise;
          end Run_Width;
+
+         type Selection_Index_Case is (Collision_Tail, Out_Of_Range_Head, Out_Of_Range_Link, Cyclic_Link);
+
+         procedure Run_Selection_Index_Case (Case_Kind : Selection_Index_Case; Transaction_Base : Natural) is
+            Set                                        : aliased Flyology.Operations.Completion_Set (2);
+            First                                      : Commit_Operation (Set'Access, Item'Access, null);
+            Second                                     : Commit_Operation (Set'Access, Item'Access, null);
+            First_Txn, Second_Txn                      : Transaction;
+            First_Receipt, Second_Receipt              : Commit_Receipt;
+            Before_Batch, Before_Manifest, Before_Head : Natural;
+            After_Batch, After_Manifest, After_Head    : Natural;
+            Completed                                  : Flyology.Operations.Completion_Batch (Set.Capacity);
+            Target_Hash                                : Interfaces.Unsigned_64;
+         begin
+            Testing.Configure_Independent_Cohort (Item, 2, Result);
+            Expect (Result, Success, "independent selection-index width configuration failed");
+            Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
+            Testing.Pause_Coordinator (Item, Result);
+            Expect (Result, Success, "independent selection-index coordinator pause failed");
+
+            Begin_Transaction (Item, Numbered_TX_ID (Transaction_Base), First_Txn, Result);
+            Expect (Result, Success, "independent selection-index first begin failed");
+            Put (Item, First_Txn, Family, To_Key ([]), To_Value ([1]), Result);
+            Expect (Result, Success, "independent selection-index first mutation failed");
+
+            Begin_Transaction (Item, Numbered_TX_ID (Transaction_Base + 1), Second_Txn, Result);
+            Expect (Result, Success, "independent selection-index second begin failed");
+            Put
+              (Item,
+               Second_Txn,
+               Family,
+               (if Case_Kind = Collision_Tail then To_Key ([]) else To_Key ([251, 1])),
+               To_Value ([2]),
+               Result);
+            Expect (Result, Success, "independent selection-index first candidate mutation failed");
+            Put (Item, Second_Txn, Family, To_Key ([251, 2]), To_Value ([3]), Result);
+            Expect (Result, Success, "independent selection-index second candidate mutation failed");
+            Put (Item, Second_Txn, Family, To_Key ([251, 3]), To_Value ([4]), Result);
+            Expect (Result, Success, "independent selection-index third candidate mutation failed");
+
+            if First_Txn.Owner.Arena = null
+              or else First_Txn.Owner.Arena.Count /= 1
+              or else Second_Txn.Owner.Arena = null
+              or else Second_Txn.Owner.Arena.Count /= 3
+            then
+               raise Program_Error with "independent selection-index fixture geometry changed";
+            end if;
+            Target_Hash := First_Txn.Owner.Arena.Mutations (1).Key_Hash;
+            for Index in Positive range 1 .. Second_Txn.Owner.Arena.Count loop
+               Second_Txn.Owner.Arena.Mutations (Index).Key_Hash := Target_Hash;
+            end loop;
+            declare
+               Bucket : constant Positive :=
+                 Second_Txn.Owner.Arena.Mutation_Buckets'First
+                 + Natural
+                     (Target_Hash
+                      mod Interfaces.Unsigned_64 (Second_Txn.Owner.Arena.Mutation_Buckets'Length));
+            begin
+               Second_Txn.Owner.Arena.Mutation_Buckets := [others => 0];
+               Second_Txn.Owner.Arena.Mutation_Buckets (Bucket) :=
+                 (if Case_Kind = Out_Of_Range_Head then Second_Txn.Owner.Arena.Count + 1 else 3);
+               Second_Txn.Owner.Arena.Mutations (3).Next_In_Bucket := 2;
+               case Case_Kind is
+                  when Collision_Tail    =>
+                     Second_Txn.Owner.Arena.Mutations (2).Next_In_Bucket := 1;
+                     Second_Txn.Owner.Arena.Mutations (1).Next_In_Bucket := 0;
+
+                  when Out_Of_Range_Head =>
+                     null;
+
+                  when Out_Of_Range_Link =>
+                     Second_Txn.Owner.Arena.Mutations (2).Next_In_Bucket := Second_Txn.Owner.Arena.Count + 1;
+
+                  when Cyclic_Link       =>
+                     Second_Txn.Owner.Arena.Mutations (2).Next_In_Bucket := 3;
+               end case;
+            end;
+
+            Commit (First_Txn, Duration'Last, First);
+            Commit (Second_Txn, Duration'Last, Second);
+            Wait_For_Cohort_Queue (2);
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "independent selection-index coordinator resume failed");
+            Flyology.Operations.Wait_Some (Set, Completed);
+            if Completed.Count /= 1 then
+               raise Program_Error with "independent selection-index pruning completed an inexact member set";
+            end if;
+            Testing.Abort_Independent_Cohort (Item, Result);
+            Expect (Result, Success, "independent selection-index tail abort failed");
+            Flyology.Operations.Wait_All (Set);
+
+            Finish (First, First_Receipt, Result);
+            Flyology.Operations.Release (First);
+            Expect (Result, Storage_Failure, "independent selection-index tail did not drain");
+            Finish (Second, Second_Receipt, Result);
+            Flyology.Operations.Release (Second);
+            Expect (Result, Conflict, "independent selection-index candidate was not rejected");
+            if Receipt_Transaction_ID (First_Receipt) /= Numbered_TX_ID (Transaction_Base)
+              or else Receipt_Batch_ID (First_Receipt) /= Numbered_ID (Transaction_Base)
+              or else Receipt_Transaction_ID (Second_Receipt) /= Numbered_TX_ID (Transaction_Base + 1)
+              or else Receipt_Batch_ID (Second_Receipt) /= Numbered_ID (Transaction_Base + 1)
+            then
+               raise Program_Error with "independent selection-index case lost receipt identity";
+            end if;
+            Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
+            if After_Batch /= Before_Batch
+              or else After_Manifest /= Before_Manifest
+              or else After_Head /= Before_Head
+            then
+               raise Program_Error with "independent selection-index case reached publication";
+            end if;
+         end Run_Selection_Index_Case;
       begin
          Bind_Context (Context, Backend, "independent-cohort-publisher");
          Create_DB (Item, Context'Access, DB_ID (221), ID (222), Result);
@@ -5968,10 +6257,10 @@ package body Flyology.DB.Engine_Tests is
          Testing.Configure_Independent_Cohort (Item, 2, Result);
          Expect (Result, Success, "independent finite-deadline width configuration failed");
          declare
-            Txn                                               : Transaction;
-            Receipt                                           : Commit_Receipt;
-            Before_Batch, Before_Manifest, Before_Head         : Natural;
-            After_Batch, After_Manifest, After_Head            : Natural;
+            Txn                                        : Transaction;
+            Receipt                                    : Commit_Receipt;
+            Before_Batch, Before_Manifest, Before_Head : Natural;
+            After_Batch, After_Manifest, After_Head    : Natural;
          begin
             Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
             Begin_Transaction (Item, Numbered_TX_ID (60_000), Txn, Result);
@@ -6003,10 +6292,10 @@ package body Flyology.DB.Engine_Tests is
          --  The private harness abort makes an underfilled tail terminal
          --  without publishing or losing the admitted receipt identity.
          declare
-            Set     : aliased Flyology.Operations.Completion_Set (1);
-            Work    : Commit_Operation (Set'Access, Item'Access, null);
-            Txn     : Transaction;
-            Receipt : Commit_Receipt;
+            Set                                        : aliased Flyology.Operations.Completion_Set (1);
+            Work                                       : Commit_Operation (Set'Access, Item'Access, null);
+            Txn                                        : Transaction;
+            Receipt                                    : Commit_Receipt;
             Before_Batch, Before_Manifest, Before_Head : Natural;
             After_Batch, After_Manifest, After_Head    : Natural;
          begin
@@ -6038,62 +6327,15 @@ package body Flyology.DB.Engine_Tests is
             end if;
          end;
 
-         --  A conflict removed during cohort selection may leave one valid
-         --  queued member. Prove that the same private abort drains that tail
-         --  while preserving the conflict result and publishing nothing.
-         declare
-            Set          : aliased Flyology.Operations.Completion_Set (2);
-            First        : Commit_Operation (Set'Access, Item'Access, null);
-            Second       : Commit_Operation (Set'Access, Item'Access, null);
-            First_Txn    : Transaction;
-            Second_Txn   : Transaction;
-            First_Receipt, Second_Receipt : Commit_Receipt;
-            Before_Batch, Before_Manifest, Before_Head : Natural;
-            After_Batch, After_Manifest, After_Head    : Natural;
-            Completed : Flyology.Operations.Completion_Batch (Set.Capacity);
-         begin
-            Testing.Configure_Independent_Cohort (Item, 2, Result);
-            Expect (Result, Success, "independent conflict-tail width configuration failed");
-            Testing.Publication_Counts (Context, Before_Batch, Before_Manifest, Before_Head);
-            Testing.Pause_Coordinator (Item, Result);
-            Expect (Result, Success, "independent conflict-tail coordinator pause failed");
-            Begin_Transaction (Item, Numbered_TX_ID (60_002), First_Txn, Result);
-            Put (Item, First_Txn, Family, To_Key ([250, 2]), To_Value ([2]), Result);
-            Begin_Transaction (Item, Numbered_TX_ID (60_003), Second_Txn, Result);
-            Put (Item, Second_Txn, Family, To_Key ([250, 2]), To_Value ([3]), Result);
-            Commit (First_Txn, Duration'Last, First);
-            Commit (Second_Txn, Duration'Last, Second);
-            Wait_For_Cohort_Queue (2);
-            Testing.Resume_Coordinator (Item, Result);
-            Expect (Result, Success, "independent conflict-tail coordinator resume failed");
-            Flyology.Operations.Wait_Some (Set, Completed);
-            if Completed.Count /= 1 then
-               raise Program_Error with "independent conflict pruning completed an inexact member set";
-            end if;
-            Testing.Abort_Independent_Cohort (Item, Result);
-            Expect (Result, Success, "independent conflict-tail abort failed");
-            Flyology.Operations.Wait_All (Set);
-            Finish (First, First_Receipt, Result);
-            Flyology.Operations.Release (First);
-            Expect (Result, Storage_Failure, "independent conflict tail did not drain");
-            Finish (Second, Second_Receipt, Result);
-            Flyology.Operations.Release (Second);
-            Expect (Result, Conflict, "independent conflicting member was not rejected");
-            if Receipt_Transaction_ID (First_Receipt) /= Numbered_TX_ID (60_002)
-              or else Receipt_Batch_ID (First_Receipt) /= Numbered_ID (60_002)
-              or else Receipt_Transaction_ID (Second_Receipt) /= Numbered_TX_ID (60_003)
-              or else Receipt_Batch_ID (Second_Receipt) /= Numbered_ID (60_003)
-            then
-               raise Program_Error with "independent conflict tail lost receipt identity";
-            end if;
-            Testing.Publication_Counts (Context, After_Batch, After_Manifest, After_Head);
-            if After_Batch /= Before_Batch
-              or else After_Manifest /= Before_Manifest
-              or else After_Head /= Before_Head
-            then
-               raise Program_Error with "independent conflict tail reached publication";
-            end if;
-         end;
+         --  Cohort selection follows the transaction's mutation index rather
+         --  than scanning all mutation pairs. Exercise an exact match behind
+         --  colliding keys and bounded fail-closed traversal of encountered
+         --  malformed links. Each rejected candidate leaves a valid tail that
+         --  the private abort drains without publication or identity loss.
+         Run_Selection_Index_Case (Collision_Tail, 60_002);
+         Run_Selection_Index_Case (Out_Of_Range_Head, 60_004);
+         Run_Selection_Index_Case (Out_Of_Range_Link, 60_006);
+         Run_Selection_Index_Case (Cyclic_Link, 60_008);
 
          Run_Width (1, 60_010, Success, 1, 1);
          Run_Width (2, 60_020, Success, 2, 1);
@@ -6206,13 +6448,7 @@ package body Flyology.DB.Engine_Tests is
             raise Program_Error with "independent cohort writer reuse changed its value";
          end if;
          for Member in Positive range 1 .. 2 loop
-            Get
-              (Item,
-               Reader,
-               Family,
-               To_Key ([Byte (Member), 2, Byte (60_050 mod 256)]),
-               Data,
-               Result);
+            Get (Item, Reader, Family, To_Key ([Byte (Member), 2, Byte (60_050 mod 256)]), Data, Result);
             Expect (Result, Success, "independent reconciled batch member was not durable");
          end loop;
          declare
@@ -6221,13 +6457,7 @@ package body Flyology.DB.Engine_Tests is
          begin
             for Base of Bases loop
                for Member in Positive range 1 .. 2 loop
-                  Get
-                    (Item,
-                     Reader,
-                     Family,
-                     To_Key ([Byte (Member), 2, Byte (Base mod 256)]),
-                     Data,
-                     Result);
+                  Get (Item, Reader, Family, To_Key ([Byte (Member), 2, Byte (Base mod 256)]), Data, Result);
                   Expect (Result, Not_Found, "independent failed cohort member became visible after reopen");
                end loop;
             end loop;
@@ -6265,16 +6495,20 @@ package body Flyology.DB.Engine_Tests is
          Batch_Before, Manifest_Before, Head_Before : Natural;
          Batch_After, Manifest_After, Head_After    : Natural;
          type Operation_Access is access Commit_Operation;
-         procedure Free is new Ada.Unchecked_Deallocation
-           (Object => Commit_Operation, Name => Operation_Access);
+         procedure Free is new
+           Ada.Unchecked_Deallocation (Object => Commit_Operation, Name => Operation_Access);
          subtype Authority_Buffer is Byte_Array (1 .. 4_096);
-         Work        : array (Positive range 1 .. 4) of Operation_Access := [others => null];
-         Active      : array (Positive range 1 .. 4) of Boolean := [others => False];
-         Receipts    : array (Positive range 1 .. 4) of Commit_Receipt;
-         Authorities : array (Positive range 1 .. 4) of Authority_Buffer := [others => [others => 0]];
-         Lengths     : array (Positive range 1 .. 4) of Natural := [others => 0];
-         Results     : array (Positive range 1 .. 4) of Outcome_Code;
-         Set         : aliased Flyology.Operations.Completion_Set (4);
+         Work                                       : array (Positive range 1 .. 4) of Operation_Access :=
+           [others => null];
+         Active                                     : array (Positive range 1 .. 4) of Boolean :=
+           [others => False];
+         Receipts                                   : array (Positive range 1 .. 4) of Commit_Receipt;
+         Authorities                                : array (Positive range 1 .. 4) of Authority_Buffer :=
+           [others => [others => 0]];
+         Lengths                                    : array (Positive range 1 .. 4) of Natural :=
+           [others => 0];
+         Results                                    : array (Positive range 1 .. 4) of Outcome_Code;
+         Set                                        : aliased Flyology.Operations.Completion_Set (4);
       begin
          Bind_Context (Context, Backend, "aggregate-cohort-publisher");
          Bind_Context (Standard_Context, Backend, "aggregate-cohort-standard");
@@ -6300,12 +6534,7 @@ package body Flyology.DB.Engine_Tests is
             Expect (Result, Success, "unconfigured aggregate transaction begin failed");
             Put (Item, Unconfigured, Family, To_Key ([0]), To_Value ([0]), Result);
             Expect (Result, Success, "unconfigured aggregate mutation failed");
-            Commit
-              (Item,
-               Unconfigured,
-               Duration'Last,
-               Receipt => Receipt,
-               Result  => Result);
+            Commit (Item, Unconfigured, Duration'Last, Receipt => Receipt, Result => Result);
             Expect
               (Result,
                Unsupported_Format,
@@ -6397,31 +6626,26 @@ package body Flyology.DB.Engine_Tests is
                end if;
             end Expect_Imported_Unchanged;
          begin
-            Import_Commit_Resolution_Authority
-              (Item, Authorities (2) (1 .. Lengths (2)), Imported, Result);
+            Import_Commit_Resolution_Authority (Item, Authorities (2) (1 .. Lengths (2)), Imported, Result);
             Expect (Result, Success, "aggregate authority replacement fixture import failed");
             Imported_Txn := Receipt_Transaction_ID (Imported);
             Imported_Batch := Receipt_Batch_ID (Imported);
-            Export_Commit_Resolution_Authority
-              (Imported, Reexported, Reexported_Length, Result);
+            Export_Commit_Resolution_Authority (Imported, Reexported, Reexported_Length, Result);
             Expect (Result, Success, "imported aggregate authority re-export failed");
             if Reexported_Length /= Lengths (2)
               or else Reexported (10) /= Byte (Commit_Authorities.Aggregate_Authority_Format_Version)
-              or else Reexported (1 .. Reexported_Length)
-                        /= Authorities (2) (1 .. Lengths (2))
+              or else Reexported (1 .. Reexported_Length) /= Authorities (2) (1 .. Lengths (2))
             then
                raise Program_Error with "imported aggregate authority lost its exact version-3 image";
             end if;
 
             Corrupt_Image (Lengths (1)) := Corrupt_Image (Lengths (1)) xor 1;
-            Import_Commit_Resolution_Authority
-              (Item, Corrupt_Image (1 .. Lengths (1)), Imported, Result);
+            Import_Commit_Resolution_Authority (Item, Corrupt_Image (1 .. Lengths (1)), Imported, Result);
             Expect (Result, Corrupt, "corrupt aggregate authority was accepted");
             Expect_Imported_Unchanged ("corrupt aggregate import changed its destination receipt");
 
             Set_Test_Allocation_Fault (Commit_Authority_Image_Allocation);
-            Import_Commit_Resolution_Authority
-              (Item, Authorities (1) (1 .. Lengths (1)), Imported, Result);
+            Import_Commit_Resolution_Authority (Item, Authorities (1) (1 .. Lengths (1)), Imported, Result);
             Expect (Result, Capacity_Exceeded, "aggregate authority allocation failure was not typed");
             Expect_Imported_Unchanged ("aggregate allocation failure changed its destination receipt");
 
@@ -6471,17 +6695,17 @@ package body Flyology.DB.Engine_Tests is
          --  five must still publish together instead of inheriting its fate.
          declare
             type Revalidation_Operation_Access is access Commit_Operation;
-            procedure Free_Revalidation is new Ada.Unchecked_Deallocation
-              (Object => Commit_Operation, Name => Revalidation_Operation_Access);
-            Revalidation_Set : aliased Flyology.Operations.Completion_Set (5);
-            Revalidation_Work : array (Positive range 1 .. 5) of Revalidation_Operation_Access :=
+            procedure Free_Revalidation is new
+              Ada.Unchecked_Deallocation (Object => Commit_Operation, Name => Revalidation_Operation_Access);
+            Revalidation_Set      : aliased Flyology.Operations.Completion_Set (5);
+            Revalidation_Work     : array (Positive range 1 .. 5) of Revalidation_Operation_Access :=
               [others => null];
-            Revalidation_Active : array (Positive range 1 .. 5) of Boolean := [others => False];
+            Revalidation_Active   : array (Positive range 1 .. 5) of Boolean := [others => False];
             Revalidation_Receipts : array (Positive range 1 .. 5) of Commit_Receipt;
-            Revalidation_Results : array (Positive range 1 .. 5) of Outcome_Code;
-            Depth                : Natural := 0;
-            Query_Result         : Outcome_Code;
-            Coordinator_Paused  : Boolean := False;
+            Revalidation_Results  : array (Positive range 1 .. 5) of Outcome_Code;
+            Depth                 : Natural := 0;
+            Query_Result          : Outcome_Code;
+            Coordinator_Paused    : Boolean := False;
          begin
             Testing.Configure_Aggregate_Cohort (Item, 2, 1_000_001, Result);
             Expect (Result, Success, "aggregate revalidation configuration failed");
@@ -6490,15 +6714,14 @@ package body Flyology.DB.Engine_Tests is
             Expect (Result, Success, "aggregate revalidation coordinator pause failed");
             Coordinator_Paused := True;
             for Index in Revalidation_Work'Range loop
-               Revalidation_Work (Index) :=
-                 new Commit_Operation (Revalidation_Set'Access, Item'Access, null);
+               Revalidation_Work (Index) := new Commit_Operation (Revalidation_Set'Access, Item'Access, null);
                declare
-                  Txn : Transaction;
+                  Txn      : Transaction;
                   Key_Byte : constant Byte :=
                     (case Index is
-                       when 1 | 3 => 20,
-                       when 2     => 21,
-                       when 4     => 22,
+                       when 1 | 3  => 20,
+                       when 2      => 21,
+                       when 4      => 22,
                        when others => 23);
                begin
                   Begin_Transaction (Item, Numbered_TX_ID (62_000 + Index), Txn, Result);
@@ -6528,9 +6751,7 @@ package body Flyology.DB.Engine_Tests is
             Flyology.Operations.Wait_All (Revalidation_Set);
             for Index in Revalidation_Work'Range loop
                Finish
-                 (Revalidation_Work (Index).all,
-                  Revalidation_Receipts (Index),
-                  Revalidation_Results (Index));
+                 (Revalidation_Work (Index).all, Revalidation_Receipts (Index), Revalidation_Results (Index));
                Flyology.Operations.Release (Revalidation_Work (Index).all);
                Revalidation_Active (Index) := False;
                Free_Revalidation (Revalidation_Work (Index));
@@ -6541,19 +6762,18 @@ package body Flyology.DB.Engine_Tests is
                   (if Index = 3 then Conflict else Success),
                   "aggregate selection-time revalidation result changed");
             end loop;
-            if Receipt_Batch_ID (Revalidation_Receipts (1))
-                 /= Receipt_Batch_ID (Revalidation_Receipts (2))
+            if Receipt_Batch_ID (Revalidation_Receipts (1)) /= Receipt_Batch_ID (Revalidation_Receipts (2))
               or else Receipt_Batch_ID (Revalidation_Receipts (4))
-                        /= Receipt_Batch_ID (Revalidation_Receipts (5))
+                      /= Receipt_Batch_ID (Revalidation_Receipts (5))
               or else Receipt_Batch_ID (Revalidation_Receipts (1))
-                        = Receipt_Batch_ID (Revalidation_Receipts (4))
+                      = Receipt_Batch_ID (Revalidation_Receipts (4))
               or else Receipt_Batch_ID (Revalidation_Receipts (3)) /= Numbered_ID (62_003)
               or else Receipt_Sequence (Revalidation_Receipts (1)) + 1
-                        /= Receipt_Sequence (Revalidation_Receipts (2))
+                      /= Receipt_Sequence (Revalidation_Receipts (2))
               or else Receipt_Sequence (Revalidation_Receipts (2)) + 1
-                        /= Receipt_Sequence (Revalidation_Receipts (4))
+                      /= Receipt_Sequence (Revalidation_Receipts (4))
               or else Receipt_Sequence (Revalidation_Receipts (4)) + 1
-                        /= Receipt_Sequence (Revalidation_Receipts (5))
+                      /= Receipt_Sequence (Revalidation_Receipts (5))
             then
                raise Program_Error with "aggregate selection-time revalidation changed cohort identity";
             end if;
@@ -6845,9 +7065,7 @@ package body Flyology.DB.Engine_Tests is
                if Flyology.Operations.Is_Active (Second) then
                   Flyology.Operations.Cancel (Second);
                end if;
-               if Flyology.Operations.Is_Active (First)
-                 or else Flyology.Operations.Is_Active (Second)
-               then
+               if Flyology.Operations.Is_Active (First) or else Flyology.Operations.Is_Active (Second) then
                   Flyology.Operations.Wait_All (Set);
                end if;
                raise;
@@ -6931,9 +7149,7 @@ package body Flyology.DB.Engine_Tests is
          exception
             when others =>
                Testing.Abort_Independent_Cohort (Item, Result);
-               if Flyology.Operations.Is_Active (First)
-                 or else Flyology.Operations.Is_Active (Second)
-               then
+               if Flyology.Operations.Is_Active (First) or else Flyology.Operations.Is_Active (Second) then
                   Flyology.Operations.Wait_All (Set);
                end if;
                raise;
@@ -7000,9 +7216,7 @@ package body Flyology.DB.Engine_Tests is
          exception
             when others =>
                Testing.Abort_Independent_Cohort (Item, Result);
-               if Flyology.Operations.Is_Active (First)
-                 or else Flyology.Operations.Is_Active (Second)
-               then
+               if Flyology.Operations.Is_Active (First) or else Flyology.Operations.Is_Active (Second) then
                   Flyology.Operations.Wait_All (Set);
                end if;
                raise;
@@ -7049,19 +7263,20 @@ package body Flyology.DB.Engine_Tests is
          Batch_Before, Manifest_Before, Head_Before : Natural;
          Batch_After, Manifest_After, Head_After    : Natural;
          subtype Authority_Buffer is Byte_Array (1 .. 4_096);
-         Authorities : array (Positive range 1 .. 2) of Authority_Buffer := [others => [others => 0]];
-         Lengths     : array (Positive range 1 .. 2) of Natural := [others => 0];
-         Checkpoint_Runs : constant Checkpoint_Run_Identity_Array :=
+         Authorities                                : array (Positive range 1 .. 2) of Authority_Buffer :=
+           [others => [others => 0]];
+         Lengths                                    : array (Positive range 1 .. 2) of Natural :=
+           [others => 0];
+         Checkpoint_Runs                            : constant Checkpoint_Run_Identity_Array :=
            [Configure_Checkpoint_Run (1, Numbered_ID (65_030))];
-         Adaptive_Limits : constant Database_Limits :=
-           (Default_Limits
-            with delta Maximum_Column_Families => 2, Maximum_Total_L0_Runs => 2);
+         Adaptive_Limits                            : constant Database_Limits :=
+           (Default_Limits with delta Maximum_Column_Families => 2, Maximum_Total_L0_Runs => 2);
          --  Sixteen entries at the exact maximum key/value extent retain all
          --  successful pre-checkpoint cohort fixtures without changing a
          --  production limit or the later two-run checkpoint bound.
-         Initial_Families : constant Column_Family_Configuration_Array :=
+         Initial_Families                           : constant Column_Family_Configuration_Array :=
            [Configure_Column_Family (1, [16#61#], 64, 256, 5_120, 16, 1)];
-         Appended_Configuration : constant Column_Family_Configuration :=
+         Appended_Configuration                     : constant Column_Family_Configuration :=
            Configure_Test_Family (2, [16#62#], 8, 8);
       begin
          Bind_Context (Context, Backend, "adaptive-aggregate-cohort");
@@ -7088,11 +7303,14 @@ package body Flyology.DB.Engine_Tests is
          Expect (Result, Success, "adaptive cohort family open failed");
          Testing.Configure_Adaptive_Aggregate_Cohort
            (Item,
-            Maximum_Members       => 4,
-            Maximum_Encoded_Bytes => 4_096,
-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (0.01),
-            Admission_Depth       => 4,
-            Result                => Result);
+            Maximum_Members                 => 4,
+            Maximum_Encoded_Bytes           => 4_096,
+            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (0.01),
+            Admission_Depth                 => 4,
+            Preparation_Concurrency         => 1,
+            Pipeline_Depth                  => 1,
+            Maximum_In_Flight_Payload_Bytes => 4_096,
+            Result                          => Result);
          Expect (Result, Success, "adaptive cohort configuration failed");
 
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
@@ -7141,16 +7359,122 @@ package body Flyology.DB.Engine_Tests is
             Expect (Result, Success, "adaptive finite-deadline transaction begin failed");
             Put (Item, Txn, Family, To_Key ([0]), To_Value ([0]), Result);
             Expect (Result, Success, "adaptive finite-deadline mutation failed");
-            Commit
-              (Item,
-               Txn,
-               Test_Operation_Timeout,
-               Receipt => Receipt,
-               Result  => Result);
+            Commit (Item, Txn, Test_Operation_Timeout, Receipt => Receipt, Result => Result);
             Expect (Result, Unsupported_Format, "adaptive cohort admitted a finite commit deadline");
             Rollback (Txn, Result);
             Expect (Result, Success, "adaptive finite-deadline rejection consumed its transaction");
          end;
+
+         --  The preparation lane may publish the next immutable batch while
+         --  the ordered publication lane is still waiting on the front HEAD.
+         Testing.Configure_Adaptive_Aggregate_Cohort
+           (Item,
+            Maximum_Members                 => 2,
+            Maximum_Encoded_Bytes           => 4_096,
+            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (1.0),
+            Admission_Depth                 => 4,
+            Preparation_Concurrency         => 2,
+            Pipeline_Depth                  => 2,
+            Maximum_In_Flight_Payload_Bytes => 4_096,
+            Result                          => Result);
+         Expect (Result, Success, "adaptive overlap configuration failed");
+         Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+         declare
+            Set            : aliased Flyology.Operations.Completion_Set (4);
+            Work           :
+              array (Positive range 1 .. 4) of Commit_Operation (Set'Access, Item'Access, null);
+            Receipts       : array (Positive range 1 .. 4) of Commit_Receipt;
+            Results        : array (Positive range 1 .. 4) of Outcome_Code;
+            Active         : array (Positive range 1 .. 4) of Boolean := [others => False];
+            Arrived        : Boolean;
+            Head_Paused    : Boolean := False;
+            Visible_Before : constant Sequence_Number := Visible (Item);
+
+            procedure Submit (Index : Positive) is
+               Txn : Transaction;
+            begin
+               Begin_Transaction (Item, Numbered_TX_ID (65_200 + Index), Txn, Result);
+               Expect (Result, Success, "adaptive overlap member begin failed");
+               Put (Item, Txn, Family, To_Key ([Byte (20 + Index)]), To_Value ([Byte (20 + Index)]), Result);
+               Expect (Result, Success, "adaptive overlap mutation failed");
+               Commit (Txn, Duration'Last, Work (Index));
+               Active (Index) := True;
+            end Submit;
+         begin
+            Testing.Pause_Head_Puts (Context);
+            Head_Paused := True;
+            Submit (1);
+            Submit (2);
+            Testing.Wait_For_Head_Put (Context, Test_Operation_Timeout, Arrived);
+            if not Arrived then
+               raise Program_Error with "adaptive overlap front HEAD did not reach the barrier";
+            end if;
+            Submit (3);
+            Submit (4);
+            for Attempt in 1 .. 2_000 loop
+               Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+               exit when Batch_After = Batch_Before + 2;
+               delay 0.001;
+            end loop;
+            if Batch_After /= Batch_Before + 2
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before + 1
+              or else Visible (Item) /= Visible_Before
+              or else (for some Index in Work'Range => Flyology.Operations.Is_Terminal (Work (Index)))
+            then
+               raise Program_Error with "adaptive overlap did not prepare behind the blocked front HEAD";
+            end if;
+            Testing.Resume_Head_Puts (Context);
+            Head_Paused := False;
+            Flyology.Operations.Wait_All (Set);
+            for Index in Work'Range loop
+               Finish (Work (Index), Receipts (Index), Results (Index));
+               Flyology.Operations.Release (Work (Index));
+               Active (Index) := False;
+               Expect (Results (Index), Success, "adaptive overlap member failed");
+               if Receipt_Transaction_ID (Receipts (Index)) /= Numbered_TX_ID (65_200 + Index)
+                 or else Receipt_Sequence (Receipts (Index))
+                         /= Receipt_Sequence (Receipts (1)) + Sequence_Number (Index - 1)
+               then
+                  raise Program_Error with "adaptive overlap member identity changed";
+               end if;
+            end loop;
+            if Receipt_Batch_ID (Receipts (1)) /= Numbered_ID (65_201)
+              or else Receipt_Batch_ID (Receipts (2)) /= Receipt_Batch_ID (Receipts (1))
+              or else Receipt_Batch_ID (Receipts (3)) /= Numbered_ID (65_203)
+              or else Receipt_Batch_ID (Receipts (4)) /= Receipt_Batch_ID (Receipts (3))
+            then
+               raise Program_Error with "adaptive overlap cohort identities changed";
+            end if;
+         exception
+            when others =>
+               if Head_Paused then
+                  Testing.Resume_Head_Puts (Context);
+               end if;
+               Testing.Abort_Independent_Cohort (Item, Result);
+               for Index in Work'Range loop
+                  if Active (Index) and then Flyology.Operations.Is_Active (Work (Index)) then
+                     Flyology.Operations.Cancel (Work (Index));
+                  end if;
+               end loop;
+               if (for some Index in Active'Range => Active (Index)) then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               for Index in Work'Range loop
+                  if Active (Index) and then Flyology.Operations.Is_Terminal (Work (Index)) then
+                     Finish (Work (Index), Receipts (Index), Results (Index));
+                     Flyology.Operations.Release (Work (Index));
+                  end if;
+               end loop;
+               raise;
+         end;
+         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+         if Batch_After /= Batch_Before + 2
+           or else Manifest_After /= Manifest_Before
+           or else Head_After /= Head_Before + 2
+         then
+            raise Program_Error with "adaptive overlap publication geometry changed";
+         end if;
 
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          declare
@@ -7186,11 +7510,14 @@ package body Flyology.DB.Engine_Tests is
          --  for its otherwise distant scheduler boundary.
          Testing.Configure_Adaptive_Aggregate_Cohort
            (Item,
-            Maximum_Members       => 4,
-            Maximum_Encoded_Bytes => 256,
-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
-            Admission_Depth       => 4,
-            Result                => Result);
+            Maximum_Members                 => 4,
+            Maximum_Encoded_Bytes           => 256,
+            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (1.0),
+            Admission_Depth                 => 4,
+            Preparation_Concurrency         => 1,
+            Pipeline_Depth                  => 1,
+            Maximum_In_Flight_Payload_Bytes => 4_096,
+            Result                          => Result);
          Expect (Result, Success, "adaptive exact-byte equality configuration failed");
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          declare
@@ -7236,9 +7563,7 @@ package body Flyology.DB.Engine_Tests is
                   Testing.Resume_Coordinator (Item, Result);
                end if;
                Testing.Abort_Independent_Cohort (Item, Result);
-               if Flyology.Operations.Is_Active (First)
-                 or else Flyology.Operations.Is_Active (Second)
-               then
+               if Flyology.Operations.Is_Active (First) or else Flyology.Operations.Is_Active (Second) then
                   Flyology.Operations.Wait_All (Set);
                end if;
                if Flyology.Operations.Is_Terminal (First) then
@@ -7259,26 +7584,33 @@ package body Flyology.DB.Engine_Tests is
             raise Program_Error with "adaptive exact-byte equality publication geometry changed";
          end if;
 
-         --  An expired oldest member still selects the maximal compatible
-         --  prefix. A third member crosses the exact byte boundary and
-         --  publishes separately.
+         --  Wait expiry selects joined ready members, not all admissions.
+         --  Depending on preparation joins, the legal ordered partitions
+         --  are 2+1, 1+2 or 1+1+1. Each fixture member adds 48 encoded bytes
+         --  to batch-v1's 160-byte envelope, so three cannot fit in 256.
          Testing.Configure_Adaptive_Aggregate_Cohort
            (Item,
-            Maximum_Members       => 4,
-            Maximum_Encoded_Bytes => 256,
-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (0.01),
-            Admission_Depth       => 4,
-            Result                => Result);
+            Maximum_Members                 => 4,
+            Maximum_Encoded_Bytes           => 256,
+            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (0.01),
+            Admission_Depth                 => 4,
+            Preparation_Concurrency         => 1,
+            Pipeline_Depth                  => 1,
+            Maximum_In_Flight_Payload_Bytes => 4_096,
+            Result                          => Result);
          Expect (Result, Success, "adaptive exact-byte configuration failed");
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          declare
             Set                : aliased Flyology.Operations.Completion_Set (3);
-            Work               : array (Positive range 1 .. 3) of
-              Commit_Operation (Set'Access, Item'Access, null);
+            Work               :
+              array (Positive range 1 .. 3) of Commit_Operation (Set'Access, Item'Access, null);
             Receipts           : array (Positive range 1 .. 3) of Commit_Receipt;
             Results            : array (Positive range 1 .. 3) of Outcome_Code;
             Depth              : Natural := 0;
             Coordinator_Paused : Boolean := False;
+            Sequence_Before    : constant Sequence_Number := Visible (Item);
+            Cohort_Leader      : Positive := 1;
+            Cohort_Count       : Positive := 1;
          begin
             Testing.Pause_Coordinator (Item, Result);
             Expect (Result, Success, "adaptive exact-byte coordinator pause failed");
@@ -7289,13 +7621,7 @@ package body Flyology.DB.Engine_Tests is
                begin
                   Begin_Transaction (Item, Numbered_TX_ID (65_100 + Index), Txn, Result);
                   Expect (Result, Success, "adaptive exact-byte member begin failed");
-                  Put
-                    (Item,
-                     Txn,
-                     Family,
-                     To_Key ([Byte (4 + Index)]),
-                     To_Value ([Byte (4 + Index)]),
-                     Result);
+                  Put (Item, Txn, Family, To_Key ([Byte (4 + Index)]), To_Value ([Byte (4 + Index)]), Result);
                   Expect (Result, Success, "adaptive exact-byte mutation failed");
                   Commit (Txn, Duration'Last, Work (Index));
                end;
@@ -7319,11 +7645,26 @@ package body Flyology.DB.Engine_Tests is
                Flyology.Operations.Release (Work (Index));
                Expect (Results (Index), Success, "adaptive exact-byte member failed");
             end loop;
-            if Receipt_Batch_ID (Receipts (1)) /= Numbered_ID (65_101)
-              or else Receipt_Batch_ID (Receipts (2)) /= Receipt_Batch_ID (Receipts (1))
-              or else Receipt_Batch_ID (Receipts (3)) /= Numbered_ID (65_103)
+            for Index in Receipts'Range loop
+               if Receipt_Batch_ID (Receipts (Index)) /= Receipt_Batch_ID (Receipts (Cohort_Leader)) then
+                  Cohort_Leader := Index;
+                  Cohort_Count := Cohort_Count + 1;
+               end if;
+               if Receipt_Transaction_ID (Receipts (Index)) /= Numbered_TX_ID (65_100 + Index)
+                 or else Receipt_Sequence (Receipts (Index)) /= Sequence_Before + Sequence_Number (Index)
+                 or else Receipt_Batch_ID (Receipts (Index)) /= Numbered_ID (65_100 + Cohort_Leader)
+                 or else 160 + 48 * (Index - Cohort_Leader + 1) > 256
+               then
+                  raise Program_Error with "adaptive exact-byte split changed ordered identity or byte bound";
+               end if;
+            end loop;
+            Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+            if Cohort_Count not in 2 .. 3
+              or else Batch_After /= Batch_Before + Cohort_Count
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before + Cohort_Count
             then
-               raise Program_Error with "adaptive exact-byte split changed cohort identity";
+               raise Program_Error with "adaptive exact-byte split publication geometry changed";
             end if;
          exception
             when others =>
@@ -7342,24 +7683,19 @@ package body Flyology.DB.Engine_Tests is
                end loop;
                raise;
          end;
-         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
-         if Batch_After /= Batch_Before + 2
-           or else Manifest_After /= Manifest_Before
-           or else Head_After /= Head_Before + 2
-         then
-            raise Program_Error with "adaptive exact-byte split publication geometry changed";
-         end if;
-
          --  The byte target is a coalescing preference, not an individual
          --  transaction limit: a hard-valid oversized oldest item publishes
          --  alone instead of becoming permanently unselectable.
          Testing.Configure_Adaptive_Aggregate_Cohort
            (Item,
-            Maximum_Members       => 4,
-            Maximum_Encoded_Bytes => 200,
-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (0.01),
-            Admission_Depth       => 4,
-            Result                => Result);
+            Maximum_Members                 => 4,
+            Maximum_Encoded_Bytes           => 200,
+            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (0.01),
+            Admission_Depth                 => 4,
+            Preparation_Concurrency         => 1,
+            Pipeline_Depth                  => 1,
+            Maximum_In_Flight_Payload_Bytes => 4_096,
+            Result                          => Result);
          Expect (Result, Success, "adaptive oversized-singleton configuration failed");
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          declare
@@ -7391,14 +7727,17 @@ package body Flyology.DB.Engine_Tests is
 
          --  Admission depth counts owned but uncollected work. A rejected
          --  third operation leaves its transaction caller-owned, while Close
-         --  forces the conclusive queued pair to a final durable cohort.
+         --  drains the admitted pair through ready cohorts.
          Testing.Configure_Adaptive_Aggregate_Cohort
            (Item,
-            Maximum_Members       => 2,
-            Maximum_Encoded_Bytes => 4_096,
-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
-            Admission_Depth       => 2,
-            Result                => Result);
+            Maximum_Members                 => 2,
+            Maximum_Encoded_Bytes           => 4_096,
+            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (1.0),
+            Admission_Depth                 => 2,
+            Preparation_Concurrency         => 1,
+            Pipeline_Depth                  => 1,
+            Maximum_In_Flight_Payload_Bytes => 4_096,
+            Result                          => Result);
          Expect (Result, Success, "adaptive admission-depth configuration failed");
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          declare
@@ -7410,9 +7749,13 @@ package body Flyology.DB.Engine_Tests is
             Second_Txn         : Transaction;
             Rejected_Txn       : Transaction;
             Receipt            : Commit_Receipt;
+            First_Receipt      : Commit_Receipt;
+            Second_Receipt     : Commit_Receipt;
             First_Result       : Outcome_Code;
             Second_Result      : Outcome_Code;
             Close_Result       : Outcome_Code;
+            Expected_Puts      : Natural;
+            Sequence_Before    : constant Sequence_Number := Visible (Item);
             Coordinator_Paused : Boolean := False;
          begin
             Testing.Pause_Coordinator (Item, Result);
@@ -7459,15 +7802,13 @@ package body Flyology.DB.Engine_Tests is
                Flyology.Operations.Wait_All (Set);
                Join_Attempted := True;
                Closer.Finish (Close_Result);
-               Finish (First, Receipt, First_Result);
+               Finish (First, First_Receipt, First_Result);
                Flyology.Operations.Release (First);
-               Finish (Second, Receipt, Second_Result);
+               Finish (Second, Second_Receipt, Second_Result);
                Flyology.Operations.Release (Second);
             exception
                when others =>
-                  if Flyology.Operations.Is_Active (First)
-                    or else Flyology.Operations.Is_Active (Second)
-                  then
+                  if Flyology.Operations.Is_Active (First) or else Flyology.Operations.Is_Active (Second) then
                      Flyology.Operations.Wait_All (Set);
                   end if;
                   if not Join_Attempted then
@@ -7487,6 +7828,33 @@ package body Flyology.DB.Engine_Tests is
             Expect (First_Result, Success, "adaptive close-tail first member failed");
             Expect (Second_Result, Success, "adaptive close-tail second member failed");
             Expect (Close_Result, Success, "adaptive conclusive close did not drain its tail");
+            if Receipt_Transaction_ID (First_Receipt) /= Numbered_TX_ID (65_105)
+              or else Receipt_Transaction_ID (Second_Receipt) /= Numbered_TX_ID (65_106)
+              or else Receipt_Sequence (First_Receipt) /= Sequence_Before + 1
+              or else Receipt_Sequence (Second_Receipt) /= Sequence_Before + 2
+              or else Receipt_Batch_ID (First_Receipt) /= Numbered_ID (65_105)
+              or else Receipt_Batch_ID (Second_Receipt) not in Numbered_ID (65_105) | Numbered_ID (65_106)
+            then
+               raise Program_Error with "adaptive conclusive close changed member identity";
+            end if;
+            Expected_Puts :=
+              (if Receipt_Batch_ID (Second_Receipt) = Receipt_Batch_ID (First_Receipt) then 1 else 2);
+            Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+            if Batch_After /= Batch_Before + Expected_Puts
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before + Expected_Puts
+            then
+               raise Program_Error
+                 with
+                   "adaptive conclusive close publication geometry changed: batch"
+                   & Natural'Image (Batch_Before)
+                   & "->"
+                   & Natural'Image (Batch_After)
+                   & " head"
+                   & Natural'Image (Head_Before)
+                   & "->"
+                   & Natural'Image (Head_After);
+            end if;
          exception
             when others =>
                if Coordinator_Paused then
@@ -7513,13 +7881,6 @@ package body Flyology.DB.Engine_Tests is
                end if;
                raise;
          end;
-         Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
-         if Batch_After /= Batch_Before + 1
-           or else Manifest_After /= Manifest_Before
-           or else Head_After /= Head_Before + 1
-         then
-            raise Program_Error with "adaptive conclusive close publication geometry changed";
-         end if;
          Open (Item, Context'Access, DB_ID (231), Test_Operation_Timeout, Result => Result);
          Expect (Result, Success, "adaptive close-tail root did not reopen");
          Open_Column_Family (Item, 1, Family, Result);
@@ -7536,28 +7897,31 @@ package body Flyology.DB.Engine_Tests is
 
          Testing.Configure_Adaptive_Aggregate_Cohort
            (Item,
-            Maximum_Members       => 2,
-            Maximum_Encoded_Bytes => 4_096,
-            Maximum_Wait          => Ada.Real_Time.To_Time_Span (1.0),
-            Admission_Depth       => 4,
-            Result                => Result);
+            Maximum_Members                 => 2,
+            Maximum_Encoded_Bytes           => 4_096,
+            Maximum_Wait                    => Ada.Real_Time.To_Time_Span (1.0),
+            Admission_Depth                 => 4,
+            Preparation_Concurrency         => 1,
+            Pipeline_Depth                  => 2,
+            Maximum_In_Flight_Payload_Bytes => 4_096,
+            Result                          => Result);
          Expect (Result, Success, "adaptive two-member configuration failed");
          Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
          Testing.Arm (Context, After_Head_Put, Unknown_After_Entry);
          declare
-            Set            : aliased Flyology.Operations.Completion_Set (3);
-            First          : Commit_Operation (Set'Access, Item'Access, null);
-            Second         : Commit_Operation (Set'Access, Item'Access, null);
-            Tail           : Commit_Operation (Set'Access, Item'Access, null);
-            First_Txn      : Transaction;
-            Second_Txn     : Transaction;
-            Tail_Txn       : Transaction;
-            Tail_Receipt   : Commit_Receipt;
-            Tail_Result    : Outcome_Code;
-            Receipts       : array (Positive range 1 .. 2) of Commit_Receipt;
-            Results        : array (Positive range 1 .. 2) of Outcome_Code;
-            Both_Terminal  : Boolean := False;
-            Close_Result   : Outcome_Code;
+            Set                : aliased Flyology.Operations.Completion_Set (3);
+            First              : Commit_Operation (Set'Access, Item'Access, null);
+            Second             : Commit_Operation (Set'Access, Item'Access, null);
+            Tail               : Commit_Operation (Set'Access, Item'Access, null);
+            First_Txn          : Transaction;
+            Second_Txn         : Transaction;
+            Tail_Txn           : Transaction;
+            Tail_Receipt       : Commit_Receipt;
+            Tail_Result        : Outcome_Code;
+            Receipts           : array (Positive range 1 .. 2) of Commit_Receipt;
+            Results            : array (Positive range 1 .. 2) of Outcome_Code;
+            Both_Terminal      : Boolean := False;
+            Close_Result       : Outcome_Code;
             Coordinator_Paused : Boolean := False;
          begin
             Testing.Pause_Coordinator (Item, Result);
@@ -7591,13 +7955,9 @@ package body Flyology.DB.Engine_Tests is
                   end if;
                end;
                Both_Terminal :=
-                 Flyology.Operations.Is_Terminal (First)
-                 and then Flyology.Operations.Is_Terminal (Second);
+                 Flyology.Operations.Is_Terminal (First) and then Flyology.Operations.Is_Terminal (Second);
                exit when Both_Terminal;
             end loop;
-            if Flyology.Operations.Is_Terminal (Tail) then
-               raise Program_Error with "adaptive unknown cohort did not retain its queued tail";
-            end if;
             Finish (First, Receipts (1), Results (1));
             Flyology.Operations.Release (First);
             Finish (Second, Receipts (2), Results (2));
@@ -7757,6 +8117,245 @@ package body Flyology.DB.Engine_Tests is
          Close (Item, Result);
          Expect (Result, Success, "adaptive recovered root close failed");
       end;
+
+      --  A selected but unpublished predecessor cannot conclusively reject
+      --  a conflicting younger member. The ten-second cohort wait and
+      --  five-second observation window are test geometry: observing the
+      --  first result before that wait excludes a timer-driven singleton.
+      for First_Fails in Boolean loop
+         declare
+            Context                                    : aliased Storage_Context;
+            Item                                       : aliased Database;
+            Family                                     : Column_Family;
+            Transactions                               : Transaction_Array (1 .. 2);
+            Reader                                     : Transaction;
+            Data                                       : Value;
+            Set                                        : aliased Flyology.Operations.Completion_Set (3);
+            Work                                       :
+              array (Positive range 1 .. 2) of Commit_Operation (Set'Access, Item'Access, null);
+            Receipts                                   : array (Work'Range) of Commit_Receipt;
+            Results                                    : array (Work'Range) of Outcome_Code;
+            Watchdog                                   : Flyology.IO.Timers.Timer_Operation (Set'Access);
+            Completed                                  : Flyology.Operations.Completion_Batch (Set.Capacity);
+            Observation_End                            : Ada.Real_Time.Time;
+            Depth                                      : Natural := 0;
+            Coordinator_Paused                         : Boolean := False;
+            Second_Finished                            : Boolean := False;
+            Close_Result                               : Outcome_Code;
+            Batch_Before, Manifest_Before, Head_Before : Natural;
+            Batch_After, Manifest_After, Head_After    : Natural;
+
+            procedure Finish_Ready is
+            begin
+               for Index in Work'Range loop
+                  if (Index = 1 or else not Second_Finished)
+                    and then Flyology.Operations.Is_Terminal (Work (Index))
+                  then
+                     Finish (Work (Index), Receipts (Index), Results (Index));
+                     Flyology.Operations.Release (Work (Index));
+                     if Index = 2 then
+                        Second_Finished := True;
+                     end if;
+                  end if;
+               end loop;
+               if Flyology.Operations.Is_Terminal (Watchdog) then
+                  begin
+                     Flyology.IO.Timers.Finish (Watchdog);
+                  exception
+                     when Flyology.Operations.Operation_Cancelled =>
+                        null;
+                  end;
+                  Flyology.Operations.Release (Watchdog);
+               end if;
+            end Finish_Ready;
+         begin
+            Bind_Context
+              (Context,
+               Backend,
+               (if First_Fails
+                then "adaptive-prefix-conflict-failure"
+                else "adaptive-prefix-conflict-success"));
+            Create_DB (Item, Context'Access, DB_ID (233), ID (234), Result);
+            Expect (Result, Success, "adaptive prefix-conflict root create failed");
+            Close (Item, Result);
+            Expect (Result, Success, "adaptive prefix-conflict root close failed");
+            Testing.Rewrite_Manifest_Profile
+              (Context, Manifest_ID_For (ID (234)), DB_ID (233), Result, Aggregate_Profile => True);
+            Expect (Result, Success, "adaptive prefix-conflict profile rewrite failed");
+            Open (Item, Context'Access, DB_ID (233), Test_Operation_Timeout, Result => Result);
+            Expect (Result, Success, "adaptive prefix-conflict root open failed");
+            Open_Column_Family (Item, 1, Family, Result);
+            Expect (Result, Success, "adaptive prefix-conflict family open failed");
+            Testing.Configure_Adaptive_Aggregate_Cohort
+              (Item,
+               Maximum_Members                 => 2,
+               Maximum_Encoded_Bytes           => 4_096,
+               Maximum_Wait                    => Ada.Real_Time.To_Time_Span (10.0),
+               Admission_Depth                 => 2,
+               Preparation_Concurrency         => 1,
+               Pipeline_Depth                  => 1,
+               Maximum_In_Flight_Payload_Bytes => 4_096,
+               Result                          => Result);
+            Expect (Result, Success, "adaptive prefix-conflict configuration failed");
+            Testing.Pause_Coordinator (Item, Result);
+            Expect (Result, Success, "adaptive prefix-conflict coordinator pause failed");
+            Coordinator_Paused := True;
+            for Index in Transactions'Range loop
+               Begin_Transaction (Item, Numbered_TX_ID (65_300 + Index), Transactions (Index), Result);
+               Expect (Result, Success, "adaptive prefix-conflict member begin failed");
+               Put (Item, Transactions (Index), Family, To_Key ([1]), To_Value ([Byte (Index)]), Result);
+               Expect (Result, Success, "adaptive prefix-conflict mutation failed");
+            end loop;
+            Testing.Publication_Counts (Context, Batch_Before, Manifest_Before, Head_Before);
+            if First_Fails then
+               Testing.Arm (Context, Before_Head_Put, Definite_Failure);
+            end if;
+            Observation_End := Ada.Real_Time.Clock + Ada.Real_Time.To_Time_Span (5.0);
+            Flyology.IO.Timers.Sleep_Until (Observation_End, Watchdog);
+            for Index in Work'Range loop
+               Commit (Transactions (Index), Duration'Last, Work (Index));
+            end loop;
+            for Attempt in 1 .. 2_000 loop
+               Testing.Queue_Depth (Item, Depth, Result);
+               Expect (Result, Success, "adaptive prefix-conflict queue query failed");
+               exit when Depth = Work'Length or else Ada.Real_Time.Clock >= Observation_End;
+               delay 0.001;
+            end loop;
+            if Depth /= Work'Length or else Ada.Real_Time.Clock >= Observation_End then
+               raise Program_Error with "adaptive prefix-conflict admissions missed observation window";
+            end if;
+            Testing.Resume_Coordinator (Item, Result);
+            Expect (Result, Success, "adaptive prefix-conflict coordinator resume failed");
+            Coordinator_Paused := False;
+            while not Flyology.Operations.Is_Terminal (Work (1))
+              and then not Flyology.Operations.Is_Terminal (Watchdog)
+            loop
+               Flyology.Operations.Wait_Some (Set, Completed);
+               if Completed.Count = 0 then
+                  raise Program_Error with "adaptive prefix-conflict observation returned no completion";
+               end if;
+               if not Second_Finished and then Flyology.Operations.Is_Terminal (Work (2)) then
+                  Finish (Work (2), Receipts (2), Results (2));
+                  Flyology.Operations.Release (Work (2));
+                  Second_Finished := True;
+               end if;
+            end loop;
+            if Ada.Real_Time.Clock >= Observation_End then
+               raise Program_Error with "adaptive prefix-conflict first member missed observation deadline";
+            elsif Flyology.Operations.Is_Terminal (Watchdog) then
+               raise Program_Error with "adaptive prefix-conflict watchdog completed before first member";
+            end if;
+            Finish (Work (1), Receipts (1), Results (1));
+            Flyology.Operations.Release (Work (1));
+            Expect
+              (Results (1),
+               (if First_Fails then Storage_Failure else Success),
+               "adaptive prefix-conflict predecessor outcome changed");
+            if Receipt_Outcome (Receipts (1)) /= Results (1)
+              or else Receipt_Sequence (Receipts (1)) /= 1
+              or else Commit_Resolution_Authority_Length (Receipts (1)) /= 0
+              or else Visible (Item) /= (if First_Fails then 0 else 1)
+            then
+               raise Program_Error with "adaptive prefix-conflict predecessor certainty changed";
+            end if;
+            Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+            if Batch_After /= Batch_Before + 1
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before + (if First_Fails then 0 else 1)
+            then
+               raise Program_Error with "adaptive prefix-conflict predecessor publication changed";
+            end if;
+            Flyology.Operations.Cancel (Watchdog);
+            declare
+               Join_Attempted : Boolean := False;
+
+               task Closer is
+                  pragma Task_Info (Flyology.Native_Task);
+                  entry Finish (Outcome : out Outcome_Code);
+               end Closer;
+
+               task body Closer is
+                  Local_Result : Outcome_Code;
+               begin
+                  Close (Item, Local_Result);
+                  accept Finish (Outcome : out Outcome_Code) do
+                     Outcome := Local_Result;
+                  end Finish;
+               end Closer;
+            begin
+               Flyology.Operations.Wait_All (Set);
+               Join_Attempted := True;
+               Closer.Finish (Close_Result);
+            exception
+               when others =>
+                  Testing.Abort_Independent_Cohort (Item, Result);
+                  Flyology.Operations.Wait_All (Set);
+                  if not Join_Attempted then
+                     Join_Attempted := True;
+                     Closer.Finish (Result);
+                  end if;
+                  raise;
+            end;
+            Finish_Ready;
+            Expect (Close_Result, Success, "adaptive prefix-conflict close did not drain tail");
+            Expect
+              (Results (2),
+               (if First_Fails then Success else Conflict),
+               "adaptive prefix-conflict younger outcome ignored predecessor certainty");
+            for Index in Receipts'Range loop
+               if Receipt_Transaction_ID (Receipts (Index)) /= Numbered_TX_ID (65_300 + Index)
+                 or else Receipt_Batch_ID (Receipts (Index)) /= Numbered_ID (65_300 + Index)
+                 or else Receipt_Outcome (Receipts (Index)) /= Results (Index)
+               then
+                  raise Program_Error with "adaptive prefix-conflict member identity changed";
+               end if;
+            end loop;
+            if Receipt_Sequence (Receipts (2)) /= (if First_Fails then 1 else 0) then
+               raise Program_Error with "adaptive prefix-conflict younger sequence changed";
+            end if;
+            Testing.Publication_Counts (Context, Batch_After, Manifest_After, Head_After);
+            if Batch_After /= Batch_Before + (if First_Fails then 2 else 1)
+              or else Manifest_After /= Manifest_Before
+              or else Head_After /= Head_Before + 1
+            then
+               raise Program_Error with "adaptive prefix-conflict terminal publication changed";
+            end if;
+            Open (Item, Context'Access, DB_ID (233), Test_Operation_Timeout, Result => Result);
+            Expect (Result, Success, "adaptive prefix-conflict recovery failed");
+            if Visible (Item) /= 1 then
+               raise Program_Error with "adaptive prefix-conflict recovery sequence changed";
+            end if;
+            Open_Column_Family (Item, 1, Family, Result);
+            Expect (Result, Success, "adaptive prefix-conflict recovered family open failed");
+            Begin_Transaction (Item, Numbered_TX_ID (65_303), Reader, Result);
+            Expect (Result, Success, "adaptive prefix-conflict recovery reader begin failed");
+            Get (Item, Reader, Family, To_Key ([1]), Data, Result);
+            Expect (Result, Success, "adaptive prefix-conflict recovery lost authoritative value");
+            if Data /= To_Value ([(if First_Fails then 2 else 1)]) then
+               raise Program_Error with "adaptive prefix-conflict recovery selected nonauthoritative value";
+            end if;
+            Rollback (Reader, Result);
+            Expect (Result, Success, "adaptive prefix-conflict reader rollback failed");
+            Close (Item, Result);
+            Expect (Result, Success, "adaptive prefix-conflict recovered root close failed");
+         exception
+            when others =>
+               if Coordinator_Paused then
+                  Testing.Resume_Coordinator (Item, Result);
+               end if;
+               Testing.Clear (Context);
+               Testing.Abort_Independent_Cohort (Item, Result);
+               if Flyology.Operations.Is_Active (Watchdog) then
+                  Flyology.Operations.Cancel (Watchdog);
+               end if;
+               if (for some Index in Work'Range => Flyology.Operations.Is_Active (Work (Index))) then
+                  Flyology.Operations.Wait_All (Set);
+               end if;
+               Finish_Ready;
+               Close (Item, Result);
+               raise;
+         end;
+      end loop;
 
       declare
          Context                                    : aliased Storage_Context;
@@ -13103,15 +13702,24 @@ package body Flyology.DB.Engine_Tests is
          Before_Source_Bytes,
          Before_Sink_Bytes);
       declare
-         --  Memory-backend test capacity: four buckets, the established 512-object
-         --  corpus, ten durable-authority fixture keys, seven cohort-authority
-         --  keys, 46 coalescing-profile keys, six aggregate cancellation/orphan
-         --  keys, 69 v2 recovery objects, one reverse-order live-capacity
-         --  batch, six collision-index fixture objects, and 12 adaptive-cohort
-         --  fixture objects.
+         --  This fixture publishes exactly one manifest, one HEAD key and one
+         --  immutable batch without consuming the shared engine corpus slots.
+         Store : aliased Memory.Store (1, 3, 8_000_000);
+      begin
+         Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
+         if Status /= OS.Success then
+            raise Program_Error with "owned-copy memory bucket create failed";
+         end if;
+         Test_Owned_Copy_Boundaries (Store'Access, "memory-owned-copy", 250);
+      end;
+      declare
+         --  The retained shared-corpus capacity is finite, but the exact
+         --  database-limit campaign below has its own backing store. Its
+         --  former slots cover the seven new prefix-conflict objects without
+         --  coupling their publication outcome to later backend exhaustion.
          --  Eight million bytes cover the complete deterministic engine corpus
          --  while retaining explicit backend backpressure.
-         Store : aliased Memory.Store (4, 669, 8_000_000);
+         Store : aliased Memory.Store (4, 671, 8_000_000);
       begin
          Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
          if Status /= OS.Success then
@@ -13225,7 +13833,20 @@ package body Flyology.DB.Engine_Tests is
          Test_Serializable_Point_Validation (Store'Access, "memory-serializable-points");
          Test_Serializable_Range_Validation (Store'Access, "memory-serializable-ranges");
          Test_Bounded_Scan (Store'Access, "memory-bounded-scan");
-         Test_Cap_Boundaries (Store'Access);
+      end;
+
+      declare
+         --  Four roots contribute one manifest and one HEAD each. The exact
+         --  history, reservation, live-state, and byte cases contribute
+         --  64 + 64 + 4 + 1 immutable batches. Their persisted DB limits,
+         --  not a previously populated provider, govern the one-over checks.
+         Capacity_Store : aliased Memory.Store (1, 141, 8_000_000);
+      begin
+         Capacity_Store.Create_Bucket (Bucket, null, Ada.Real_Time.Time_Last, Status);
+         if Status /= OS.Success then
+            raise Program_Error with "capacity campaign memory bucket create failed";
+         end if;
+         Test_Cap_Boundaries (Capacity_Store'Access);
       end;
 
       declare
@@ -13253,6 +13874,7 @@ package body Flyology.DB.Engine_Tests is
             Test_Runtime_Sized_Value (Store'Access, "files-runtime-sized", 21);
             Test_Large_Production_Profile (Store'Access, "files-large-profile", 22);
             Test_Dynamic_Mutation_Descriptors (Store'Access, "files-dynamic-mutations", 23);
+            Test_Owned_Copy_Boundaries (Store'Access, "files-owned-copy", 251);
             Test_Manifest_And_Family_API (Store'Access);
             Test_Column_Family_Append (Store'Access, "files-family-append", 33_600);
             Test_Checkpoint_Recovery_Failures (Store'Access);

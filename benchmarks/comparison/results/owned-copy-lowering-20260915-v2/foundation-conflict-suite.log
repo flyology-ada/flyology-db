@@ -1,0 +1,83 @@
+Note: Running pre-build actions for flyology=0.1.1-dev...
+Note: Building flyology_tla=0.1.0-dev/flyology_tla.gpr...
+gprbuild: "flyology-tla" up to date
+Note: Building flyology_db=0.1.0-dev/flyology_db.gpr...
+Compile
+   [Ada]          flyology-db.adb
+Build Libraries
+   [gprlib]       Flyology_Db.lexch
+   [archive]      libFlyology_Db.a
+   [index]        libFlyology_Db.a
+Success: Build finished successfully in 13.90 seconds.
+validated oracles/contract/canonical_state_vectors.json
+validated oracles/workloads/log_only_cross_family.ndjson
+validated oracles/workloads/unknown_resolution.ndjson
+validated oracles/contract/valid/unsupported_remote_commit.ndjson
+validated oracles/adapters/slatedb/tests/fixtures/single_family_read_only_recovery.ndjson
+validated oracles/adapters/slatedb/tests/fixtures/unsupported_remote_commit.ndjson
+Flyology.DB repository checks passed
+  Object Storage f65afbf28108bb9d81fac6dc15496857dc710796
+  SlateDB        e0161973d8d7ffdede7c44725729838811674e99
+  TidesDB        23a67a6531bc6c0b537d3696758c7879586dcfce
+Note: Running pre-build actions for flyology=0.1.1-dev...
+Note: Building flyology_tla=0.1.0-dev/flyology_tla.gpr...
+gprbuild: "flyology-tla" up to date
+Note: Building flyology_db_tests=0.1.0-dev/flyology_db_tests.gpr...
+Compile
+   [Ada]          flyology-db-tests.adb
+   [Ada]          flyology-db-files_crash_probe.adb
+   [Ada]          flyology-db-client_probe.adb
+   [Ada]          flyology-db-tla_conformance.adb
+   [Ada]          flyology_db_config.ads
+   [Ada]          flyology-db-commit_profile_formats.adb
+   [Ada]          flyology-db-checkpoint_policy.adb
+   [Ada]          flyology-db-object_storage.adb
+   [Ada]          flyology-db.adb
+   [Ada]          flyology-db-testing.adb
+   [Ada]          flyology-db-batch_formats.adb
+   [Ada]          flyology-db-manifest_formats.adb
+   [Ada]          flyology-db-reference_model.adb
+   [Ada]          flyology-db-lsm_formats.adb
+   [Ada]          flyology-db-identity_partition_policy.adb
+   [Ada]          flyology-db-formats.adb
+   [Ada]          flyology-db-head_policy.adb
+   [Ada]          flyology-db-commit_profiles.adb
+   [Ada]          flyology-db-commit_authority_formats.adb
+   [Ada]          flyology-db-lsm_runtime_formats.adb
+   [Ada]          flyology-db-batch_format_tests.adb
+   [Ada]          flyology-db-engine_tests.adb
+   [Ada]          flyology-db-lsm_format_tests.adb
+   [Ada]          flyology-db-manifest_format_tests.adb
+flyology-db-client_probe.adb:2545:10: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-client_probe.adb:3030:19: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+   [Ada]          refresh_proxy_testing.adb
+refresh_proxy_testing.adb:216:07: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:8062:19: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:10220:16: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:10288:16: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:10578:16: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:11667:13: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:11987:13: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:12288:13: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:12613:13: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+Build Libraries
+   [gprlib]       Flyology_Db.lexch
+   [archive]      libFlyology_Db.a
+   [index]        libFlyology_Db.a
+Bind
+   [gprbind]      flyology-db-tests.bexch
+   [gprbind]      flyology-db-files_crash_probe.bexch
+   [Ada]          flyology-db-tests.ali
+   [Ada]          flyology-db-files_crash_probe.ali
+   [gprbind]      flyology-db-client_probe.bexch
+   [Ada]          flyology-db-client_probe.ali
+   [gprbind]      flyology-db-tla_conformance.bexch
+   [Ada]          flyology-db-tla_conformance.ali
+Link
+   [link]         flyology-db-tests.adb
+   [link]         flyology-db-files_crash_probe.adb
+   [link]         flyology-db-client_probe.adb
+   [link]         flyology-db-tla_conformance.adb
+Success: Build finished successfully in 35.35 seconds.
+
+raised PROGRAM_ERROR : adaptive exact-byte split changed cohort identity

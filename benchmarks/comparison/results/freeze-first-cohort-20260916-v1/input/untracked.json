@@ -1,0 +1,338 @@
+[
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingAdmissionOrderProbe.cfg",
+    "sha256": "a149f23c03112d0f0df1ea10e79d531342bd2f88bfe46f4133622563aa2a0f55",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingAdmissionSlices.tla",
+    "sha256": "88620981eea203612c9fcb8fdb8374015c11c8c68c34fb1b091786b32216ae6f",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingBoundedBackpressureWitness.cfg",
+    "sha256": "322f76c096e2c2d94d8e8a6f6a85561efb9e0fd40fb3c521e87080823f84acff",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingByteBoundProbe.cfg",
+    "sha256": "2f1d0e71ccd719dac8a38a98ba704a036cfeb0b061211faf694fa56f48fdd0fe",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingByteCapacityOneCloseProgress.cfg",
+    "sha256": "ec3f605ed92cb05e1dc9c03c279519594a745fd0f29e08b09ebfbc3a9efe26f0",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingByteCapacityOneCloseWitness.cfg",
+    "sha256": "5fab9c948fd13eaf08bfb058ed72d9fcfcacd202c67827bd98386d93fb670ff3",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingByteCapacityTwoCloseProgress.cfg",
+    "sha256": "30c264059380367e81a6ded98db70a8931494074849a608f8c3c05ef243a2bd9",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingByteCapacityTwoCloseWitness.cfg",
+    "sha256": "91f3d5e9031def23fbaa73800c97c169bb10a8092d1f6228897192ff8fca6216",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingByteTailWitness.cfg",
+    "sha256": "56b6bac132053a59299cdcca80da3587f88f10879af9a3b82d8c0db42af3cafb",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingCloseOverlapWitness.cfg",
+    "sha256": "c752d55bffa5d3bdedf29474ab588260679860abaacbdbb09ce528219ad8d952",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingCloseProgress.cfg",
+    "sha256": "ba38d3fac550b0ff0bb1cde259245f62d00ce2fd4b67da90868292a615054529",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingCloseTailWitness.cfg",
+    "sha256": "5460e882798b34132851debb3974f6413da200ee722785cf13c005b4d8ab872f",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingCollectionBeforeDeliveryWitness.cfg",
+    "sha256": "220015a798362aa9c7923654aeee3f50754fc705b02f6932b30b3e74691e442e",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingCompletionBoundProbe.cfg",
+    "sha256": "f7f5af510e15f1a2110dc017d4eba9d2d2f9eb6b9ad8caf00624128e81f5e3c7",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingCompletionOwnershipProbe.cfg",
+    "sha256": "7679d7f769cae6b4bda13e44b85c50c1d080843d203871dcbf5c141b0fbf3fc3",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingConflictCloseProgress.cfg",
+    "sha256": "bbd59f7ff4816ca0eb5b3395f147175643f09379b4cdb8930e3786e2b1b98fe8",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingConflictProbe.cfg",
+    "sha256": "1c0e5c3892be6de7612cc5ebadca303ac2fb7f624b1a99b965f06744e65c6704",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingConflictWaitWitness.cfg",
+    "sha256": "fadea4d438327a1940aea0ff782177a6b42efa073bb7743c13195e349f995902",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingEpisodeProbe.cfg",
+    "sha256": "d7c12779d0ae2f89c33799ce7635f7ff6dc6bab8f5b857ccd261fb3e3c3f2881",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingFragmentProbe.cfg",
+    "sha256": "4c29b66c9a2455c327857e90ba03bef27e8a373a0986d8e4178a967de9fd6f01",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingFrontValidationFailureWitness.cfg",
+    "sha256": "1db90f5a2860df6c0cb146543de33ec89f185569ae1c47b83938fd891d0a6f62",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingHeadValidationProbe.cfg",
+    "sha256": "791ad2752edcd5e37f678dfded3cb23f3ed33b161b862bdd713619452357081a",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingLaterBatchFailureWitness.cfg",
+    "sha256": "e8b8eac9e8787e3b2f130a5557f11ee4a6db5ea33e8c216bcf3a470eb02f5196",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingLaterPrepareFailureWitness.cfg",
+    "sha256": "d9eecc0d491ab0f7c812973c7be158b58dffc49eb41bb3a91fc8248a7b44ce3e",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingLifecycle.cfg",
+    "sha256": "a89c5196596a91e07a3ec5cc78db042150303d39de0eddd7aa4241fe6f533178",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingLifecycle.tla",
+    "sha256": "52ccbef5c5840c18675110be9d69e735025ca045cf064c970c53ea6481c303bd",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingMemberReceiptProbe.cfg",
+    "sha256": "5f7236f57a2282d4c90f02965e3981349f87d0fbe93192d072401b92a82f9387",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingOversizedSingletonWitness.cfg",
+    "sha256": "4192a75da636f59e067589c5c61a26e768bcd94f8d7bce8993196e898a86db9c",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingPreparationOverlapWitness.cfg",
+    "sha256": "127a94ba1a4897e56e610fdee057742c5cd60cb6e886930362a057f7a273ec3d",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingPrepareBoundProbe.cfg",
+    "sha256": "0a4a9b9dff44a92595661b7692bd93cd0616a354dd9e17af97cd20425622c702",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingPrepareCloseProbe.cfg",
+    "sha256": "e7c62820f26854f42a05a8a54754673a8459ee0fb0d68d73e8a8331083101b71",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingPrepareFailureWitness.cfg",
+    "sha256": "c2bd4cd1f9497488299ade24a820c3ae80b80f7ce62a55aa7276abf9af7bec9b",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingPrepareOwnershipProbe.cfg",
+    "sha256": "9da644b2d20b6a15a3627d60ac0eed78c39e8533f5161140ca47495d3336329a",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingProgress.cfg",
+    "sha256": "fa2b1f856dfc5c136770f3c74e1f1b3dca06c17c2fbeac6b00c75073b688b528",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingProgress.tla",
+    "sha256": "84b2811593ee42d2e078587dfdf195645b26bc96faed4690a8338e6a3d074cf0",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingProjectionOwnershipProbe.cfg",
+    "sha256": "ac00b510ebf9b9ad1acb0f91e2a699ca669df40fbc2a8ab8d03bf84f202c8333",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingReadyOutOfOrderWitness.cfg",
+    "sha256": "18ffa6803be8a3668e8f3e0068875e7ebb4a6d2c1055832ae1c2d24d5a0854cb",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingReadyQueueProbe.cfg",
+    "sha256": "1fb9c4221a46e3631acd688a9332fdf9184f778238759aa28db4356aa7158b91",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingReceiptDeliveryProbe.cfg",
+    "sha256": "d7c43e92ace7e234fb378574251b55cdb0db5ff36f177e22c72bb1b28a86f68e",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingSealProbe.cfg",
+    "sha256": "7f57b4e44177683f2c32b9209998cccce04230c5db3692b8ef7efb0bd8efdd3c",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingStalledProvider.cfg",
+    "sha256": "ae56306b479489956917afa741551fa33bcc15eddd3720b340b397e4e1c55611",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingSuccessorDrainProbe.cfg",
+    "sha256": "ca5e3b5b67b964af5bc84426fcd3f6efdfa6e6d81eaf67760c84c7a6117499d9",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingTerminalSlotsHeldWitness.cfg",
+    "sha256": "a113baf188c618857e3cf51eab855a3327be80c259d039b63ceda5026d449697",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingTightMultiMemberFreezeWitness.cfg",
+    "sha256": "024006f3776ce06f79a128a79c1aa8416785ebe790e1c0c0cba6b8e713a53b56",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingTightSingletonCloseProgress.cfg",
+    "sha256": "a28a8d500144fb37ab3b976c444d8a31fccb94ca9e858c18b858418bc1c25bfc",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingTightSingletonDrainWitness.cfg",
+    "sha256": "53e3f3d138a9fc8582a9944016277f5c189d63736b4655eece10e9ac9331288f",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/PipelinedAdaptiveAggregateCommitCoalescingUnknownPreparingTailWitness.cfg",
+    "sha256": "ca95d22c29405223127442777e253623f984214f5dd095faba556741b3260b34",
+    "target": null
+  },
+  {
+    "kind": "regular",
+    "mode": 420,
+    "path": "formal/tla/benchmarks/comparison/results/current-local-raw/pipelined-formal-access/tlc-lifecycle-v1/tlc.log",
+    "sha256": "95a5374006eebefc317748b511b6a9cfcd1c587011a9d1be54e31ef9594f3b8d",
+    "target": null
+  }
+]

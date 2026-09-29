@@ -1,0 +1,532 @@
+# THIS FILE IS GENERATED. DO NOT EDIT.
+
+[solution]
+[solution.context]
+solved = true
+[[solution.state]]
+crate = "flyology"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=0.1.1-dev"
+[solution.state.release]
+authors = [
+"Yurii Rashkovskii",
+]
+description = "Experimental GNAT runtime extension for native and lightweight Ada tasks"
+licenses = "(MIT OR Apache-2.0) AND GPL-3.0-or-later WITH GCC-exception-3.1"
+maintainers = [
+"Yurii Rashkovskii <yrashk@gmail.com>",
+]
+maintainers-logins = [
+"yrashk",
+]
+name = "flyology"
+project-files = [
+"flyology.gpr",
+]
+tags = [
+"ada",
+"runtime",
+"event-loop",
+"concurrency",
+"lightweight",
+"spark",
+]
+version = "0.1.1-dev"
+website = "https://flyology.org/"
+[solution.state.release.environment]
+[solution.state.release.environment.FLYOLOGY_ROOT]
+set = "${CRATE_ROOT}"
+[solution.state.release.environment.GPR_CONFIG]
+set = "${CRATE_ROOT}/build/flyology.cgpr"
+[solution.state.release.origin]
+commit = "bd95746d5c9c31f5b41b611db9ba82a016ceaaa4"
+url = "git+https://github.com/flyology-ada/flyology.git"
+[[solution.state.release.actions]]
+command = [
+"./scripts/prepare-alire-rts.sh",
+]
+directory = "."
+type = "pre-build"
+[[solution.state.release.actions]]
+command = [
+"./scripts/test.sh",
+]
+directory = "."
+type = "test"
+[[solution.state.release.depends-on]]
+flyology_allocators = "~0.1.0-dev"
+gnat = ">=13 & <17"
+[[solution.state]]
+crate = "flyology_allocators"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=0.1.0"
+[solution.state.release]
+authors = [
+"Yurii Rashkovskii",
+]
+description = "Caller-owned memory allocation algorithms for Ada"
+licenses = "MIT OR Apache-2.0"
+maintainers = [
+"Yurii Rashkovskii <yrashk@gmail.com>",
+]
+maintainers-logins = [
+"yrashk",
+]
+name = "flyology_allocators"
+project-files = [
+"flyology_allocators.gpr",
+]
+tags = [
+"ada",
+"allocators",
+"embedded",
+"memory",
+"systems",
+]
+version = "0.1.0"
+website = "https://flyology.org/"
+[solution.state.release.build-switches]
+[solution.state.release.build-switches."*"]
+Compile_Checks = "warnings"
+[solution.state.release.origin]
+commit = "6f91b1afb27f861e73411a4abd0bf4b23b87e5c2"
+subdir = "./flyology_allocators/"
+url = "git+https://github.com/flyology-ada/flyology.git"
+[[solution.state.release.actions]]
+command = [
+"sh",
+"./scripts/test.sh",
+]
+directory = "."
+type = "test"
+[[solution.state.release.depends-on]]
+gnat = ">=13 & <17"
+[[solution.state]]
+crate = "flyology_cachelines"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=0.1.0"
+[solution.state.release]
+authors = [
+"Yurii Rashkovskii",
+]
+description = "Cache-line-aware storage and cache information for Ada"
+licenses = "MIT OR Apache-2.0"
+maintainers = [
+"Yurii Rashkovskii <yrashk@gmail.com>",
+]
+maintainers-logins = [
+"yrashk",
+]
+name = "flyology_cachelines"
+project-files = [
+"flyology_cachelines.gpr",
+]
+tags = [
+"ada",
+"cache",
+"concurrency",
+"performance",
+"systems",
+]
+version = "0.1.0"
+website = "https://flyology.org/guide/cachelines/"
+[solution.state.release.build-switches]
+[solution.state.release.build-switches."*"]
+Compile_Checks = "warnings"
+[solution.state.release.origin]
+commit = "8e0461080e0f110b3bf70dbff283af9ca5e53a2c"
+subdir = "flyology_cachelines"
+url = "git+https://github.com/flyology-ada/flyology.git"
+[[solution.state.release.actions]]
+command = [
+"./scripts/test.sh",
+]
+directory = "."
+type = "test"
+[[solution.state.release.depends-on]]
+gnat = ">=13 & <17"
+[[solution.state]]
+crate = "flyology_crc"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=0.1.1"
+[solution.state.release]
+authors = [
+"Yurii Rashkovskii",
+]
+description = "Fast CRC-16, CRC-32, and CRC-64 algorithms for Ada"
+licenses = "MIT OR Apache-2.0"
+maintainers = [
+"Yurii Rashkovskii <yrashk@gmail.com>",
+]
+maintainers-logins = [
+"yrashk",
+]
+name = "flyology_crc"
+project-files = [
+"flyology_crc.gpr",
+]
+tags = [
+"ada",
+"crc",
+"checksum",
+"simd",
+]
+version = "0.1.1"
+[solution.state.release.gpr-set-externals]
+FLYOLOGY_CRC_ARCH = "aarch64"
+FLYOLOGY_CRC_HOST_OS = "macos"
+[solution.state.release.origin]
+commit = "a5cb23a28c2f9d1e5548cf510f5126ca5a453315"
+url = "git+https://github.com/flyology-ada/flyology-crc.git"
+[[solution.state.release.depends-on]]
+gnat = ">=13 & <17"
+[[solution.state]]
+crate = "flyology_http"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=0.1.3-dev"
+[solution.state.release]
+authors = [
+"Yurii Rashkovskii",
+]
+description = "HTTP client and server library for Flyology tasks"
+licenses = "MIT OR Apache-2.0"
+maintainers = [
+"Yurii Rashkovskii <yrashk@gmail.com>",
+]
+maintainers-logins = [
+"yrashk",
+]
+name = "flyology_http"
+project-files = [
+"flyology_http.gpr",
+]
+tags = [
+"ada",
+"http",
+"client",
+"server",
+"websocket",
+"sse",
+]
+version = "0.1.3-dev"
+website = "https://http.flyology.org/"
+[solution.state.release.origin]
+commit = "eb09a80a7e06274e93289861c2cae1ca7e8cb1af"
+url = "git+https://github.com/flyology-ada/flyology-http.git"
+[[solution.state.release.actions]]
+command = [
+"./scripts/test.sh",
+]
+directory = "."
+type = "test"
+[[solution.state.release.depends-on]]
+flyology = "=0.1.1-dev"
+flyology_cachelines = "=0.1.0"
+flyology_quic = "=0.1.3-dev"
+[[solution.state]]
+crate = "flyology_json"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=0.1.0-dev"
+[solution.state.release]
+authors = [
+"Yurii Rashkovskii",
+]
+description = "Incremental bounded JSON parsing and writing for Ada"
+licenses = "MIT OR Apache-2.0"
+maintainers = [
+"Yurii Rashkovskii <yrashk@gmail.com>",
+]
+maintainers-logins = [
+"yrashk",
+]
+name = "flyology_json"
+tags = [
+"ada",
+"json",
+"streaming",
+"parser",
+"writer",
+]
+version = "0.1.0-dev"
+website = "https://json.flyology.org"
+[solution.state.release.build-switches]
+[solution.state.release.build-switches."*"]
+Compile_Checks = "warnings"
+[solution.state.release.origin]
+commit = "3445b7540b89c3d1aa5c55d43b2817fab97710ae"
+url = "git+https://github.com/flyology-ada/flyology-json.git"
+[[solution.state.release.actions]]
+command = [
+"./scripts/test-all.sh",
+]
+directory = "."
+type = "test"
+[[solution.state.release.depends-on]]
+gnat = ">=13 & <17"
+[[solution.state]]
+crate = "flyology_object_storage"
+fulfilment = "linked"
+pinned = false
+transitivity = "direct"
+versions = "=0.1.0-dev"
+[solution.state.link]
+lockfiled = true
+path = ".deps/flyology-object-storage"
+[[solution.state]]
+crate = "flyology_quic"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=0.1.3-dev"
+[solution.state.release]
+authors = [
+"Yurii Rashkovskii",
+]
+description = "Ada-native QUIC transport for Flyology tasks"
+licenses = "MIT OR Apache-2.0"
+maintainers = [
+"Yurii Rashkovskii <yrashk@gmail.com>",
+]
+maintainers-logins = [
+"yrashk",
+]
+name = "flyology_quic"
+project-files = [
+"flyology_quic.gpr",
+]
+tags = [
+"ada",
+"quic",
+"transport",
+"udp",
+]
+version = "0.1.3-dev"
+website = "https://http.flyology.org/"
+[solution.state.release.origin]
+commit = "eb09a80a7e06274e93289861c2cae1ca7e8cb1af"
+subdir = "flyology_quic"
+url = "git+https://github.com/flyology-ada/flyology-http.git"
+[[solution.state.release.actions]]
+command = [
+"./scripts/test.sh",
+]
+directory = "."
+type = "test"
+[[solution.state.release.depends-on]]
+flyology = "~0.1.0"
+[[solution.state]]
+crate = "flyology_tla"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=0.1.0-dev"
+[solution.state.release]
+authors = [
+"Yurii Rashkovskii",
+]
+description = "TLA+ trace generation and Ada conformance replay harness"
+executables = [
+"flyology-tla",
+]
+licenses = "MIT OR Apache-2.0"
+maintainers = [
+"Yurii Rashkovskii <yrashk@gmail.com>",
+]
+maintainers-logins = [
+"yrashk",
+]
+name = "flyology_tla"
+project-files = [
+"flyology_tla.gpr",
+]
+tags = [
+"ada",
+"tla",
+"tlc",
+"tlaps",
+"testing",
+"conformance",
+]
+version = "0.1.0-dev"
+[solution.state.release.build-switches]
+[solution.state.release.build-switches."*"]
+Compile_Checks = "warnings"
+[solution.state.release.origin]
+commit = "faf06c48246931e30b7fe9c5c786660185925666"
+url = "git+https://github.com/flyology-ada/tla.git"
+[[solution.state.release.actions]]
+command = [
+"./scripts/test.sh",
+]
+directory = "."
+type = "test"
+[[solution.state.release.depends-on]]
+flyology_json = "=0.1.0-dev"
+gnat = ">=13 & <17"
+[[solution.state]]
+crate = "gnat"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = ">=13 & <=16.1.0"
+[solution.state.release]
+auto-gpr-with = false
+description = "The GNAT Ada compiler - Native"
+licenses = "GPL-3.0-or-later AND GPL-3.0-or-later WITH GCC-exception-3.1"
+maintainers = [
+"Fabien Chouteau <chouteau@adacore.com>",
+"CÃ©sar Sagaert <sagaert@adacore.com>",
+]
+maintainers-logins = [
+"Fabien-Chouteau",
+"AldanTanneo",
+]
+name = "gnat_native"
+provides = [
+"gnat=16.1.0",
+]
+version = "16.1.0"
+website = "https://github.com/alire-project/GNAT-FSF-builds"
+[solution.state.release.configuration]
+auto_gpr_with = true
+disabled = true
+generate_ada = true
+generate_c = true
+generate_gpr = true
+output_dir = "config"
+[solution.state.release.environment]
+[solution.state.release.environment.LD_LIBRARY_PATH]
+prepend = "${CRATE_ROOT}/lib"
+[solution.state.release.environment.LD_RUN_PATH]
+prepend = "${CRATE_ROOT}/lib"
+[solution.state.release.environment.PATH]
+prepend = "${CRATE_ROOT}/bin"
+[solution.state.release.origin]
+binary = true
+hashes = [
+"sha256:657cf254323eb91f79768918e8bd8887d6da7ac6056732a38f21e2848267da18",
+]
+url = "https://github.com/alire-project/GNAT-FSF-builds/releases/download/gnat-16.1.0-1/gnat-aarch64-darwin-16.1.0-1.tar.gz"
+[[solution.state]]
+crate = "gnat_native"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=16.1.0"
+[solution.state.release]
+auto-gpr-with = false
+description = "The GNAT Ada compiler - Native"
+licenses = "GPL-3.0-or-later AND GPL-3.0-or-later WITH GCC-exception-3.1"
+maintainers = [
+"Fabien Chouteau <chouteau@adacore.com>",
+"CÃ©sar Sagaert <sagaert@adacore.com>",
+]
+maintainers-logins = [
+"Fabien-Chouteau",
+"AldanTanneo",
+]
+name = "gnat_native"
+provides = [
+"gnat=16.1.0",
+]
+version = "16.1.0"
+website = "https://github.com/alire-project/GNAT-FSF-builds"
+[solution.state.release.configuration]
+auto_gpr_with = true
+disabled = true
+generate_ada = true
+generate_c = true
+generate_gpr = true
+output_dir = "config"
+[solution.state.release.environment]
+[solution.state.release.environment.LD_LIBRARY_PATH]
+prepend = "${CRATE_ROOT}/lib"
+[solution.state.release.environment.LD_RUN_PATH]
+prepend = "${CRATE_ROOT}/lib"
+[solution.state.release.environment.PATH]
+prepend = "${CRATE_ROOT}/bin"
+[solution.state.release.origin]
+binary = true
+hashes = [
+"sha256:657cf254323eb91f79768918e8bd8887d6da7ac6056732a38f21e2848267da18",
+]
+url = "https://github.com/alire-project/GNAT-FSF-builds/releases/download/gnat-16.1.0-1/gnat-aarch64-darwin-16.1.0-1.tar.gz"
+[[solution.state]]
+crate = "xmlada"
+fulfilment = "solved"
+pinned = false
+transitivity = "direct"
+versions = "=26.0.0"
+[solution.state.release]
+authors = [
+"AdaCore",
+]
+description = "The XML/Ada toolkit"
+licenses = "GPL-3.0-or-later WITH GCC-exception-3.1"
+maintainers = [
+"chouteau@adacore.com",
+"sagaert@adacore.com",
+]
+maintainers-logins = [
+"Fabien-Chouteau",
+"AldanTanneo",
+]
+name = "xmlada"
+project-files = [
+"distrib/xmlada.gpr",
+"dom/xmlada_dom.gpr",
+"sax/xmlada_sax.gpr",
+"input_sources/xmlada_input.gpr",
+"schema/xmlada_schema.gpr",
+"unicode/xmlada_unicode.gpr",
+]
+version = "26.0.0"
+website = "https://github.com/AdaCore/xmlada"
+[solution.state.release.configuration]
+auto_gpr_with = true
+disabled = true
+generate_ada = true
+generate_c = true
+generate_gpr = true
+output_dir = "config"
+[solution.state.release.gpr-externals]
+LIBRARY_TYPE = [
+"static",
+"relocatable",
+"static-pic",
+]
+XMLADA_BUILD_MODE = [
+"distrib",
+"Debug",
+"Production",
+"profile",
+"coverage",
+"nochecks",
+]
+[solution.state.release.origin]
+hashes = [
+"sha512:b140ed4a41210d9defccf07fde0eafe8ee3d883aa31bfc2996fab01409a657d11ea7af7f6caca2a5ffa492e5bd18ffb6958355c23aa78180f41a19af21efdd0f",
+]
+url = "https://github.com/AdaCore/xmlada/archive/refs/tags/v26.0.0.zip"
+[[solution.state.release.actions]]
+command = [
+"sh",
+"configure",
+]
+directory = "."
+type = "post-fetch"
+[[solution.state.release.depends-on]]
+gnat = ">=11"
+

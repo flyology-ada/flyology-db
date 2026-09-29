@@ -1,0 +1,57 @@
+Note: Running pre-build actions for flyology=0.1.1-dev...
+Note: Building flyology_tla=0.1.0-dev/flyology_tla.gpr...
+gprbuild: "flyology-tla" up to date
+Note: Building flyology_db=0.1.0-dev/flyology_db.gpr...
+Compile
+   [Ada]          flyology_db_config.ads
+Build Libraries
+   [gprlib]       Flyology_Db.lexch
+   [archive]      libFlyology_Db.a
+   [index]        libFlyology_Db.a
+Success: Build finished successfully in 3.12 seconds.
+validated oracles/contract/canonical_state_vectors.json
+validated oracles/workloads/log_only_cross_family.ndjson
+validated oracles/workloads/unknown_resolution.ndjson
+validated oracles/contract/valid/unsupported_remote_commit.ndjson
+validated oracles/adapters/slatedb/tests/fixtures/single_family_read_only_recovery.ndjson
+validated oracles/adapters/slatedb/tests/fixtures/unsupported_remote_commit.ndjson
+Flyology.DB repository checks passed
+  Object Storage f65afbf28108bb9d81fac6dc15496857dc710796
+  SlateDB        e0161973d8d7ffdede7c44725729838811674e99
+  TidesDB        23a67a6531bc6c0b537d3696758c7879586dcfce
+Note: Running pre-build actions for flyology=0.1.1-dev...
+Note: Building flyology_tla=0.1.0-dev/flyology_tla.gpr...
+gprbuild: "flyology-tla" up to date
+Note: Building flyology_db_tests=0.1.0-dev/flyology_db_tests.gpr...
+Compile
+   [Ada]          flyology_db_config.ads
+   [Ada]          flyology-db-engine_tests.adb
+flyology-db-engine_tests.adb:8092:19: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:10250:16: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:10318:16: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:10608:16: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:11697:13: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:12017:13: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:12318:13: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+flyology-db-engine_tests.adb:12643:13: warning: GNAT pragma Task_Info is now obsolete, use CPU instead [-gnatwj]
+Build Libraries
+   [gprlib]       Flyology_Db.lexch
+   [archive]      libFlyology_Db.a
+   [index]        libFlyology_Db.a
+Bind
+   [gprbind]      flyology-db-tests.bexch
+   [Ada]          flyology-db-tests.ali
+   [gprbind]      flyology-db-files_crash_probe.bexch
+   [Ada]          flyology-db-files_crash_probe.ali
+   [gprbind]      flyology-db-client_probe.bexch
+   [Ada]          flyology-db-client_probe.ali
+   [gprbind]      flyology-db-tla_conformance.bexch
+   [Ada]          flyology-db-tla_conformance.ali
+Link
+   [link]         flyology-db-tests.adb
+   [link]         flyology-db-files_crash_probe.adb
+   [link]         flyology-db-client_probe.adb
+   [link]         flyology-db-tla_conformance.adb
+Success: Build finished successfully in 9.98 seconds.
+
+raised PROGRAM_ERROR : adaptive prefix-conflict first member did not freeze before wait

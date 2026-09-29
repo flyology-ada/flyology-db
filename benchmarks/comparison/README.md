@@ -87,16 +87,22 @@ controlled successful-path durability experiments:
   admits ordinary singleton commits through an `N`-slot completion set, then
   freezes the oldest compatible prefix at `M` members, `B` encoded bytes, or
   `W` microseconds and validates each member receipt against its shared batch
-  and HEAD transition.
+  and HEAD transition. Append `-workersR-cohortsC` to select `R` concurrent
+  private cohort preparers and at most `C` resident cohort descriptors; omitting
+  both markers explicitly selects the one-preparer, one-cohort baseline.
 
-`N`, `G`, and `M` are canonical decimal integers bounded by the existing
-eight-slot benchmark fixture; explicit groups require `G >= 2` and
-`G * N <= 8`, while adaptive profiles require `N >= M`. `B` and `W` are
-canonical positive decimal integers. The participant name records the exact
-geometry in JSON and NDJSON evidence. These are benchmark profile choices, not
+`G`, `M`, `R`, and `C` are canonical decimal integers bounded by the existing
+eight-member/eight-cohort private runtime geometry. Ordinary singleton,
+explicit-group, independent, and exact-aggregate depths remain bounded by their
+existing eight-slot admission profiles; explicit groups require `G >= 2` and
+`G * N <= 8`. Adaptive caller/admission depth `N` may use the benchmark's
+existing 63-operation fixture capacity and must satisfy `N >= M`. `B` and `W`
+are canonical positive decimal integers. The participant name and execution
+metadata record the exact geometry. These are benchmark profile choices, not
 database defaults: the useful balance between publication amortization,
-maximum wait, and in-flight overlap can vary by hardware, provider latency,
-key/value geometry, and transaction shape.
+maximum wait, preparation concurrency, resident cohorts, and caller concurrency
+can vary by hardware, provider latency, key/value geometry, and transaction
+shape.
 
 The unsuffixed Flyology participant refills after each completion, while the
 SlateDB participant submits and drains fixed waves. Append `-waves` to both
@@ -104,6 +110,37 @@ participant names for an explicitly matched fixed-wave admission boundary, for
 example `slatedb-1ms-depth8-waves` and
 `flyology-db-files-singleton-depth8-waves`. Aggregate profiles accept the same
 suffix, as in `flyology-db-files-aggregate-cohort-width4-depth8-waves`.
+
+Append `-prepareP` immediately before `-waves` to prepare each fixed wave with
+`P` bounded workers before ordered commit admission. For example,
+`slatedb-1ms-depth8-prepare4-waves` and
+`flyology-db-files-adaptive-cohort-members8-bytes2159008-wait-us1000-depth8-prepare4-waves`
+compare the same eight-transaction wave and four-worker preparation geometry.
+The complete Begin/Put/Commit/durability path remains inside `primary_time`,
+and close/reopen byte verification remains unchanged. This benchmark-only
+fixture does not select a public Flyology.DB scheduling default.
+
+Append `-packed` immediately before `-waves` to an adaptive Flyology profile to
+measure the full-cohort admission ceiling with one preparation owner. The
+fixture uses one persistent producer and two bounded banks. It prepares each
+bank linearly, briefly pauses only coordinator selection while admitting that
+bank in transaction order, resumes the unchanged publisher, and prepares the
+alternate bank while the owner drains the current durable cohort. A bank is not
+reused until every member receipt finishes, bounding caller-side ownership to
+eight admitted plus eight preparing or ready transactions. For 35 transactions
+at depth and member bound eight, the maintained geometry is 8/8/8/8/3 and
+exactly five immutable batch objects plus five HEAD transitions. Preparation,
+admission, publication, durability, producer shutdown, and close/reopen
+verification remain inside the same evidence boundary. The deliberate
+selection barrier is a benchmark oracle, not a public scheduler or an
+ordinary-call performance claim.
+
+Combine the markers as `-packed-prepareP-waves` to feed the same exact packed
+cohorts with `P` persistent bounded preparation workers. Each worker owns
+disjoint transaction slots, workers join before ordered admission, and the
+alternate bank may prepare while the current bank publishes. This avoids
+per-wave task creation while preserving the 8/8/8/8/3 publication geometry,
+receipt checks, and final reopen verification.
 
 The explicitly wave-suffixed first two participants are the matched successful,
 conflict-free singleton comparison. Ordinary serial singleton `Commit` is the

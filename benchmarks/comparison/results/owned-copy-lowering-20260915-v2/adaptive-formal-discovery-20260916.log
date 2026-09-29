@@ -1,0 +1,87 @@
+verified flyology TLA+ toolchain: /Users/yrashk/Projects/flyology-ada/flyology-db/.deps/flyology-tla-toolchain
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/CommitPublicationDescendantCommittedWitness.trace.json
+valid flyology.tla.trace/2: 7 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/CommitPublicationDescendantFailureWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/CommitPublicationWitness.trace.json
+valid flyology.tla.trace/2: 7 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/ManifestPublicationWitness.trace.json
+valid flyology.tla.trace/2: 9 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/ManifestPublicationFailureWitness.trace.json
+valid flyology.tla.trace/2: 7 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/CheckpointPublicationCommittedWitness.trace.json
+valid flyology.tla.trace/2: 13 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/CheckpointPublicationRejectedWitness.trace.json
+valid flyology.tla.trace/2: 13 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/CheckpointPublicationRecoveryWitness.trace.json
+valid flyology.tla.trace/2: 16 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SuccessiveCheckpointRecoveryWitness.trace.json
+valid flyology.tla.trace/2: 17 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/LiveSuffixRegistryRecoveryWitness.trace.json
+valid flyology.tla.trace/2: 10 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/LiveSuffixRegistryCancellationWitness.trace.json
+valid flyology.tla.trace/2: 8 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/L0CheckpointNoWorkWitness.trace.json
+valid flyology.tla.trace/2: 1 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/L0CheckpointAdditiveWitness.trace.json
+valid flyology.tla.trace/2: 1 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/L0CheckpointSelectionWitness.trace.json
+valid flyology.tla.trace/2: 1 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/L0CheckpointNoAdmissibleWitness.trace.json
+valid flyology.tla.trace/2: 1 steps
+conformant: 1 modeled steps
+conformant: 1 modeled steps
+conformant: 1 modeled steps
+conformant: 1 modeled steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/L0AccumulationRecoveryWitness.trace.json
+valid flyology.tla.trace/2: 17 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/L0CompactionRecoveryWitness.trace.json
+valid flyology.tla.trace/2: 9 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/L0CompactionEmptyRecoveryWitness.trace.json
+valid flyology.tla.trace/2: 8 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/LSMCompactionEquivalenceWitness.trace.json
+valid flyology.tla.trace/2: 3 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/LSMPartialCompactionEquivalenceWitness.trace.json
+valid flyology.tla.trace/2: 2 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/LSMThreeRunCompactionEquivalenceWitness.trace.json
+valid flyology.tla.trace/2: 2 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/ImmutableCacheWitness.trace.json
+valid flyology.tla.trace/2: 19 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/ObjectRetentionWitness.trace.json
+valid flyology.tla.trace/2: 23 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/ReplicaRefreshWitness.trace.json
+valid flyology.tla.trace/2: 15 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SnapshotIsolationWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SnapshotIsolationDisjointWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SnapshotIsolationCheckpointWitness.trace.json
+valid flyology.tla.trace/2: 7 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SnapshotReadsOldWitness.trace.json
+valid flyology.tla.trace/2: 5 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SnapshotReadsOwnWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SnapshotReadsTooOldWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SerializablePointWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SerializableRangeWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SerializableSnapshotWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/SerializableOwnWriteWitness.trace.json
+valid flyology.tla.trace/2: 4 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/RangeNormalizationWitness.trace.json
+valid flyology.tla.trace/2: 7 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/PagedScanWitness.trace.json
+valid flyology.tla.trace/2: 7 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/PhysicalScanMergeWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/LazySSTReadWitness.trace.json
+valid flyology.tla.trace/2: 6 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/LazySSTNextEntryWitness.trace.json
+valid flyology.tla.trace/2: 4 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/AuthenticatedScanInitializationWitness.trace.json
+valid flyology.tla.trace/2: 9 steps
+normalized flyology.tla.trace/2: /Users/yrashk/Projects/flyology-ada/flyology-db/benchmarks/comparison/results/owned-copy-lowering-20260915-v2/foundation-test-tmp/flyology-db-tla.C6rZVI/StorageBackedPagedScanWitness.trace.json
+valid flyology.tla.trace/2: 17 steps
